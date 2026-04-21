@@ -1,0 +1,1 @@
+Get a high-level health snapshot: total observation count, errors in last 60s, active channels, connected data sources, and health status. Call this FIRST when starting a debugging session to understand what data is flowing. Also useful to check if a specific application is sending telemetry (its name will appear in connections).

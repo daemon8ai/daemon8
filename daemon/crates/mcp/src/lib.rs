@@ -1,0 +1,1054 @@
+// SPDX-License-Identifier: LicenseRef-FCL-1.0-ALv2
+// Copyright (c) 2026 Havy.tech, LLC
+
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
+
+use daemon8_store::StateModel;
+use daemon8_types::{
+    Checkpoint, DevicePlatform, Filter, Observation, ObservationKindTag, OriginPattern, Severity,
+};
+use rmcp::handler::server::router::tool::ToolRouter;
+use rmcp::handler::server::wrapper::Parameters;
+use rmcp::model::{Implementation, ServerCapabilities, ServerInfo, Tool};
+use rmcp::schemars::{self, JsonSchema};
+use rmcp::{ServerHandler, tool, tool_router};
+use serde::Deserialize;
+use tracing::warn;
+
+const INSTRUCTIONS: &str = include_str!("../tool_descriptions/instructions.txt");
+
+/// Result of a device screenshot capture.
+pub struct DeviceScreenshotResult {
+    pub png_bytes: Vec<u8>,
+    pub source: String,
+}
+
+/// Callback type for device screenshot capture. Receives (serial, platform) and
+/// returns PNG bytes + source label. Constructed by the daemon crate with access
+/// to ADB transport and xcap.
+pub type DeviceScreenshotFn = Arc<
+    dyn Fn(
+            String,
+            DevicePlatform,
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<DeviceScreenshotResult>> + Send>>
+        + Send
+        + Sync,
+>;
+
+#[derive(Debug)]
+pub enum ChromeCommand {
+    Connect { endpoint: String },
+    Action(daemon8_chrome::BrowserAction),
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ObserveParams {
+    #[schemars(
+        description = "Filter by observation kind: log, query, http_exchange, exception, js_exception, lifecycle, state_snapshot, metric, custom. Browser console output is 'log', browser JS errors are 'js_exception', page load events are 'lifecycle', network requests are 'http_exchange'."
+    )]
+    pub kinds: Option<Vec<String>>,
+
+    #[schemars(description = "Minimum severity threshold: trace, debug, info, warn, error")]
+    pub severity_min: Option<String>,
+
+    #[schemars(
+        description = "Filter by origin pattern: 'app' or 'app:name' for applications, 'browser' or 'browser:tab_id' for browser tabs, 'device' or 'device:serial' for devices. Omit to see all origins."
+    )]
+    pub origins: Option<Vec<String>>,
+
+    #[schemars(description = "Substring search across observation data")]
+    pub text_match: Option<String>,
+
+    #[schemars(description = "Return only observations after this checkpoint id")]
+    pub since_checkpoint: Option<u64>,
+
+    #[schemars(description = "Maximum number of results to return (default 50)")]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ConnectParams {
+    #[schemars(description = "Browser DevTools endpoint URL (default http://localhost:9222)")]
+    pub endpoint: String,
+}
+
+pub use daemon8_types::DebugAction;
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum NetworkPreset {
+    Offline,
+    #[serde(rename = "slow-3g")]
+    Slow3g,
+    #[serde(rename = "fast-3g")]
+    Fast3g,
+    Restore,
+}
+
+impl NetworkPreset {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Offline => "offline",
+            Self::Slow3g => "slow-3g",
+            Self::Fast3g => "fast-3g",
+            Self::Restore => "restore",
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum StoreType {
+    Localstorage,
+    Sessionstorage,
+    Cookie,
+}
+
+impl StoreType {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Localstorage => "localstorage",
+            Self::Sessionstorage => "sessionstorage",
+            Self::Cookie => "cookie",
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ActParams {
+    pub action: DebugAction,
+    #[schemars(description = "Target tab ID (omit for first/default tab)")]
+    pub tab_id: Option<String>,
+    #[schemars(description = "JavaScript expression to evaluate (for eval_js)")]
+    pub expression: Option<String>,
+    #[schemars(description = "CSS selector for element screenshot (for screenshot)")]
+    pub selector: Option<String>,
+    #[schemars(description = "CSS text to inject (for inject_css)")]
+    pub css: Option<String>,
+    #[schemars(description = "Track injected CSS for later revert (for inject_css, default true)")]
+    pub temporary: Option<bool>,
+    #[schemars(
+        description = "Device serial for device screenshot (e.g. 'emulator-5554'). When provided with action='screenshot', captures from the device instead of the browser. Uses host window capture for emulators, ADB for physical devices."
+    )]
+    pub device_serial: Option<String>,
+    #[schemars(
+        description = "Device platform hint: 'android' or 'vega'. Used with device_serial to select the right capture method. Defaults to 'android'."
+    )]
+    pub device_platform: Option<String>,
+    #[schemars(
+        description = "Viewport width in CSS pixels (for set_viewport). iPhone 15=390, Pixel 8=412, iPad=820, desktop=1280"
+    )]
+    pub viewport_width: Option<u32>,
+    #[schemars(
+        description = "Viewport height in CSS pixels (for set_viewport). iPhone 15=844, Pixel 8=915, iPad=1180, desktop=800"
+    )]
+    pub viewport_height: Option<u32>,
+    #[schemars(
+        description = "Device pixel ratio / scale factor (for set_viewport). iPhone 15=3.0, Pixel 8=2.625, iPad=2.0, desktop=1.0"
+    )]
+    pub viewport_scale: Option<f64>,
+    #[schemars(
+        description = "Enable mobile emulation with touch events (for set_viewport). true for mobile devices, false for desktop"
+    )]
+    pub viewport_mobile: Option<bool>,
+    #[schemars(description = "User-agent string override (for set_viewport, optional)")]
+    pub viewport_ua: Option<String>,
+    #[schemars(
+        description = "Network preset for network_conditions. offline=no connectivity, slow-3g=400ms/780Kbps, fast-3g=150ms/1.6Mbps, restore=remove throttling"
+    )]
+    pub network_preset: Option<NetworkPreset>,
+    #[schemars(description = "Storage type for storage_set")]
+    pub store_type: Option<StoreType>,
+    #[schemars(description = "Storage key to read or write (for storage_set)")]
+    pub storage_key: Option<String>,
+    #[schemars(description = "Storage value to write (for storage_set)")]
+    pub storage_value: Option<String>,
+    #[schemars(
+        description = "Comma-separated storage types to clear (for storage_clear): 'cookies', 'local_storage', 'session_storage', 'indexeddb', 'cache_storage', 'service_workers', 'all'. Default: 'all'"
+    )]
+    pub storage_types: Option<String>,
+    #[schemars(description = "X coordinate in CSS pixels (for element_at_point)")]
+    pub x: Option<f64>,
+    #[schemars(description = "Y coordinate in CSS pixels (for element_at_point)")]
+    pub y: Option<f64>,
+    #[schemars(description = "URL to navigate to (for navigate)")]
+    pub url: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct IngestParams {
+    #[schemars(
+        description = "Your agent or application name (e.g. 'my-agent'). Used for filtering with origins=['app:name']."
+    )]
+    pub app: Option<String>,
+
+    #[schemars(
+        description = "Observation kind: log, metric, query, exception, custom. Defaults to log."
+    )]
+    pub kind: Option<String>,
+
+    #[schemars(
+        description = "Severity: trace, debug, info, warn, error. Defaults to info. Setting warn or error triggers a real-time alert push to all connected agent sessions."
+    )]
+    pub severity: Option<String>,
+
+    #[schemars(
+        description = "The observation payload (JSON object). Use a 'message' key for clean alert formatting: {\"message\": \"what happened\"}. Additional fields are preserved."
+    )]
+    pub data: serde_json::Value,
+
+    #[schemars(description = "Channel name for custom kind observations.")]
+    pub channel: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SubscribeParams {
+    #[schemars(
+        description = "Filter by observation kind: log, query, http_exchange, exception, js_exception, lifecycle, metric, custom. Omit for all kinds."
+    )]
+    pub kinds: Option<Vec<String>>,
+
+    #[schemars(
+        description = "Minimum severity threshold: trace, debug, info, warn, error. Default: warn (only warn and error push alerts)."
+    )]
+    pub severity_min: Option<String>,
+
+    #[schemars(
+        description = "Filter by origin: 'app' or 'app:name' for applications. Omit for all origins."
+    )]
+    pub origins: Option<Vec<String>>,
+
+    #[schemars(description = "Substring match in observation data. Omit for no text filtering.")]
+    pub text_match: Option<String>,
+}
+
+fn parse_origin_pattern(s: &str) -> OriginPattern {
+    match s.split_once(':') {
+        Some(("app", "*")) | None if s == "app" => OriginPattern::AnyApplication,
+        Some(("app", name)) => OriginPattern::ApplicationNamed(name.into()),
+        Some(("browser", "*")) | None if s == "browser" => OriginPattern::AnyBrowser,
+        Some(("browser", tab_id)) => OriginPattern::BrowserTab(tab_id.into()),
+        Some(("device", "*")) | None if s == "device" => OriginPattern::AnyDevice,
+        Some(("device", serial)) => OriginPattern::DeviceSerial(serial.into()),
+        _ => OriginPattern::ApplicationNamed(s.into()),
+    }
+}
+
+pub struct DaemonMcp {
+    store: Arc<dyn StateModel>,
+    obs_tx: tokio::sync::mpsc::UnboundedSender<Observation>,
+    chrome_tx: tokio::sync::mpsc::Sender<ChromeCommand>,
+    chrome_state: tokio::sync::watch::Receiver<daemon8_chrome::ConnectionState>,
+    chrome_endpoint: Mutex<Option<Arc<str>>>,
+    last_checkpoint: Mutex<Checkpoint>,
+    device_screenshot_fn: Option<DeviceScreenshotFn>,
+    screenshot_dir: std::path::PathBuf,
+    subscription_tx: Arc<tokio::sync::watch::Sender<Option<Filter>>>,
+    tool_router: ToolRouter<Self>,
+}
+
+pub struct DaemonMcpConfig {
+    pub store: Arc<dyn StateModel>,
+    pub obs_tx: tokio::sync::mpsc::UnboundedSender<Observation>,
+    pub chrome_tx: tokio::sync::mpsc::Sender<ChromeCommand>,
+    pub chrome_state: tokio::sync::watch::Receiver<daemon8_chrome::ConnectionState>,
+    pub chrome_endpoint: Option<String>,
+    pub device_screenshot_fn: Option<DeviceScreenshotFn>,
+    pub screenshot_dir: std::path::PathBuf,
+    pub subscription_tx: Arc<tokio::sync::watch::Sender<Option<Filter>>>,
+}
+
+#[tool_router(vis = "pub")]
+impl DaemonMcp {
+    pub fn new(cfg: DaemonMcpConfig) -> Self {
+        let mut router = Self::tool_router();
+        router += Self::action_tool_router();
+        Self {
+            store: cfg.store,
+            obs_tx: cfg.obs_tx,
+            chrome_tx: cfg.chrome_tx,
+            chrome_state: cfg.chrome_state,
+            chrome_endpoint: Mutex::new(cfg.chrome_endpoint.map(Arc::from)),
+            last_checkpoint: Mutex::new(Checkpoint(0)),
+            device_screenshot_fn: cfg.device_screenshot_fn,
+            screenshot_dir: cfg.screenshot_dir,
+            subscription_tx: cfg.subscription_tx,
+            tool_router: router,
+        }
+    }
+
+    pub fn subscription_rx(&self) -> tokio::sync::watch::Receiver<Option<Filter>> {
+        self.subscription_tx.subscribe()
+    }
+
+    /// Ensure Chrome is connected, waiting up to `timeout` for the connection.
+    /// Returns Ok if connected, Err with a user-facing error message if not.
+    async fn ensure_chrome_connected(&self, timeout: std::time::Duration) -> Result<(), String> {
+        use daemon8_chrome::ConnectionState;
+
+        let state = *self.chrome_state.borrow();
+        match state {
+            ConnectionState::Connected => Ok(()),
+            ConnectionState::Disconnected => {
+                let endpoint = self
+                    .chrome_endpoint
+                    .lock()
+                    .expect("chrome_endpoint mutex poisoned")
+                    .as_ref()
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| "http://localhost:9222".to_string());
+                let _ = self
+                    .chrome_tx
+                    .send(ChromeCommand::Connect { endpoint })
+                    .await;
+                let result = self.wait_for_connected(timeout).await;
+                if result.is_ok() {
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                }
+                result
+            }
+            ConnectionState::Connecting | ConnectionState::Reconnecting => {
+                self.wait_for_connected(timeout).await
+            }
+        }
+    }
+
+    async fn wait_for_connected(&self, timeout: std::time::Duration) -> Result<(), String> {
+        use daemon8_chrome::ConnectionState;
+
+        let mut rx = self.chrome_state.clone();
+        let result = tokio::time::timeout(timeout, async {
+            loop {
+                if *rx.borrow_and_update() == ConnectionState::Connected {
+                    return true;
+                }
+                if rx.changed().await.is_err() {
+                    return false;
+                }
+            }
+        })
+        .await;
+        match result {
+            Ok(true) => Ok(()),
+            _ => Err(
+                "Browser connection timed out. The daemon will keep retrying in the background."
+                    .into(),
+            ),
+        }
+    }
+
+    #[doc = include_str!("../tool_descriptions/debug_observe.txt")]
+    #[tool(name = "debug_observe")]
+    async fn debug_observe(&self, Parameters(params): Parameters<ObserveParams>) -> String {
+        // If the caller wants browser observations, ensure Chrome is connected.
+        let wants_browser = params
+            .origins
+            .as_ref()
+            .is_some_and(|origins| origins.iter().any(|o| o.starts_with("browser")));
+        if wants_browser
+            && let Err(e) = self
+                .ensure_chrome_connected(std::time::Duration::from_secs(10))
+                .await
+        {
+            // Don't fail -- still query the store for whatever's there,
+            // but include the connection error in the response.
+            tracing::warn!("Browser not available for observation: {e}");
+        }
+
+        let kinds = params.kinds.map(|v| {
+            v.iter()
+                .filter_map(|s| match s.parse::<ObservationKindTag>() {
+                    Ok(k) => Some(k),
+                    Err(e) => {
+                        warn!("ignoring unknown kind '{}': {}", s, e);
+                        None
+                    }
+                })
+                .collect()
+        });
+
+        let severity_min = params
+            .severity_min
+            .and_then(|s| match s.parse::<Severity>() {
+                Ok(sev) => Some(sev),
+                Err(e) => {
+                    warn!("ignoring unknown severity '{}': {}", s, e);
+                    None
+                }
+            });
+
+        let origins = params
+            .origins
+            .map(|v| v.iter().map(|s| parse_origin_pattern(s)).collect());
+
+        let since = params.since_checkpoint.map(Checkpoint);
+
+        let filter = Filter {
+            kinds,
+            severity_min,
+            origins,
+            text_match: params.text_match,
+            since,
+            limit: Some(params.limit.unwrap_or(50).min(500)),
+        };
+
+        match self.store.query(&filter) {
+            Ok(slice) => {
+                if wants_browser {
+                    // Include chrome connection state so the LLM knows
+                    // whether Chrome is connected even when observations are empty.
+                    let chrome_state = *self.chrome_state.borrow();
+                    let mut result = serde_json::to_value(&slice).unwrap_or_default();
+                    result["browser_state"] = serde_json::json!(format!("{chrome_state}"));
+                    serde_json::to_string_pretty(&result)
+                        .unwrap_or_else(|e| error_json(&format!("serialization failed: {e}")))
+                } else {
+                    serde_json::to_string_pretty(&slice)
+                        .unwrap_or_else(|e| error_json(&format!("serialization failed: {e}")))
+                }
+            }
+            Err(e) => error_json(&format!("query failed: {e}")),
+        }
+    }
+
+    #[doc = include_str!("../tool_descriptions/debug_summary.txt")]
+    #[tool(name = "debug_summary")]
+    async fn debug_summary(&self) -> String {
+        match self.store.summary() {
+            Ok(summary) => match serde_json::to_value(&summary) {
+                Ok(mut val) => {
+                    if let Some(obj) = val.as_object_mut() {
+                        obj.insert(
+                            "daemon_version".into(),
+                            serde_json::Value::String(env!("CARGO_PKG_VERSION").to_string()),
+                        );
+                    }
+                    serde_json::to_string_pretty(&val)
+                        .unwrap_or_else(|e| error_json(&format!("serialization failed: {e}")))
+                }
+                Err(e) => error_json(&format!("serialization failed: {e}")),
+            },
+            Err(e) => error_json(&format!("summary failed: {e}")),
+        }
+    }
+
+    #[doc = include_str!("../tool_descriptions/debug_checkpoint.txt")]
+    #[tool(name = "debug_checkpoint")]
+    async fn debug_checkpoint(&self) -> String {
+        let current = self.store.checkpoint();
+        *self
+            .last_checkpoint
+            .lock()
+            .expect("last_checkpoint mutex poisoned") = current;
+        serde_json::to_string_pretty(&serde_json::json!({ "checkpoint": current.0 }))
+            .unwrap_or_else(|e| error_json(&format!("serialization failed: {e}")))
+    }
+
+    #[doc = include_str!("../tool_descriptions/debug_connections.txt")]
+    #[tool(name = "debug_connections")]
+    async fn debug_connections(&self) -> String {
+        self.connections_json()
+    }
+
+    #[doc = include_str!("../tool_descriptions/debug_ingest.txt")]
+    #[tool(name = "debug_ingest")]
+    async fn debug_ingest(&self, Parameters(params): Parameters<IngestParams>) -> String {
+        let mut body = serde_json::Map::new();
+        if let Some(app) = params.app {
+            body.insert("app".into(), serde_json::Value::String(app));
+        } else {
+            body.insert("app".into(), serde_json::Value::String("agent".into()));
+        }
+        if let Some(kind) = params.kind {
+            body.insert("kind".into(), serde_json::Value::String(kind));
+        }
+        if let Some(severity) = params.severity {
+            body.insert("severity".into(), serde_json::Value::String(severity));
+        }
+        if let Some(channel) = params.channel {
+            body.insert("channel".into(), serde_json::Value::String(channel));
+        }
+        body.insert("data".into(), params.data);
+
+        let obs = daemon8_ingest::normalize::normalize(serde_json::Value::Object(body));
+        let _ = self.obs_tx.send(obs);
+
+        serde_json::to_string(&serde_json::json!({"ok": true})).unwrap_or_default()
+    }
+
+    #[doc = include_str!("../tool_descriptions/debug_subscribe.txt")]
+    #[tool(name = "debug_subscribe")]
+    async fn debug_subscribe(&self, Parameters(params): Parameters<SubscribeParams>) -> String {
+        let kinds = params.kinds.map(|v| {
+            v.iter()
+                .filter_map(|s| s.parse::<ObservationKindTag>().ok())
+                .collect()
+        });
+
+        let severity_min = params.severity_min.and_then(|s| s.parse::<Severity>().ok());
+
+        let origins = params
+            .origins
+            .map(|v| v.iter().map(|s| parse_origin_pattern(s)).collect());
+
+        let filter = Filter {
+            kinds,
+            severity_min,
+            origins,
+            text_match: params.text_match,
+            since: None,
+            limit: None,
+        };
+
+        let is_default = filter.kinds.is_none()
+            && filter.severity_min.is_none()
+            && filter.origins.is_none()
+            && filter.text_match.is_none();
+
+        if is_default {
+            self.subscription_tx.send_replace(None);
+            serde_json::to_string(&serde_json::json!({
+                "subscribed": true,
+                "filter": "default (severity >= warn)"
+            }))
+            .unwrap_or_default()
+        } else {
+            self.subscription_tx.send_replace(Some(filter));
+            serde_json::to_string(&serde_json::json!({
+                "subscribed": true,
+                "filter": "custom"
+            }))
+            .unwrap_or_default()
+        }
+    }
+}
+
+#[tool_router(router = action_tool_router, vis = "pub")]
+impl DaemonMcp {
+    #[doc = include_str!("../tool_descriptions/debug_connect.txt")]
+    #[tool(name = "debug_connect")]
+    async fn debug_connect(&self, Parameters(params): Parameters<ConnectParams>) -> String {
+        self.debug_connect_inner(params).await
+    }
+
+    #[doc = include_str!("../tool_descriptions/debug_act.txt")]
+    #[tool(name = "debug_act")]
+    async fn debug_act(&self, Parameters(params): Parameters<ActParams>) -> String {
+        self.debug_act_inner(params).await
+    }
+}
+
+// Browser-action handler implementations (inner methods, not registered with tool_router).
+impl DaemonMcp {
+    async fn debug_connect_inner(&self, params: ConnectParams) -> String {
+        let endpoint = params.endpoint.clone();
+        *self
+            .chrome_endpoint
+            .lock()
+            .expect("chrome_endpoint mutex poisoned") = Some(Arc::from(endpoint.as_str()));
+        match self
+            .chrome_tx
+            .send(ChromeCommand::Connect {
+                endpoint: params.endpoint,
+            })
+            .await
+        {
+            Ok(()) => serde_json::to_string(&serde_json::json!({
+                "status": "connecting",
+                "endpoint": endpoint,
+            }))
+            .unwrap_or_default(),
+            Err(_) => error_json("Daemon is shutting down."),
+        }
+    }
+
+    async fn debug_act_inner(&self, params: ActParams) -> String {
+        use daemon8_chrome::BrowserAction;
+
+        // Device screenshot: bypass Chrome entirely
+        if params.action == DebugAction::Screenshot && params.device_serial.is_some() {
+            return self.handle_device_screenshot(&params).await;
+        }
+
+        if let Err(e) = self
+            .ensure_chrome_connected(std::time::Duration::from_secs(10))
+            .await
+        {
+            return error_json(&e);
+        }
+
+        let (reply_tx, reply_rx) =
+            tokio::sync::oneshot::channel::<Result<serde_json::Value, anyhow::Error>>();
+
+        // Build the BrowserAction and a mapper that converts the typed reply
+        // into a uniform serde_json::Value result for the wrapper oneshot.
+        let action: BrowserAction = match params.action {
+            DebugAction::EvalJs => {
+                let expression = match params.expression {
+                    Some(expr) => expr,
+                    None => return error_json("eval_js requires 'expression' parameter"),
+                };
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                let reply_tx = reply_tx;
+                tokio::spawn(async move {
+                    let result = rx
+                        .await
+                        .map_err(|_| anyhow::anyhow!("browser task died"))
+                        .and_then(|r: daemon8_chrome::Result<_>| r.map_err(anyhow::Error::from))
+                        .map(|s| serde_json::json!({ "result": s }));
+                    let _ = reply_tx.send(result);
+                });
+                BrowserAction::EvalJs {
+                    tab_id: params.tab_id,
+                    expression,
+                    reply: tx,
+                }
+            }
+            DebugAction::Screenshot => {
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                let reply_tx = reply_tx;
+                let selector = params.selector.clone();
+                let shot_dir = self.screenshot_dir.clone();
+                tokio::spawn(async move {
+                    let result = rx
+                        .await
+                        .map_err(|_| anyhow::anyhow!("browser task died"))
+                        .and_then(|r: daemon8_chrome::Result<_>| r.map_err(anyhow::Error::from))
+                        .and_then(|bytes: Vec<u8>| {
+                            let path = screenshot_path(&shot_dir, "browser", selector.as_deref());
+                            std::fs::write(&path, &bytes)
+                                .map_err(|e| anyhow::anyhow!("failed to write screenshot: {e}"))?;
+                            Ok(serde_json::json!({
+                                "screenshot": path.display().to_string(),
+                                "size_bytes": bytes.len(),
+                                "selector": selector,
+                            }))
+                        });
+                    let _ = reply_tx.send(result);
+                });
+                BrowserAction::Screenshot {
+                    tab_id: params.tab_id,
+                    selector: params.selector,
+                    reply: tx,
+                }
+            }
+            DebugAction::InjectCss => {
+                let css = match params.css {
+                    Some(css) => css,
+                    None => return error_json("inject_css requires 'css' parameter"),
+                };
+                let temporary = params.temporary.unwrap_or(true);
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                let reply_tx = reply_tx;
+                tokio::spawn(async move {
+                    let result = rx
+                        .await
+                        .map_err(|_| anyhow::anyhow!("browser task died"))
+                        .and_then(|r: daemon8_chrome::Result<_>| r.map_err(anyhow::Error::from))
+                        .map(|element_id| {
+                            serde_json::json!({
+                                "injected": true,
+                                "element_id": element_id,
+                                "temporary": temporary,
+                            })
+                        });
+                    let _ = reply_tx.send(result);
+                });
+                BrowserAction::InjectCss {
+                    tab_id: params.tab_id,
+                    css,
+                    temporary,
+                    reply: tx,
+                }
+            }
+            DebugAction::RevertCss => {
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                let reply_tx = reply_tx;
+                tokio::spawn(async move {
+                    let result = rx
+                        .await
+                        .map_err(|_| anyhow::anyhow!("browser task died"))
+                        .and_then(|r: daemon8_chrome::Result<_>| r.map_err(anyhow::Error::from))
+                        .map(|count| serde_json::json!({ "reverted_count": count }));
+                    let _ = reply_tx.send(result);
+                });
+                BrowserAction::RevertCss {
+                    tab_id: params.tab_id,
+                    reply: tx,
+                }
+            }
+            DebugAction::ListTabs => {
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                let reply_tx = reply_tx;
+                tokio::spawn(async move {
+                    let result = rx
+                        .await
+                        .map_err(|_| anyhow::anyhow!("browser task died"))
+                        .and_then(|r: daemon8_chrome::Result<_>| r.map_err(anyhow::Error::from))
+                        .map(|tabs| serde_json::json!({ "tabs": tabs }));
+                    let _ = reply_tx.send(result);
+                });
+                BrowserAction::ListTabs { reply: tx }
+            }
+            DebugAction::GetPerfMetrics => {
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                let reply_tx = reply_tx;
+                tokio::spawn(async move {
+                    let result = rx
+                        .await
+                        .map_err(|_| anyhow::anyhow!("browser task died"))
+                        .and_then(|r: daemon8_chrome::Result<_>| r.map_err(anyhow::Error::from))
+                        .and_then(|metrics| {
+                            let json = serde_json::to_value(&metrics)
+                                .map_err(|e| anyhow::anyhow!("serialization failed: {e}"))?;
+                            Ok(serde_json::json!({ "metrics": json }))
+                        });
+                    let _ = reply_tx.send(result);
+                });
+                BrowserAction::GetPerformanceMetrics {
+                    tab_id: params.tab_id,
+                    reply: tx,
+                }
+            }
+            DebugAction::GetDom => {
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                let reply_tx = reply_tx;
+                tokio::spawn(async move {
+                    let result = rx
+                        .await
+                        .map_err(|_| anyhow::anyhow!("browser task died"))
+                        .and_then(|r: daemon8_chrome::Result<_>| r.map_err(anyhow::Error::from))
+                        .map(|html| serde_json::json!({ "html": html }));
+                    let _ = reply_tx.send(result);
+                });
+                BrowserAction::GetDom {
+                    tab_id: params.tab_id,
+                    selector: params.selector,
+                    reply: tx,
+                }
+            }
+            DebugAction::SetViewport => {
+                let width = params.viewport_width.unwrap_or(390);
+                let height = params.viewport_height.unwrap_or(844);
+                let scale = params.viewport_scale.unwrap_or(2.0);
+                let mobile = params.viewport_mobile.unwrap_or(true);
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                let reply_tx = reply_tx;
+                tokio::spawn(async move {
+                    let result = rx
+                        .await
+                        .map_err(|_| anyhow::anyhow!("browser task died"))
+                        .and_then(|r: daemon8_chrome::Result<_>| r.map_err(anyhow::Error::from))
+                        .map(|()| {
+                            serde_json::json!({
+                                "viewport_set": true,
+                                "width": width,
+                                "height": height,
+                                "scale": scale,
+                                "mobile": mobile,
+                            })
+                        });
+                    let _ = reply_tx.send(result);
+                });
+                BrowserAction::SetViewport {
+                    tab_id: params.tab_id,
+                    width,
+                    height,
+                    device_scale_factor: scale,
+                    mobile,
+                    user_agent: params.viewport_ua,
+                    reply: tx,
+                }
+            }
+            DebugAction::ClearViewport => {
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                let reply_tx = reply_tx;
+                tokio::spawn(async move {
+                    let result = rx
+                        .await
+                        .map_err(|_| anyhow::anyhow!("browser task died"))
+                        .and_then(|r: daemon8_chrome::Result<_>| r.map_err(anyhow::Error::from))
+                        .map(|()| serde_json::json!({ "viewport_cleared": true }));
+                    let _ = reply_tx.send(result);
+                });
+                BrowserAction::ClearViewport {
+                    tab_id: params.tab_id,
+                    reply: tx,
+                }
+            }
+            DebugAction::NetworkConditions => {
+                let preset = params.network_preset.unwrap_or(NetworkPreset::Restore);
+                let preset_str = preset.as_str();
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                let reply_tx = reply_tx;
+                tokio::spawn(async move {
+                    let result = rx
+                        .await
+                        .map_err(|_| anyhow::anyhow!("browser task died"))
+                        .and_then(|r: daemon8_chrome::Result<_>| r.map_err(anyhow::Error::from))
+                        .map(|()| serde_json::json!({ "network_conditions": preset_str }));
+                    let _ = reply_tx.send(result);
+                });
+                BrowserAction::SetNetworkConditions {
+                    tab_id: params.tab_id,
+                    preset: preset.as_str().to_string(),
+                    reply: tx,
+                }
+            }
+            DebugAction::Navigate => {
+                let url = match params.url {
+                    Some(u) => u,
+                    None => return error_json("navigate requires 'url' parameter"),
+                };
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                let reply_tx = reply_tx;
+                tokio::spawn(async move {
+                    let result = rx
+                        .await
+                        .map_err(|_| anyhow::anyhow!("browser task died"))
+                        .and_then(|r: daemon8_chrome::Result<_>| r.map_err(anyhow::Error::from))
+                        .map(|title| serde_json::json!({ "navigated": true, "title": title }));
+                    let _ = reply_tx.send(result);
+                });
+                BrowserAction::Navigate {
+                    tab_id: params.tab_id,
+                    url,
+                    reply: tx,
+                }
+            }
+            DebugAction::StorageClear => {
+                let types = params.storage_types.unwrap_or_else(|| "all".to_string());
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                let reply_tx = reply_tx;
+                tokio::spawn(async move {
+                    let result = rx
+                        .await
+                        .map_err(|_| anyhow::anyhow!("browser task died"))
+                        .and_then(|r: daemon8_chrome::Result<_>| r.map_err(anyhow::Error::from))
+                        .map(|()| serde_json::json!({ "cleared": true }));
+                    let _ = reply_tx.send(result);
+                });
+                BrowserAction::StorageClear {
+                    tab_id: params.tab_id,
+                    storage_types: types,
+                    reply: tx,
+                }
+            }
+            DebugAction::StorageInspect => {
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                let reply_tx = reply_tx;
+                tokio::spawn(async move {
+                    let result = rx
+                        .await
+                        .map_err(|_| anyhow::anyhow!("browser task died"))
+                        .and_then(|r: daemon8_chrome::Result<_>| r.map_err(anyhow::Error::from));
+                    let _ = reply_tx.send(result);
+                });
+                BrowserAction::StorageInspect {
+                    tab_id: params.tab_id,
+                    reply: tx,
+                }
+            }
+            DebugAction::StorageSet => {
+                let store_type = match params.store_type {
+                    Some(t) => t.as_str().to_string(),
+                    None => return error_json("storage_set requires 'store_type' parameter"),
+                };
+                let key = match params.storage_key {
+                    Some(k) => k,
+                    None => return error_json("storage_set requires 'storage_key' parameter"),
+                };
+                let value = params.storage_value.unwrap_or_default();
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                let reply_tx = reply_tx;
+                tokio::spawn(async move {
+                    let result = rx
+                        .await
+                        .map_err(|_| anyhow::anyhow!("browser task died"))
+                        .and_then(|r: daemon8_chrome::Result<_>| r.map_err(anyhow::Error::from))
+                        .map(|()| serde_json::json!({ "set": true }));
+                    let _ = reply_tx.send(result);
+                });
+                BrowserAction::StorageSet {
+                    tab_id: params.tab_id,
+                    store_type,
+                    key,
+                    value,
+                    reply: tx,
+                }
+            }
+            DebugAction::ElementAtPoint => {
+                let x = match params.x {
+                    Some(v) => v,
+                    None => return error_json("element_at_point requires 'x' parameter"),
+                };
+                let y = match params.y {
+                    Some(v) => v,
+                    None => return error_json("element_at_point requires 'y' parameter"),
+                };
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                let reply_tx = reply_tx;
+                tokio::spawn(async move {
+                    let result = rx
+                        .await
+                        .map_err(|_| anyhow::anyhow!("browser task died"))
+                        .and_then(|r: daemon8_chrome::Result<_>| r.map_err(anyhow::Error::from));
+                    let _ = reply_tx.send(result);
+                });
+                BrowserAction::ElementAtPoint {
+                    tab_id: params.tab_id,
+                    x,
+                    y,
+                    reply: tx,
+                }
+            }
+        };
+
+        if self
+            .chrome_tx
+            .send(ChromeCommand::Action(action))
+            .await
+            .is_err()
+        {
+            return error_json("Daemon is shutting down.");
+        }
+
+        match tokio::time::timeout(std::time::Duration::from_secs(30), reply_rx).await {
+            Err(_) => error_json(
+                "Browser action timed out (30s). The daemon is still connected and will recover.",
+            ),
+            Ok(Ok(Ok(value))) => serde_json::to_string(&value).unwrap_or_default(),
+            Ok(Ok(Err(e))) => error_json(&format!("{e}")),
+            Ok(Err(_)) => error_json(
+                "Browser connection lost during action. The daemon is reconnecting automatically.",
+            ),
+        }
+    }
+}
+
+impl DaemonMcp {
+    async fn handle_device_screenshot(&self, params: &ActParams) -> String {
+        let screenshot_fn = match &self.device_screenshot_fn {
+            Some(f) => f,
+            None => return error_json("device screenshots not available (ADB not enabled)"),
+        };
+
+        let serial = params.device_serial.clone().unwrap_or_default();
+        let platform = match params.device_platform.as_deref() {
+            Some("vega") => DevicePlatform::Vega,
+            _ => DevicePlatform::Android,
+        };
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            (screenshot_fn)(serial.clone(), platform),
+        )
+        .await;
+
+        match result {
+            Err(_) => error_json("device screenshot timed out (15s)"),
+            Ok(Err(e)) => error_json(&format!("device screenshot failed for {serial}: {e}")),
+            Ok(Ok(shot)) => {
+                let path = screenshot_path(&self.screenshot_dir, &serial, Some(&shot.source));
+                if let Err(e) = std::fs::write(&path, &shot.png_bytes) {
+                    return error_json(&format!("failed to write screenshot: {e}"));
+                }
+                serde_json::to_string(&serde_json::json!({
+                    "screenshot": path.display().to_string(),
+                    "size_bytes": shot.png_bytes.len(),
+                    "source": shot.source,
+                    "serial": serial,
+                }))
+                .unwrap_or_default()
+            }
+        }
+    }
+}
+
+fn screenshot_path(dir: &std::path::Path, target: &str, label: Option<&str>) -> std::path::PathBuf {
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let safe_target = target.replace(['/', '\\', ':'], "-");
+    let suffix = label.map(|l| format!("-{l}")).unwrap_or_default();
+    dir.join(format!("daemon8-screenshot-{ts}-{safe_target}{suffix}.png"))
+}
+
+fn error_json(msg: &str) -> String {
+    serde_json::to_string(&serde_json::json!({ "error": msg })).unwrap_or_default()
+}
+
+impl DaemonMcp {
+    /// Returns the connection-state JSON with full state including browser.
+    pub fn connections_json(&self) -> String {
+        let chrome_state = *self.chrome_state.borrow();
+        let chrome_endpoint = self
+            .chrome_endpoint
+            .lock()
+            .expect("chrome_endpoint mutex poisoned")
+            .clone();
+        let mut result = serde_json::json!({
+            "browser": {
+                "state": format!("{chrome_state}"),
+                "endpoint": chrome_endpoint,
+            }
+        });
+
+        if let Ok(summary) = self.store.summary()
+            && !summary.connections.is_empty()
+        {
+            result["applications"] = serde_json::to_value(&summary.connections).unwrap_or_default();
+        }
+
+        serde_json::to_string_pretty(&result)
+            .unwrap_or_else(|e| error_json(&format!("serialization failed: {e}")))
+    }
+
+    pub fn tools_for_client(&self) -> Vec<Tool> {
+        self.tool_router.list_all()
+    }
+}
+
+impl ServerHandler for DaemonMcp {
+    fn get_info(&self) -> ServerInfo {
+        let instructions = String::from(INSTRUCTIONS);
+
+        let mut capabilities = ServerCapabilities::builder().enable_tools().build();
+        capabilities.experimental = Some(std::collections::BTreeMap::from([(
+            "claude/channel".to_string(),
+            serde_json::Map::new(),
+        )]));
+
+        ServerInfo::new(capabilities)
+            .with_server_info(Implementation::new("daemon8", env!("CARGO_PKG_VERSION")))
+            .with_instructions(instructions)
+    }
+
+    async fn list_tools(
+        &self,
+        _request: Option<rmcp::model::PaginatedRequestParams>,
+        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::ListToolsResult, rmcp::ErrorData> {
+        Ok(rmcp::model::ListToolsResult {
+            tools: self.tools_for_client(),
+            meta: None,
+            next_cursor: None,
+        })
+    }
+
+    async fn call_tool(
+        &self,
+        request: rmcp::model::CallToolRequestParams,
+        context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
+        let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
+        self.tool_router.call(tcc).await
+    }
+
+    fn get_tool(&self, name: &str) -> Option<rmcp::model::Tool> {
+        self.tool_router.get(name).cloned()
+    }
+}

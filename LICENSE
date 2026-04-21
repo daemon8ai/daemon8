@@ -1,0 +1,25 @@
+Daemon8 — Licensing Overview
+
+This repository is polyglot-licensed. Each subtree carries its own license.
+Full texts live in /LICENSES/.
+
+  daemon/   Fair Core License v1.0, Apache-2.0 Future License (FCL-1.0-ALv2)
+            → /LICENSES/FCL-1.0-ALv2.txt
+            → SPDX-License-Identifier: LicenseRef-FCL-1.0-ALv2
+
+  sdks/     MIT License
+            → /LICENSES/MIT.txt
+            → SPDX-License-Identifier: MIT
+
+  app/      Proprietary (Havy.tech, LLC — all rights reserved)
+  backend/  → /LICENSES/Proprietary.txt
+
+Copyright (c) 2026 Havy.tech, LLC.
+
+Contributions are governed by /CONTRIBUTING.md and require signing the
+contributor license agreement wired at cla-assistant.io. Each subtree's
+contribution policy matches its license: FCL for daemon/, MIT for sdks/;
+app/ and backend/ do not accept community contributions.
+
+DAEMON8™ is a trademark of Havy.tech, LLC. See /TRADEMARK.md for permitted
+use (once published) and /SECURITY.md for responsible disclosure.

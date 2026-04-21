@@ -1,0 +1,1 @@
+Mark the current position in the observation stream. Returns a checkpoint id for use with debug_observe's since_checkpoint parameter. Use this before making a change (running code, deploying, etc.) so you can query only observations that occurred after that point. Pattern: checkpoint -> make change -> observe with since_checkpoint to see exactly what happened.

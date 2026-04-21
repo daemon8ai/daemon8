@@ -1,0 +1,1 @@
+List all active data source connections feeding observations into the daemon. Shows connected applications and their current status. State is one of: connected, connecting, reconnecting, disconnected.

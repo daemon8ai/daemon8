@@ -1,0 +1,86 @@
+Daemon8
+Copyright (c) 2026 Havy.tech, LLC
+
+This product includes software developed by the following third parties.
+Full license texts are preserved in each dependency's source distribution.
+
+---
+
+Rust crates (daemon/, via Cargo.lock)
+
+  tokio                      MIT                  https://tokio.rs
+  tokio-util                 MIT                  https://tokio.rs
+  tokio-tungstenite          MIT                  https://github.com/snapview/tokio-tungstenite
+  tokio-stream               MIT                  https://tokio.rs
+  axum                       MIT                  https://github.com/tokio-rs/axum
+  tower-http                 MIT                  https://github.com/tower-rs/tower-http
+  reqwest                    MIT OR Apache-2.0    https://github.com/seanmonstar/reqwest
+  reqwest-eventsource        MIT OR Apache-2.0    https://github.com/jpopesculian/reqwest-eventsource
+  ureq                       MIT OR Apache-2.0    https://github.com/algesten/ureq
+  serde                      MIT OR Apache-2.0    https://serde.rs
+  serde_json                 MIT OR Apache-2.0    https://github.com/serde-rs/json
+  rmcp                       MIT                  https://github.com/modelcontextprotocol/rust-sdk
+  rusqlite                   MIT                  https://github.com/rusqlite/rusqlite
+  figment                    MIT OR Apache-2.0    https://github.com/SergioBenitez/Figment
+  clap                       MIT OR Apache-2.0    https://github.com/clap-rs/clap
+  clap_complete              MIT OR Apache-2.0    https://github.com/clap-rs/clap
+  anyhow                     MIT OR Apache-2.0    https://github.com/dtolnay/anyhow
+  thiserror                  MIT OR Apache-2.0    https://github.com/dtolnay/thiserror
+  tracing                    MIT                  https://tokio.rs
+  tracing-subscriber         MIT                  https://tokio.rs
+  tracing-appender           MIT                  https://tokio.rs
+  directories                MIT OR Apache-2.0    https://github.com/dirs-dev/directories-rs
+  dirs                       MIT OR Apache-2.0    https://github.com/dirs-dev/dirs-rs
+  base64                     MIT OR Apache-2.0    https://github.com/marshallpierce/rust-base64
+  uuid                       MIT OR Apache-2.0    https://github.com/uuid-rs/uuid
+  owo-colors                 MIT                  https://github.com/jam1garner/owo-colors
+  comfy-table                MIT                  https://github.com/Nukesor/comfy-table
+  cliclack                   MIT                  https://github.com/fadeevab/cliclack
+  toml                       MIT OR Apache-2.0    https://github.com/toml-rs/toml
+  libc                       MIT OR Apache-2.0    https://github.com/rust-lang/libc
+  futures                    MIT OR Apache-2.0    https://github.com/rust-lang/futures-rs
+  windows-sys                MIT OR Apache-2.0    https://github.com/microsoft/windows-rs
+  xcap                       Apache-2.0           https://github.com/nashaofu/xcap
+  image                      MIT OR Apache-2.0    https://github.com/image-rs/image
+  adb_client                 Apache-2.0           https://github.com/cocool97/adb_client
+
+A full dependency tree with exact versions is resolvable from
+`daemon/Cargo.lock`. Run `cargo tree -p daemon8` inside `daemon/` for the
+current graph; run `cargo license` for a per-crate license dump.
+
+---
+
+PHP packages (sdks/, via composer.json)
+
+  guzzlehttp/guzzle          MIT                  https://github.com/guzzle/guzzle
+  illuminate/support         MIT                  https://github.com/illuminate/support
+  symfony/http-client        MIT                  https://symfony.com
+  symfony/http-kernel        MIT                  https://symfony.com
+  symfony/event-dispatcher   MIT                  https://symfony.com
+  psr/log                    MIT                  https://www.php-fig.org/psr/psr-3/
+
+Per-package lockfiles live in each SDK's repo snapshot. Libraries do not ship
+with a lockfile; consumers resolve transitive dependencies against their own
+application constraints.
+
+---
+
+JavaScript packages (app/, via package.json + bun.lock)
+
+  @tanstack/react-router     MIT                  https://tanstack.com/router
+  @tanstack/react-query      MIT                  https://tanstack.com/query
+  @tanstack/start            MIT                  https://tanstack.com/start
+  react                      MIT                  https://react.dev
+  react-dom                  MIT                  https://react.dev
+  vite                       MIT                  https://vitejs.dev
+  lucide-react               ISC                  https://lucide.dev
+  content-collections        MIT                  https://www.content-collections.dev
+  @content-collections/mdx   MIT                  https://www.content-collections.dev
+
+The full JS dependency graph lives in `app/bun.lock`.
+
+---
+
+If you distribute or bundle this software, preserve this NOTICE file alongside
+the LICENSE. If you identify a missing attribution, file an issue or open a PR
+against this file.

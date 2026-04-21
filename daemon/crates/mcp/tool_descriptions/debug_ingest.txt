@@ -1,0 +1,10 @@
+Write an observation into the daemon's stream. Immediately queryable via debug_observe.
+
+Use cases:
+- Log a debugging note: app='my-session', data={message: 'investigating auth bug'}
+- Record a state snapshot before/after a change: kind='state_snapshot', data={before: ..., after: ...}
+- Alert other agents: severity='warn' or 'error' triggers real-time push to all connected sessions
+- Send a message to another agent: app='agent-a', data={message: 'found the bug in auth.rs:42'}. The other agent reads it via debug_observe with origins=['app:agent-a']
+- Emit a metric: kind='metric', data={name: 'response_time', value: 3.2}
+
+Use data.message for clean alert formatting. severity warn/error pushes alerts in real-time.

@@ -1,0 +1,1 @@
+Override the browser DevTools endpoint. Default is http://localhost:9222. The daemon auto-discovers the browser and reconnects on its own -- only use this if the browser is on a non-standard port. Do NOT call this for troubleshooting; the daemon handles reconnection automatically.

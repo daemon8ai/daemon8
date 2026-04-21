@@ -1,0 +1,149 @@
+// SPDX-License-Identifier: LicenseRef-FCL-1.0-ALv2
+// Copyright (c) 2026 Havy.tech, LLC
+
+use std::sync::Arc;
+
+use daemon8_chrome::ConnectionState;
+use daemon8_mcp::{DaemonMcp, DaemonMcpConfig};
+use daemon8_store::MemoryStore;
+
+const EXPECTED_TOOLS: [&str; 8] = [
+    "debug_observe",
+    "debug_summary",
+    "debug_checkpoint",
+    "debug_connections",
+    "debug_ingest",
+    "debug_subscribe",
+    "debug_act",
+    "debug_connect",
+];
+
+fn tool_names(router: &rmcp::handler::server::router::tool::ToolRouter<DaemonMcp>) -> Vec<String> {
+    router
+        .list_all()
+        .iter()
+        .map(|t| t.name.to_string())
+        .collect()
+}
+
+fn make_mcp() -> DaemonMcp {
+    let store = Arc::new(MemoryStore::new());
+    let (obs_tx, _) = tokio::sync::mpsc::unbounded_channel();
+    let (chrome_tx, _) = tokio::sync::mpsc::channel(16);
+    let (_, chrome_state_rx) = tokio::sync::watch::channel(ConnectionState::Disconnected);
+    let (sub_tx, _) = tokio::sync::watch::channel(None);
+    let sub_tx = Arc::new(sub_tx);
+    DaemonMcp::new(DaemonMcpConfig {
+        store,
+        obs_tx,
+        chrome_tx,
+        chrome_state: chrome_state_rx,
+        chrome_endpoint: None,
+        device_screenshot_fn: None,
+        screenshot_dir: std::env::temp_dir().join("daemon8-test-screenshots"),
+        subscription_tx: sub_tx,
+    })
+}
+
+#[test]
+fn composed_router_has_all_eight_tools() {
+    let router = DaemonMcp::tool_router() + DaemonMcp::action_tool_router();
+    let names = tool_names(&router);
+
+    assert_eq!(
+        names.len(),
+        8,
+        "router must expose all 8 tools, got {}: {:?}",
+        names.len(),
+        names
+    );
+
+    for expected in EXPECTED_TOOLS.iter() {
+        assert!(
+            names.iter().any(|n| n == expected),
+            "router missing expected tool '{}'. Present: {:?}",
+            expected,
+            names
+        );
+    }
+}
+
+#[test]
+fn live_mcp_exposes_all_eight_tools() {
+    let mcp = make_mcp();
+    let names: Vec<String> = mcp
+        .tools_for_client()
+        .iter()
+        .map(|t| t.name.to_string())
+        .collect();
+
+    assert_eq!(
+        names.len(),
+        8,
+        "tools_for_client() must expose all 8 tools, got {}: {:?}",
+        names.len(),
+        names
+    );
+    for expected in EXPECTED_TOOLS.iter() {
+        assert!(
+            names.iter().any(|n| n == expected),
+            "tools_for_client() missing '{}'. Present: {:?}",
+            expected,
+            names
+        );
+    }
+}
+
+#[test]
+fn debug_observe_description_mentions_full_surface() {
+    let mcp = make_mcp();
+    let tools = mcp.tools_for_client();
+    let observe = tools
+        .iter()
+        .find(|t| t.name == "debug_observe")
+        .expect("debug_observe must be present in tools_for_client()");
+    let desc = observe.description.as_deref().unwrap_or("");
+    for term in ["browser", "device", "js_exception"] {
+        assert!(
+            desc.contains(term),
+            "debug_observe description must contain '{term}'. Got: {:?}",
+            &desc[..desc.len().min(300)]
+        );
+    }
+}
+
+#[test]
+fn server_instructions_mention_action_surface() {
+    use rmcp::ServerHandler as _;
+
+    let mcp = make_mcp();
+    let text = mcp
+        .get_info()
+        .instructions
+        .as_deref()
+        .unwrap_or("")
+        .to_string();
+
+    assert!(
+        text.contains("browser"),
+        "instructions must mention browser. Got: {:?}",
+        &text[..text.len().min(300)]
+    );
+    assert!(
+        text.contains("debug_act"),
+        "instructions must mention debug_act. Got: {:?}",
+        &text[..text.len().min(300)]
+    );
+}
+
+#[test]
+fn debug_connections_browser_key_visible() {
+    let mcp = make_mcp();
+    let raw = mcp.connections_json();
+    let val: serde_json::Value =
+        serde_json::from_str(&raw).expect("connections_json must return valid JSON");
+    assert!(
+        val.get("browser").is_some(),
+        "connections_json must contain 'browser' key. Got: {val}"
+    );
+}

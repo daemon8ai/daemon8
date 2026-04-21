@@ -1,0 +1,127 @@
+# ============================================
+# Daemon8 .gitignore — default-deny
+# ============================================
+# Hidden files, markdown, logs, and common build artifacts are
+# ignored by default. Specific paths under "Allowlist" are
+# re-allowed. AI context and env files are then explicitly
+# re-denied even under allowed trees. Specific markdown files
+# are re-allowed at the very end so they override the blanket
+# markdown deny.
+# ============================================
+
+# Default denies
+.*
+*.md
+*.log
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.DS_Store
+Thumbs.db
+node_modules/
+target/
+dist/
+__pycache__/
+*.egg-info/
+
+# Internal / deprecated trees (explicit — these never ship)
+/design/
+/ui-design/
+/marketing-deprecated/
+/gtm/
+/branding-kit/
+/api.json
+/error.log
+/vegacli.log
+
+# ============================================
+# Allowlist (primary code trees + repo meta)
+# ============================================
+
+!/.gitignore
+!/.github/
+!/.github/**
+!/LICENSE
+!/LICENSES/
+!/LICENSES/**
+!/NOTICE
+!/logo.svg
+
+!/daemon/
+!/daemon/**
+!/sdks/
+!/sdks/**
+!/app/
+!/app/**
+!/backend/
+!/backend/**
+
+# ============================================
+# Re-deny within allowed trees
+# ============================================
+
+# AI context (anywhere)
+**/.claude/
+**/.aimind/
+**/.cursor/
+**/.codex/
+**/.agents/
+**/CLAUDE.md
+**/AGENTS.md
+**/GEMINI.md
+**/boost.json
+**/opencode.json
+
+# Env files (anywhere) — allow only templates
+**/.env
+**/.env.*
+
+# All markdown inside allowed trees (docs live at daemon8ai/ui)
+**/*.md
+
+# Composer / npm / Rust build artifacts (exact paths to avoid
+# clobbering legitimate "vendor" subpaths like Laravel view publishes)
+/daemon/target/
+/daemon/**/target/
+/sdks/php/vendor/
+/sdks/php/composer.lock
+/sdks/php-laravel/vendor/
+/sdks/php-laravel/composer.lock
+/sdks/php-symfony/vendor/
+/sdks/php-symfony/composer.lock
+/sdks/**/node_modules/
+/sdks/**/.phpunit.cache/
+/sdks/**/.phpstan-cache/
+/app/node_modules/
+/app/dist/
+/app/.output/
+/app/package-lock.json
+/backend/vendor/
+/backend/node_modules/
+
+# ============================================
+# Final explicit re-allows (override **/*.md deny above)
+# ============================================
+
+# Root docs
+!/README.md
+!/CONTRIBUTING.md
+!/CODE_OF_CONDUCT.md
+!/SECURITY.md
+!/CHANGELOG.md
+!/TESTING.md
+!/TODO.md
+
+# Docs allowed inside code trees
+!/daemon/README.md
+!/daemon/DEPLOY.md
+!/sdks/php/README.md
+!/sdks/php-laravel/README.md
+!/sdks/php-symfony/README.md
+!/.github/PULL_REQUEST_TEMPLATE.md
+
+# Env templates (override **/.env* deny above)
+!**/.env.example
+!**/.env.template
+!**/.env.*.template

@@ -1,0 +1,93 @@
+name: MCP Registry Publish
+
+# Runs after a GitHub Release is published for a v* tag.
+# Prerequisites (one-time manual setup):
+#   1. Generate an Ed25519 key pair and publish the corresponding TXT record for daemon8.ai
+#   2. Store the Ed25519 private key hex as a GitHub secret: MCP_PRIVATE_KEY
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to publish (for example v1.0.0)'
+        required: true
+        type: string
+
+jobs:
+  publish:
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.tag }}
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          if [[ "${{ github.event_name }}" == "release" ]]; then
+            TAG="${{ github.event.release.tag_name }}"
+          else
+            TAG="${{ inputs.tag }}"
+          fi
+          VERSION="${TAG#v}"
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Download mcp-named artifact from GitHub Releases
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          TAG="${{ steps.version.outputs.tag }}"
+          URL="https://github.com/havy-tech/daemon8/releases/download/$TAG/daemon8-mcp-server-aarch64-apple-darwin.tar.gz"
+          echo "Downloading $URL"
+          curl -fsSL "$URL" -o daemon8-mcp-server-aarch64-apple-darwin.tar.gz
+
+      - name: Compute SHA256
+        id: sha256
+        run: |
+          HASH=$(sha256sum daemon8-mcp-server-aarch64-apple-darwin.tar.gz | awk '{print $1}')
+          echo "hash=$HASH" >> $GITHUB_OUTPUT
+          echo "SHA256: $HASH"
+
+      - name: Patch server.json
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          TAG="${{ steps.version.outputs.tag }}"
+          HASH="${{ steps.sha256.outputs.hash }}"
+          URL="https://github.com/havy-tech/daemon8/releases/download/$TAG/daemon8-mcp-server-aarch64-apple-darwin.tar.gz"
+
+          jq \
+            --arg version "$VERSION" \
+            --arg url "$URL" \
+            --arg hash "$HASH" \
+            '.version = $version |
+             .packages[0].identifier = $url |
+             .packages[0].fileSha256 = $hash' \
+            gtm/server.json > server.json.patched
+          mv server.json.patched gtm/server.json
+
+          echo "Patched server.json:"
+          cat gtm/server.json
+
+      - name: Install mcp-publisher
+        run: |
+          OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+          ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+          curl -fsSL \
+            "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_${OS}_${ARCH}.tar.gz" \
+            | tar xz mcp-publisher
+          chmod +x mcp-publisher
+
+      - name: Authenticate with MCP Registry (DNS)
+        env:
+          MCP_PRIVATE_KEY: ${{ secrets.MCP_PRIVATE_KEY }}
+        run: |
+          ./mcp-publisher login dns --domain daemon8.ai --private-key "$MCP_PRIVATE_KEY"
+
+      - name: Publish
+        run: ./mcp-publisher publish --file gtm/server.json

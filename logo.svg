@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="340" height="70" viewBox="0 0 340 70">
+  <rect width="340" height="70" fill="#0B1120"/>
+  <text x="95" y="35" fill="#E2E8F0" font-size="28" dominant-baseline="central" letter-spacing="0" font-family="Inconsolata, 'Roboto Mono', monospace">daemon</text>
+  <g transform="translate(196, 10.5) scale(1.225)">
+    <line x1="20" y1="-1.8" x2="20" y2="38" stroke="#6C9EF8" stroke-width="0.7" stroke-linecap="round" opacity="0.58"/>
+    <circle cx="20" cy="13" r="6.35" fill="#0B1120"/>
+    <circle cx="20" cy="27" r="6.35" fill="#0B1120"/>
+    <circle cx="20" cy="13" r="6.5" stroke="#6C9EF8" stroke-width="1.4" fill="none"/>
+    <circle cx="20" cy="27" r="6.5" stroke="#6C9EF8" stroke-width="1.4" fill="none"/>
+    <circle cx="20" cy="13" r="4.7" stroke="#6C9EF8" stroke-width="0.4" fill="none" opacity="0.38"/>
+    <circle cx="20" cy="13" r="3.0" stroke="#6C9EF8" stroke-width="0.38" fill="none" opacity="0.28"/>
+    <circle cx="20" cy="27" r="4.7" stroke="#6C9EF8" stroke-width="0.4" fill="none" opacity="0.38"/>
+    <circle cx="20" cy="27" r="3.0" stroke="#6C9EF8" stroke-width="0.38" fill="none" opacity="0.28"/>
+    <circle cx="20" cy="13" r="0.52" fill="#6C9EF8" opacity="0.88"/>
+    <circle cx="20" cy="27" r="0.52" fill="#6C9EF8" opacity="0.88"/>
+    <path d="M 23.21 1.78 A 18.5 18.5 0 1 1 16.79 1.78" stroke="#8B949E" stroke-width="1.0" fill="none" opacity="0.45" stroke-linecap="butt"/>
+  </g>
+</svg>

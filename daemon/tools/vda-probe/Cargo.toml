@@ -1,0 +1,14 @@
+[package]
+name = "vda-probe"
+publish = false
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[[bin]]
+name = "vda-probe"
+path = "src/main.rs"
+
+[dependencies]
+daemon8-adb.workspace = true
+tokio = { workspace = true, features = ["rt", "macros"] }
