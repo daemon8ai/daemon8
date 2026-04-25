@@ -14,29 +14,28 @@ Thanks for sending a PR. A few things before you hit submit:
 
 <!-- The problem this solves. Link the issue if one exists (#123). -->
 
-## Subtree affected
+## Area affected
 
-- [ ] `daemon/`
-- [ ] `sdks/php/`
-- [ ] `sdks/php-laravel/`
-- [ ] `sdks/php-symfony/`
+- [ ] Daemon core (`crates/`)
+- [ ] MCP tools (`crates/mcp/`)
+- [ ] Browser / ADB bridges
+- [ ] CLI (`crates/daemon/`)
 - [ ] Docs / meta (root files, .github/, etc.)
 
 ## Tests
 
 <!-- What you ran locally. Paste the last few lines of output or a summary. -->
 
-- [ ] `cargo test --workspace -- --test-threads=1` green *(daemon/)*
-- [ ] `cargo clippy --workspace -- -D warnings` clean *(daemon/)*
-- [ ] `cargo fmt --check` clean *(daemon/)*
-- [ ] `composer test` green *(sdks/)*
+- [ ] `cargo test --workspace -- --test-threads=1` green
+- [ ] `cargo clippy --workspace -- -D warnings` clean
+- [ ] `cargo fmt --check` clean
 
 ## Checklist
 
 - [ ] CLA signed (CLA Assistant will prompt automatically)
 - [ ] CHANGELOG updated under `[Unreleased]` if this is a user-visible change
 - [ ] New behavior is covered by a test; bug fixes include a regression test
-- [ ] Commit message is a single line, lowercase subtree prefix (`daemon:`, `sdks:`, `repo:`)
+- [ ] Commit message is a single line, lowercase prefix (`core:`, `mcp:`, `cli:`, `repo:`)
 
 ## Notes for reviewers
 

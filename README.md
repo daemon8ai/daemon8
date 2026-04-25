@@ -126,7 +126,7 @@ Batch ingest, optional UDP, and optional Unix socket listeners are documented at
 
 **Available today:**
 
-- **PHP** — [daemon8ai/daemon8-php](https://github.com/daemon8ai/daemon8-php) — `composer require daemon8/sdk`
+- **PHP** — [daemon8ai/daemon8-php](https://github.com/daemon8ai/daemon8-php) — `composer require daemon8/php`
 - **Laravel** — [daemon8ai/daemon8-laravel](https://github.com/daemon8ai/daemon8-laravel) — `composer require daemon8/laravel`
 - **Symfony** — [daemon8ai/daemon8-symfony](https://github.com/daemon8ai/daemon8-symfony) — `composer require daemon8/symfony`
 
@@ -183,7 +183,7 @@ By participating, you agree to the [Code of Conduct](./CODE_OF_CONDUCT.md). Enfo
 
 Until `v0.1.0`, release binaries are not yet code-signed. Builds from `cargo install --git` carry an ad-hoc signature and trigger macOS Gatekeeper's "unidentified developer" prompt on first launch.
 
-From `v0.1.0` forward, GitHub Release binaries are code-signed with an Apple Developer ID (Team `4WT356MQPL`, Jonathan Havens) and notarized by Apple. From `v0.2.0` forward, releases ship under Havy.tech, LLC's organizational Developer ID once enrollment completes.
+From `v0.1.0` forward, GitHub Release binaries are code-signed with an Apple Developer ID and notarized by Apple. From `v0.2.0` forward, releases ship under Havy.tech, LLC's organizational Developer ID once enrollment completes.
 
 Verify a signed binary:
 

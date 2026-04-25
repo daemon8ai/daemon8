@@ -426,7 +426,7 @@ role_default = "solo"
 
 [enrollment]
 enabled = true
-scope = ["sdks/php/**"]
+scope = ["crates/mcp/**"]
 banner = "testing"
 
 [features]
@@ -452,7 +452,7 @@ enabled = true
 
         let cfg: CliConfig = toml::from_str(toml_text).unwrap();
         assert_eq!(cfg.project.slug.as_deref(), Some("daemonai"));
-        assert_eq!(cfg.enrollment.scope, vec!["sdks/php/**"]);
+        assert_eq!(cfg.enrollment.scope, vec!["crates/mcp/**"]);
         assert!(!cfg.features.state_tracking);
         assert_eq!(cfg.features.heartbeat_interval, "60s");
         assert_eq!(cfg.intents.auto_declare.expertise, vec!["rust", "php"]);

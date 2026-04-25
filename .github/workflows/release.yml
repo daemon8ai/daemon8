@@ -119,11 +119,12 @@ jobs:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
         run: |
           VERSION=${GITHUB_REF#refs/tags/}
           mkdir -p ~/.ssh
           echo "$DEPLOY_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
-          ssh -o StrictHostKeyChecking=no -i ~/.ssh/deploy_key $DEPLOY_USER@$DEPLOY_HOST "mkdir -p /var/www/daemon8.ai/releases/$VERSION"
-          scp -o StrictHostKeyChecking=no -i ~/.ssh/deploy_key artifacts/* $DEPLOY_USER@$DEPLOY_HOST:/var/www/daemon8.ai/releases/$VERSION/
-          ssh -o StrictHostKeyChecking=no -i ~/.ssh/deploy_key $DEPLOY_USER@$DEPLOY_HOST "ln -sfn /var/www/daemon8.ai/releases/$VERSION /var/www/daemon8.ai/releases/latest"
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p $DEPLOY_PATH/$VERSION"
+          scp -o StrictHostKeyChecking=no -i ~/.ssh/deploy_key artifacts/* "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/$VERSION/"
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" "ln -sfn $DEPLOY_PATH/$VERSION $DEPLOY_PATH/latest"
