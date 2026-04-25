@@ -1,0 +1,12 @@
+Query runtime observations from all connected sources -- browser console, network requests, JS exceptions, device telemetry, and application logs. Returns logs, HTTP exchanges, exceptions, browser console output, JS exceptions, SQL queries, and application telemetry. IMPORTANT: Observations are real-time -- ALWAYS re-call to get fresh data. Never rely on previous results.
+
+Filters: kinds (log, query, http_exchange, exception, js_exception, lifecycle, state_snapshot, metric, custom), severity_min (trace/debug/info/warn/error), origins (app:name, browser, browser:tab_id, device, device:serial), text_match (substring search in data). Use since_checkpoint for incremental polling.
+
+Common patterns:
+- After running code: check origins=['app'] for application logs, SQL queries, and exceptions
+- Monitor a specific service: origins=['app:user-api'] with since_checkpoint for incremental updates
+- Find a specific error: text_match='ConnectionRefused' or severity_min='error'
+- Read messages from another agent: origins=['app:agent-name'] with since_checkpoint
+- Browser console errors: kinds=['js_exception'] or origins=['browser'] for all browser tabs
+- Specific browser tab: origins=['browser:tab_id'] where tab_id is from issue_command with action='list_tabs'
+- Device logs: origins=['device'] or origins=['device:serial'] for a specific device

@@ -15,11 +15,11 @@ lives in its own sibling repo. The marketing site also lives separately.
 
 | Repository                                                                    | Scope                                                        | License                                    | Accepts PRs?                       |
 |-------------------------------------------------------------------------------|--------------------------------------------------------------|--------------------------------------------|------------------------------------|
-| **`daemon8ai/daemon8`** (this repo)                                           | Rust daemon binary + all workspace crates under `daemon/`    | [FCL-1.0-ALv2](./LICENSES/FCL-1.0-ALv2.txt) | **Yes**                            |
-| [`daemon8ai/sdk-php`](https://github.com/daemon8ai/sdk-php)                   | Framework-agnostic PHP SDK                                   | MIT                                        | Yes (that repo's CONTRIBUTING)     |
-| [`daemon8ai/sdk-laravel`](https://github.com/daemon8ai/sdk-laravel)           | Laravel integration (11 / 12 / 13)                           | MIT                                        | Yes (that repo's CONTRIBUTING)     |
-| [`daemon8ai/sdk-symfony`](https://github.com/daemon8ai/sdk-symfony)           | Symfony bundle (6.4 / 7.x)                                   | MIT                                        | Yes (that repo's CONTRIBUTING)     |
-| [`daemon8ai/ui`](https://github.com/daemon8ai/ui)                             | daemon8.ai marketing & docs source code (TanStack Start + React 19) | Public-visibility                          | Yes (that repo's CONTRIBUTING)     |
+| **`daemon8ai/daemon8`** (this repo)                                           | Rust daemon binary and workspace crates                      | [FCL-1.0-ALv2](./LICENSES/FCL-1.0-ALv2.txt) | **Yes**                            |
+| [`daemon8ai/daemon8-php`](https://github.com/daemon8ai/daemon8-php)                   | Framework-agnostic PHP SDK                                   | MIT                                        | Yes (that repo's CONTRIBUTING)     |
+| [`daemon8ai/daemon8-laravel`](https://github.com/daemon8ai/daemon8-laravel)           | Laravel integration (11 / 12 / 13)                           | MIT                                        | Yes (that repo's CONTRIBUTING)     |
+| [`daemon8ai/daemon8-symfony`](https://github.com/daemon8ai/daemon8-symfony)           | Symfony bundle (6.4 / 7.x)                                   | MIT                                        | Yes (that repo's CONTRIBUTING)     |
+| [`daemon8ai/daemon8-site`](https://github.com/daemon8ai/daemon8-site)         | daemon8.ai marketing & docs site (TanStack Start + React 19) | Public-visibility                          | Issues welcome; code PRs case-by-case |
 
 This file covers `daemon8ai/daemon8` only. For SDK or app contributions,
 follow the CONTRIBUTING doc in those repos.
@@ -65,7 +65,6 @@ rather than Issues.
 ### Build and test locally
 
 ```bash
-cd daemon
 cargo test --workspace -- --test-threads=1
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --check
@@ -74,7 +73,7 @@ cargo deny check
 
 All four gates must pass. CI runs the same four.
 
-The `rust-toolchain.toml` at `daemon/` pins the stable channel plus
+The `rust-toolchain.toml` pins the stable channel plus
 rustfmt + clippy components — `cargo` auto-fetches what it needs.
 
 ### Tests
@@ -86,7 +85,7 @@ without the fix.
   inside each source file, or as `crates/<name>/tests/` for
   cross-module tests.
 - Integration tests that exercise the full HTTP / MCP / SSE stack live
-  in [`daemon/crates/daemon/tests/integration.rs`](./daemon/crates/daemon/tests/integration.rs).
+  in [`crates/daemon/tests/integration.rs`](./crates/daemon/tests/integration.rs).
 - For **larger user-perspective coverage** (real Chrome, real service
   install, real MCP clients) we run a **Testing Gauntlet** —
   see [`TESTING.md`](./TESTING.md). Gauntlet phases are explicitly
@@ -142,6 +141,7 @@ without the fix.
 
 - [GitHub Discussions](https://github.com/daemon8ai/daemon8/discussions)
   — questions, design, show-and-tell.
-- `mail@daemon8.ai` — vulnerabilities, Code of Conduct enforcement.
+- `mail@daemon8.ai` — vulnerabilities, Code of Conduct enforcement,
+  DAEMON8™ use inquiries.
 
 Thanks again. First-time PRs get a prompt review.

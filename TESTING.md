@@ -67,7 +67,7 @@ Tracking issues for each phase live on GitHub under the
 All tracks:
 
 - Rust stable (the daemon crate's `rust-toolchain.toml` pins it)
-- A working `daemon8` binary (either `cargo install --path daemon/crates/daemon --force`
+- A working `daemon8` binary (either `cargo install --path crates/daemon --force`
   or `cargo binstall daemon8` once releases are published)
 - POSIX shell (zsh or bash)
 
@@ -194,15 +194,15 @@ and HTTP/SSE transports using a real MCP client, not mocks.
 - `notifications/initialized`
 - `tools/list` — assert exactly 8 tools and exact names match
 - `tools/call` for each tool:
-  - `debug_summary` — response shape (keys, no tier fields)
-  - `debug_observe` — seed via `/ingest`, call, verify results
-  - `debug_checkpoint` — call twice, checkpoint advances
-  - `debug_connections` — shape validation
-  - `debug_ingest` — call, verify via `/api/observe`
-  - `debug_subscribe` — set filter, verify applied
-  - `debug_connect` — verify `ChromeCommand::Connect` reaches the channel
+  - `status` — response shape (keys, no tier fields)
+  - `query_observations` — seed via `/ingest`, call, verify results
+  - `create_checkpoint` — call twice, checkpoint advances
+  - `list_connections` — shape validation
+  - `ingest_observation` — call, verify via `/api/observe`
+  - `subscribe_observations` — set filter, verify applied
+  - `connect_browser` — verify `ChromeCommand::Connect` reaches the channel
     (stubbed receiver in the gauntlet, no real Chrome)
-  - `debug_act` — dispatch each variant (`EvalJs`, `ListTabs`, `Screenshot`,
+  - `issue_command` — dispatch each variant (`EvalJs`, `ListTabs`, `Screenshot`,
     `InjectCss`, `RevertCss`, `GetPerfMetrics`, `GetDom`, `SetViewport`,
     `ClearViewport`, `NetworkConditions`, `Navigate`, `StorageClear`,
     `StorageInspect`, `StorageSet`, `ElementAtPoint`)
@@ -232,7 +232,7 @@ Two transports:
   framing.
 - HTTP/SSE transport requires `Mcp-Session-Id` header management — rmcp
   handles that automatically.
-- For `debug_connect` and `debug_act`, the daemon binary you spawn
+- For `connect_browser` and `issue_command`, the daemon binary you spawn
   should have a stubbed chrome command receiver. Easiest: set the chrome
   endpoint to an unreachable address; the command enters the channel but
   Chrome never actually gets contacted. Phase 3 covers real Chrome.
@@ -240,7 +240,7 @@ Two transports:
 ### Phase 3 — Real Chrome CDP
 
 **Goal:** verify daemon8 can actually drive a real Chromium browser
-through every browser-action variant.
+through every command action variant.
 
 **Scope:**
 
@@ -452,6 +452,6 @@ Three reasons:
 3. **Speed.** The gauntlet is comprehensive, not fast. Running it
    per-PR would slow CI dramatically. Per-release is the right cadence.
 
-What CI does cover today: every test in `daemon/crates/**/tests/` and
-`daemon/crates/daemon/tests/integration.rs`. That's the automated floor.
+What CI does cover today: every test in `crates/**/tests/` and
+`crates/daemon/tests/integration.rs`. That's the automated floor.
 The gauntlet is the ceiling.

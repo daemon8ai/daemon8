@@ -6,7 +6,7 @@ Full license texts are preserved in each dependency's source distribution.
 
 ---
 
-Rust crates (daemon/, via Cargo.lock)
+Rust crates (via Cargo.lock)
 
   tokio                      MIT                  https://tokio.rs
   tokio-util                 MIT                  https://tokio.rs
@@ -45,39 +45,8 @@ Rust crates (daemon/, via Cargo.lock)
   adb_client                 Apache-2.0           https://github.com/cocool97/adb_client
 
 A full dependency tree with exact versions is resolvable from
-`daemon/Cargo.lock`. Run `cargo tree -p daemon8` inside `daemon/` for the
-current graph; run `cargo license` for a per-crate license dump.
-
----
-
-PHP packages (sdks/, via composer.json)
-
-  guzzlehttp/guzzle          MIT                  https://github.com/guzzle/guzzle
-  illuminate/support         MIT                  https://github.com/illuminate/support
-  symfony/http-client        MIT                  https://symfony.com
-  symfony/http-kernel        MIT                  https://symfony.com
-  symfony/event-dispatcher   MIT                  https://symfony.com
-  psr/log                    MIT                  https://www.php-fig.org/psr/psr-3/
-
-Per-package lockfiles live in each SDK's repo snapshot. Libraries do not ship
-with a lockfile; consumers resolve transitive dependencies against their own
-application constraints.
-
----
-
-JavaScript packages (app/, via package.json + bun.lock)
-
-  @tanstack/react-router     MIT                  https://tanstack.com/router
-  @tanstack/react-query      MIT                  https://tanstack.com/query
-  @tanstack/start            MIT                  https://tanstack.com/start
-  react                      MIT                  https://react.dev
-  react-dom                  MIT                  https://react.dev
-  vite                       MIT                  https://vitejs.dev
-  lucide-react               ISC                  https://lucide.dev
-  content-collections        MIT                  https://www.content-collections.dev
-  @content-collections/mdx   MIT                  https://www.content-collections.dev
-
-The full JS dependency graph lives in `app/bun.lock`.
+`Cargo.lock`. Run `cargo tree -p daemon8` for the current graph;
+run `cargo license` for a per-crate license dump.
 
 ---
 
