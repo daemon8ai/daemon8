@@ -29,7 +29,7 @@
 
 ## What is Daemon8?
 
-As smart as LLMs are getting, how long does one reasonably expect the "logging mess" to last? Send logs to one place for agents to consume, query, and collaborate — that's what Daemon8 is.
+Send runtime output to one local stream for agents to consume, query, and collaborate.
 
 Everything stays on your machine. Nothing is sent anywhere.
 
@@ -181,9 +181,9 @@ By participating, you agree to the [Code of Conduct](./CODE_OF_CONDUCT.md). Enfo
 
 ## Signing & trust
 
-Until `v0.1.0`, release binaries are not yet code-signed. Builds from `cargo install --git` carry an ad-hoc signature and trigger macOS Gatekeeper's "unidentified developer" prompt on first launch.
+Builds from `cargo install --git` carry an ad-hoc signature and trigger macOS Gatekeeper's "unidentified developer" prompt on first launch.
 
-From `v0.1.0` forward, GitHub Release binaries are code-signed with an Apple Developer ID and notarized by Apple. From `v0.2.0` forward, releases ship under Havy.tech, LLC's organizational Developer ID once enrollment completes.
+GitHub Release binaries will be code-signed with an Apple Developer ID and notarized by Apple once the release workflow is finalized.
 
 Verify a signed binary:
 
