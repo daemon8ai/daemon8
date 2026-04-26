@@ -1,0 +1,9 @@
+Configure which observations trigger real-time alerts in your session. Default: severity >= warn only.
+
+Examples:
+- Watch only exceptions: kinds=['exception'], severity_min='error'
+- Monitor a specific app: origins=['app:user-api']
+- Listen for messages from another agent: origins=['app:agent-b'], severity_min='info'
+- Reset to default: call with no parameters
+
+Subscription persists for the session. Call again to change filters.

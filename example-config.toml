@@ -1,0 +1,45 @@
+# Daemon8 configuration
+# Location: ~/.config/daemon8/config.toml (macOS/Linux)
+# Reference: https://daemon8.ai/docs/configuration
+#
+# All values shown are defaults. Uncomment to override.
+# Env vars use DAEMON8_ prefix with __ for nesting (e.g. DAEMON8_SERVER__PORT).
+
+# [server]
+# port = 8888
+# host = "127.0.0.1"
+
+# [storage]
+# path = ""
+# screenshot_path = ""
+
+# [browser]
+# auto_connect = false
+# endpoint = "http://localhost:9222"
+# reconnect_interval_secs = 5
+# max_reconnect_interval_secs = 30
+# path = ""
+
+# [adb]
+# enabled = true
+# server_addr = "127.0.0.1:5037"
+# scan_interval_secs = 10
+
+# [mcp]
+# stdio = true
+# http = false
+
+# [ingestion.udp]
+# enabled = false
+# bind = "127.0.0.1:8889"
+# max_packet = 65536
+
+# [ingestion.unix]
+# enabled = false
+# path = ""
+
+# [logging]
+# level = "info"
+# file = ""
+# stderr = true
+# max_log_files = 5

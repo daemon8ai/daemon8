@@ -1,0 +1,32 @@
+# Blanket ignores
+.*
+*.md
+*.log
+
+# OS
+Thumbs.db
+
+# Rust
+target/
+*.rs.bk
+
+# AI tools
+.claude/
+.cursorrules
+.cursor/
+
+# Explicitly tracked
+!/.gitignore
+!/.github/
+!/.github/**
+!/README.md
+!/DEPLOY.md
+!/LICENSE
+!/CHANGELOG.md
+!/CONTRIBUTING.md
+!/SECURITY.md
+!/CODE_OF_CONDUCT.md
+!/TESTING.md
+!/TODO.md
+!/NOTICE
+!/logo.svg

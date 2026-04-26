@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 520 120" fill="none">
+  <defs>
+    <!-- Radar sweep gradient -->
+    <linearGradient id="sweep" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#58A6FF" stop-opacity="0.35"/>
+      <stop offset="100%" stop-color="#58A6FF" stop-opacity="0"/>
+    </linearGradient>
+    <!-- Blip glow -->
+    <radialGradient id="blip-green">
+      <stop offset="0%" stop-color="#7EE787" stop-opacity="0.6"/>
+      <stop offset="100%" stop-color="#7EE787" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="blip-blue">
+      <stop offset="0%" stop-color="#58A6FF" stop-opacity="0.5"/>
+      <stop offset="100%" stop-color="#58A6FF" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <g transform="translate(10, 10)">
+    <!-- Outer hex -->
+    <path d="M50 0 L93.3 25 L93.3 75 L50 100 L6.7 75 L6.7 25 Z"
+          fill="#0D1117" stroke="#58A6FF" stroke-width="2"/>
+
+    <!-- Radar rings (concentric, fading out) -->
+    <circle cx="50" cy="50" r="12" stroke="#58A6FF" stroke-width="0.8" fill="none" opacity="0.35"/>
+    <circle cx="50" cy="50" r="22" stroke="#58A6FF" stroke-width="0.8" fill="none" opacity="0.2"/>
+    <circle cx="50" cy="50" r="32" stroke="#58A6FF" stroke-width="0.8" fill="none" opacity="0.1"/>
+
+    <!-- Radar crosshairs (subtle) -->
+    <line x1="50" y1="16" x2="50" y2="84" stroke="#58A6FF" stroke-width="0.5" opacity="0.12"/>
+    <line x1="16" y1="50" x2="84" y2="50" stroke="#58A6FF" stroke-width="0.5" opacity="0.12"/>
+
+    <!-- Sweep wedge (the rotating radar arm -- frozen in position) -->
+    <path d="M50,50 L72,28 A32,32 0 0,0 50,18 Z" fill="url(#sweep)"/>
+
+    <!-- Center dot (the daemon) -->
+    <circle cx="50" cy="50" r="4" fill="#58A6FF"/>
+    <circle cx="50" cy="50" r="1.8" fill="#0D1117"/>
+
+    <!-- Blips (connected projects/sources) with glow halos -->
+    <!-- Inbound blips (green -- apps sending data) -->
+    <circle cx="30" cy="32" r="6" fill="url(#blip-green)"/>
+    <circle cx="30" cy="32" r="2.2" fill="#7EE787"/>
+
+    <circle cx="28" cy="68" r="6" fill="url(#blip-green)"/>
+    <circle cx="28" cy="68" r="2.2" fill="#7EE787"/>
+
+    <!-- Outbound blips (blue -- agents querying) -->
+    <circle cx="70" cy="35" r="6" fill="url(#blip-blue)"/>
+    <circle cx="70" cy="35" r="2.2" fill="#58A6FF"/>
+
+    <circle cx="72" cy="65" r="5" fill="url(#blip-blue)"/>
+    <circle cx="72" cy="65" r="1.8" fill="#58A6FF"/>
+
+    <!-- Data traces (thin lines from blips to center, ephemeral) -->
+    <line x1="30" y1="32" x2="48" y2="48" stroke="#7EE787" stroke-width="0.8" opacity="0.4"/>
+    <line x1="28" y1="68" x2="48" y2="52" stroke="#7EE787" stroke-width="0.8" opacity="0.4"/>
+    <line x1="52" y1="48" x2="70" y2="35" stroke="#58A6FF" stroke-width="0.8" opacity="0.3"/>
+    <line x1="52" y1="52" x2="72" y2="65" stroke="#58A6FF" stroke-width="0.8" opacity="0.3"/>
+  </g>
+
+  <!-- Product name -->
+  <text x="125" y="62" font-family="Inter, -apple-system, system-ui, sans-serif"
+        font-size="42" font-weight="700" fill="#E6EDF3" letter-spacing="3">
+    DAEMON<tspan fill="#58A6FF">AI</tspan>
+  </text>
+  <!-- Subtitle -->
+  <text x="127" y="88" font-family="Inter, -apple-system, system-ui, sans-serif"
+        font-size="13" font-weight="400" fill="#8B949E" letter-spacing="4.5">
+    RUNTIME OBSERVATION FOR AI AGENTS
+  </text>
+</svg>

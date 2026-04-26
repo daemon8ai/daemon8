@@ -1,0 +1,69 @@
+# cargo-deny config for daemon8.
+#
+# Run locally: cargo deny check
+# CI: .github/workflows/daemon-ci.yml + daemon/.github/workflows/ci.yml
+#
+# Purpose:
+#   - Block dependencies with incompatible licenses (GPL/AGPL/LGPL/etc.) that
+#     would create licensing conflicts with FCL-1.0-ALv2.
+#   - Surface security advisories against vulnerable or unmaintained deps.
+#   - Lock distribution sources to crates.io; reject unvetted git deps.
+
+[graph]
+targets = [
+    { triple = "x86_64-unknown-linux-gnu" },
+    { triple = "aarch64-unknown-linux-gnu" },
+    { triple = "x86_64-apple-darwin" },
+    { triple = "aarch64-apple-darwin" },
+    { triple = "x86_64-pc-windows-msvc" },
+]
+all-features = false
+
+[advisories]
+version = 2
+db-urls = ["https://github.com/rustsec/advisory-db"]
+yanked = "deny"
+ignore = [
+    # Marvin Attack timing sidechannel in the `rsa` crate.
+    # Pulled in transitively via adb_client for ADB's local USB/TCP TLS.
+    # No safe upgrade available upstream. Exploit requires an attacker to
+    # observe timing side-channels on RSA private-key operations; daemon8
+    # uses `rsa` only for local device transport (adb server on loopback),
+    # so the attack surface is effectively zero. Revisit when adb_client
+    # ships a non-`rsa`-based transport.
+    { id = "RUSTSEC-2023-0071", reason = "rsa crate, local-only ADB transport" },
+]
+
+[licenses]
+version = 2
+confidence-threshold = 0.85
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "CC0-1.0",
+    "MPL-2.0",
+    "Zlib",
+    "CDLA-Permissive-2.0",
+    "LicenseRef-FCL-1.0-ALv2",
+]
+exceptions = []
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+highlight = "all"
+allow = []
+deny = []
+skip = []
+skip-tree = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
