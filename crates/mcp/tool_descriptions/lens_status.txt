@@ -1,0 +1,1 @@
+Check the current lens state: whether a lens is active, its filter, how many observations are buffered, buffer capacity, and the cursor position (highest observation id seen).

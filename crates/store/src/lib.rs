@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: LicenseRef-FCL-1.0-ALv2
 // Copyright (c) 2026 Havy.tech, LLC
 
+mod lens;
 mod surreal;
 
+pub use lens::{LensManager, LensStatus};
 pub use surreal::SurrealStore;
 
 use daemon8_types::{Checkpoint, Filter, Observation, RuntimeSummary, StateSlice};

@@ -14,7 +14,7 @@ use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post};
 use daemon8_chrome::BrowserAction;
 use daemon8_mcp::ChromeCommand;
-use daemon8_store::StateModel;
+use daemon8_store::{LensManager, StateModel};
 use daemon8_types::{Checkpoint, Filter, Observation};
 use serde::Deserialize;
 use tokio::sync::broadcast::error::RecvError;
@@ -28,6 +28,7 @@ pub struct ApiState {
     pub chrome_cmd_tx: tokio::sync::mpsc::Sender<ChromeCommand>,
     pub chrome_state: tokio::sync::watch::Receiver<daemon8_chrome::ConnectionState>,
     pub chrome_endpoint: Arc<std::sync::Mutex<Option<Arc<str>>>>,
+    pub lens: Arc<LensManager>,
 }
 
 pub fn api_router(state: ApiState) -> Router {
@@ -38,6 +39,7 @@ pub fn api_router(state: ApiState) -> Router {
         .route("/api/connections", get(handle_connections))
         .route("/api/connect", post(handle_connect))
         .route("/api/stream", get(handle_stream))
+        .route("/api/lens", get(handle_lens_status).put(handle_lens_set).delete(handle_lens_clear))
         .route("/api/browser/act", post(handle_chrome_act))
         .with_state(state)
 }
@@ -259,6 +261,45 @@ async fn handle_observe(
 async fn handle_checkpoint(State(state): State<ApiState>) -> Response {
     let cp = state.store.checkpoint().await;
     (StatusCode::OK, Json(serde_json::json!({ "checkpoint": cp.0 }))).into_response()
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LensSetBody {
+    pub kinds: Option<String>,
+    pub severity_min: Option<String>,
+    pub origins: Option<String>,
+    pub text_match: Option<String>,
+    pub correlation_id: Option<String>,
+    pub tags: Option<String>,
+    pub capacity: Option<usize>,
+}
+
+async fn handle_lens_set(State(state): State<ApiState>, Json(body): Json<LensSetBody>) -> Response {
+    let filter = parse_filter(FilterInput {
+        kinds: body.kinds,
+        severity_min: body.severity_min,
+        origins: body.origins,
+        text_match: body.text_match,
+        since: None,
+        limit: None,
+        correlation_id: body.correlation_id,
+        tags: body.tags,
+    });
+    let capacity = body.capacity.unwrap_or(200).min(1000);
+    state.lens.set_with_capacity(filter, capacity).await;
+
+    let status = state.lens.status().await;
+    (StatusCode::OK, Json(status)).into_response()
+}
+
+async fn handle_lens_clear(State(state): State<ApiState>) -> Response {
+    state.lens.clear().await;
+    (StatusCode::OK, Json(serde_json::json!({"cleared": true}))).into_response()
+}
+
+async fn handle_lens_status(State(state): State<ApiState>) -> Response {
+    let status = state.lens.status().await;
+    (StatusCode::OK, Json(status)).into_response()
 }
 
 async fn handle_summary(State(state): State<ApiState>) -> Response {

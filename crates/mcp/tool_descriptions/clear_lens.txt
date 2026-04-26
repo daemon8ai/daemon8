@@ -1,0 +1,1 @@
+Remove the active observation lens. Stops buffering and discards any buffered observations. No-op if no lens is active.

@@ -1,0 +1,1 @@
+Set a persistent observation filter (lens) for this session. While a lens is active, matching observations are buffered automatically. Call query_observations to retrieve buffered matches without re-specifying filters. Replaces any existing lens. Use clear_lens to remove.

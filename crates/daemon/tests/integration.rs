@@ -53,10 +53,11 @@ async fn start_server(
         tokio::sync::watch::channel(daemon8_chrome::ConnectionState::Disconnected);
     let api_state = daemon8_api::ApiState {
         store,
-        stream_tx: broadcast_tx,
+        stream_tx: broadcast_tx.clone(),
         chrome_cmd_tx,
         chrome_state: chrome_state_rx,
         chrome_endpoint: std::sync::Arc::new(std::sync::Mutex::new(None)),
+        lens: std::sync::Arc::new(daemon8_store::LensManager::new(broadcast_tx.subscribe())),
     };
 
     let app =
@@ -821,10 +822,11 @@ async fn start_act_server() -> (
 
     let api_state = daemon8_api::ApiState {
         store,
-        stream_tx,
+        stream_tx: stream_tx.clone(),
         chrome_cmd_tx,
         chrome_state: chrome_state_rx,
         chrome_endpoint: std::sync::Arc::new(std::sync::Mutex::new(None)),
+        lens: std::sync::Arc::new(daemon8_store::LensManager::new(stream_tx.subscribe())),
     };
     let app = daemon8_api::api_router(api_state);
 

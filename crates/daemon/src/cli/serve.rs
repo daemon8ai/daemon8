@@ -167,6 +167,7 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
     if stdin_is_pipe {
         use rmcp::ServiceExt;
 
+        let lens = Arc::new(daemon8_store::LensManager::new(broadcast_tx.subscribe()));
         let mcp = daemon8_mcp::DaemonMcp::new(daemon8_mcp::DaemonMcpConfig {
             store: store.clone(),
             obs_tx: obs_tx.clone(),
@@ -177,6 +178,7 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
             screenshot_dir: screenshot_dir.clone(),
             subscription_tx: sub_tx.clone(),
             broadcast_tx: broadcast_tx.clone(),
+            lens,
         });
         let cancel_on_eof = cancel.clone();
         tasks.spawn(async move {
@@ -220,6 +222,9 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
                 screenshot_dir: mcp_screenshot_dir.clone(),
                 subscription_tx: sub_tx.clone(),
                 broadcast_tx: mcp_broadcast_tx.clone(),
+                lens: Arc::new(daemon8_store::LensManager::new(
+                    mcp_broadcast_tx.subscribe(),
+                )),
             }))
         },
         Arc::new(
@@ -230,12 +235,14 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
             .with_cancellation_token(mcp_cancel),
     );
 
+    let api_lens = Arc::new(daemon8_store::LensManager::new(broadcast_tx.subscribe()));
     let api_state = daemon8_api::ApiState {
         store: store.clone(),
         stream_tx: broadcast_tx.clone(),
         chrome_cmd_tx: chrome_cmd_tx.clone(),
         chrome_state: chrome_state_rx.clone(),
         chrome_endpoint: chrome_endpoint.clone(),
+        lens: api_lens,
     };
     let port = cfg.server.port;
     let app = daemon8_ingest::ingest_router(obs_tx.clone())

@@ -7,7 +7,7 @@ use daemon8_chrome::ConnectionState;
 use daemon8_mcp::{DaemonMcp, DaemonMcpConfig};
 use daemon8_store::SurrealStore;
 
-const EXPECTED_TOOLS: [&str; 8] = [
+const EXPECTED_TOOLS: [&str; 11] = [
     "query_observations",
     "status",
     "create_checkpoint",
@@ -16,6 +16,9 @@ const EXPECTED_TOOLS: [&str; 8] = [
     "subscribe_observations",
     "issue_command",
     "connect_browser",
+    "set_lens",
+    "clear_lens",
+    "lens_status",
 ];
 
 fn tool_names(router: &rmcp::handler::server::router::tool::ToolRouter<DaemonMcp>) -> Vec<String> {
@@ -34,6 +37,7 @@ async fn make_mcp() -> DaemonMcp {
     let (sub_tx, _) = tokio::sync::watch::channel(None);
     let sub_tx = Arc::new(sub_tx);
     let (broadcast_tx, _) = tokio::sync::broadcast::channel(16);
+    let lens = Arc::new(daemon8_store::LensManager::new(broadcast_tx.subscribe()));
     DaemonMcp::new(DaemonMcpConfig {
         store,
         obs_tx,
@@ -44,18 +48,20 @@ async fn make_mcp() -> DaemonMcp {
         screenshot_dir: std::env::temp_dir().join("daemon8-test-screenshots"),
         subscription_tx: sub_tx,
         broadcast_tx,
+        lens,
     })
 }
 
 #[test]
-fn composed_router_has_all_eight_tools() {
-    let router = DaemonMcp::tool_router() + DaemonMcp::action_tool_router();
+fn composed_router_has_all_eleven_tools() {
+    let router =
+        DaemonMcp::tool_router() + DaemonMcp::action_tool_router() + DaemonMcp::lens_tool_router();
     let names = tool_names(&router);
 
     assert_eq!(
         names.len(),
-        8,
-        "router must expose all 8 tools, got {}: {:?}",
+        11,
+        "router must expose all 11 tools, got {}: {:?}",
         names.len(),
         names
     );
@@ -71,7 +77,7 @@ fn composed_router_has_all_eight_tools() {
 }
 
 #[tokio::test]
-async fn live_mcp_exposes_all_eight_tools() {
+async fn live_mcp_exposes_all_eleven_tools() {
     let mcp = make_mcp().await;
     let names: Vec<String> = mcp
         .tools_for_client()
@@ -81,8 +87,8 @@ async fn live_mcp_exposes_all_eight_tools() {
 
     assert_eq!(
         names.len(),
-        8,
-        "tools_for_client() must expose all 8 tools, got {}: {:?}",
+        11,
+        "tools_for_client() must expose all 11 tools, got {}: {:?}",
         names.len(),
         names
     );

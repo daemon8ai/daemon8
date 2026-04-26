@@ -6,7 +6,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use daemon8_store::StateModel;
+use daemon8_store::{LensManager, StateModel};
 use daemon8_types::{Checkpoint, DevicePlatform, Filter, Observation};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
@@ -252,6 +252,30 @@ pub struct SubscribeParams {
     pub tags: Option<Vec<String>>,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct LensParams {
+    #[schemars(description = "Filter by observation kind: log, query, http_exchange, js_exception, lifecycle, metric, custom")]
+    pub kinds: Option<Vec<String>>,
+
+    #[schemars(description = "Minimum severity threshold: trace, debug, info, warn, error")]
+    pub severity_min: Option<String>,
+
+    #[schemars(description = "Filter by origin pattern: 'app:name', 'browser', 'device:serial'")]
+    pub origins: Option<Vec<String>>,
+
+    #[schemars(description = "Substring search across observation data")]
+    pub text_match: Option<String>,
+
+    #[schemars(description = "Filter by correlation ID (exact match)")]
+    pub correlation_id: Option<String>,
+
+    #[schemars(description = "Filter by tags (all listed tags must be present)")]
+    pub tags: Option<Vec<String>>,
+
+    #[schemars(description = "Maximum observations to buffer (default 200)")]
+    pub capacity: Option<usize>,
+}
+
 pub struct DaemonMcp {
     store: Arc<dyn StateModel>,
     obs_tx: tokio::sync::mpsc::UnboundedSender<Observation>,
@@ -263,6 +287,7 @@ pub struct DaemonMcp {
     screenshot_dir: std::path::PathBuf,
     subscription_tx: Arc<tokio::sync::watch::Sender<Option<Filter>>>,
     broadcast_tx: broadcast::Sender<(Arc<Observation>, Arc<str>)>,
+    lens: Arc<LensManager>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -276,6 +301,7 @@ pub struct DaemonMcpConfig {
     pub screenshot_dir: std::path::PathBuf,
     pub subscription_tx: Arc<tokio::sync::watch::Sender<Option<Filter>>>,
     pub broadcast_tx: broadcast::Sender<(Arc<Observation>, Arc<str>)>,
+    pub lens: Arc<LensManager>,
 }
 
 #[tool_router(vis = "pub")]
@@ -283,6 +309,7 @@ impl DaemonMcp {
     pub fn new(cfg: DaemonMcpConfig) -> Self {
         let mut router = Self::tool_router();
         router += Self::action_tool_router();
+        router += Self::lens_tool_router();
         Self {
             store: cfg.store,
             obs_tx: cfg.obs_tx,
@@ -294,6 +321,7 @@ impl DaemonMcp {
             screenshot_dir: cfg.screenshot_dir,
             subscription_tx: cfg.subscription_tx,
             broadcast_tx: cfg.broadcast_tx,
+            lens: cfg.lens,
             tool_router: router,
         }
     }
@@ -397,16 +425,21 @@ impl DaemonMcp {
 
         match self.store.query(&filter).await {
             Ok(slice) => {
+                let mut result = serde_json::to_value(&slice).unwrap_or_default();
+
                 if wants_browser {
                     let chrome_state = *self.chrome_state.borrow();
-                    let mut result = serde_json::to_value(&slice).unwrap_or_default();
                     result["browser_state"] = serde_json::json!(format!("{chrome_state}"));
-                    serde_json::to_string_pretty(&result)
-                        .unwrap_or_else(|e| error_json(&format!("serialization failed: {e}")))
-                } else {
-                    serde_json::to_string_pretty(&slice)
-                        .unwrap_or_else(|e| error_json(&format!("serialization failed: {e}")))
                 }
+
+                let lens_obs = self.lens.drain().await;
+                if !lens_obs.is_empty() {
+                    result["lens_observations"] = serde_json::to_value(&lens_obs).unwrap_or_default();
+                    result["lens_count"] = serde_json::json!(lens_obs.len());
+                }
+
+                serde_json::to_string_pretty(&result)
+                    .unwrap_or_else(|e| error_json(&format!("serialization failed: {e}")))
             }
             Err(e) => error_json(&format!("query failed: {e}")),
         }
@@ -555,6 +588,46 @@ impl DaemonMcp {
     #[tool(name = "issue_command")]
     async fn issue_command(&self, Parameters(params): Parameters<ActParams>) -> String {
         self.issue_command_inner(params).await
+    }
+}
+
+#[tool_router(router = lens_tool_router, vis = "pub")]
+impl DaemonMcp {
+    #[doc = include_str!("../tool_descriptions/set_lens.txt")]
+    #[tool(name = "set_lens")]
+    async fn set_lens(&self, Parameters(params): Parameters<LensParams>) -> String {
+        let filter = Filter {
+            kinds: params.kinds.map(Filter::kinds_from_vec),
+            severity_min: params.severity_min.and_then(|s| Filter::parse_severity(&s)),
+            origins: params.origins.map(Filter::origins_from_vec),
+            text_match: params.text_match,
+            since: None,
+            limit: None,
+            correlation_id: params.correlation_id,
+            tags: params.tags,
+        };
+
+        let capacity = params.capacity.unwrap_or(200).min(1000);
+        self.lens.set_with_capacity(filter, capacity).await;
+
+        let status = self.lens.status().await;
+        serde_json::to_string_pretty(&status)
+            .unwrap_or_else(|e| error_json(&format!("serialization failed: {e}")))
+    }
+
+    #[doc = include_str!("../tool_descriptions/clear_lens.txt")]
+    #[tool(name = "clear_lens")]
+    async fn clear_lens(&self) -> String {
+        self.lens.clear().await;
+        serde_json::to_string(&serde_json::json!({"cleared": true})).unwrap_or_default()
+    }
+
+    #[doc = include_str!("../tool_descriptions/lens_status.txt")]
+    #[tool(name = "lens_status")]
+    async fn lens_status(&self) -> String {
+        let status = self.lens.status().await;
+        serde_json::to_string_pretty(&status)
+            .unwrap_or_else(|e| error_json(&format!("serialization failed: {e}")))
     }
 }
 
