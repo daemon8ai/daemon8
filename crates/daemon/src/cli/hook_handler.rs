@@ -22,6 +22,8 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use daemon8_types::SYSTEM_TAG;
+
 use crate::cli_config::{self, CliConfig};
 use crate::config;
 
@@ -490,15 +492,14 @@ fn build_joined(ctx: JoinContext<'_>) -> Value {
         pairs_with: None,
     };
 
-    let observation = json!({
+    json!({
         "app": "daemon8-cli-hook",
         "kind": "custom",
         "channel": "agent",
         "severity": "info",
+        "tags": [SYSTEM_TAG],
         "data": card,
-    });
-
-    observation
+    })
 }
 
 fn build_banner(agent_id: &str, banner: &str) -> Value {
@@ -507,6 +508,7 @@ fn build_banner(agent_id: &str, banner: &str) -> Value {
         "kind": "custom",
         "channel": "agent",
         "severity": "info",
+        "tags": [SYSTEM_TAG],
         "data": {
             "event": "agent.banner",
             "agent_id": agent_id,
@@ -521,6 +523,7 @@ fn build_minimal(event: &str, agent_id: &str) -> Value {
         "kind": "custom",
         "channel": "agent",
         "severity": "info",
+        "tags": [SYSTEM_TAG],
         "data": {
             "event": event,
             "agent_id": agent_id,
@@ -545,6 +548,7 @@ fn build_prompt_submitted(
         "kind": "custom",
         "channel": "agent",
         "severity": "info",
+        "tags": [SYSTEM_TAG],
         "data": {
             "event": "user.prompt_submitted",
             "agent_id": agent_id,
@@ -579,6 +583,7 @@ fn build_tool_event(
         "kind": "custom",
         "channel": "agent",
         "severity": "info",
+        "tags": [SYSTEM_TAG],
         "data": {
             "event": event,
             "agent_id": agent_id,
@@ -615,6 +620,7 @@ fn build_permission_requested(
         "kind": "custom",
         "channel": "agent",
         "severity": "info",
+        "tags": [SYSTEM_TAG],
         "data": {
             "event": "agent.permission_requested",
             "agent_id": agent_id,
@@ -872,5 +878,52 @@ mod tests {
         assert_eq!(observations[0]["data"]["tool_use_id"], "tool-123");
         assert_eq!(observations[0]["data"]["command"], "git status");
         assert_eq!(observations[1]["data"]["event"], "agent.heartbeat");
+    }
+
+    #[test]
+    fn all_observations_carry_system_tag() {
+        let mut cfg = CliConfig::default();
+        cfg.enrollment.banner = Some("test banner".into());
+
+        let input = HookInput {
+            tool_name: Some("Bash".into()),
+            tool_input: HookToolInput {
+                command: Some("ls".into()),
+                description: None,
+            },
+            ..HookInput::default()
+        };
+        let raw = serde_json::json!({});
+
+        for event in [
+            AgentEvent::Joined,
+            AgentEvent::PromptSubmitted,
+            AgentEvent::ToolPreUse,
+            AgentEvent::ToolPostUse,
+            AgentEvent::PermissionRequested,
+            AgentEvent::Departed,
+            AgentEvent::PreCompact,
+            AgentEvent::PostCompact,
+        ] {
+            let observations = build_observations(ObservationContext {
+                event,
+                cli_cfg: &cfg,
+                tool: "test",
+                agent_id: "host:test:s1",
+                host: "host",
+                session_id: "s1",
+                slug: "proj",
+                cwd: Path::new("/tmp"),
+                input: &input,
+                raw_input: &raw,
+            });
+            for obs in &observations {
+                assert_eq!(
+                    obs["tags"],
+                    serde_json::json!([daemon8_types::SYSTEM_TAG]),
+                    "missing _system tag on {event:?} observation: {obs}"
+                );
+            }
+        }
     }
 }
