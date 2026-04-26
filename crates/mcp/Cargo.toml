@@ -1,9 +1,10 @@
 [package]
 name = "daemon8-mcp"
-publish = false
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license-file.workspace = true
+description = "MCP tool server for daemon8 AI agent integration"
+repository.workspace = true
 
 [dependencies]
 daemon8-types.workspace = true

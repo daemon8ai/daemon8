@@ -1,9 +1,10 @@
 [package]
 name = "daemon8-store"
-publish = false
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license-file.workspace = true
+description = "SurrealDB storage backend for daemon8 observations"
+repository.workspace = true
 
 [dependencies]
 daemon8-types.workspace = true

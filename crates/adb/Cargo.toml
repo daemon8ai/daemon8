@@ -1,9 +1,10 @@
 [package]
 name = "daemon8-adb"
-publish = false
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license-file.workspace = true
+description = "Android Debug Bridge transport for daemon8 device observation"
+repository.workspace = true
 
 [dependencies]
 daemon8-types.workspace = true

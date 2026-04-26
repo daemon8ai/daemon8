@@ -1,9 +1,10 @@
 [package]
 name = "daemon8-ingest"
-publish = false
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license-file.workspace = true
+description = "HTTP, UDP, and Unix socket ingestion endpoints for daemon8"
+repository.workspace = true
 
 [dependencies]
 daemon8-types.workspace = true
