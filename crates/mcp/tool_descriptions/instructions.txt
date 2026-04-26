@@ -14,6 +14,7 @@ CRITICAL: Observations are real-time and change constantly. NEVER answer questio
 - To take screenshots, inject CSS, inspect DOM: call issue_command
 - To log a note, emit a metric, or message another agent: call ingest_observation
 - To watch for specific events in real-time: call subscribe_observations
+- To set a persistent filter: call set_lens -- matching observations are buffered and returned automatically in query_observations responses. Call lens_status to check buffer depth, clear_lens to remove.
 - Before making a change, call create_checkpoint. After, call query_observations with since_checkpoint to see exactly what happened.
 
 Browser connection is fully automatic. The daemon discovers, launches, and reconnects to the browser without intervention. If the browser is temporarily unavailable, browser actions will return a timeout -- just retry.
