@@ -6,7 +6,7 @@
 //! Invoked by Claude Code, Cursor CLI, Gemini CLI, GitHub Copilot CLI,
 //! OpenAI Codex CLI, and Continue.dev. Reads a stdin JSON payload, normalizes
 //! the event name across the seven case conventions, resolves project-local
-//! `.daemon8-cli.toml`, and POSTs the corresponding `agent.*` observation to
+//! `.daemon8.toml`, and POSTs the corresponding `agent.*` observation to
 //! the daemon's `/ingest` endpoint.
 //!
 //! Performance budget: <20ms per invocation. Uses blocking `ureq` rather than
@@ -244,6 +244,10 @@ fn run(args: CliHookArgs) -> Result<()> {
     let (input, raw_input) = read_input()?;
     let cwd = resolve_cwd(&input);
     let (cli_cfg, report) = cli_config::load(&cwd);
+
+    if cli_cfg.project_config_path.is_none() {
+        return Ok(());
+    }
 
     if report.has_errors() && args.verbose {
         if let Some(ref e) = report.user_error {

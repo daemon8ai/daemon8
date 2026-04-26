@@ -54,6 +54,7 @@ pub struct ObserveQueryParams {
     pub limit: Option<u64>,
     pub correlation_id: Option<String>,
     pub tags: Option<String>,
+    pub include_system: Option<bool>,
 }
 
 /// Query params for the live SSE stream. `since` and `limit` are deliberately
@@ -67,6 +68,7 @@ pub struct StreamQueryParams {
     pub text_match: Option<String>,
     pub correlation_id: Option<String>,
     pub tags: Option<String>,
+    pub include_system: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -203,6 +205,7 @@ struct FilterInput {
     limit: Option<usize>,
     correlation_id: Option<String>,
     tags: Option<String>,
+    include_system: Option<bool>,
 }
 
 fn parse_filter(input: FilterInput) -> Filter {
@@ -215,6 +218,7 @@ fn parse_filter(input: FilterInput) -> Filter {
         limit,
         correlation_id,
         tags,
+        include_system,
     } = input;
 
     Filter {
@@ -226,6 +230,7 @@ fn parse_filter(input: FilterInput) -> Filter {
         limit,
         correlation_id,
         tags: tags.map(|raw| Filter::parse_tags(&raw)),
+        include_system,
     }
 }
 
@@ -247,6 +252,7 @@ async fn handle_observe(
         limit: Some(params.limit.unwrap_or(50).min(500) as usize),
         correlation_id: params.correlation_id,
         tags: params.tags,
+        include_system: params.include_system,
     });
 
     match state.store.query(&filter).await {
@@ -284,6 +290,7 @@ async fn handle_lens_set(State(state): State<ApiState>, Json(body): Json<LensSet
         limit: None,
         correlation_id: body.correlation_id,
         tags: body.tags,
+        include_system: None,
     });
     let capacity = body.capacity.unwrap_or(200).min(1000);
     state.lens.set_with_capacity(filter, capacity).await;
@@ -413,6 +420,7 @@ async fn handle_stream(
         limit: None,
         correlation_id: params.correlation_id,
         tags: params.tags,
+        include_system: params.include_system,
     });
 
     let last_event_id: Option<u64> = headers

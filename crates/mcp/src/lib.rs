@@ -18,7 +18,6 @@ use tokio::sync::broadcast;
 
 const INSTRUCTIONS: &str = include_str!("../tool_descriptions/instructions.txt");
 
-/// Result of a device screenshot capture.
 pub struct DeviceScreenshotResult {
     pub png_bytes: Vec<u8>,
     pub source: String,
@@ -71,6 +70,11 @@ pub struct ObserveParams {
 
     #[schemars(description = "Filter by tags (all listed tags must be present)")]
     pub tags: Option<Vec<String>>,
+
+    #[schemars(
+        description = "Include system/infrastructure observations (tagged '_system'). These are excluded by default to reduce noise from CLI hooks and internal tooling."
+    )]
+    pub include_system: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -250,6 +254,11 @@ pub struct SubscribeParams {
 
     #[schemars(description = "Filter by tags (all listed tags must be present)")]
     pub tags: Option<Vec<String>>,
+
+    #[schemars(
+        description = "Include system/infrastructure observations (tagged '_system'). Excluded by default."
+    )]
+    pub include_system: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -421,6 +430,7 @@ impl DaemonMcp {
             limit: Some(params.limit.unwrap_or(50).min(500)),
             correlation_id: params.correlation_id,
             tags: params.tags,
+            include_system: params.include_system,
         };
 
         match self.store.query(&filter).await {
@@ -549,6 +559,7 @@ impl DaemonMcp {
             limit: None,
             correlation_id: params.correlation_id,
             tags: params.tags,
+            include_system: params.include_system,
         };
 
         let is_default = filter.kinds.is_none()
@@ -556,7 +567,8 @@ impl DaemonMcp {
             && filter.origins.is_none()
             && filter.text_match.is_none()
             && filter.correlation_id.is_none()
-            && filter.tags.is_none();
+            && filter.tags.is_none()
+            && filter.include_system.is_none();
 
         if is_default {
             self.subscription_tx.send_replace(None);
@@ -605,6 +617,7 @@ impl DaemonMcp {
             limit: None,
             correlation_id: params.correlation_id,
             tags: params.tags,
+            include_system: None,
         };
 
         let capacity = params.capacity.unwrap_or(200).min(1000);

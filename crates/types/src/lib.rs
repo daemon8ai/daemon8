@@ -12,6 +12,8 @@ use rmcp::schemars;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+pub const SYSTEM_TAG: &str = "_system";
+
 macro_rules! arc_str_newtype {
     ($name:ident) => {
         #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -401,10 +403,19 @@ pub struct Filter {
     pub limit: Option<usize>,
     pub correlation_id: Option<String>,
     pub tags: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include_system: Option<bool>,
 }
 
 impl Filter {
     pub fn matches(&self, obs: &Observation) -> bool {
+        if !self.include_system.unwrap_or(false)
+            && let Some(ref tags) = obs.tags
+            && tags.iter().any(|t| t == SYSTEM_TAG)
+        {
+            return false;
+        }
+
         if let Some(ref cp) = self.since
             && obs.id <= cp.0
         {
@@ -760,6 +771,35 @@ mod tests {
         assert_eq!(from_str, from_string);
         assert_eq!(from_string, from_arc);
         assert_eq!(from_str, "abc");
+    }
+
+    #[test]
+    fn system_tag_excluded_by_default() {
+        let mut system_obs = obs(
+            Origin::Application {
+                name: AppName::from("hook"),
+            },
+            ObservationKind::Log,
+        );
+        system_obs.tags = Some(vec![SYSTEM_TAG.to_string()]);
+
+        let normal_obs = obs(
+            Origin::Application {
+                name: AppName::from("app"),
+            },
+            ObservationKind::Log,
+        );
+
+        let default_filter = Filter::default();
+        assert!(!default_filter.matches(&system_obs));
+        assert!(default_filter.matches(&normal_obs));
+
+        let include_filter = Filter {
+            include_system: Some(true),
+            ..Filter::default()
+        };
+        assert!(include_filter.matches(&system_obs));
+        assert!(include_filter.matches(&normal_obs));
     }
 
     #[test]

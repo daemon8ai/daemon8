@@ -81,7 +81,7 @@ enum Commands {
     /// Universal CLI hook handler (invoked by Claude/Cursor/Gemini/Codex/Copilot/Continue)
     #[command(name = "cli-hook", hide = true)]
     CliHook(cli::hook_handler::CliHookArgs),
-    /// Initialize a `.daemon8-cli.toml` at the current project
+    /// Initialize a `.daemon8.toml` at the current project
     Init(cli::init::InitArgs),
 }
 

@@ -30,6 +30,8 @@ pub struct QueryArgs {
     pub since: Option<u64>,
     #[arg(long, default_value = "50")]
     pub limit: usize,
+    #[arg(long)]
+    pub include_system: bool,
 }
 
 pub async fn cmd_query(args: QueryArgs) -> Result<()> {
@@ -55,6 +57,9 @@ pub async fn cmd_query(args: QueryArgs) -> Result<()> {
     }
     if let Some(since) = args.since {
         params.push(format!("since={since}"));
+    }
+    if args.include_system {
+        params.push("include_system=true".to_string());
     }
     params.push(format!("limit={}", args.limit));
 

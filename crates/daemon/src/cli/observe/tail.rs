@@ -23,6 +23,8 @@ pub struct TailArgs {
     pub text: Option<String>,
     #[arg(long)]
     pub no_color: bool,
+    #[arg(long)]
+    pub include_system: bool,
 }
 
 pub async fn cmd_tail(args: TailArgs) -> Result<()> {
@@ -40,6 +42,9 @@ pub async fn cmd_tail(args: TailArgs) -> Result<()> {
     }
     if let Some(ref text) = args.text {
         params.push(format!("text_match={}", urlenc(text)));
+    }
+    if args.include_system {
+        params.push("include_system=true".to_string());
     }
     let query = if params.is_empty() {
         String::new()

@@ -3,14 +3,14 @@
 
 //! Project-local CLI hook configuration.
 //!
-//! `.daemon8-cli.toml` lives at the project root (next to `.editorconfig` /
+//! `.daemon8.toml` lives at the project root (next to `.editorconfig` /
 //! `.gitignore`). It abstracts per-CLI enrollment behavior so the same config
 //! drives Claude Code, Cursor, Gemini, Codex, Copilot, Continue, and opencode.
 //!
 //! Resolution order (merged last-wins):
 //!  1. System defaults
 //!  2. User file:    `{config_dir}/cli.toml`
-//!  3. Project file: nearest `.daemon8-cli.toml` walking up from `cwd` to
+//!  3. Project file: nearest `.daemon8.toml` walking up from `cwd` to
 //!     the first `.git` directory or filesystem root.
 //!
 //! Schema reference: https://daemon8.ai/docs/cli-hook-config
@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-pub const PROJECT_CONFIG_FILENAME: &str = ".daemon8-cli.toml";
+pub const PROJECT_CONFIG_FILENAME: &str = ".daemon8.toml";
 pub const USER_CONFIG_FILENAME: &str = "cli.toml";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -40,7 +40,7 @@ pub struct CliConfig {
     #[serde(default)]
     pub sources: BTreeMap<String, toml::Value>,
 
-    /// Runtime-only: absolute path of the project `.daemon8-cli.toml` that
+    /// Runtime-only: absolute path of the project `.daemon8.toml` that
     /// provided the merge, or `None` if none was found.
     #[serde(skip)]
     pub project_config_path: Option<PathBuf>,
@@ -63,9 +63,9 @@ impl Default for ProjectSection {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EnrollmentSection {
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub enabled: bool,
     #[serde(default)]
     pub scope: Vec<String>,
@@ -159,16 +159,6 @@ fn default_coarsen_threshold() -> u32 {
     5
 }
 
-impl Default for EnrollmentSection {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            scope: Vec::new(),
-            banner: None,
-        }
-    }
-}
-
 impl Default for FeaturesSection {
     fn default() -> Self {
         Self {
@@ -205,7 +195,7 @@ impl Default for ProviderEntry {
 // Walk-up discovery
 // ---------------------------------------------------------------------------
 
-/// Walk up from `start` looking for `.daemon8-cli.toml`. Stop at the first
+/// Walk up from `start` looking for `.daemon8.toml`. Stop at the first
 /// `.git` directory encountered (project boundary) or the filesystem root.
 pub fn find_project_config(start: &Path) -> Option<PathBuf> {
     let mut cursor = Some(start);
@@ -369,15 +359,16 @@ mod tests {
     use std::fs;
 
     #[test]
-    fn default_is_enabled() {
+    fn default_is_disabled() {
         let cfg = CliConfig::default();
-        assert!(cfg.enrollment_enabled_for("claude-code"));
+        assert!(!cfg.enrollment_enabled_for("claude-code"));
         assert!(cfg.features.intents);
     }
 
     #[test]
     fn provider_disabled_overrides_project_enabled() {
         let mut cfg = CliConfig::default();
+        cfg.enrollment.enabled = true;
         cfg.providers.insert(
             "copilot".into(),
             ProviderEntry {

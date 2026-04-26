@@ -4,7 +4,7 @@
 //! Integration tests for `daemon8 init`.
 //!
 //! Exercise the compiled binary end-to-end: clap parsing, dispatch,
-//! `.daemon8-cli.toml` generation, and hook registration into
+//! `.daemon8.toml` generation, and hook registration into
 //! `.claude/settings.{local.,}json` / `~/.claude/settings.json` (via fake HOME).
 
 use std::path::{Path, PathBuf};
@@ -106,7 +106,7 @@ fn cli_yes_writes_toml_only() {
         String::from_utf8_lossy(&out.stderr)
     );
 
-    assert!(work.join(".daemon8-cli.toml").exists());
+    assert!(work.join(".daemon8.toml").exists());
     assert!(
         !work.join(".claude").exists(),
         ".claude must NOT be created without --install-hooks"
@@ -127,7 +127,7 @@ fn cli_yes_with_install_hooks_local_writes_both() {
         String::from_utf8_lossy(&out.stderr)
     );
 
-    assert!(work.join(".daemon8-cli.toml").exists());
+    assert!(work.join(".daemon8.toml").exists());
     let settings = work.join(".claude").join("settings.local.json");
     assert!(settings.exists(), "local settings file missing");
 
@@ -246,7 +246,7 @@ fn cli_noninteractive_when_stdin_not_tty() {
         "stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(work.join(".daemon8-cli.toml").exists());
+    assert!(work.join(".daemon8.toml").exists());
 }
 
 #[test]
@@ -261,13 +261,13 @@ fn cli_ci_env_forces_noninteractive() {
         "stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(work.join(".daemon8-cli.toml").exists());
+    assert!(work.join(".daemon8.toml").exists());
 }
 
 #[test]
 fn cli_bails_on_existing_toml_without_force() {
     let (_tmp, work, home) = setup_dirs();
-    std::fs::write(work.join(".daemon8-cli.toml"), "# pre-existing\n").unwrap();
+    std::fs::write(work.join(".daemon8.toml"), "# pre-existing\n").unwrap();
 
     let out = run_init(&work, &home, &["--yes"]);
     assert!(
@@ -276,7 +276,7 @@ fn cli_bails_on_existing_toml_without_force() {
         String::from_utf8_lossy(&out.stderr)
     );
 
-    let preserved = std::fs::read_to_string(work.join(".daemon8-cli.toml")).unwrap();
+    let preserved = std::fs::read_to_string(work.join(".daemon8.toml")).unwrap();
     assert_eq!(
         preserved, "# pre-existing\n",
         "file must be untouched when --force is not set"
@@ -286,7 +286,7 @@ fn cli_bails_on_existing_toml_without_force() {
 #[test]
 fn cli_force_overwrites_existing_toml() {
     let (_tmp, work, home) = setup_dirs();
-    std::fs::write(work.join(".daemon8-cli.toml"), "# pre-existing\n").unwrap();
+    std::fs::write(work.join(".daemon8.toml"), "# pre-existing\n").unwrap();
 
     let out = run_init(&work, &home, &["--yes", "--force"]);
     assert!(
@@ -295,7 +295,7 @@ fn cli_force_overwrites_existing_toml() {
         String::from_utf8_lossy(&out.stderr)
     );
 
-    let content = std::fs::read_to_string(work.join(".daemon8-cli.toml")).unwrap();
+    let content = std::fs::read_to_string(work.join(".daemon8.toml")).unwrap();
     assert!(
         content.contains("[project]"),
         "template should replace the pre-existing stub"

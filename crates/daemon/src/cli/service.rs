@@ -132,7 +132,7 @@ pub fn cmd_uninstall() -> Result<()> {
         remove_path(data_dir, "data dir");
     }
 
-    // 4. Project-local .daemon8-cli.toml
+    // 4. Project-local .daemon8.toml
     let cwd_config = std::env::current_dir()
         .unwrap_or_default()
         .join(crate::cli_config::PROJECT_CONFIG_FILENAME);

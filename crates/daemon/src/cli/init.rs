@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LicenseRef-FCL-1.0-ALv2
 // Copyright (c) 2026 Havy.tech, LLC
 
-//! `daemon8 init` -- scaffold `.daemon8-cli.toml` at cwd and optionally
+//! `daemon8 init` -- scaffold `.daemon8.toml` at cwd and optionally
 //! bootstrap provider configs / hook settings.
 
 use std::env;
@@ -40,7 +40,7 @@ pub struct InitArgs {
     #[arg(long, default_value = "solo")]
     pub role: String,
 
-    /// Overwrite an existing `.daemon8-cli.toml` at this location
+    /// Overwrite an existing `.daemon8.toml` at this location
     #[arg(long)]
     pub force: bool,
 

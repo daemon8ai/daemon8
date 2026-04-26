@@ -209,6 +209,12 @@ impl SurrealStore {
         let mut conditions = Vec::new();
         let mut binds: Vec<(String, serde_json::Value)> = Vec::new();
 
+        if !filter.include_system.unwrap_or(false) {
+            conditions.push(
+                "(tags IS NONE OR tags CONTAINSNOT '_system')".to_string(),
+            );
+        }
+
         if let Some(ref cp) = filter.since {
             conditions.push("seq > $since_seq".to_string());
             binds.push(("since_seq".into(), serde_json::json!(cp.0)));
@@ -781,5 +787,29 @@ mod tests {
         };
         let slice = store.query(&filter).await.unwrap();
         assert_eq!(slice.observations.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn system_tag_excluded_by_default() {
+        let store = SurrealStore::memory().await.unwrap();
+
+        let mut system_obs = make_obs(Severity::Info, 1_000);
+        system_obs.tags = Some(vec![daemon8_types::SYSTEM_TAG.to_string()]);
+        store.insert(system_obs).await.unwrap();
+
+        store.insert(make_obs(Severity::Info, 2_000)).await.unwrap();
+
+        let default_slice = store.query(&Filter::default()).await.unwrap();
+        assert_eq!(default_slice.observations.len(), 1);
+        assert_eq!(default_slice.observations[0].timestamp_ns, 2_000);
+
+        let include_slice = store
+            .query(&Filter {
+                include_system: Some(true),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(include_slice.observations.len(), 2);
     }
 }
