@@ -23,6 +23,10 @@ pub struct QueryArgs {
     #[arg(long)]
     pub text: Option<String>,
     #[arg(long)]
+    pub correlation_id: Option<String>,
+    #[arg(long, value_delimiter = ',')]
+    pub tags: Option<Vec<String>>,
+    #[arg(long)]
     pub since: Option<u64>,
     #[arg(long, default_value = "50")]
     pub limit: usize,
@@ -42,6 +46,12 @@ pub async fn cmd_query(args: QueryArgs) -> Result<()> {
     }
     if let Some(ref text) = args.text {
         params.push(format!("text_match={}", urlenc(text)));
+    }
+    if let Some(ref cid) = args.correlation_id {
+        params.push(format!("correlation_id={}", urlenc(cid)));
+    }
+    if let Some(ref tags) = args.tags {
+        params.push(format!("tags={}", urlenc(&tags.join(","))));
     }
     if let Some(since) = args.since {
         params.push(format!("since={since}"));

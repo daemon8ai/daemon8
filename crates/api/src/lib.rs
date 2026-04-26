@@ -33,6 +33,7 @@ pub struct ApiState {
 pub fn api_router(state: ApiState) -> Router {
     Router::new()
         .route("/api/observe", get(handle_observe))
+        .route("/api/checkpoint", get(handle_checkpoint))
         .route("/api/summary", get(handle_summary))
         .route("/api/connections", get(handle_connections))
         .route("/api/connect", post(handle_connect))
@@ -253,6 +254,11 @@ async fn handle_observe(
             format!("query failed: {e}"),
         ),
     }
+}
+
+async fn handle_checkpoint(State(state): State<ApiState>) -> Response {
+    let cp = state.store.checkpoint().await;
+    (StatusCode::OK, Json(serde_json::json!({ "checkpoint": cp.0 }))).into_response()
 }
 
 async fn handle_summary(State(state): State<ApiState>) -> Response {

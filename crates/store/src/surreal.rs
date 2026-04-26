@@ -11,8 +11,8 @@ use surrealdb::Surreal;
 use surrealdb::engine::local::Db;
 
 use daemon8_types::{
-    Checkpoint, ConnectionInfo, Filter, HealthStatus, Observation, Origin, RuntimeSummary,
-    Severity, SliceSummary, StateSlice,
+    Checkpoint, ConnectionInfo, Filter, HealthStatus, Observation, Origin, OriginPattern,
+    RuntimeSummary, Severity, SliceSummary, StateSlice,
 };
 
 use crate::{StateModel, StoreError};
@@ -205,13 +205,13 @@ impl SurrealStore {
         Ok(())
     }
 
-    fn build_query_sql(filter: &Filter) -> (String, Vec<(&'static str, serde_json::Value)>) {
+    fn build_query_sql(filter: &Filter) -> (String, Vec<(String, serde_json::Value)>) {
         let mut conditions = Vec::new();
-        let mut binds: Vec<(&'static str, serde_json::Value)> = Vec::new();
+        let mut binds: Vec<(String, serde_json::Value)> = Vec::new();
 
         if let Some(ref cp) = filter.since {
-            conditions.push("seq > $since_seq");
-            binds.push(("since_seq", serde_json::json!(cp.0)));
+            conditions.push("seq > $since_seq".to_string());
+            binds.push(("since_seq".into(), serde_json::json!(cp.0)));
         }
 
         if let Some(min) = filter.severity_min {
@@ -226,28 +226,45 @@ impl SurrealStore {
             .filter(|s| s.level() >= min.level())
             .map(|s| s.to_string())
             .collect();
-            conditions.push("severity IN $allowed_severities");
-            binds.push(("allowed_severities", serde_json::json!(allowed)));
+            conditions.push("severity IN $allowed_severities".to_string());
+            binds.push(("allowed_severities".into(), serde_json::json!(allowed)));
         }
 
         if let Some(ref kinds) = filter.kinds
             && !kinds.is_empty()
         {
             let tags: Vec<String> = kinds.iter().map(|k| k.to_string()).collect();
-            conditions.push("kind_tag IN $allowed_kinds");
-            binds.push(("allowed_kinds", serde_json::json!(tags)));
+            conditions.push("kind_tag IN $allowed_kinds".to_string());
+            binds.push(("allowed_kinds".into(), serde_json::json!(tags)));
         }
 
         if let Some(ref cid) = filter.correlation_id {
-            conditions.push("correlation_id = $corr_id");
-            binds.push(("corr_id", serde_json::json!(cid)));
+            conditions.push("correlation_id = $corr_id".to_string());
+            binds.push(("corr_id".into(), serde_json::json!(cid)));
         }
 
         if let Some(ref required_tags) = filter.tags
             && !required_tags.is_empty()
         {
-            conditions.push("tags CONTAINSALL $required_tags");
-            binds.push(("required_tags", serde_json::json!(required_tags)));
+            conditions.push("tags CONTAINSALL $required_tags".to_string());
+            binds.push(("required_tags".into(), serde_json::json!(required_tags)));
+        }
+
+        if let Some(ref origins) = filter.origins
+            && !origins.is_empty()
+        {
+            let origin_conds: Vec<String> = origins
+                .iter()
+                .enumerate()
+                .map(|(i, pat)| Self::origin_pattern_sql(pat, i, &mut binds))
+                .collect();
+            conditions.push(format!("({})", origin_conds.join(" OR ")));
+        }
+
+        if let Some(ref text) = filter.text_match {
+            conditions
+                .push("string::contains(string::lowercase(<string> data), $text_lower)".to_string());
+            binds.push(("text_lower".into(), serde_json::json!(text.to_ascii_lowercase())));
         }
 
         let where_clause = if conditions.is_empty() {
@@ -266,6 +283,33 @@ impl SurrealStore {
         );
 
         (sql, binds)
+    }
+
+    fn origin_pattern_sql(
+        pat: &OriginPattern,
+        idx: usize,
+        binds: &mut Vec<(String, serde_json::Value)>,
+    ) -> String {
+        match pat {
+            OriginPattern::AnyApplication => "origin.type = 'application'".to_string(),
+            OriginPattern::ApplicationNamed(name) => {
+                let bind_name = format!("origin_name_{idx}");
+                binds.push((bind_name.clone(), serde_json::json!(name)));
+                format!("(origin.type = 'application' AND origin.name = ${bind_name})")
+            }
+            OriginPattern::AnyBrowser => "origin.type = 'browser'".to_string(),
+            OriginPattern::BrowserTab(tab_id) => {
+                let bind_name = format!("origin_tab_{idx}");
+                binds.push((bind_name.clone(), serde_json::json!(tab_id)));
+                format!("(origin.type = 'browser' AND origin.tab_id = ${bind_name})")
+            }
+            OriginPattern::AnyDevice => "origin.type = 'device'".to_string(),
+            OriginPattern::DeviceSerial(serial) => {
+                let bind_name = format!("origin_serial_{idx}");
+                binds.push((bind_name.clone(), serde_json::json!(serial)));
+                format!("(origin.type = 'device' AND origin.serial = ${bind_name})")
+            }
+        }
     }
 }
 
@@ -314,8 +358,8 @@ impl StateModel for SurrealStore {
         let (sql, binds) = Self::build_query_sql(filter);
 
         let mut query = self.db.query(&sql);
-        for (name, value) in &binds {
-            query = query.bind((*name, value.clone()));
+        for (name, value) in binds {
+            query = query.bind((name, value));
         }
 
         let mut result = query
@@ -331,10 +375,6 @@ impl StateModel for SurrealStore {
             let rec: ObsRecord = serde_json::from_value(val)?;
             observations.push(rec.into_observation()?);
         }
-
-        // Apply Rust-side filter for complex predicates (origins, text_match, tags)
-        // that are harder to express in SurrealQL.
-        observations.retain(|obs| filter.matches(obs));
 
         let checkpoint = observations
             .last()
@@ -619,5 +659,127 @@ mod tests {
             slice.observations[0].correlation_id.as_deref(),
             Some("req-123")
         );
+    }
+
+    #[tokio::test]
+    async fn origin_filter_by_type() {
+        let store = SurrealStore::memory().await.unwrap();
+
+        store.insert(make_obs(Severity::Info, 1_000)).await.unwrap();
+
+        let mut browser_obs = make_obs(Severity::Info, 2_000);
+        browser_obs.origin = Origin::Browser {
+            tab_id: "tab-1".into(),
+            url: "https://example.com".into(),
+        };
+        store.insert(browser_obs).await.unwrap();
+
+        let filter = Filter {
+            origins: Some(vec![OriginPattern::AnyBrowser]),
+            ..Default::default()
+        };
+        let slice = store.query(&filter).await.unwrap();
+        assert_eq!(slice.observations.len(), 1);
+        assert!(matches!(slice.observations[0].origin, Origin::Browser { .. }));
+    }
+
+    #[tokio::test]
+    async fn origin_filter_by_name() {
+        let store = SurrealStore::memory().await.unwrap();
+
+        store.insert(make_obs(Severity::Info, 1_000)).await.unwrap();
+
+        let mut obs2 = make_obs(Severity::Info, 2_000);
+        obs2.origin = Origin::Application {
+            name: "other-app".into(),
+        };
+        store.insert(obs2).await.unwrap();
+
+        let filter = Filter {
+            origins: Some(vec![OriginPattern::ApplicationNamed("test-app".into())]),
+            ..Default::default()
+        };
+        let slice = store.query(&filter).await.unwrap();
+        assert_eq!(slice.observations.len(), 1);
+        assert!(matches!(
+            &slice.observations[0].origin,
+            Origin::Application { name } if name.as_ref() == "test-app"
+        ));
+    }
+
+    #[tokio::test]
+    async fn origin_filter_multiple_patterns() {
+        let store = SurrealStore::memory().await.unwrap();
+
+        store.insert(make_obs(Severity::Info, 1_000)).await.unwrap();
+
+        let mut browser_obs = make_obs(Severity::Info, 2_000);
+        browser_obs.origin = Origin::Browser {
+            tab_id: "tab-1".into(),
+            url: "https://example.com".into(),
+        };
+        store.insert(browser_obs).await.unwrap();
+
+        let mut device_obs = make_obs(Severity::Info, 3_000);
+        device_obs.origin = Origin::Device {
+            serial: "ABC123".into(),
+            platform: daemon8_types::DevicePlatform::Android,
+        };
+        store.insert(device_obs).await.unwrap();
+
+        let filter = Filter {
+            origins: Some(vec![
+                OriginPattern::AnyBrowser,
+                OriginPattern::DeviceSerial("ABC123".into()),
+            ]),
+            ..Default::default()
+        };
+        let slice = store.query(&filter).await.unwrap();
+        assert_eq!(slice.observations.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn text_match_filter() {
+        let store = SurrealStore::memory().await.unwrap();
+
+        let mut obs1 = make_obs(Severity::Info, 1_000);
+        obs1.data = serde_json::json!({"msg": "connection timeout on port 443"});
+        store.insert(obs1).await.unwrap();
+
+        let mut obs2 = make_obs(Severity::Info, 2_000);
+        obs2.data = serde_json::json!({"msg": "request completed successfully"});
+        store.insert(obs2).await.unwrap();
+
+        let filter = Filter {
+            text_match: Some("TIMEOUT".to_string()),
+            ..Default::default()
+        };
+        let slice = store.query(&filter).await.unwrap();
+        assert_eq!(slice.observations.len(), 1);
+        assert!(slice.observations[0].data.to_string().contains("timeout"));
+    }
+
+    #[tokio::test]
+    async fn origin_filter_respects_limit() {
+        let store = SurrealStore::memory().await.unwrap();
+
+        for i in 0..10 {
+            store.insert(make_obs(Severity::Info, i * 1000)).await.unwrap();
+        }
+
+        let mut browser_obs = make_obs(Severity::Info, 100_000);
+        browser_obs.origin = Origin::Browser {
+            tab_id: "tab-1".into(),
+            url: "https://example.com".into(),
+        };
+        store.insert(browser_obs).await.unwrap();
+
+        let filter = Filter {
+            origins: Some(vec![OriginPattern::AnyBrowser]),
+            limit: Some(5),
+            ..Default::default()
+        };
+        let slice = store.query(&filter).await.unwrap();
+        assert_eq!(slice.observations.len(), 1);
     }
 }
