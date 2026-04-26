@@ -45,6 +45,9 @@ enum Commands {
     /// Browser DevTools commands
     #[command(subcommand)]
     Browser(cli::browser::ChromeSubcommand),
+    /// Manage per-session observation lens (filter + ring buffer)
+    #[command(subcommand)]
+    Lens(cli::lens::LensSubcommand),
     /// Show log file location or tail logs
     Logs {
         /// Follow the log file (like tail -f)
@@ -111,6 +114,7 @@ async fn main() -> Result<()> {
         Commands::Query(args) => cli::observe::query::cmd_query(args).await,
         Commands::Connections(args) => cli::observe::connections::cmd_connections(args).await,
         Commands::Browser(sub) => cli::browser::cmd_chrome(sub).await,
+        Commands::Lens(sub) => cli::lens::cmd_lens(sub).await,
         Commands::Logs { follow } => cli::logs::cmd_logs(cli.config, follow),
         Commands::Config(sub) => cli::config_cmd::cmd_config(cli.config, sub),
         Commands::Completions { shell } => {
