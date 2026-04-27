@@ -579,6 +579,7 @@ fn spawn_chrome_command_handler(
     state_rx
 }
 
+#[cfg(unix)]
 fn resolve_node_id() -> String {
     let mut buf = [0u8; 256];
     unsafe {
@@ -589,6 +590,11 @@ fn resolve_node_id() -> String {
             "unknown".to_string()
         }
     }
+}
+
+#[cfg(windows)]
+fn resolve_node_id() -> String {
+    std::env::var("COMPUTERNAME").unwrap_or_else(|_| "unknown".to_string())
 }
 
 /// Returns true only when stdin is a FIFO (named or anonymous pipe).
