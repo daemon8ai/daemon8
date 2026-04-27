@@ -117,56 +117,6 @@ curl -X POST http://localhost:9077/ingest \
 
 Batch ingest, optional UDP, and optional Unix socket listeners are documented at [daemon8.ai/docs](https://daemon8.ai/docs).
 
-## SDK libraries
-
-<details>
-<summary><strong>Available and on-roadmap SDKs</strong> (click to expand)</summary>
-
-<br>
-
-**Available today:**
-
-- **PHP** — [daemon8ai/daemon8-php](https://github.com/daemon8ai/daemon8-php) — `composer require daemon8/php`
-- **Laravel** — [daemon8ai/daemon8-laravel](https://github.com/daemon8ai/daemon8-laravel) — `composer require daemon8/laravel`
-- **Symfony** — [daemon8ai/daemon8-symfony](https://github.com/daemon8ai/daemon8-symfony) — `composer require daemon8/symfony`
-
-**On roadmap:**
-
-- JavaScript / TypeScript — on roadmap
-- Python — on roadmap
-- Rust (client SDK, distinct from the daemon binary) — on roadmap
-- .NET — on roadmap
-- Go — on roadmap
-
-Community SDK contributions welcome — open a discussion at
-[GitHub Discussions](https://github.com/daemon8ai/daemon8/discussions) before starting a new SDK, so the observation envelope stays consistent across languages.
-
-</details>
-
-## Example projects
-
-Minimal runnable demos showing how to wire each SDK into a real application:
-
-- **PHP:** [daemon8ai/daemon8-demo-php](https://github.com/daemon8ai/daemon8-demo-php)
-- **Laravel:** [daemon8ai/daemon8-demo-laravel](https://github.com/daemon8ai/daemon8-demo-laravel)
-- **Symfony:** [daemon8ai/daemon8-demo-symfony](https://github.com/daemon8ai/daemon8-demo-symfony)
-
-Demo improvements are tracked in [`TODO.md`](./TODO.md#sdk-demo-improvements).
-
-## The daemon8 ecosystem
-
-Every public repository under the [`daemon8ai`](https://github.com/daemon8ai) GitHub organization:
-
-| Repository | Purpose |
-|---|---|
-| [`daemon8ai/daemon8`](https://github.com/daemon8ai/daemon8) | Rust daemon binary and canonical documentation (this repo) |
-| [`daemon8ai/daemon8-php`](https://github.com/daemon8ai/daemon8-php) | Framework-agnostic PHP SDK |
-| [`daemon8ai/daemon8-laravel`](https://github.com/daemon8ai/daemon8-laravel) | Laravel integration |
-| [`daemon8ai/daemon8-symfony`](https://github.com/daemon8ai/daemon8-symfony) | Symfony bundle |
-| [`daemon8ai/daemon8-demo-php`](https://github.com/daemon8ai/daemon8-demo-php) | PHP demo app |
-| [`daemon8ai/daemon8-demo-laravel`](https://github.com/daemon8ai/daemon8-demo-laravel) | Laravel demo app |
-| [`daemon8ai/daemon8-demo-symfony`](https://github.com/daemon8ai/daemon8-demo-symfony) | Symfony demo app |
-
 ## Docs
 
 Docs render at [daemon8.ai/docs](https://daemon8.ai/docs). Source lives in [`daemon8ai/daemon8-site`](https://github.com/daemon8ai/daemon8-site).
@@ -198,8 +148,6 @@ DAEMON8™ is a trademark of Havy.tech, LLC. U.S. trademark application pending.
 ## License
 
 [Fair Core License 1.0 with Apache 2.0 Fallback](LICENSES/FCL-1.0-ALv2.txt) (FCL-1.0-ALv2). Grants full rights for internal use, education, research, and professional services; restricts competing use. Each release relicenses under Apache 2.0 two years after publication.
-
-SDK packages ([daemon8-php](https://github.com/daemon8ai/daemon8-php), [daemon8-laravel](https://github.com/daemon8ai/daemon8-laravel), [daemon8-symfony](https://github.com/daemon8ai/daemon8-symfony)) are MIT-licensed.
 
 ## Contact
 
