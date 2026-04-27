@@ -58,7 +58,7 @@ pub struct InitArgs {
     #[arg(long)]
     pub providers: Option<String>,
 
-    /// Register Claude hooks at the given scope.
+    /// Register CLI hooks at the given scope.
     #[arg(long, value_enum)]
     pub install_hooks: Option<HookInstallScope>,
 
@@ -184,14 +184,14 @@ fn resolve_hook_scope(args: &InitArgs, non_interactive: bool) -> Result<Option<H
         return Ok(None);
     }
 
-    let should_install = cliclack::confirm("Install Claude hooks for this project?")
+    let should_install = cliclack::confirm("Install CLI hooks for this project?")
         .initial_value(false)
         .interact()?;
     if !should_install {
         return Ok(None);
     }
 
-    let scope = cliclack::select("Choose the Claude hook settings target")
+    let scope = cliclack::select("Choose the hook settings target")
         .item(HookScope::Local, "local", ".claude/settings.local.json")
         .item(HookScope::Shared, "shared", ".claude/settings.json")
         .item(HookScope::Global, "global", "~/.claude/settings.json")

@@ -17,3 +17,4 @@ tracing.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
+daemon8-embed.workspace = true

@@ -69,7 +69,7 @@ enum Commands {
     Uninstall,
     /// Interactive setup wizard (run after install)
     Setup,
-    /// Real-time alert relay for Claude Code (experimental)
+    /// Real-time alert relay for MCP clients (experimental)
     Channel,
     /// Run a stateless background or one-shot daemon8 agent
     Agent(cli::agent::AgentArgs),
@@ -79,7 +79,7 @@ enum Commands {
         #[arg(long)]
         fix: bool,
     },
-    /// Universal CLI hook handler (invoked by Claude/Cursor/Gemini/Codex/Copilot/Continue)
+    /// Universal CLI hook handler (invoked by AI coding agents)
     #[command(name = "cli-hook", hide = true)]
     CliHook(cli::hook_handler::CliHookArgs),
     /// Initialize a `.daemon8.toml` at the current project

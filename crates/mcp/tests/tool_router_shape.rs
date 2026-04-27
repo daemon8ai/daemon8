@@ -55,6 +55,7 @@ async fn make_mcp() -> DaemonMcp {
         subscription_tx: sub_tx,
         broadcast_tx,
         lens,
+        embedder: None,
     })
 }
 

@@ -804,7 +804,7 @@ mod tests {
     #[test]
     fn build_permission_requested_keeps_normalized_fields_and_raw_payload() {
         let input = HookInput {
-            model: Some("gpt-5.5".into()),
+            model: Some("claude-sonnet-4-6".into()),
             turn_id: Some("turn-1".into()),
             tool_name: Some("Bash".into()),
             tool_input: HookToolInput {
@@ -845,7 +845,7 @@ mod tests {
         let mut cfg = CliConfig::default();
         cfg.project.role_default = "solo".into();
         let input = HookInput {
-            model: Some("gpt-5.5".into()),
+            model: Some("claude-sonnet-4-6".into()),
             turn_id: Some("turn-tool".into()),
             tool_name: Some("Bash".into()),
             tool_use_id: Some("tool-123".into()),

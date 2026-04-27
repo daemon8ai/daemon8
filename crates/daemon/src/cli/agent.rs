@@ -26,7 +26,7 @@ pub struct AgentArgs {
     #[arg(long, default_value = "worker")]
     pub role: String,
 
-    #[arg(long, default_value = "gpt-5.4")]
+    #[arg(long, default_value = "claude-sonnet-4-6")]
     pub model: String,
 
     #[arg(long)]

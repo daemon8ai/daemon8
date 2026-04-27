@@ -55,6 +55,27 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
 
     let store: Arc<dyn StateModel> = Arc::new(surreal_store);
 
+    let embedder: Option<Arc<dyn daemon8_embed::Embedder>> =
+        if cfg.embeddings.provider != daemon8_embed::EmbedProvider::None {
+            match daemon8_embed::create_embedder(&cfg.embeddings) {
+                Ok(e) => {
+                    tracing::info!(
+                        provider = %cfg.embeddings.provider,
+                        model = %e.model_name(),
+                        dimensions = e.dimensions(),
+                        "embedder initialized"
+                    );
+                    Some(e)
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "embedder init failed, memories will lack embeddings");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
     // Unbounded channel — deliberate policy.  The daemon captures observations
     // best-effort and losslessly: callers POST and return immediately; the store
     // writer drains the receiver without backpressure.  Switching to a bounded
@@ -197,6 +218,7 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
             subscription_tx: sub_tx.clone(),
             broadcast_tx: broadcast_tx.clone(),
             lens,
+            embedder: embedder.clone(),
         });
         let cancel_on_eof = cancel.clone();
         tasks.spawn(async move {
@@ -227,6 +249,7 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
     let mcp_screenshot_fn = device_screenshot_fn.clone();
     let mcp_screenshot_dir = screenshot_dir.clone();
     let mcp_broadcast_tx = broadcast_tx.clone();
+    let mcp_embedder = embedder.clone();
     let mcp_cancel = cancel.child_token();
 
     let mcp_http = rmcp::transport::streamable_http_server::StreamableHttpService::new(
@@ -245,6 +268,7 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
                 lens: Arc::new(daemon8_store::LensManager::new(
                     mcp_broadcast_tx.subscribe(),
                 )),
+                embedder: mcp_embedder.clone(),
             }))
         },
         Arc::new(

@@ -350,6 +350,7 @@ pub struct DaemonMcp {
     subscription_tx: Arc<tokio::sync::watch::Sender<Option<Filter>>>,
     broadcast_tx: broadcast::Sender<(Arc<Observation>, Arc<str>)>,
     lens: Arc<LensManager>,
+    embedder: Option<Arc<dyn daemon8_embed::Embedder>>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -365,6 +366,7 @@ pub struct DaemonMcpConfig {
     pub subscription_tx: Arc<tokio::sync::watch::Sender<Option<Filter>>>,
     pub broadcast_tx: broadcast::Sender<(Arc<Observation>, Arc<str>)>,
     pub lens: Arc<LensManager>,
+    pub embedder: Option<Arc<dyn daemon8_embed::Embedder>>,
 }
 
 #[tool_router(vis = "pub")]
@@ -389,6 +391,7 @@ impl DaemonMcp {
             subscription_tx: cfg.subscription_tx,
             broadcast_tx: cfg.broadcast_tx,
             lens: cfg.lens,
+            embedder: cfg.embedder,
             tool_router: router,
         }
     }
@@ -723,13 +726,25 @@ impl DaemonMcp {
             .unwrap_or_default()
             .as_nanos() as u64;
 
+        let embedding = match &self.embedder {
+            Some(embedder) => match embedder.embed(&params.content).await {
+                Ok(v) if v.is_empty() => None,
+                Ok(v) => Some(v),
+                Err(e) => {
+                    tracing::warn!(error = %e, "embedding failed, saving without");
+                    None
+                }
+            },
+            None => None,
+        };
+
         let memory = daemon8_store::Memory {
             id: None,
             created_at: now,
             updated_at: now,
             kind,
             content: params.content,
-            embedding: None,
+            embedding,
             source_observations: params.source_observations.unwrap_or_default(),
             tags: params.tags.unwrap_or_default(),
             project_slug: params.project_slug.unwrap_or_default(),
