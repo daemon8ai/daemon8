@@ -104,47 +104,6 @@ in `mcp-tools.mdx` near `query_observations`) would make this discoverable.
 
 ---
 
-## SDK demo improvements
-
-Each of the three SDK demos lives in its own repo under `daemon8ai/`. They
-currently ship a minimal surface; contributions that make them stronger
-learning references are welcome. Open issues on the relevant demo repo:
-
-- [`daemon8ai/daemon8-demo-php`](https://github.com/daemon8ai/daemon8-demo-php/issues)
-- [`daemon8ai/daemon8-demo-laravel`](https://github.com/daemon8ai/daemon8-demo-laravel/issues)
-- [`daemon8ai/daemon8-demo-symfony`](https://github.com/daemon8ai/daemon8-demo-symfony/issues)
-
-Concrete areas where demos could grow:
-
-- More realistic application shapes beyond hello-world.
-- Example patterns for common ingestion scenarios — a full web-request
-  lifecycle threading database query, outbound HTTP call, and exception
-  capture under one correlation id.
-- README walkthroughs that narrate the emitted observation stream step by
-  step.
-- CI workflows that run the demo against a real daemon instance and
-  assert on the observation stream.
-
----
-
-## SDKs on the roadmap
-
-Each of these would be a new repository under `daemon8ai/`. Before
-starting, please open a discussion so we can align on API shape — the
-existing PHP / Laravel / Symfony SDKs define the observation envelope, and
-new SDKs should wire to the same ingestion contract.
-
-- JavaScript / TypeScript (browser + Node)
-- Python (sync + async)
-- Rust (client-side — distinct from the daemon binary itself)
-- .NET
-- Go
-
-Discuss before starting:
-[GitHub Discussions](https://github.com/daemon8ai/daemon8/discussions).
-
----
-
 ## How to propose something new
 
 If you have an idea that doesn't match any item here, open a discussion at

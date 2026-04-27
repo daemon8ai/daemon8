@@ -9,20 +9,16 @@ Before anything below: by participating, you agree to the
 
 ## Where contributions are accepted
 
-The daemon8ai org is split across several repos. This repo
-(`daemon8ai/daemon8`) holds the daemon binary and its crates. Each SDK
-lives in its own sibling repo. The marketing site also lives separately.
+This repo (`daemon8ai/daemon8`) holds the daemon binary and its workspace
+crates. The marketing site lives separately at
+[`daemon8ai/daemon8-site`](https://github.com/daemon8ai/daemon8-site).
 
 | Repository                                                                    | Scope                                                        | License                                    | Accepts PRs?                       |
 |-------------------------------------------------------------------------------|--------------------------------------------------------------|--------------------------------------------|------------------------------------|
 | **`daemon8ai/daemon8`** (this repo)                                           | Rust daemon binary and workspace crates                      | [FCL-1.0-ALv2](./LICENSES/FCL-1.0-ALv2.txt) | **Yes**                            |
-| [`daemon8ai/daemon8-php`](https://github.com/daemon8ai/daemon8-php)                   | Framework-agnostic PHP SDK                                   | MIT                                        | Yes (that repo's CONTRIBUTING)     |
-| [`daemon8ai/daemon8-laravel`](https://github.com/daemon8ai/daemon8-laravel)           | Laravel integration (11 / 12 / 13)                           | MIT                                        | Yes (that repo's CONTRIBUTING)     |
-| [`daemon8ai/daemon8-symfony`](https://github.com/daemon8ai/daemon8-symfony)           | Symfony bundle (6.4 / 7.x)                                   | MIT                                        | Yes (that repo's CONTRIBUTING)     |
 | [`daemon8ai/daemon8-site`](https://github.com/daemon8ai/daemon8-site)         | daemon8.ai marketing & docs site (TanStack Start + React 19) | Public-visibility                          | Issues welcome; code PRs case-by-case |
 
-This file covers `daemon8ai/daemon8` only. For SDK or app contributions,
-follow the CONTRIBUTING doc in those repos.
+This file covers `daemon8ai/daemon8` only.
 
 ## Filing issues
 
@@ -127,9 +123,6 @@ without the fix.
 
 ## What's out of scope
 
-- **New language SDKs.** Those land as new sibling repos under
-  `daemon8ai/`, not as subtrees here. Start a Discussion to align on
-  API shape first, then open a repo.
 - **A paid tier, license keys, or capability gates.** Daemon8 ships OSS,
   period. Proposals for "could you add a premium feature" land as
   feature requests judged on merit, not as gated features.

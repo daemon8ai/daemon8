@@ -238,10 +238,3 @@ git push origin v0.1.0
 
 The release workflow triggers automatically from the tag.
 
-## SDK Publishing
-
-PHP SDKs publish to Packagist on tag push. See the individual SDK repos for
-per-package status:
-[daemon8-php](https://github.com/daemon8ai/daemon8-php),
-[daemon8-laravel](https://github.com/daemon8ai/daemon8-laravel),
-[daemon8-symfony](https://github.com/daemon8ai/daemon8-symfony).

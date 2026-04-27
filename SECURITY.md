@@ -15,9 +15,8 @@ Include:
 
 1. A description of the issue and its impact.
 2. Repro steps or a proof-of-concept.
-3. Affected component — the daemon binary (this repo), a specific
-   ingest endpoint, or a sibling SDK repo (`daemon8ai/daemon8-php`,
-   `daemon8ai/daemon8-laravel`, `daemon8ai/daemon8-symfony`).
+3. Affected component — the daemon binary (this repo) or a specific
+   ingest endpoint.
 4. Version or commit SHA of what you tested against.
 5. Your disclosure timeline expectations, if any.
 
@@ -31,20 +30,15 @@ In scope for this policy:
 
 - The daemon binary and its Rust crates (this repo).
 - Ingest endpoints (HTTP `/ingest`, UDP when enabled, Unix socket when enabled).
-- MCP handlers (8 tools: `query_observations`, `status`, `create_checkpoint`, `list_connections`, `connect_browser`, `issue_command`, `ingest_observation`, `subscribe_observations`).
+- MCP handlers (14 tools including query, command, lens, memory, and ingest tools).
 - Chrome DevTools Protocol bridge — specifically, any path that could let a
   malicious page influence the daemon beyond its intended surface.
 - Configuration file parsing and secret handling.
 
-Handled by sibling-repo security policies (same reporting address, but
-tracked separately):
+Handled separately (same reporting address):
 
-- SDK packages — [`daemon8ai/daemon8-php`](https://github.com/daemon8ai/daemon8-php),
-  [`daemon8ai/daemon8-laravel`](https://github.com/daemon8ai/daemon8-laravel),
-  [`daemon8ai/daemon8-symfony`](https://github.com/daemon8ai/daemon8-symfony).
-  Each has its own `SECURITY.md`.
 - Marketing site — [`daemon8ai/daemon8-site`](https://github.com/daemon8ai/daemon8-site).
-- daemon8.ai production surfaces (Laravel waitlist API, Resend webhook) —
+- daemon8.ai production surfaces —
   report to the same email with subject `[SECURITY] daemon8.ai production`.
 
 Out of scope:

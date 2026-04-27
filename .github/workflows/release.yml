@@ -107,6 +107,11 @@ jobs:
       - name: Create MCP registry alias artifact
         run: cp artifacts/daemon8-aarch64-apple-darwin.tar.gz artifacts/daemon8-mcp-server-aarch64-apple-darwin.tar.gz
 
+      - name: Generate checksums
+        run: |
+          cd artifacts
+          sha256sum * > checksums.sha256
+
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:

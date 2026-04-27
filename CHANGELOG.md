@@ -4,11 +4,7 @@ All notable, user-facing changes to Daemon8 are recorded here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
-for the daemon binary. SDK packages live in sibling repositories and
-version independently — see each SDK's own `CHANGELOG.md`:
-[`daemon8ai/daemon8-php`](https://github.com/daemon8ai/daemon8-php),
-[`daemon8ai/daemon8-laravel`](https://github.com/daemon8ai/daemon8-laravel),
-[`daemon8ai/daemon8-symfony`](https://github.com/daemon8ai/daemon8-symfony).
+for the daemon binary.
 
 ## [Unreleased]
 
@@ -42,12 +38,6 @@ tier, no license verification, no capability gate.
   boots it. Preflight surfaces the two macOS 14+ permission dialogs
   (Background Items and App Management) in advance. `daemon8 doctor`
   includes an App Management state probe.
-- **PHP SDKs ship from sibling repos** — `daemon8/php`
-  (framework-agnostic, [daemon8ai/daemon8-php](https://github.com/daemon8ai/daemon8-php)),
-  `daemon8/laravel` (Telescope-style watchers for Laravel 11/12/13,
-  [daemon8ai/daemon8-laravel](https://github.com/daemon8ai/daemon8-laravel)),
-  `daemon8/symfony` (event subscribers + DBAL middleware for Symfony 6.4/7.x,
-  [daemon8ai/daemon8-symfony](https://github.com/daemon8ai/daemon8-symfony)).
 
 ### Changed
 - Chrome liveness probe switched from `kill -0 PID` to `libc::proc_pidinfo`
