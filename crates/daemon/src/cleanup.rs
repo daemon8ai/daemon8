@@ -42,17 +42,8 @@ pub fn spawn_cleanup_task(
 
             match store.cleanup_before(cutoff).await {
                 Ok(0) => {}
-                Ok(n) => {
-                    tracing::debug!(deleted = n, "observation cleanup sweep");
-                    if let Err(e) = store.vacuum_incremental(200).await {
-                        tracing::debug!("incremental vacuum: {e}");
-                    }
-                }
+                Ok(n) => tracing::debug!(deleted = n, "observation cleanup sweep"),
                 Err(e) => tracing::error!("observation cleanup failed: {e}"),
-            }
-
-            if let Err(e) = store.wal_checkpoint().await {
-                tracing::debug!("wal checkpoint: {e}");
             }
 
             cleanup_screenshots(&screenshot_dir);

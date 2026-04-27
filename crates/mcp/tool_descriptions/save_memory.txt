@@ -1,0 +1,1 @@
+Save a long-term memory. Use this to persist patterns, decisions, error signatures, session summaries, or user-flagged insights that should survive across sessions. Memories are searchable by kind, tags, project, and text content. Returns the memory ID for later retrieval or deletion.

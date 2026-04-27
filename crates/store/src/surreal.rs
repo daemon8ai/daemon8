@@ -15,7 +15,7 @@ use daemon8_types::{
     RuntimeSummary, Severity, SliceSummary, StateSlice,
 };
 
-use crate::{StateModel, StoreError};
+use crate::{StateModel, StoreError, memory::SurrealMemoryStore};
 
 const NAMESPACE: &str = "daemon8";
 const DATABASE: &str = "observations";
@@ -142,6 +142,12 @@ impl SurrealStore {
         };
         store.init_schema().await?;
         Ok(store)
+    }
+
+    /// Create a `SurrealMemoryStore` sharing this database handle.
+    /// `Surreal<Db>` is internally Arc'd, so cloning is cheap.
+    pub fn memory_store(&self) -> SurrealMemoryStore {
+        SurrealMemoryStore::new(self.db.clone())
     }
 
     async fn init_schema(&self) -> Result<(), StoreError> {
@@ -504,11 +510,13 @@ impl StateModel for SurrealStore {
         Ok(count)
     }
 
-    async fn vacuum_incremental(&self, _pages: u32) -> Result<(), StoreError> {
-        Ok(())
-    }
-
-    async fn wal_checkpoint(&self) -> Result<(), StoreError> {
+    async fn health_check(&self) -> Result<(), StoreError> {
+        self.db
+            .query("RETURN 1")
+            .await
+            .map_err(|e| StoreError::Db(format!("health check: {e}")))?
+            .check()
+            .map_err(|e| StoreError::Db(format!("health check: {e}")))?;
         Ok(())
     }
 }

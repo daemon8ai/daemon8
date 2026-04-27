@@ -38,7 +38,7 @@ pub struct CliConfig {
     #[serde(default)]
     pub providers: BTreeMap<String, ProviderEntry>,
     #[serde(default)]
-    pub sources: BTreeMap<String, toml::Value>,
+    pub sources: BTreeMap<String, crate::config::SourceConfig>,
 
     /// Runtime-only: absolute path of the project `.daemon8.toml` that
     /// provided the merge, or `None` if none was found.

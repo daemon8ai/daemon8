@@ -7,7 +7,7 @@ use daemon8_chrome::ConnectionState;
 use daemon8_mcp::{DaemonMcp, DaemonMcpConfig};
 use daemon8_store::SurrealStore;
 
-const EXPECTED_TOOLS: [&str; 11] = [
+const EXPECTED_TOOLS: [&str; 14] = [
     "query_observations",
     "status",
     "create_checkpoint",
@@ -19,6 +19,9 @@ const EXPECTED_TOOLS: [&str; 11] = [
     "set_lens",
     "clear_lens",
     "lens_status",
+    "save_memory",
+    "query_memory",
+    "forget_memory",
 ];
 
 fn tool_names(router: &rmcp::handler::server::router::tool::ToolRouter<DaemonMcp>) -> Vec<String> {
@@ -31,6 +34,8 @@ fn tool_names(router: &rmcp::handler::server::router::tool::ToolRouter<DaemonMcp
 
 async fn make_mcp() -> DaemonMcp {
     let store = Arc::new(SurrealStore::memory().await.unwrap());
+    let memory_store = store.memory_store();
+    memory_store.init_schema().await.unwrap();
     let (obs_tx, _) = tokio::sync::mpsc::unbounded_channel();
     let (chrome_tx, _) = tokio::sync::mpsc::channel(16);
     let (_, chrome_state_rx) = tokio::sync::watch::channel(ConnectionState::Disconnected);
@@ -40,6 +45,7 @@ async fn make_mcp() -> DaemonMcp {
     let lens = Arc::new(daemon8_store::LensManager::new(broadcast_tx.subscribe()));
     DaemonMcp::new(DaemonMcpConfig {
         store,
+        memory_store: Some(Arc::new(memory_store)),
         obs_tx,
         chrome_tx,
         chrome_state: chrome_state_rx,
@@ -53,15 +59,17 @@ async fn make_mcp() -> DaemonMcp {
 }
 
 #[test]
-fn composed_router_has_all_eleven_tools() {
-    let router =
-        DaemonMcp::tool_router() + DaemonMcp::action_tool_router() + DaemonMcp::lens_tool_router();
+fn composed_router_has_all_fourteen_tools() {
+    let router = DaemonMcp::tool_router()
+        + DaemonMcp::action_tool_router()
+        + DaemonMcp::lens_tool_router()
+        + DaemonMcp::memory_tool_router();
     let names = tool_names(&router);
 
     assert_eq!(
         names.len(),
-        11,
-        "router must expose all 11 tools, got {}: {:?}",
+        14,
+        "router must expose all 14 tools, got {}: {:?}",
         names.len(),
         names
     );
@@ -77,7 +85,7 @@ fn composed_router_has_all_eleven_tools() {
 }
 
 #[tokio::test]
-async fn live_mcp_exposes_all_eleven_tools() {
+async fn live_mcp_exposes_all_fourteen_tools() {
     let mcp = make_mcp().await;
     let names: Vec<String> = mcp
         .tools_for_client()
@@ -87,8 +95,8 @@ async fn live_mcp_exposes_all_eleven_tools() {
 
     assert_eq!(
         names.len(),
-        11,
-        "tools_for_client() must expose all 11 tools, got {}: {:?}",
+        14,
+        "tools_for_client() must expose all 14 tools, got {}: {:?}",
         names.len(),
         names
     );

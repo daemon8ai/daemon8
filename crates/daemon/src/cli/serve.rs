@@ -42,11 +42,18 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
     }
 
     let db_path = config::resolve_db_path(cfg.storage.path.as_deref());
-    let store: Arc<dyn StateModel> = Arc::new(
-        SurrealStore::open(&db_path)
-            .await
-            .with_context(|| format!("opening database: {}", db_path.display()))?,
-    );
+    let surreal_store = SurrealStore::open(&db_path)
+        .await
+        .with_context(|| format!("opening database: {}", db_path.display()))?;
+
+    let memory_store = surreal_store.memory_store();
+    memory_store
+        .init_schema()
+        .await
+        .context("initializing memory table schema")?;
+    let memory_store: Arc<dyn daemon8_store::MemoryStore> = Arc::new(memory_store);
+
+    let store: Arc<dyn StateModel> = Arc::new(surreal_store);
 
     // Unbounded channel — deliberate policy.  The daemon captures observations
     // best-effort and losslessly: callers POST and return immediately; the store
@@ -154,6 +161,16 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
         );
     }
 
+    if !cfg.sources.is_empty() {
+        tracing::info!(count = cfg.sources.len(), "starting file sources");
+        crate::sources::spawn_file_sources(
+            &mut tasks,
+            &cfg.sources,
+            obs_tx.clone(),
+            cancel.clone(),
+        );
+    }
+
     let (sub_tx, _sub_rx) = tokio::sync::watch::channel::<Option<daemon8_types::Filter>>(None);
     let sub_tx = Arc::new(sub_tx);
 
@@ -170,6 +187,7 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
         let lens = Arc::new(daemon8_store::LensManager::new(broadcast_tx.subscribe()));
         let mcp = daemon8_mcp::DaemonMcp::new(daemon8_mcp::DaemonMcpConfig {
             store: store.clone(),
+            memory_store: Some(memory_store.clone()),
             obs_tx: obs_tx.clone(),
             chrome_tx: chrome_cmd_tx.clone(),
             chrome_state: chrome_state_rx.clone(),
@@ -201,6 +219,7 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
     }
 
     let mcp_store = store.clone();
+    let mcp_memory_store = memory_store.clone();
     let mcp_obs_tx = obs_tx.clone();
     let mcp_chrome_tx = chrome_cmd_tx.clone();
     let mcp_state_rx = chrome_state_rx.clone();
@@ -214,6 +233,7 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
         move || {
             Ok(daemon8_mcp::DaemonMcp::new(daemon8_mcp::DaemonMcpConfig {
                 store: mcp_store.clone(),
+                memory_store: Some(mcp_memory_store.clone()),
                 obs_tx: mcp_obs_tx.clone(),
                 chrome_tx: mcp_chrome_tx.clone(),
                 chrome_state: mcp_state_rx.clone(),

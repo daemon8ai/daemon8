@@ -522,6 +522,44 @@ impl OriginPattern {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryKind {
+    Pattern,
+    Decision,
+    ErrorSignature,
+    SessionSummary,
+    UserFlagged,
+}
+
+impl fmt::Display for MemoryKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            Self::Pattern => "pattern",
+            Self::Decision => "decision",
+            Self::ErrorSignature => "error_signature",
+            Self::SessionSummary => "session_summary",
+            Self::UserFlagged => "user_flagged",
+        };
+        f.write_str(s)
+    }
+}
+
+impl std::str::FromStr for MemoryKind {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "pattern" => Ok(Self::Pattern),
+            "decision" => Ok(Self::Decision),
+            "error_signature" => Ok(Self::ErrorSignature),
+            "session_summary" => Ok(Self::SessionSummary),
+            "user_flagged" => Ok(Self::UserFlagged),
+            other => Err(format!("unknown memory kind: {other}")),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SliceSummary {
     pub total: usize,

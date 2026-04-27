@@ -265,14 +265,14 @@ fn cli_ci_env_forces_noninteractive() {
 }
 
 #[test]
-fn cli_bails_on_existing_toml_without_force() {
+fn cli_skips_existing_toml_without_force() {
     let (_tmp, work, home) = setup_dirs();
     std::fs::write(work.join(".daemon8.toml"), "# pre-existing\n").unwrap();
 
     let out = run_init(&work, &home, &["--yes"]);
     assert!(
-        !out.status.success(),
-        "expected non-zero exit; stderr: {}",
+        out.status.success(),
+        "expected success (graceful skip); stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
 

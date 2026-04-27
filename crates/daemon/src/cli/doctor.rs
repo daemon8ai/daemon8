@@ -2,11 +2,13 @@
 // Copyright (c) 2026 Havy.tech, LLC
 
 use std::net::TcpListener;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
+use daemon8_embed::EmbedProvider;
+use daemon8_store::StateModel;
 
-use crate::config;
+use crate::config::{self, SourceConfig};
 
 struct Check {
     name: &'static str,
@@ -15,6 +17,7 @@ struct Check {
 
 enum CheckResult {
     Ok,
+    OkHint(String),
     Fixed(String),
     Warn(String),
     Err(String),
@@ -30,6 +33,7 @@ impl std::fmt::Display for Check {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.result {
             CheckResult::Ok => write!(f, "[ok]     {}", self.name),
+            CheckResult::OkHint(msg) => write!(f, "[ok]     {} ({})", self.name, msg),
             CheckResult::Fixed(msg) => write!(f, "[fixed]  {} ({})", self.name, msg),
             CheckResult::Warn(msg) => write!(f, "[WARN]   {} ({})", self.name, msg),
             CheckResult::Err(msg) => write!(f, "[ERR]    {} ({})", self.name, msg),
@@ -37,7 +41,7 @@ impl std::fmt::Display for Check {
     }
 }
 
-pub fn cmd_doctor(fix: bool) -> Result<()> {
+pub async fn cmd_doctor(fix: bool) -> Result<()> {
     let cfg = crate::config::load(None).unwrap_or_default();
     let config_path = cfg.config_dir.join("config.toml");
 
@@ -47,6 +51,9 @@ pub fn cmd_doctor(fix: bool) -> Result<()> {
         check_data_dir(&cfg, fix),
         check_port(cfg.server.port),
         check_network(),
+        check_sources(&cfg),
+        check_embeddings(&cfg),
+        check_store(&cfg).await,
     ];
 
     #[cfg(target_os = "macos")]
@@ -272,6 +279,155 @@ fn check_network() -> Check {
     }
 }
 
+fn check_sources(cfg: &config::Config) -> Check {
+    if cfg.sources.is_empty() {
+        return Check {
+            name: "sources",
+            result: CheckResult::OkHint("none configured".into()),
+        };
+    }
+
+    let mut warnings: Vec<String> = Vec::new();
+
+    for (name, source) in &cfg.sources {
+        match source {
+            SourceConfig::File(f) => {
+                // For glob patterns, verify the parent directory exists.
+                // For plain paths, verify the file itself.
+                let path = Path::new(&f.path);
+                let is_glob = f.path.contains('*') || f.path.contains('?');
+
+                if is_glob {
+                    if let Some(parent) = path.parent()
+                        && !parent.as_os_str().is_empty()
+                        && !parent.exists()
+                    {
+                        warnings.push(format!(
+                            "{name}: parent dir missing ({})",
+                            parent.display()
+                        ));
+                    }
+                } else if !path.exists() {
+                    warnings.push(format!("{name}: path not found ({})", f.path));
+                }
+
+                if let Err(e) = daemon8_parse::resolve_parser(&f.parser) {
+                    warnings.push(format!("{name}: parser '{}' — {e}", f.parser));
+                }
+            }
+        }
+    }
+
+    if warnings.is_empty() {
+        Check {
+            name: "sources",
+            result: CheckResult::OkHint(format!("{} configured", cfg.sources.len())),
+        }
+    } else {
+        Check {
+            name: "sources",
+            result: CheckResult::Warn(warnings.join("; ")),
+        }
+    }
+}
+
+fn check_embeddings(cfg: &config::Config) -> Check {
+    match cfg.embeddings.provider {
+        EmbedProvider::None => Check {
+            name: "embeddings",
+            result: CheckResult::OkHint("disabled".into()),
+        },
+        EmbedProvider::Fastembed => Check {
+            name: "embeddings",
+            result: CheckResult::OkHint(format!("fastembed, model={}", cfg.embeddings.model)),
+        },
+        EmbedProvider::Ollama => {
+            let endpoint = cfg
+                .embeddings
+                .endpoint
+                .as_deref()
+                .unwrap_or("http://localhost:11434");
+
+            // Parse host:port from the endpoint URL for a TCP probe
+            let reachable = parse_host_port(endpoint).is_some_and(|addr| {
+                std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(2))
+                    .is_ok()
+            });
+
+            if reachable {
+                Check {
+                    name: "embeddings",
+                    result: CheckResult::OkHint(format!(
+                        "ollama reachable, model={}",
+                        cfg.embeddings.model
+                    )),
+                }
+            } else {
+                Check {
+                    name: "embeddings",
+                    result: CheckResult::Warn(format!(
+                        "ollama unreachable at {endpoint} — is it running?"
+                    )),
+                }
+            }
+        }
+        EmbedProvider::Openai => {
+            let has_key = cfg
+                .embeddings
+                .api_key
+                .as_ref()
+                .is_some_and(|k| !k.is_empty());
+
+            if has_key {
+                Check {
+                    name: "embeddings",
+                    result: CheckResult::OkHint(format!(
+                        "openai, model={}",
+                        cfg.embeddings.model
+                    )),
+                }
+            } else {
+                Check {
+                    name: "embeddings",
+                    result: CheckResult::Warn(
+                        "openai provider configured but api_key is missing".into(),
+                    ),
+                }
+            }
+        }
+    }
+}
+
+async fn check_store(cfg: &config::Config) -> Check {
+    let db_path = config::resolve_db_path(cfg.storage.path.as_deref());
+
+    // Only probe an existing store — opening SurrealDB creates directories and
+    // schema as a side effect, which doctor should not do.
+    if !db_path.exists() {
+        return Check {
+            name: "store",
+            result: CheckResult::OkHint("not yet created (first run will initialize)".into()),
+        };
+    }
+
+    match daemon8_store::SurrealStore::open(&db_path).await {
+        Ok(store) => match store.health_check().await {
+            Ok(()) => Check {
+                name: "store",
+                result: CheckResult::Ok,
+            },
+            Err(e) => Check {
+                name: "store",
+                result: CheckResult::Err(format!("health check failed: {e}")),
+            },
+        },
+        Err(e) => Check {
+            name: "store",
+            result: CheckResult::Err(format!("could not open database: {e}")),
+        },
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -368,6 +524,24 @@ fn check_macos_launchd_state() -> Check {
             )),
         },
     }
+}
+
+/// Extract host:port from a URL like `http://localhost:11434` and resolve to a
+/// `SocketAddr` suitable for `TcpStream::connect_timeout`.
+fn parse_host_port(url: &str) -> Option<std::net::SocketAddr> {
+    use std::net::ToSocketAddrs;
+
+    let stripped = url
+        .strip_prefix("http://")
+        .or_else(|| url.strip_prefix("https://"))
+        .unwrap_or(url);
+
+    // stripped is now "host:port" or "host:port/path"
+    let authority = stripped.split('/').next().unwrap_or(stripped);
+
+    // Default port 80/443 isn't relevant here — Ollama/OpenAI endpoints always
+    // include the port. If they don't, the resolve will fail, which is fine.
+    authority.to_socket_addrs().ok()?.next()
 }
 
 fn is_writable(dir: &std::path::Path) -> bool {

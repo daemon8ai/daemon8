@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LicenseRef-FCL-1.0-ALv2
 // Copyright (c) 2026 Havy.tech, LLC
 
+use std::collections::BTreeMap;
 use std::net::{IpAddr, SocketAddr, SocketAddrV4};
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -25,6 +26,10 @@ pub struct Config {
     pub ingestion: IngestionConfig,
     #[serde(default)]
     pub logging: LoggingConfig,
+    #[serde(default)]
+    pub sources: BTreeMap<String, SourceConfig>,
+    #[serde(default)]
+    pub embeddings: daemon8_embed::EmbedConfig,
     #[serde(skip)]
     pub config_dir: PathBuf,
 }
@@ -154,6 +159,25 @@ impl FromStr for LogLevel {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum SourceConfig {
+    File(FileSourceConfig),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileSourceConfig {
+    pub path: String,
+    #[serde(default = "default_line_parser")]
+    pub parser: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+fn default_line_parser() -> String {
+    "line".into()
+}
+
 fn deser_optional_path<'de, D: Deserializer<'de>>(d: D) -> Result<Option<PathBuf>, D::Error> {
     let s: Option<String> = Option::deserialize(d)?;
     Ok(s.filter(|s| !s.is_empty()).map(PathBuf::from))
@@ -207,6 +231,8 @@ impl Default for Config {
             adb: AdbConfig::default(),
             ingestion: IngestionConfig::default(),
             logging: LoggingConfig::default(),
+            sources: BTreeMap::new(),
+            embeddings: daemon8_embed::EmbedConfig::default(),
             config_dir: project_dirs()
                 .map(|d| d.config_dir().to_path_buf())
                 .unwrap_or_else(|| PathBuf::from(".")),
@@ -549,5 +575,61 @@ bind = "0.0.0.0:8889"
         .unwrap();
         assert_eq!(cfg.ingestion.udp.bind.port(), 8889);
         assert!(cfg.ingestion.udp.bind.ip().is_unspecified());
+    }
+
+    #[test]
+    fn sources_default_is_empty() {
+        let cfg = Config::default();
+        assert!(cfg.sources.is_empty());
+    }
+
+    #[test]
+    fn sources_file_type_parses() {
+        let cfg: Config = toml::from_str(
+            r#"
+[sources.laravel]
+type = "file"
+path = "/var/log/laravel/*.log"
+parser = "monolog"
+tags = ["php", "laravel"]
+
+[sources.nginx]
+type = "file"
+path = "/var/log/nginx/access.log"
+parser = "clf"
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.sources.len(), 2);
+        match &cfg.sources["laravel"] {
+            SourceConfig::File(f) => {
+                assert_eq!(f.path, "/var/log/laravel/*.log");
+                assert_eq!(f.parser, "monolog");
+                assert_eq!(f.tags, vec!["php", "laravel"]);
+            }
+        }
+        match &cfg.sources["nginx"] {
+            SourceConfig::File(f) => {
+                assert_eq!(f.parser, "clf");
+                assert!(f.tags.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn sources_file_defaults_parser_to_line() {
+        let cfg: Config = toml::from_str(
+            r#"
+[sources.raw]
+type = "file"
+path = "/tmp/test.log"
+"#,
+        )
+        .unwrap();
+        match &cfg.sources["raw"] {
+            SourceConfig::File(f) => {
+                assert_eq!(f.parser, "line");
+            }
+        }
     }
 }

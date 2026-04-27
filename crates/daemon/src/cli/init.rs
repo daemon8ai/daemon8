@@ -72,16 +72,18 @@ pub fn cmd_init(args: InitArgs) -> Result<()> {
     let target = cwd.join(PROJECT_CONFIG_FILENAME);
 
     if target.exists() && !args.force {
-        bail!(
-            "{} already exists; pass --force to overwrite",
+        println!(
+            "{} already exists. Use --force to overwrite.",
             target.display()
         );
+        return Ok(());
     }
 
     let non_interactive = args.yes || is_non_interactive() || !std::io::stdin().is_terminal();
     let role = resolve_role(&args, non_interactive)?;
     let slug = args.slug.clone().unwrap_or_else(|| derive_slug(&cwd));
-    let contents = render_template(&slug, &role);
+    let project_type = detect_project_type(&cwd);
+    let contents = render_template(&slug, &role, project_type);
 
     std::fs::write(&target, contents)
         .with_context(|| format!("failed to write {}", target.display()))?;
@@ -211,7 +213,71 @@ fn derive_slug(cwd: &Path) -> String {
         .to_string()
 }
 
-fn render_template(slug: &str, role: &str) -> String {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProjectType {
+    Laravel,
+    Symfony,
+    Node,
+    Rust,
+    Generic,
+}
+
+fn detect_project_type(cwd: &Path) -> ProjectType {
+    if cwd.join("artisan").exists() {
+        ProjectType::Laravel
+    } else if cwd.join("bin/console").exists() {
+        ProjectType::Symfony
+    } else if cwd.join("package.json").exists() {
+        ProjectType::Node
+    } else if cwd.join("Cargo.toml").exists() {
+        ProjectType::Rust
+    } else {
+        ProjectType::Generic
+    }
+}
+
+fn sources_example(project_type: ProjectType) -> &'static str {
+    match project_type {
+        ProjectType::Laravel => r#"
+# [sources.app-logs]
+# type = "file"
+# path = "storage/logs/laravel.log"
+# parser = "monolog"
+# tags = ["app"]
+"#,
+        ProjectType::Symfony => r#"
+# [sources.app-logs]
+# type = "file"
+# path = "var/log/*.log"
+# parser = "monolog"
+# tags = ["app"]
+"#,
+        ProjectType::Node => r#"
+# [sources.app-logs]
+# type = "file"
+# path = "logs/app.log"
+# parser = "json"
+# tags = ["app"]
+"#,
+        ProjectType::Rust => r#"
+# [sources.app-logs]
+# type = "file"
+# path = "logs/app.log"
+# parser = "line"
+# tags = ["app"]
+"#,
+        ProjectType::Generic => r#"
+# [sources.app-logs]
+# type = "file"
+# path = "logs/app.log"
+# parser = "line"
+# tags = ["app"]
+"#,
+    }
+}
+
+fn render_template(slug: &str, role: &str, project_type: ProjectType) -> String {
+    let sources = sources_example(project_type);
     format!(
         r##"# Daemon8 CLI hook configuration.
 # Schema reference: https://daemon8.ai/docs/cli-hook-config
@@ -239,7 +305,7 @@ track_todowrite = true
 track_git_commits = true
 track_file_writes = true
 coarsen_file_writes_below_threshold = 5
-"##
+{sources}"##
     )
 }
 
@@ -249,9 +315,45 @@ mod tests {
 
     #[test]
     fn template_includes_slug_and_role() {
-        let out = render_template("my-proj", "worker");
+        let out = render_template("my-proj", "worker", ProjectType::Generic);
         assert!(out.contains(r#"slug = "my-proj""#));
         assert!(out.contains(r#"role_default = "worker""#));
+    }
+
+    #[test]
+    fn template_laravel_sources_example() {
+        let out = render_template("my-app", "solo", ProjectType::Laravel);
+        assert!(out.contains("storage/logs/laravel.log"));
+        assert!(out.contains(r#"# parser = "monolog""#));
+    }
+
+    #[test]
+    fn template_symfony_sources_example() {
+        let out = render_template("my-app", "solo", ProjectType::Symfony);
+        assert!(out.contains("var/log/*.log"));
+        assert!(out.contains(r#"# parser = "monolog""#));
+    }
+
+    #[test]
+    fn template_node_sources_example() {
+        let out = render_template("my-app", "solo", ProjectType::Node);
+        assert!(out.contains("logs/app.log"));
+        assert!(out.contains(r#"# parser = "json""#));
+    }
+
+    #[test]
+    fn template_rust_sources_example() {
+        let out = render_template("my-app", "solo", ProjectType::Rust);
+        assert!(out.contains("logs/app.log"));
+        assert!(out.contains(r#"# parser = "line""#));
+    }
+
+    #[test]
+    fn detect_project_type_defaults_to_generic() {
+        let tmp = std::env::temp_dir().join("daemon8-test-empty");
+        let _ = std::fs::create_dir_all(&tmp);
+        assert_eq!(detect_project_type(&tmp), ProjectType::Generic);
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]

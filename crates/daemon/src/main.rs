@@ -7,6 +7,7 @@ mod cli_config;
 mod config;
 mod providers;
 mod screenshot;
+mod sources;
 pub(crate) mod style;
 
 use std::path::PathBuf;
@@ -126,7 +127,7 @@ async fn main() -> Result<()> {
         Commands::Setup => cli::setup::cmd_setup().await,
         Commands::Channel => cli::channel::cmd_channel().await,
         Commands::Agent(args) => cli::agent::run_agent(args).await,
-        Commands::Doctor { fix } => cli::doctor::cmd_doctor(fix),
+        Commands::Doctor { fix } => cli::doctor::cmd_doctor(fix).await,
         Commands::CliHook(args) => cli::hook_handler::cmd_cli_hook(args),
         Commands::Init(args) => cli::init::cmd_init(args),
     }

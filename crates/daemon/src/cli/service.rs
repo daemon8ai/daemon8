@@ -59,6 +59,88 @@ fn macos_open_privacy_pane() {
         .output();
 }
 
+pub fn service_installed() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        plist_path().exists()
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        unit_path().exists()
+    }
+
+    #[cfg(windows)]
+    {
+        std::process::Command::new("schtasks")
+            .args(["/Query", "/TN", "Daemon8"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+    false
+}
+
+#[allow(dead_code)]
+pub fn restart_service() -> Result<bool> {
+    if !service_installed() {
+        return Ok(false);
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let service_target = format!("{}/{LABEL}", launchd_domain());
+        let output = std::process::Command::new("launchctl")
+            .args(["kickstart", "-k", &service_target])
+            .output()
+            .context("failed to run launchctl kickstart")?;
+        if !output.status.success() {
+            anyhow::bail!(
+                "launchctl kickstart failed: {}",
+                launchctl_message(&output)
+            );
+        }
+        Ok(true)
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let output = std::process::Command::new("systemctl")
+            .args(["--user", "restart", "daemon8"])
+            .output()
+            .context("failed to run systemctl restart")?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("systemctl --user restart daemon8 failed: {stderr}");
+        }
+        Ok(true)
+    }
+
+    #[cfg(windows)]
+    {
+        let _ = std::process::Command::new("schtasks")
+            .args(["/End", "/TN", "Daemon8"])
+            .output();
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        let output = std::process::Command::new("schtasks")
+            .args(["/Run", "/TN", "Daemon8"])
+            .output()
+            .context("failed to run schtasks /Run")?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("schtasks /Run failed: {stderr}");
+        }
+        Ok(true)
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+    Ok(false)
+}
+
 pub fn cmd_install() -> Result<()> {
     let binary = binary_path()?;
     let binary_str = binary.display().to_string();

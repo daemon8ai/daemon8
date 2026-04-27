@@ -38,6 +38,13 @@
 # enabled = false
 # path = ""
 
+# [embeddings]
+# provider = "none"           # none, fastembed, ollama, openai
+# model = "BAAI/bge-small-en-v1.5"
+# endpoint = ""               # ollama only (default: http://localhost:11434)
+# api_key = ""                # openai only
+# base_url = ""               # openai only (custom endpoint)
+
 # [logging]
 # level = "info"
 # file = ""

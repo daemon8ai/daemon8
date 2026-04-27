@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
+use daemon8_embed::EmbedProvider;
+
 use crate::config;
 use crate::providers::{
     ProviderWriteSummary, detect_ai_tools, provider_map, summarize_restarts, write_provider_config,
@@ -31,6 +33,8 @@ pub async fn cmd_setup() -> Result<()> {
 
     setup_browser(&config_path)?;
 
+    setup_embeddings(&config_path)?;
+
     setup_mcp_configs()?;
 
     setup_service()?;
@@ -52,8 +56,9 @@ pub async fn cmd_setup() -> Result<()> {
 
     eprintln!();
     eprintln!("  Quick commands:");
-    eprintln!("    daemon8 status                         check if daemon is running");
-    eprintln!("    daemon8 config set browser.path \"...\"  change default browser");
+    eprintln!("    daemon8 status                                check if daemon is running");
+    eprintln!("    daemon8 config set browser.path \"...\"          change default browser");
+    eprintln!("    daemon8 config set embeddings.provider \"...\"   change embedding provider");
     eprintln!();
 
     Ok(())
@@ -124,6 +129,90 @@ fn setup_browser(config_path: &Path) -> Result<()> {
 
     if selected != "none" {
         write_config_value(config_path, "browser", "path", &selected)?;
+    }
+
+    Ok(())
+}
+
+fn setup_embeddings(config_path: &Path) -> Result<()> {
+    let existing = read_config_value(config_path, "embeddings", "provider");
+    if let Some(ref provider) = existing
+        && provider != "none"
+        && !provider.is_empty()
+    {
+        let model = read_config_value(config_path, "embeddings", "model")
+            .unwrap_or_else(|| "default".into());
+        cliclack::log::info(format!("Embeddings: {provider} (model: {model})"))?;
+        return Ok(());
+    }
+
+    let selected: &str = cliclack::select("Enable semantic search for observations?")
+        .items(&[
+            (
+                "fastembed",
+                "Built-in embeddings",
+                "downloads ~24 MB model on first use",
+            ),
+            (
+                "ollama",
+                "Ollama",
+                "requires running Ollama instance",
+            ),
+            (
+                "openai",
+                "OpenAI",
+                "requires API key",
+            ),
+            (
+                "none",
+                "No, skip for now",
+                "",
+            ),
+        ])
+        .interact()?;
+
+    let provider: EmbedProvider = selected.parse().unwrap_or(EmbedProvider::None);
+
+    match provider {
+        EmbedProvider::Fastembed => {
+            write_config_value(config_path, "embeddings", "provider", "fastembed")?;
+            write_config_value(
+                config_path,
+                "embeddings",
+                "model",
+                "BAAI/bge-small-en-v1.5",
+            )?;
+            cliclack::log::info(
+                "The embedding model (~24 MB) will download on first daemon start.",
+            )?;
+        }
+        EmbedProvider::Ollama => {
+            let endpoint: String = cliclack::input("Ollama endpoint")
+                .default_input("http://localhost:11434")
+                .interact()?;
+            let model: String = cliclack::input("Ollama embedding model")
+                .default_input("nomic-embed-text")
+                .interact()?;
+            write_config_value(config_path, "embeddings", "provider", "ollama")?;
+            write_config_value(config_path, "embeddings", "model", &model)?;
+            write_config_value(config_path, "embeddings", "endpoint", &endpoint)?;
+        }
+        EmbedProvider::Openai => {
+            let api_key: String = cliclack::password("OpenAI API key").interact()?;
+            let model: String = cliclack::input("OpenAI embedding model")
+                .default_input("text-embedding-3-small")
+                .interact()?;
+            let base_url: String = cliclack::input("OpenAI base URL (leave empty for default)")
+                .default_input("")
+                .interact()?;
+            write_config_value(config_path, "embeddings", "provider", "openai")?;
+            write_config_value(config_path, "embeddings", "model", &model)?;
+            write_config_value(config_path, "embeddings", "api_key", &api_key)?;
+            if !base_url.is_empty() {
+                write_config_value(config_path, "embeddings", "base_url", &base_url)?;
+            }
+        }
+        EmbedProvider::None => {}
     }
 
     Ok(())
@@ -260,31 +349,7 @@ fn setup_service() -> Result<()> {
 }
 
 fn service_installed() -> bool {
-    #[cfg(target_os = "macos")]
-    {
-        let plist = dirs_home().join("Library/LaunchAgents/dev.daemon8.daemon.plist");
-        plist.exists()
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        let unit = dirs_home().join(".config/systemd/user/daemon8.service");
-        unit.exists()
-    }
-
-    #[cfg(windows)]
-    {
-        std::process::Command::new("schtasks")
-            .args(["/Query", "/TN", "Daemon8"])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
-    }
-
-    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
-    false
+    super::service::service_installed()
 }
 
 fn service_binary_stale() -> bool {

@@ -6,7 +6,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use daemon8_store::{LensManager, StateModel};
+use daemon8_store::{LensManager, MemoryStore, StateModel};
 use daemon8_types::{Checkpoint, DevicePlatform, Filter, Observation};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
@@ -285,8 +285,61 @@ pub struct LensParams {
     pub capacity: Option<usize>,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SaveMemoryParams {
+    #[schemars(description = "The memory content to persist")]
+    pub content: String,
+
+    #[schemars(
+        description = "Memory kind: pattern, decision, error_signature, session_summary, user_flagged. Defaults to user_flagged."
+    )]
+    pub kind: Option<String>,
+
+    #[schemars(description = "Tags for categorization and retrieval")]
+    pub tags: Option<Vec<String>>,
+
+    #[schemars(description = "Observation IDs that informed this memory")]
+    pub source_observations: Option<Vec<u64>>,
+
+    #[schemars(description = "Project slug to scope this memory to")]
+    pub project_slug: Option<String>,
+
+    #[schemars(description = "Session ID that produced this memory")]
+    pub session_id: Option<String>,
+
+    #[schemars(description = "Confidence score from 0.0 to 1.0 (default 1.0)")]
+    pub confidence: Option<f64>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct QueryMemoryParams {
+    #[schemars(description = "Substring search across memory content")]
+    pub text: Option<String>,
+
+    #[schemars(
+        description = "Filter by kind: pattern, decision, error_signature, session_summary, user_flagged"
+    )]
+    pub kinds: Option<Vec<String>>,
+
+    #[schemars(description = "Filter by tags (all listed tags must be present)")]
+    pub tags: Option<Vec<String>>,
+
+    #[schemars(description = "Filter by project slug")]
+    pub project_slug: Option<String>,
+
+    #[schemars(description = "Maximum number of results (default 20)")]
+    pub limit: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ForgetMemoryParams {
+    #[schemars(description = "The memory ID to delete")]
+    pub id: String,
+}
+
 pub struct DaemonMcp {
     store: Arc<dyn StateModel>,
+    memory_store: Option<Arc<dyn MemoryStore>>,
     obs_tx: tokio::sync::mpsc::UnboundedSender<Observation>,
     chrome_tx: tokio::sync::mpsc::Sender<ChromeCommand>,
     chrome_state: tokio::sync::watch::Receiver<daemon8_chrome::ConnectionState>,
@@ -302,6 +355,7 @@ pub struct DaemonMcp {
 
 pub struct DaemonMcpConfig {
     pub store: Arc<dyn StateModel>,
+    pub memory_store: Option<Arc<dyn MemoryStore>>,
     pub obs_tx: tokio::sync::mpsc::UnboundedSender<Observation>,
     pub chrome_tx: tokio::sync::mpsc::Sender<ChromeCommand>,
     pub chrome_state: tokio::sync::watch::Receiver<daemon8_chrome::ConnectionState>,
@@ -319,8 +373,12 @@ impl DaemonMcp {
         let mut router = Self::tool_router();
         router += Self::action_tool_router();
         router += Self::lens_tool_router();
+        if cfg.memory_store.is_some() {
+            router += Self::memory_tool_router();
+        }
         Self {
             store: cfg.store,
+            memory_store: cfg.memory_store,
             obs_tx: cfg.obs_tx,
             chrome_tx: cfg.chrome_tx,
             chrome_state: cfg.chrome_state,
@@ -641,6 +699,94 @@ impl DaemonMcp {
         let status = self.lens.status().await;
         serde_json::to_string_pretty(&status)
             .unwrap_or_else(|e| error_json(&format!("serialization failed: {e}")))
+    }
+}
+
+#[tool_router(router = memory_tool_router, vis = "pub")]
+impl DaemonMcp {
+    #[doc = include_str!("../tool_descriptions/save_memory.txt")]
+    #[tool(name = "save_memory")]
+    async fn save_memory(&self, Parameters(params): Parameters<SaveMemoryParams>) -> String {
+        let mem_store = match &self.memory_store {
+            Some(s) => s,
+            None => return error_json("memory store not available"),
+        };
+
+        let kind = params
+            .kind
+            .as_deref()
+            .and_then(|s| s.parse::<daemon8_types::MemoryKind>().ok())
+            .unwrap_or(daemon8_types::MemoryKind::UserFlagged);
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+
+        let memory = daemon8_store::Memory {
+            id: None,
+            created_at: now,
+            updated_at: now,
+            kind,
+            content: params.content,
+            embedding: None,
+            source_observations: params.source_observations.unwrap_or_default(),
+            tags: params.tags.unwrap_or_default(),
+            project_slug: params.project_slug.unwrap_or_default(),
+            session_id: params.session_id,
+            confidence: params.confidence.unwrap_or(1.0),
+        };
+
+        match mem_store.save_memory(memory).await {
+            Ok(id) => serde_json::to_string(&serde_json::json!({ "id": id })).unwrap_or_default(),
+            Err(e) => error_json(&format!("save_memory failed: {e}")),
+        }
+    }
+
+    #[doc = include_str!("../tool_descriptions/query_memory.txt")]
+    #[tool(name = "query_memory")]
+    async fn query_memory(&self, Parameters(params): Parameters<QueryMemoryParams>) -> String {
+        let mem_store = match &self.memory_store {
+            Some(s) => s,
+            None => return error_json("memory store not available"),
+        };
+
+        let kinds = params.kinds.map(|v| {
+            v.into_iter()
+                .filter_map(|s| s.parse::<daemon8_types::MemoryKind>().ok())
+                .collect()
+        });
+
+        let filter = daemon8_store::MemoryFilter {
+            kinds,
+            tags: params.tags,
+            project_slug: params.project_slug,
+            session_id: None,
+            text_match: params.text,
+            limit: Some(params.limit.unwrap_or(20).min(500) as usize),
+        };
+
+        match mem_store.query_memory(&filter).await {
+            Ok(memories) => serde_json::to_string_pretty(&memories)
+                .unwrap_or_else(|e| error_json(&format!("serialization failed: {e}"))),
+            Err(e) => error_json(&format!("query_memory failed: {e}")),
+        }
+    }
+
+    #[doc = include_str!("../tool_descriptions/forget_memory.txt")]
+    #[tool(name = "forget_memory")]
+    async fn forget_memory(&self, Parameters(params): Parameters<ForgetMemoryParams>) -> String {
+        let mem_store = match &self.memory_store {
+            Some(s) => s,
+            None => return error_json("memory store not available"),
+        };
+
+        match mem_store.forget_memory(&params.id).await {
+            Ok(existed) => {
+                serde_json::to_string(&serde_json::json!({ "deleted": existed })).unwrap_or_default()
+            }
+            Err(e) => error_json(&format!("forget_memory failed: {e}")),
+        }
     }
 }
 

@@ -1,0 +1,1 @@
+Search long-term memories. Filter by kind (pattern, decision, error_signature, session_summary, user_flagged), tags, project, or text substring. Returns matching memories ordered by creation time (newest first). Use this before making decisions to check if relevant patterns or prior decisions exist.

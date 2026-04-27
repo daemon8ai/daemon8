@@ -1,0 +1,1 @@
+Delete a long-term memory by ID. Use when a memory is outdated, incorrect, or no longer relevant. Returns whether the memory existed.
