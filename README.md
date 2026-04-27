@@ -1,11 +1,12 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/daemon8ai/daemon8/main/mark.png" alt="Daemon8" width="128">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/daemon8ai/daemon8/main/mark-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/daemon8ai/daemon8/main/mark-light.svg">
+    <img src="https://raw.githubusercontent.com/daemon8ai/daemon8/main/mark-dark.svg" alt="Daemon8" width="240">
+  </picture>
 </p>
 
-<h3 align="center">daemon8</h3>
-
 <p align="center">
-  Runtime awareness management for AI agents.<br>
   <em>Everything stays on your machine.</em>
 </p>
 
