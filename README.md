@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="mark.png" alt="Daemon8" width="128">
+  <img src="https://raw.githubusercontent.com/daemon8ai/daemon8/main/mark.png" alt="Daemon8" width="128">
 </p>
 
 <h3 align="center">daemon8</h3>
@@ -17,9 +17,13 @@
 
 ---
 
-Daemon8 is a local observation daemon that collects runtime data from your browser, devices, and applications into a single stream. AI coding agents connect over MCP and get query, subscribe, and act capabilities in one place.
+Daemon8 is centralized awareness for agentic programming. It runs as a local system service and presents a unified loop where **sources feed in** and **agents see out**.
 
-No cloud. No account. No telemetry.
+**Sources** -- your browser (via CDP), devices (via ADB), applications (via HTTP/UDP ingestion), and CLI tool hooks -- continuously stream observations into daemon8. **Agents** -- any MCP-connected AI coding tool -- connect to that same loop and gain full visibility: what the browser is doing, what the app just logged, what the device is reporting, all queryable and subscribable from a single endpoint.
+
+The result is agents that can observe, reason about, and act on your entire runtime in real time. No tab-switching. No copy-pasting logs. No "check the console."
+
+No cloud. No account. No telemetry. Everything stays on your machine.
 
 ## Install
 
@@ -27,7 +31,7 @@ No cloud. No account. No telemetry.
 cargo install daemon8
 ```
 
-macOS — sign the binary so Gatekeeper and launchd accept it:
+macOS -- sign the binary so Gatekeeper and launchd accept it:
 
 ```bash
 codesign --force --sign - ~/.cargo/bin/daemon8
@@ -54,26 +58,61 @@ daemon8 status
 daemon8 doctor
 ```
 
+## How it works
+
+```
+Sources (inputs)                          Agents (outputs)
+-----------------                         ----------------
+Browser (CDP)    --\                  /--  Claude Code
+Applications     ----> daemon8 loop ----> Cursor
+Devices (ADB)   --/    localhost:8888 \--> Windsurf
+CLI hooks        --/                  \--> Gemini CLI, Codex
+```
+
+Sources push observations into the loop. Agents query, subscribe, and act through MCP tools on `http://localhost:8888/mcp`.
+
 ## MCP tools
 
-Any MCP client connects to `http://localhost:8888/mcp`. Fourteen tools are exposed:
+Fourteen tools across four capabilities:
+
+**Observe** -- query and subscribe to the observation stream.
 
 | Tool | Purpose |
 |------|---------|
-| `query_observations` | Query observations by kind, severity, origin, text, tags, or checkpoint. |
+| `query_observations` | Query by kind, severity, origin, text, tags, or checkpoint. |
 | `status` | Health snapshot: error rate, sources, observation count, version. |
 | `create_checkpoint` | Mark current stream position; subsequent queries resume from it. |
-| `list_connections` | List active ingestion sources and browser connection state. |
+| `list_connections` | List active sources and browser connection state. |
+| `subscribe_observations` | Subscribe to a filtered real-time alert stream. |
+
+**Act** -- control the browser and connected devices.
+
+| Tool | Purpose |
+|------|---------|
 | `connect_browser` | Point the daemon at a Chrome DevTools Protocol endpoint. |
-| `issue_command` | Browser/device actions: eval JS, screenshot, CSS inject, storage, navigate. |
-| `ingest_observation` | Record an observation from inside the agent loop. |
-| `subscribe_observations` | Subscribe to a filtered real-time alert stream (severity >= warn by default). |
-| `set_lens` | Create a per-session reactive filter with a ring buffer (up to 1000). |
+| `issue_command` | Eval JS, screenshot, CSS inject, storage, navigate, network throttle. |
+
+**Lens** -- per-session reactive filters with a ring buffer.
+
+| Tool | Purpose |
+|------|---------|
+| `set_lens` | Create a focused filter that buffers matching observations (up to 1000). |
 | `clear_lens` | Remove the active lens. |
 | `lens_status` | Inspect the current lens filter and buffer state. |
-| `save_memory` | Persist a memory entry (user-flagged, pattern, insight, etc.). |
+
+**Memory** -- persist and recall across sessions.
+
+| Tool | Purpose |
+|------|---------|
+| `save_memory` | Persist a memory entry (user-flagged, pattern, insight). |
 | `query_memory` | Search stored memories by kind, tags, project, or text. |
 | `forget_memory` | Delete a memory entry by ID. |
+
+**Ingest** -- agents can write into the loop too.
+
+| Tool | Purpose |
+|------|---------|
+| `ingest_observation` | Record an observation from inside the agent loop. |
 
 ## CLI
 
@@ -99,7 +138,7 @@ Any MCP client connects to `http://localhost:8888/mcp`. Fourteen tools are expos
 
 ## Ingestion
 
-Send observations from any language over HTTP:
+Any language with an HTTP client can feed the loop:
 
 ```bash
 curl -X POST http://localhost:8888/ingest -H 'Content-Type: application/json' -d '{"kind":"query","severity":"info","app":"my-api","data":{"sql":"SELECT * FROM users","duration_ms":3.2}}'
@@ -114,7 +153,7 @@ Ten crates in a Cargo workspace:
 | Crate | Purpose |
 |-------|---------|
 | `daemon` | CLI binary and command dispatch. |
-| `types` | `Observation`, `Filter`, `Kind`, `Origin`, `Severity` — shared types. |
+| `types` | `Observation`, `Filter`, `Kind`, `Origin`, `Severity` -- shared types. |
 | `store` | `SurrealStore` (embedded SurrealDB) + `LensManager` ring buffer. |
 | `api` | Axum HTTP routes: ingest, observe, stream, checkpoint, connections, lens, health. |
 | `mcp` | MCP server: 14 tools across observe, action, lens, and memory routers. |
