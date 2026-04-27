@@ -50,7 +50,7 @@ async fn start_server(
     });
 
     let (_, chrome_state_rx) =
-        tokio::sync::watch::channel(daemon8_chrome::ConnectionState::Disconnected);
+        tokio::sync::watch::channel(daemon8_chrome::ConnectionState::Connected);
     let api_state = daemon8_api::ApiState {
         store,
         stream_tx: broadcast_tx.clone(),
@@ -818,7 +818,7 @@ async fn start_act_server() -> (
     let (stream_tx, _) = broadcast::channel::<StreamFrame>(16);
     let store: Arc<dyn StateModel> = Arc::new(SurrealStore::memory().await.unwrap());
     let (_, chrome_state_rx) =
-        tokio::sync::watch::channel(daemon8_chrome::ConnectionState::Disconnected);
+        tokio::sync::watch::channel(daemon8_chrome::ConnectionState::Connected);
 
     let api_state = daemon8_api::ApiState {
         store,
