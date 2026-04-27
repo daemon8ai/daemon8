@@ -566,6 +566,52 @@ fn ok_json(body: serde_json::Value) -> Response {
     (StatusCode::OK, Json(body)).into_response()
 }
 
+async fn ensure_chrome_connected(state: &ApiState) -> Result<(), Response> {
+    use daemon8_chrome::ConnectionState;
+
+    let current = *state.chrome_state.borrow();
+    match current {
+        ConnectionState::Connected => return Ok(()),
+        ConnectionState::Disconnected => {
+            let endpoint = state
+                .chrome_endpoint
+                .lock()
+                .expect("chrome_endpoint mutex poisoned")
+                .as_ref()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "http://localhost:9222".to_string());
+            let _ = state
+                .chrome_cmd_tx
+                .send(ChromeCommand::Connect { endpoint })
+                .await;
+        }
+        ConnectionState::Connecting | ConnectionState::Reconnecting => {}
+    }
+
+    let mut rx = state.chrome_state.clone();
+    match tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if *rx.borrow_and_update() == ConnectionState::Connected {
+                return;
+            }
+            if rx.changed().await.is_err() {
+                return;
+            }
+        }
+    })
+    .await
+    {
+        Ok(()) if *rx.borrow() == ConnectionState::Connected => {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            Ok(())
+        }
+        _ => Err(error_json(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "cdp: Browser not connected (timed out waiting for connection)",
+        )),
+    }
+}
+
 async fn handle_chrome_act(
     State(state): State<ApiState>,
     body: Result<Json<ActRequest>, JsonRejection>,
@@ -574,6 +620,10 @@ async fn handle_chrome_act(
         Ok(j) => j,
         Err(rejection) => return error_json(StatusCode::BAD_REQUEST, rejection.body_text()),
     };
+
+    if let Err(resp) = ensure_chrome_connected(&state).await {
+        return resp;
+    }
 
     let tx = &state.chrome_cmd_tx;
 
