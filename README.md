@@ -1,158 +1,153 @@
 <p align="center">
-  <img src="logo.svg" alt="Daemon8" width="360">
+  <img src="mark.png" alt="Daemon8" width="128">
 </p>
 
+<h3 align="center">daemon8</h3>
+
 <p align="center">
-  <strong>The admin layer for AI agents.</strong><br>
-  Observe. Act. Coordinate.<br>
-  One convention for runtime output and real-time context.
+  Runtime awareness management for AI agents.<br>
+  <em>Everything stays on your machine.</em>
 </p>
 
 <p align="center">
   <a href="https://daemon8.ai">Website</a> ·
   <a href="https://daemon8.ai/docs">Docs</a> ·
-  <a href="https://github.com/daemon8ai/daemon8/discussions">Discussions</a> ·
-  <a href="mailto:mail@daemon8.ai">Contact</a>
+  <a href="https://github.com/daemon8ai/daemon8/discussions">Discussions</a>
 </p>
-
-<p align="center">
-  <em>Free and open source. No tiers, no license keys, no phone-home.</em>
-</p>
-
-> [!TIP]
-> Daemon8 is 'closing the loop' - agents will be able to debug anything in one MCP call - that's the objective! Care to help ensure this type of power stays open source?? Consider starring the repo!
 
 ---
 
-> [!NOTE]
-> Daemon8 is under active development.
+Daemon8 is a local observation daemon that collects runtime data from your browser, devices, and applications into a single stream. AI coding agents connect over MCP and get query, subscribe, and act capabilities in one place.
 
-## What is Daemon8?
+No cloud. No account. No telemetry.
 
-As smart as LLMs are getting, how long does one reasonably expect the "logging mess" to last? Send logs to one place for agents to consume, query, and collaborate — that's what Daemon8 is.
-
-Everything stays on your machine. Nothing is sent anywhere.
-
-## Getting started
-
-Two install paths. Pick whichever matches your comfort level.
-
-### Option A — Fastest (coming soon)
-
-> Signed release binaries ship with `v0.1.0`. Until then, use Option B.
+## Install
 
 ```bash
-cargo install cargo-binstall
-cargo binstall daemon8
-daemon8 setup
-```
-
-### Option B — Build from source (works today, 4 commands)
-
-```bash
-# 1. Build and install the daemon binary from this repo.
 cargo install --git https://github.com/daemon8ai/daemon8 daemon8
+```
 
-# 2. macOS only: sign your local build so Gatekeeper and launchd accept it.
+macOS — sign the binary so Gatekeeper and launchd accept it:
+
+```bash
 codesign --force --sign - ~/.cargo/bin/daemon8
+```
 
-# 3. Register daemon8 as a user-level system service.
-#    (launchd on macOS, systemd on Linux, Task Scheduler on Windows.)
+Register as a system service and configure your AI clients:
+
+```bash
 daemon8 install
-
-# 4. One-shot wizard: finds your browser, configures Claude Code / Cursor /
-#    Windsurf / Gemini CLI, and confirms the daemon is responsive.
 daemon8 setup
 ```
+
+`daemon8 install` registers a user-level service (launchd on macOS, systemd on Linux, Task Scheduler on Windows). `daemon8 setup` detects your browser and auto-configures Claude Code, Cursor, Windsurf, Gemini CLI, and Codex.
 
 > [!WARNING]
-> **macOS:** the first launch will show an "unidentified developer" Gatekeeper
-> warning and may ask for two permissions (Background Items, App Management).
-> Both are expected until we ship signed release binaries. Click "Allow" — the
-> daemon is entirely local and nothing leaves your machine.
+> **macOS:** first launch triggers an "unidentified developer" Gatekeeper prompt
+> and may request Background Items and App Management permissions. Both are
+> expected until signed release binaries ship. The daemon is entirely local.
 
-> [!NOTE]
-> **Windows:** the build-from-source path works (Task Scheduler gets a
-> user-level task at logon). Pre-built signed binaries for Windows are still a
-> work in progress.
-
-## Verify and connect a client
+## Verify
 
 ```bash
-daemon8 status           # expect: Daemon: running
-daemon8 doctor           # expect: No issues detected
+daemon8 status
+daemon8 doctor
 ```
 
-Any MCP-compatible client connects to:
+## MCP tools
 
-```
-http://localhost:9077/mcp
-```
+Any MCP client connects to `http://localhost:8888/mcp`. Fourteen tools are exposed:
 
-`daemon8 setup` auto-configures the common ones. Eight tools are exposed:
+| Tool | Purpose |
+|------|---------|
+| `query_observations` | Query observations by kind, severity, origin, text, tags, or checkpoint. |
+| `status` | Health snapshot: error rate, sources, observation count, version. |
+| `create_checkpoint` | Mark current stream position; subsequent queries resume from it. |
+| `list_connections` | List active ingestion sources and browser connection state. |
+| `connect_browser` | Point the daemon at a Chrome DevTools Protocol endpoint. |
+| `issue_command` | Browser/device actions: eval JS, screenshot, CSS inject, storage, navigate. |
+| `ingest_observation` | Record an observation from inside the agent loop. |
+| `subscribe_observations` | Subscribe to a filtered real-time alert stream (severity >= warn by default). |
+| `set_lens` | Create a per-session reactive filter with a ring buffer (up to 1000). |
+| `clear_lens` | Remove the active lens. |
+| `lens_status` | Inspect the current lens filter and buffer state. |
+| `save_memory` | Persist a memory entry (user-flagged, pattern, insight, etc.). |
+| `query_memory` | Search stored memories by kind, tags, project, or text. |
+| `forget_memory` | Delete a memory entry by ID. |
 
-| Tool                     | Purpose                                                         |
-|--------------------------|-----------------------------------------------------------------|
-| `query_observations`     | Query recent observations (kind, severity, origin, text match). |
-| `status`                 | Health snapshot: error rate, active sources, observation count. |
-| `create_checkpoint`      | Mark current stream position; subsequent reads resume from it.  |
-| `list_connections`       | List connected ingestion sources and browser state.             |
-| `connect_browser`        | Point the daemon at a Chrome DevTools endpoint.                 |
-| `issue_command`          | Run browser/device actions: eval JS, screenshots, CSS, storage. |
-| `ingest_observation`     | Record an observation from inside the agent loop.               |
-| `subscribe_observations` | Subscribe to a filtered real-time alert stream.                 |
+## CLI
 
-Tested clients: Claude Code, Cursor, Continue.dev. Any MCP client over HTTP/SSE or stdio works.
+| Command | Description |
+|---------|-------------|
+| `daemon8 serve` | Start the daemon server (default when no subcommand given). |
+| `daemon8 status` | Show daemon health and status. |
+| `daemon8 tail` | Stream observations in real-time. |
+| `daemon8 query` | Query stored observations. |
+| `daemon8 connections` | List active data source connections. |
+| `daemon8 browser` | Browser DevTools commands. |
+| `daemon8 lens` | Manage per-session observation lens. |
+| `daemon8 logs` | Show log file location or tail logs (`--follow`). |
+| `daemon8 config` | Show or modify configuration. |
+| `daemon8 completions` | Generate shell completions. |
+| `daemon8 install` | Install as a system service. |
+| `daemon8 uninstall` | Remove the system service. |
+| `daemon8 setup` | Interactive first-run wizard. |
+| `daemon8 channel` | Real-time alert relay for Claude Code (experimental). |
+| `daemon8 agent` | Run a stateless background or one-shot agent. |
+| `daemon8 doctor` | Diagnose configuration and environment issues (`--fix` to auto-repair). |
+| `daemon8 init` | Scaffold a `.daemon8.toml` in the current project. |
 
-## Send observations from your applications
+## Ingestion
 
-Any language with an HTTP client:
+Send observations from any language over HTTP:
 
 ```bash
-curl -X POST http://localhost:9077/ingest \
-  -H 'Content-Type: application/json' \
-  -d '{"kind":"query","severity":"info","app":"my-api",
-       "data":{"sql":"SELECT * FROM users","duration_ms":3.2}}'
+curl -X POST http://localhost:8888/ingest -H 'Content-Type: application/json' -d '{"kind":"query","severity":"info","app":"my-api","data":{"sql":"SELECT * FROM users","duration_ms":3.2}}'
 ```
 
-Batch ingest, optional UDP, and optional Unix socket listeners are documented at [daemon8.ai/docs](https://daemon8.ai/docs).
+Batch endpoint: `POST /ingest/batch` (JSON array). UDP listener on port 8889.
 
-## Docs
+## SDKs
 
-Docs render at [daemon8.ai/docs](https://daemon8.ai/docs). Source lives in [`daemon8ai/daemon8-site`](https://github.com/daemon8ai/daemon8-site).
+| Package | Language | Install |
+|---------|----------|---------|
+| [`daemon8/php`](https://github.com/daemon8ai/daemon8-php) | PHP | `composer require daemon8/php` |
+| [`daemon8/laravel`](https://github.com/daemon8ai/daemon8-laravel) | Laravel | `composer require daemon8/laravel` |
+| [`daemon8/symfony`](https://github.com/daemon8ai/daemon8-symfony) | Symfony | `composer require daemon8/symfony` |
 
-Contributions to the docs are welcome. Corrections, clearer examples, and new pages for edges of the surface we haven't covered yet all help. File issues at [daemon8ai/daemon8/issues](https://github.com/daemon8ai/daemon8/issues) under the `docs` label.
+## Architecture
+
+Ten crates in a Cargo workspace:
+
+| Crate | Purpose |
+|-------|---------|
+| `daemon` | CLI binary and command dispatch. |
+| `types` | `Observation`, `Filter`, `Kind`, `Origin`, `Severity` — shared types. |
+| `store` | `SurrealStore` (embedded SurrealDB) + `LensManager` ring buffer. |
+| `api` | Axum HTTP routes: ingest, observe, stream, checkpoint, connections, lens, health. |
+| `mcp` | MCP server: 14 tools across observe, action, lens, and memory routers. |
+| `ingest` | HTTP, UDP, and Unix socket ingest routers + normalization. |
+| `chrome` | Chrome DevTools Protocol bridge (raw WebSocket). |
+| `adb` | Android Debug Bridge device transport. |
+| `embed` | Embedding support (fastembed). |
+| `parse` | Observation parsing and extraction. |
 
 ## Contributing
 
-Read [`CONTRIBUTING.md`](./CONTRIBUTING.md) before sending a PR. The [`TODO.md`](./TODO.md) list and the Testing Gauntlet in [`TESTING.md`](./TESTING.md) are both set up to be good-first-issue friendly — start there if you're looking for a first merged PR.
+Read [`CONTRIBUTING.md`](./CONTRIBUTING.md) before sending a PR. [`TODO.md`](./TODO.md) and the testing gauntlet in [`TESTING.md`](./TESTING.md) are good-first-issue friendly.
 
-By participating, you agree to the [Code of Conduct](./CODE_OF_CONDUCT.md). Enforcement: `mail@daemon8.ai`.
-
-## Signing & trust
-
-Until `v0.1.0`, release binaries are not yet code-signed. Builds from `cargo install --git` carry an ad-hoc signature and trigger macOS Gatekeeper's "unidentified developer" prompt on first launch.
-
-From `v0.1.0` forward, GitHub Release binaries are code-signed with an Apple Developer ID and notarized by Apple. From `v0.2.0` forward, releases ship under Havy.tech, LLC's organizational Developer ID once enrollment completes.
-
-Verify a signed binary:
-
-```bash
-codesign -dvv $(which daemon8) | grep Authority
-```
-
-## Trademark
-
-DAEMON8™ is a trademark of Havy.tech, LLC. U.S. trademark application pending. Policy inquiries: `mail@daemon8.ai`.
+By participating, you agree to the [Code of Conduct](./CODE_OF_CONDUCT.md).
 
 ## License
 
-[Fair Core License 1.0 with Apache 2.0 Fallback](LICENSES/FCL-1.0-ALv2.txt) (FCL-1.0-ALv2). Grants full rights for internal use, education, research, and professional services; restricts competing use. Each release relicenses under Apache 2.0 two years after publication.
+[Fair Core License 1.0 with Apache 2.0 Fallback](LICENSES/FCL-1.0-ALv2.txt) (FCL-1.0-ALv2). Full rights for internal use, education, research, and professional services. Restricts competing use. Each release relicenses under Apache 2.0 two years after publication.
+
+DAEMON8 is a trademark of Havy.tech, LLC.
 
 ## Contact
 
-- **General / trademark / security:** mail@daemon8.ai
-- **Discussion / show-and-tell:** [GitHub Discussions](https://github.com/daemon8ai/daemon8/discussions)
-- **Bug reports & feature requests:** [issue templates](.github/ISSUE_TEMPLATE/)
+- **General / security:** mail@daemon8.ai
+- **Discussion:** [GitHub Discussions](https://github.com/daemon8ai/daemon8/discussions)
+- **Bugs / features:** [Issues](https://github.com/daemon8ai/daemon8/issues)
 
-Copyright © 2026 Havy.tech, LLC.
+Copyright 2026 Havy.tech, LLC.
