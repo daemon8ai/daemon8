@@ -24,7 +24,7 @@ No cloud. No account. No telemetry.
 ## Install
 
 ```bash
-cargo install --git https://github.com/daemon8ai/daemon8 daemon8
+cargo install daemon8
 ```
 
 macOS — sign the binary so Gatekeeper and launchd accept it:
@@ -106,14 +106,6 @@ curl -X POST http://localhost:8888/ingest -H 'Content-Type: application/json' -d
 ```
 
 Batch endpoint: `POST /ingest/batch` (JSON array). UDP listener on port 8889.
-
-## SDKs
-
-| Package | Language | Install |
-|---------|----------|---------|
-| [`daemon8/php`](https://github.com/daemon8ai/daemon8-php) | PHP | `composer require daemon8/php` |
-| [`daemon8/laravel`](https://github.com/daemon8ai/daemon8-laravel) | Laravel | `composer require daemon8/laravel` |
-| [`daemon8/symfony`](https://github.com/daemon8ai/daemon8-symfony) | Symfony | `composer require daemon8/symfony` |
 
 ## Architecture
 
