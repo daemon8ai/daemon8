@@ -22,6 +22,10 @@ pub struct TailArgs {
     #[arg(long)]
     pub text: Option<String>,
     #[arg(long)]
+    pub correlation_id: Option<String>,
+    #[arg(long, value_delimiter = ',')]
+    pub tags: Option<Vec<String>>,
+    #[arg(long)]
     pub no_color: bool,
     #[arg(long)]
     pub include_system: bool,
@@ -42,6 +46,12 @@ pub async fn cmd_tail(args: TailArgs) -> Result<()> {
     }
     if let Some(ref text) = args.text {
         params.push(format!("text_match={}", urlenc(text)));
+    }
+    if let Some(ref cid) = args.correlation_id {
+        params.push(format!("correlation_id={}", urlenc(cid)));
+    }
+    if let Some(ref tags) = args.tags {
+        params.push(format!("tags={}", urlenc(&tags.join(","))));
     }
     if args.include_system {
         params.push("include_system=true".to_string());
