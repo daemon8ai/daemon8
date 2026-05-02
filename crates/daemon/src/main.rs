@@ -137,6 +137,11 @@ struct LogGuard {
     _file_guard: Option<tracing_appender::non_blocking::WorkerGuard>,
 }
 
+struct FileLogWriter {
+    writer: tracing_appender::non_blocking::NonBlocking,
+    guard: tracing_appender::non_blocking::WorkerGuard,
+}
+
 fn init_tracing(
     verbose: bool,
     logging: &config::LoggingConfig,
@@ -163,25 +168,14 @@ fn init_tracing(
 
     let log_dir = config::resolve_log_dir(logging.file.as_deref());
     let (file_layer, file_guard) = if file_enabled {
-        std::fs::create_dir_all(&log_dir)
-            .with_context(|| format!("creating log directory: {}", log_dir.display()))?;
-
-        let file_appender = tracing_appender::rolling::Builder::new()
-            .rotation(tracing_appender::rolling::Rotation::DAILY)
-            .filename_prefix("daemon8")
-            .filename_suffix("log")
-            .max_log_files(logging.max_log_files)
-            .build(&log_dir)
-            .with_context(|| format!("creating log file appender in {}", log_dir.display()))?;
-
-        let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+        let file_log = build_file_log_writer(logging)?;
 
         let layer = fmt::layer()
-            .with_writer(non_blocking)
+            .with_writer(file_log.writer)
             .with_ansi(false)
             .with_target(true);
 
-        (Some(layer), Some(guard))
+        (Some(layer), Some(file_log.guard))
     } else {
         (None, None)
     };
@@ -211,4 +205,116 @@ fn init_tracing(
     Ok(LogGuard {
         _file_guard: file_guard,
     })
+}
+
+fn build_file_log_writer(logging: &config::LoggingConfig) -> Result<FileLogWriter> {
+    let log_dir = config::resolve_log_dir(logging.file.as_deref());
+    std::fs::create_dir_all(&log_dir)
+        .with_context(|| format!("creating log directory: {}", log_dir.display()))?;
+
+    let file_appender = tracing_appender::rolling::Builder::new()
+        .rotation(tracing_appender::rolling::Rotation::DAILY)
+        .filename_prefix("daemon8")
+        .filename_suffix("log")
+        .max_log_files(logging.max_log_files)
+        .build(&log_dir)
+        .with_context(|| format!("creating log file appender in {}", log_dir.display()))?;
+
+    let (writer, guard) = tracing_appender::non_blocking(file_appender);
+    Ok(FileLogWriter { writer, guard })
+}
+
+#[cfg(test)]
+mod logging_tests {
+    use std::path::{Path, PathBuf};
+    use std::time::Duration;
+
+    use tracing_subscriber::layer::SubscriberExt;
+
+    use super::*;
+
+    fn daemon_log_paths(log_dir: &Path) -> Vec<PathBuf> {
+        let mut paths = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(log_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let is_daemon_log = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("daemon8.") && name.ends_with(".log"));
+                if is_daemon_log {
+                    paths.push(path);
+                }
+            }
+        }
+        paths.sort();
+        paths
+    }
+
+    fn logging_config(log_dir: PathBuf) -> config::LoggingConfig {
+        config::LoggingConfig {
+            level: config::LogLevel::Debug,
+            file: Some(log_dir),
+            stderr: false,
+            max_log_files: 3,
+        }
+    }
+
+    #[test]
+    fn file_logging_writes_and_prunes_old_logs() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let log_dir = tmp.path().join("logs");
+        std::fs::create_dir_all(&log_dir).unwrap();
+
+        for day in 1..=5 {
+            let path = log_dir.join(format!("daemon8.2000-01-0{day}.log"));
+            std::fs::write(path, format!("old log {day}\n")).unwrap();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        let file_log = build_file_log_writer(&logging_config(log_dir.clone())).unwrap();
+        let subscriber = tracing_subscriber::registry().with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(file_log.writer)
+                .with_ansi(false)
+                .with_target(true),
+        );
+        let default_guard = tracing::subscriber::set_default(subscriber);
+        tracing::info!(
+            target: "daemon8",
+            "narrow file logging test event"
+        );
+        drop(default_guard);
+        drop(file_log.guard);
+
+        let paths = daemon_log_paths(&log_dir);
+        assert!(
+            paths.len() <= 3,
+            "expected max 3 retained daemon logs, found {}: {paths:?}",
+            paths.len()
+        );
+        assert!(
+            paths.iter().any(|path| std::fs::read_to_string(path)
+                .unwrap_or_default()
+                .contains("narrow file logging test event")),
+            "retained logs should include the emitted test event: {paths:?}"
+        );
+    }
+
+    #[test]
+    fn file_logging_rejects_invalid_log_path() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let log_path = tmp.path().join("not-a-directory");
+        std::fs::write(&log_path, "this is a file, not a directory").unwrap();
+
+        let err = match build_file_log_writer(&logging_config(log_path)) {
+            Ok(_) => panic!("invalid log path should fail"),
+            Err(err) => err,
+        };
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("creating log directory"),
+            "error should explain log directory failure; error was: {message}"
+        );
+    }
 }
