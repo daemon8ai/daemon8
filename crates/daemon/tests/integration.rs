@@ -19,6 +19,90 @@ use daemon8_types::Observation;
 
 type StreamFrame = (Arc<Observation>, Arc<str>);
 
+struct ChildGuard(std::process::Child);
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
+fn toml_string(value: &std::path::Path) -> String {
+    value
+        .display()
+        .to_string()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+}
+
+fn remove_daemon8_env(command: &mut std::process::Command) {
+    for (key, _) in std::env::vars() {
+        if key.starts_with("DAEMON8_") {
+            command.env_remove(key);
+        }
+    }
+}
+
+async fn wait_for_health(base: &str) {
+    let client = reqwest::Client::new();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+
+    loop {
+        if let Ok(resp) = client.get(format!("{base}/health")).send().await
+            && resp.status().is_success()
+            && resp.text().await.unwrap_or_default() == "ok"
+        {
+            return;
+        }
+
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "daemon8 serve did not become healthy at {base}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+async fn wait_for_log_contains(log_dir: &std::path::Path, needle: &str) -> String {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+
+    loop {
+        let mut body = String::new();
+        if let Ok(entries) = std::fs::read_dir(log_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let is_daemon_log = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("daemon8.") && name.ends_with(".log"));
+                if is_daemon_log {
+                    body.push_str(&std::fs::read_to_string(&path).unwrap_or_default());
+                }
+            }
+        }
+
+        if body.contains(needle) {
+            return body;
+        }
+
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "log output in {} never contained {needle:?}; body was: {body}",
+            log_dir.display()
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
 // Spin up the full HTTP stack (ingest + api) on a random port.
 // Returns the base URL and a cancellation handle.
 async fn start_server(
@@ -759,6 +843,79 @@ async fn health_endpoint() {
     let resp = reqwest::get(format!("{base}/health")).await.unwrap();
     assert_eq!(resp.status(), 200);
     assert_eq!(resp.text().await.unwrap(), "ok");
+}
+
+#[tokio::test]
+async fn serve_writes_rotating_operational_log_file() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let log_dir = tmp.path().join("logs");
+    let store_path = tmp.path().join("store");
+    let screenshot_dir = tmp.path().join("screenshots");
+    let config_path = tmp.path().join("config.toml");
+
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"[storage]
+path = "{}"
+screenshot_path = "{}"
+
+[adb]
+enabled = false
+
+[logging]
+file = "{}"
+level = "debug"
+stderr = false
+max_log_files = 3
+"#,
+            toml_string(&store_path),
+            toml_string(&screenshot_dir),
+            toml_string(&log_dir),
+        ),
+    )
+    .unwrap();
+
+    let port = free_port();
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_daemon8"));
+    remove_daemon8_env(&mut command);
+    let child = command
+        .args([
+            "--config",
+            config_path.to_str().unwrap(),
+            "serve",
+            "--port",
+            &port.to_string(),
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut child = ChildGuard(child);
+
+    let base = format!("http://127.0.0.1:{port}");
+    wait_for_health(&base).await;
+
+    let logs = wait_for_log_contains(&log_dir, "daemon8 started").await;
+    assert!(
+        logs.contains("logging initialized"),
+        "missing logging initialization line; logs were: {logs}"
+    );
+    assert!(
+        logs.contains("log_rotation=\"daily\""),
+        "missing configured rotation field; logs were: {logs}"
+    );
+    assert!(
+        logs.contains("log_max_files=3"),
+        "missing configured retention field; logs were: {logs}"
+    );
+    assert!(
+        logs.contains("log_stderr=false"),
+        "missing configured stderr field; logs were: {logs}"
+    );
+
+    child.0.kill().unwrap();
+    let _ = child.0.wait();
 }
 
 // -----------------------------------------------------------------------
