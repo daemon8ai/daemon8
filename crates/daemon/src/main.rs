@@ -12,7 +12,7 @@ pub(crate) mod style;
 
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -106,7 +106,7 @@ async fn main() -> Result<()> {
             init_tracing(cli.verbose, &cfg.logging, true)
         }
         _ => init_tracing(cli.verbose, &config::LoggingConfig::default(), false),
-    };
+    }?;
 
     match command {
         Commands::Serve(args) => cli::serve::cmd_serve(cli.config, args).await,
@@ -137,7 +137,11 @@ struct LogGuard {
     _file_guard: Option<tracing_appender::non_blocking::WorkerGuard>,
 }
 
-fn init_tracing(verbose: bool, logging: &config::LoggingConfig, file_enabled: bool) -> LogGuard {
+fn init_tracing(
+    verbose: bool,
+    logging: &config::LoggingConfig,
+    file_enabled: bool,
+) -> Result<LogGuard> {
     use tracing_subscriber::EnvFilter;
     use tracing_subscriber::fmt;
     use tracing_subscriber::layer::SubscriberExt;
@@ -159,7 +163,8 @@ fn init_tracing(verbose: bool, logging: &config::LoggingConfig, file_enabled: bo
 
     let log_dir = config::resolve_log_dir(logging.file.as_deref());
     let (file_layer, file_guard) = if file_enabled {
-        std::fs::create_dir_all(&log_dir).ok();
+        std::fs::create_dir_all(&log_dir)
+            .with_context(|| format!("creating log directory: {}", log_dir.display()))?;
 
         let file_appender = tracing_appender::rolling::Builder::new()
             .rotation(tracing_appender::rolling::Rotation::DAILY)
@@ -167,7 +172,7 @@ fn init_tracing(verbose: bool, logging: &config::LoggingConfig, file_enabled: bo
             .filename_suffix("log")
             .max_log_files(logging.max_log_files)
             .build(&log_dir)
-            .expect("failed to create log file appender");
+            .with_context(|| format!("creating log file appender in {}", log_dir.display()))?;
 
         let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
 
@@ -203,7 +208,7 @@ fn init_tracing(verbose: bool, logging: &config::LoggingConfig, file_enabled: bo
         "logging initialized"
     );
 
-    LogGuard {
+    Ok(LogGuard {
         _file_guard: file_guard,
-    }
+    })
 }

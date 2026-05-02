@@ -52,6 +52,44 @@ fn remove_daemon8_env(command: &mut std::process::Command) {
     }
 }
 
+fn daemon8_command() -> std::process::Command {
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_daemon8"));
+    remove_daemon8_env(&mut command);
+    command
+}
+
+fn write_logging_config(
+    config_path: &std::path::Path,
+    store_path: &std::path::Path,
+    screenshot_dir: &std::path::Path,
+    log_dir: &std::path::Path,
+    max_log_files: usize,
+) {
+    std::fs::write(
+        config_path,
+        format!(
+            r#"[storage]
+path = "{}"
+screenshot_path = "{}"
+
+[adb]
+enabled = false
+
+[logging]
+file = "{}"
+level = "debug"
+stderr = false
+max_log_files = {}
+"#,
+            toml_string(store_path),
+            toml_string(screenshot_dir),
+            toml_string(log_dir),
+            max_log_files,
+        ),
+    )
+    .unwrap();
+}
+
 async fn wait_for_health(base: &str) {
     let client = reqwest::Client::new();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
@@ -72,22 +110,31 @@ async fn wait_for_health(base: &str) {
     }
 }
 
+fn daemon_log_paths(log_dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut paths = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(log_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let is_daemon_log = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("daemon8.") && name.ends_with(".log"));
+            if is_daemon_log {
+                paths.push(path);
+            }
+        }
+    }
+    paths.sort();
+    paths
+}
+
 async fn wait_for_log_contains(log_dir: &std::path::Path, needle: &str) -> String {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
 
     loop {
         let mut body = String::new();
-        if let Ok(entries) = std::fs::read_dir(log_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                let is_daemon_log = path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|name| name.starts_with("daemon8.") && name.ends_with(".log"));
-                if is_daemon_log {
-                    body.push_str(&std::fs::read_to_string(&path).unwrap_or_default());
-                }
-            }
+        for path in daemon_log_paths(log_dir) {
+            body.push_str(&std::fs::read_to_string(&path).unwrap_or_default());
         }
 
         if body.contains(needle) {
@@ -853,32 +900,10 @@ async fn serve_writes_rotating_operational_log_file() {
     let screenshot_dir = tmp.path().join("screenshots");
     let config_path = tmp.path().join("config.toml");
 
-    std::fs::write(
-        &config_path,
-        format!(
-            r#"[storage]
-path = "{}"
-screenshot_path = "{}"
-
-[adb]
-enabled = false
-
-[logging]
-file = "{}"
-level = "debug"
-stderr = false
-max_log_files = 3
-"#,
-            toml_string(&store_path),
-            toml_string(&screenshot_dir),
-            toml_string(&log_dir),
-        ),
-    )
-    .unwrap();
+    write_logging_config(&config_path, &store_path, &screenshot_dir, &log_dir, 3);
 
     let port = free_port();
-    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_daemon8"));
-    remove_daemon8_env(&mut command);
+    let mut command = daemon8_command();
     let child = command
         .args([
             "--config",
@@ -916,6 +941,91 @@ max_log_files = 3
 
     child.0.kill().unwrap();
     let _ = child.0.wait();
+}
+
+#[tokio::test]
+async fn serve_prunes_old_operational_log_files() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let log_dir = tmp.path().join("logs");
+    let store_path = tmp.path().join("store");
+    let screenshot_dir = tmp.path().join("screenshots");
+    let config_path = tmp.path().join("config.toml");
+
+    std::fs::create_dir_all(&log_dir).unwrap();
+    for day in 1..=5 {
+        let path = log_dir.join(format!("daemon8.2000-01-0{day}.log"));
+        std::fs::write(path, format!("old log {day}\n")).unwrap();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    write_logging_config(&config_path, &store_path, &screenshot_dir, &log_dir, 3);
+
+    let port = free_port();
+    let mut command = daemon8_command();
+    let child = command
+        .args([
+            "--config",
+            config_path.to_str().unwrap(),
+            "serve",
+            "--port",
+            &port.to_string(),
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut child = ChildGuard(child);
+
+    let base = format!("http://127.0.0.1:{port}");
+    wait_for_health(&base).await;
+    wait_for_log_contains(&log_dir, "daemon8 started").await;
+
+    let paths = daemon_log_paths(&log_dir);
+    assert!(
+        paths.len() <= 3,
+        "expected max 3 retained daemon logs, found {}: {paths:?}",
+        paths.len()
+    );
+    assert!(
+        paths.iter().any(|path| std::fs::read_to_string(path)
+            .unwrap_or_default()
+            .contains("daemon8 started")),
+        "retained logs should include the active startup log: {paths:?}"
+    );
+
+    child.0.kill().unwrap();
+    let _ = child.0.wait();
+}
+
+#[test]
+fn serve_rejects_invalid_log_path_without_panic() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let log_path = tmp.path().join("not-a-directory");
+    let store_path = tmp.path().join("store");
+    let screenshot_dir = tmp.path().join("screenshots");
+    let config_path = tmp.path().join("config.toml");
+    std::fs::write(&log_path, "this is a file, not a directory").unwrap();
+
+    write_logging_config(&config_path, &store_path, &screenshot_dir, &log_path, 3);
+
+    let output = daemon8_command()
+        .args(["--config", config_path.to_str().unwrap(), "serve"])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        !output.status.success(),
+        "serve should reject invalid log path"
+    );
+    assert!(
+        stderr.contains("creating log directory"),
+        "stderr should explain log directory failure; stderr was: {stderr}"
+    );
+    assert!(
+        !stderr.contains("panicked"),
+        "invalid log path should return an error, not panic; stderr was: {stderr}"
+    );
 }
 
 // -----------------------------------------------------------------------
