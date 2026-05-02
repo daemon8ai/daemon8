@@ -436,7 +436,7 @@ pub async fn connect_and_monitor(
                     browser
                         .terminate("browser monitor disconnected; restarting managed browser")
                         .await;
-                    
+
                     // Only allow relaunch if we were actually managing this browser's lifecycle.
                     // For reattached browsers, we stay on the current endpoint and try to reconnect.
                     if is_managed_child {

@@ -449,6 +449,7 @@ mod tests {
         assert!(cfg.mcp.stdio);
         assert!(!cfg.mcp.http);
         assert_eq!(cfg.logging.level, LogLevel::Info);
+        assert_eq!(cfg.logging.max_log_files, 5);
         assert!(cfg.storage.path.is_none());
         assert!(cfg.browser.path.is_none());
     }
@@ -536,6 +537,17 @@ level = "garbage"
             result.is_err(),
             "expected deserialize to reject unknown log level"
         );
+    }
+
+    #[test]
+    fn max_log_files_deserializes() {
+        let cfg: Config = toml::from_str(
+            r#"[logging]
+max_log_files = 14
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.logging.max_log_files, 14);
     }
 
     #[test]

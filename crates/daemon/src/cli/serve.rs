@@ -324,6 +324,10 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
         db = %db_path.display(),
         logs = %log_dir.display(),
         screenshots = %screenshot_dir.display(),
+        log_level = %cfg.logging.level.as_str(),
+        log_stderr = cfg.logging.stderr,
+        log_max_files = cfg.logging.max_log_files,
+        log_rotation = "daily",
         browser = if cfg.browser.auto_connect { &cfg.browser.endpoint } else { "disabled" },
         transports = %transports.join(", "),
         "daemon8 started"

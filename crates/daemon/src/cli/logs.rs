@@ -13,13 +13,17 @@ pub(crate) fn cmd_logs(config_path: Option<String>, follow: bool) -> Result<()> 
         anyhow::bail!("log directory does not exist: {}", log_dir.display());
     }
 
-    let mut logs: Vec<_> = std::fs::read_dir(&log_dir)?
+    let mut logs: Vec<_> = std::fs::read_dir(&log_dir)
+        .with_context(|| format!("reading log directory {}", log_dir.display()))?
         .filter_map(|e| e.ok())
         .filter(|e| {
-            e.path()
-                .extension()
-                .map(|ext| ext == "log")
-                .unwrap_or(false)
+            let path = e.path();
+            let is_log = path.extension().map(|ext| ext == "log").unwrap_or(false);
+            let is_daemon8 = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("daemon8."));
+            is_log && is_daemon8
         })
         .collect();
 

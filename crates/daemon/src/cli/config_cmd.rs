@@ -78,8 +78,24 @@ fn cmd_config_show(config_path: Option<String>, json: bool) -> Result<()> {
     println!("  {}", style::blue("Logging"));
     println!(
         "    {} {}",
+        style::label("path"),
+        config::resolve_log_dir(cfg.logging.file.as_deref()).display()
+    );
+    println!(
+        "    {} {}",
         style::label("level"),
         cfg.logging.level.as_str()
+    );
+    println!(
+        "    {} {}",
+        style::label("stderr"),
+        bval(cfg.logging.stderr)
+    );
+    println!("    {} daily", style::label("rotation"));
+    println!(
+        "    {} {}",
+        style::label("max files"),
+        cfg.logging.max_log_files
     );
 
     Ok(())
@@ -256,6 +272,14 @@ fn validate_config_key_value(key: &str, value: &str) -> Result<()> {
                 "logging.level must be one of: trace, debug, info, warn, error -- got: '{value}'"
             ),
         },
+        "logging.max_log_files" => {
+            let n: usize = value.parse().map_err(|_| {
+                anyhow::anyhow!("logging.max_log_files must be a positive integer, got: '{value}'")
+            })?;
+            if n == 0 {
+                anyhow::bail!("logging.max_log_files must be greater than 0");
+            }
+        }
         "logging.file" => {
             if !value.is_empty() {
                 let p = std::path::Path::new(value);

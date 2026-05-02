@@ -3,8 +3,9 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use daemon8_store::{LensManager, MemoryStore, StateModel};
 use daemon8_types::{Checkpoint, DevicePlatform, Filter, Observation};
@@ -15,8 +16,15 @@ use rmcp::schemars::{self, JsonSchema};
 use rmcp::{RoleServer, ServerHandler, tool, tool_router};
 use serde::Deserialize;
 use tokio::sync::broadcast;
+use tracing::Instrument;
 
 const INSTRUCTIONS: &str = include_str!("../tool_descriptions/instructions.txt");
+static MCP_SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+fn next_mcp_session_id() -> String {
+    let id = MCP_SESSION_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("mcp-{id}")
+}
 
 pub struct DeviceScreenshotResult {
     pub png_bytes: Vec<u8>,
@@ -597,7 +605,15 @@ impl DaemonMcp {
         body.insert("data".into(), params.data);
 
         let obs = daemon8_ingest::normalize::normalize(serde_json::Value::Object(body));
-        let _ = self.obs_tx.send(obs);
+        if let Err(e) = self.obs_tx.send(obs) {
+            tracing::warn!(
+                origin = ?e.0.origin,
+                kind = %e.0.kind.tag(),
+                severity = %e.0.severity,
+                "MCP ingest failed: observation channel closed"
+            );
+            return error_json("Daemon is shutting down.");
+        }
 
         serde_json::to_string(&serde_json::json!({"ok": true})).unwrap_or_default()
     }
@@ -822,12 +838,18 @@ impl DaemonMcp {
             })
             .await
         {
-            Ok(()) => serde_json::to_string(&serde_json::json!({
-                "status": "connecting",
-                "endpoint": endpoint,
-            }))
-            .unwrap_or_default(),
-            Err(_) => error_json("Daemon is shutting down."),
+            Ok(()) => {
+                tracing::info!(endpoint = %endpoint, "MCP requested browser connection");
+                serde_json::to_string(&serde_json::json!({
+                    "status": "connecting",
+                    "endpoint": endpoint,
+                }))
+                .unwrap_or_default()
+            }
+            Err(_) => {
+                tracing::warn!(endpoint = %endpoint, "browser connect command rejected: daemon shutting down");
+                error_json("Daemon is shutting down.")
+            }
         }
     }
 
@@ -1210,6 +1232,7 @@ impl DaemonMcp {
             .await
             .is_err()
         {
+            tracing::warn!("browser action command rejected: daemon shutting down");
             return error_json("Daemon is shutting down.");
         }
 
@@ -1230,7 +1253,12 @@ impl DaemonMcp {
     async fn handle_device_screenshot(&self, params: &ActParams) -> String {
         let screenshot_fn = match &self.device_screenshot_fn {
             Some(f) => f,
-            None => return error_json("device screenshots not available (ADB not enabled)"),
+            None => {
+                tracing::warn!(
+                    "device screenshot requested but ADB screenshot support is unavailable"
+                );
+                return error_json("device screenshots not available (ADB not enabled)");
+            }
         };
 
         let serial = params.device_serial.clone().unwrap_or_default();
@@ -1241,18 +1269,32 @@ impl DaemonMcp {
 
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(15),
-            (screenshot_fn)(serial.clone(), platform),
+            (screenshot_fn)(serial.clone(), platform.clone()),
         )
         .await;
 
         match result {
-            Err(_) => error_json("device screenshot timed out (15s)"),
-            Ok(Err(e)) => error_json(&format!("device screenshot failed for {serial}: {e}")),
+            Err(_) => {
+                tracing::warn!(serial, platform = ?platform, "device screenshot timed out");
+                error_json("device screenshot timed out (15s)")
+            }
+            Ok(Err(e)) => {
+                tracing::warn!(serial, platform = ?platform, error = %e, "device screenshot failed");
+                error_json(&format!("device screenshot failed for {serial}: {e}"))
+            }
             Ok(Ok(shot)) => {
                 let path = screenshot_path(&self.screenshot_dir, &serial, Some(&shot.source));
                 if let Err(e) = std::fs::write(&path, &shot.png_bytes) {
+                    tracing::warn!(serial, path = %path.display(), error = %e, "failed to write device screenshot");
                     return error_json(&format!("failed to write screenshot: {e}"));
                 }
+                tracing::info!(
+                    serial,
+                    source = %shot.source,
+                    path = %path.display(),
+                    size_bytes = shot.png_bytes.len(),
+                    "device screenshot captured"
+                );
                 serde_json::to_string(&serde_json::json!({
                     "screenshot": path.display().to_string(),
                     "size_bytes": shot.png_bytes.len(),
@@ -1326,69 +1368,82 @@ impl ServerHandler for DaemonMcp {
     }
 
     async fn on_initialized(&self, context: rmcp::service::NotificationContext<RoleServer>) {
-        tracing::info!("MCP session initialized, starting observation push");
+        let session_id = next_mcp_session_id();
+        tracing::info!(
+            session_id,
+            "MCP session initialized, starting observation push"
+        );
         let peer = context.peer;
         let mut rx = self.broadcast_tx.subscribe();
         let sub_rx = self.subscription_tx.subscribe();
+        let span = tracing::info_span!("mcp_session", session_id = %session_id);
+
         tokio::spawn(async move {
             let mut last_push = std::time::Instant::now() - Duration::from_secs(2);
-            while let Ok((arc_obs, _json)) = rx.recv().await {
+            loop {
+                let (arc_obs, _json) = match rx.recv().await {
+                    Ok(payload) => payload,
+                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                        tracing::warn!(skipped, "MCP observation push receiver lagged; continuing with newest observations");
+                        continue;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        tracing::debug!("MCP observation push broadcast closed");
+                        break;
+                    }
+                };
+
                 let obs: &Observation = &arc_obs;
                 let filter = sub_rx.borrow().clone();
                 let should_push = match filter.as_ref() {
                     Some(f) => f.matches(obs),
                     None => obs.severity.level() >= daemon8_types::Severity::Warn.level(),
                 };
+
                 if !should_push {
                     continue;
                 }
+
                 if last_push.elapsed() < Duration::from_secs(1) {
+                    tracing::debug!(
+                        observation_id = obs.id,
+                        severity = %obs.severity,
+                        kind = %obs.kind.tag(),
+                        "MCP observation push throttled"
+                    );
                     continue;
                 }
-                let severity_str = obs.severity.to_string();
-                let kind_str = obs.kind.tag().to_string();
-                let origin_str = match &obs.origin {
-                    daemon8_types::Origin::Application { name } => format!("app:{name}"),
-                    daemon8_types::Origin::Browser { tab_id, .. } => format!("browser:{tab_id}"),
-                    daemon8_types::Origin::Device { serial, .. } => format!("device:{serial}"),
-                };
-                let msg = obs.data["message"]
-                    .as_str()
-                    .or_else(|| obs.data["msg"].as_str())
-                    .unwrap_or("(no message)");
-                let level = match obs.severity {
-                    daemon8_types::Severity::Trace | daemon8_types::Severity::Debug => {
-                        rmcp::model::LoggingLevel::Debug
-                    }
-                    daemon8_types::Severity::Info => rmcp::model::LoggingLevel::Info,
-                    daemon8_types::Severity::Warn => rmcp::model::LoggingLevel::Warning,
-                    daemon8_types::Severity::Error => rmcp::model::LoggingLevel::Error,
-                };
-                let data = serde_json::json!({
-                    "message": format!("[{severity_str}] {kind_str} from {origin_str}: {msg}"),
-                    "severity": severity_str,
-                    "kind": kind_str,
-                    "origin": origin_str,
-                });
-                let param = rmcp::model::LoggingMessageNotificationParam::new(level, data)
-                    .with_logger("daemon8".to_string());
-                let send = tokio::time::timeout(
-                    Duration::from_secs(5),
-                    peer.notify_logging_message(param),
-                )
-                .await;
+
+                let param = logging_notification(obs);
+                let send = tokio::time::timeout(Duration::from_secs(5), peer.notify_logging_message(param)).await;
+
                 match send {
                     Ok(Ok(())) => {
                         last_push = std::time::Instant::now();
+                        tracing::debug!(
+                            observation_id = obs.id,
+                            severity = %obs.severity,
+                            kind = %obs.kind.tag(),
+                            "MCP observation pushed to client"
+                        );
                     }
-                    Ok(Err(_)) => break,
+                    Ok(Err(e)) => {
+                        tracing::warn!(error = ?e, "MCP observation push failed; ending session push task");
+                        break;
+                    }
                     Err(_) => {
-                        tracing::debug!("channel push timed out, skipping");
+                        tracing::warn!(
+                            observation_id = obs.id,
+                            severity = %obs.severity,
+                            kind = %obs.kind.tag(),
+                            "MCP observation push timed out"
+                        );
                     }
                 }
             }
-            tracing::debug!("observation push task ended for session");
-        });
+            tracing::debug!("MCP observation push task ended");
+        }
+        .instrument(span));
     }
 
     async fn list_tools(
@@ -1408,11 +1463,96 @@ impl ServerHandler for DaemonMcp {
         request: rmcp::model::CallToolRequestParams,
         context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
+        let tool = request.name.to_string();
+        let started = Instant::now();
+        tracing::debug!(tool = %tool, "MCP tool call started");
+
         let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
-        self.tool_router.call(tcc).await
+        let result = self.tool_router.call(tcc).await;
+        let duration_ms = started.elapsed().as_millis();
+
+        match &result {
+            Ok(result) if result.is_error.unwrap_or(false) => {
+                tracing::warn!(tool = %tool, duration_ms, "MCP tool call returned error result");
+            }
+            Ok(_) => {
+                tracing::info!(tool = %tool, duration_ms, "MCP tool call completed");
+            }
+            Err(e) => {
+                tracing::warn!(tool = %tool, duration_ms, error = ?e, "MCP tool call failed");
+            }
+        }
+
+        result
     }
 
     fn get_tool(&self, name: &str) -> Option<rmcp::model::Tool> {
         self.tool_router.get(name).cloned()
+    }
+}
+
+fn logging_notification(obs: &Observation) -> rmcp::model::LoggingMessageNotificationParam {
+    let severity_str = obs.severity.to_string();
+    let kind_str = obs.kind.tag().to_string();
+    let origin_str = match &obs.origin {
+        daemon8_types::Origin::Application { name } => format!("app:{name}"),
+        daemon8_types::Origin::Browser { tab_id, .. } => format!("browser:{tab_id}"),
+        daemon8_types::Origin::Device { serial, .. } => format!("device:{serial}"),
+    };
+    let msg = obs.data["message"]
+        .as_str()
+        .or_else(|| obs.data["msg"].as_str())
+        .unwrap_or("(no message)");
+    let level = match obs.severity {
+        daemon8_types::Severity::Trace | daemon8_types::Severity::Debug => {
+            rmcp::model::LoggingLevel::Debug
+        }
+        daemon8_types::Severity::Info => rmcp::model::LoggingLevel::Info,
+        daemon8_types::Severity::Warn => rmcp::model::LoggingLevel::Warning,
+        daemon8_types::Severity::Error => rmcp::model::LoggingLevel::Error,
+    };
+    let data = serde_json::json!({
+        "message": format!("[{severity_str}] {kind_str} from {origin_str}: {msg}"),
+        "severity": severity_str,
+        "kind": kind_str,
+        "origin": origin_str,
+        "observation_id": obs.id,
+    });
+
+    rmcp::model::LoggingMessageNotificationParam::new(level, data)
+        .with_logger("daemon8".to_string())
+}
+
+#[cfg(test)]
+mod logging_tests {
+    use daemon8_types::{ObservationKind, Origin, Severity};
+
+    use super::*;
+
+    #[test]
+    fn mcp_session_ids_are_stable_and_prefixed() {
+        let id = next_mcp_session_id();
+        assert!(id.starts_with("mcp-"));
+    }
+
+    #[test]
+    fn logging_notification_includes_operational_fields() {
+        let mut obs = Observation::new(
+            Origin::Application {
+                name: "test-app".into(),
+            },
+            ObservationKind::Log,
+            serde_json::json!({"message": "hello"}),
+            Severity::Warn,
+            None,
+        );
+        obs.id = 42;
+
+        let param = logging_notification(&obs);
+        assert_eq!(param.logger.as_deref(), Some("daemon8"));
+        assert_eq!(param.data["severity"], "warn");
+        assert_eq!(param.data["kind"], "log");
+        assert_eq!(param.data["origin"], "app:test-app");
+        assert_eq!(param.data["observation_id"], 42);
     }
 }

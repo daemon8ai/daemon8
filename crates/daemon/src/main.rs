@@ -157,8 +157,8 @@ fn init_tracing(verbose: bool, logging: &config::LoggingConfig, file_enabled: bo
     let filter =
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&default_filter));
 
+    let log_dir = config::resolve_log_dir(logging.file.as_deref());
     let (file_layer, file_guard) = if file_enabled {
-        let log_dir = config::resolve_log_dir(logging.file.as_deref());
         std::fs::create_dir_all(&log_dir).ok();
 
         let file_appender = tracing_appender::rolling::Builder::new()
@@ -192,6 +192,16 @@ fn init_tracing(verbose: bool, logging: &config::LoggingConfig, file_enabled: bo
         .with(stderr_layer)
         .with(file_layer)
         .init();
+
+    tracing::debug!(
+        level = daemon8_level,
+        file_enabled,
+        stderr = logging.stderr,
+        log_dir = %log_dir.display(),
+        max_log_files = logging.max_log_files,
+        rotation = "daily",
+        "logging initialized"
+    );
 
     LogGuard {
         _file_guard: file_guard,
