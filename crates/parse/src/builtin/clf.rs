@@ -117,12 +117,14 @@ mod tests {
     #[test]
     fn parse_common_log_format() {
         let parser = ClfParser;
-        let line =
-            r#"127.0.0.1 - frank [10/Oct/2000:13:55:36 -0700] "GET /apache_pb.gif HTTP/1.0" 200 2326"#;
+        let line = r#"127.0.0.1 - frank [10/Oct/2000:13:55:36 -0700] "GET /apache_pb.gif HTTP/1.0" 200 2326"#;
         let result = parser.parse(line).expect("should parse");
         assert_eq!(result.severity, Some(Severity::Info));
         assert_eq!(result.message, "GET /apache_pb.gif 200");
-        assert_eq!(result.timestamp.as_deref(), Some("10/Oct/2000:13:55:36 -0700"));
+        assert_eq!(
+            result.timestamp.as_deref(),
+            Some("10/Oct/2000:13:55:36 -0700")
+        );
         assert_eq!(
             result.fields.get("client_ip"),
             Some(&serde_json::Value::String("127.0.0.1".to_string()))

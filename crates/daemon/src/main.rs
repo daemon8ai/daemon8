@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: LicenseRef-FCL-1.0-ALv2
 // Copyright (c) 2026 Havy.tech, LLC
 
-mod cli;
 mod cleanup;
+mod cli;
 mod cli_config;
 mod config;
 mod providers;

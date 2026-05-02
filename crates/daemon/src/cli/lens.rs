@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use clap::Subcommand;
 use owo_colors::OwoColorize;
 
-use super::observe::{base_url, check_response, handle_reqwest_error, ClientArgs};
+use super::observe::{ClientArgs, base_url, check_response, handle_reqwest_error};
 
 #[derive(clap::Args)]
 pub struct LensSetArgs {

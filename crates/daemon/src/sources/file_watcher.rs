@@ -34,7 +34,13 @@ pub fn spawn_file_sources(
     for (name, source) in sources {
         match source {
             SourceConfig::File(cfg) => {
-                spawn_file_source(tasks, name.clone(), cfg.clone(), obs_tx.clone(), cancel.clone());
+                spawn_file_source(
+                    tasks,
+                    name.clone(),
+                    cfg.clone(),
+                    obs_tx.clone(),
+                    cancel.clone(),
+                );
             }
         }
     }

@@ -62,11 +62,10 @@ impl CustomParser {
                 source: e,
             })?;
 
-        let regex =
-            Regex::new(&config.pattern.regex).map_err(|e| ParseError::InvalidRegex {
-                name: config.parser.name.clone(),
-                source: e,
-            })?;
+        let regex = Regex::new(&config.pattern.regex).map_err(|e| ParseError::InvalidRegex {
+            name: config.parser.name.clone(),
+            source: e,
+        })?;
 
         if !regex
             .capture_names()
@@ -274,7 +273,10 @@ message = "msg"
 "#;
         let path = write_toml(dir.path(), "bad", toml);
         let result = CustomParser::from_file(&path);
-        assert!(matches!(result, Err(ParseError::MissingFieldMapping { .. })));
+        assert!(matches!(
+            result,
+            Err(ParseError::MissingFieldMapping { .. })
+        ));
     }
 
     #[test]

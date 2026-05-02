@@ -18,8 +18,8 @@ impl FastembedEmbedder {
         let dimensions = model_dimensions(&embedding_model);
 
         let options = InitOptions::new(embedding_model).with_show_download_progress(true);
-        let model = TextEmbedding::try_new(options)
-            .context("failed to initialize fastembed model")?;
+        let model =
+            TextEmbedding::try_new(options).context("failed to initialize fastembed model")?;
 
         Ok(Self {
             model: Arc::new(Mutex::new(model)),
@@ -36,8 +36,11 @@ impl Embedder for FastembedEmbedder {
         let model = Arc::clone(&self.model);
 
         let result = tokio::task::spawn_blocking(move || {
-            let mut guard = model.lock().map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
-            guard.embed(vec![input], None)
+            let mut guard = model
+                .lock()
+                .map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
+            guard
+                .embed(vec![input], None)
                 .context("fastembed embed failed")
         })
         .await
@@ -54,8 +57,11 @@ impl Embedder for FastembedEmbedder {
         let model = Arc::clone(&self.model);
 
         tokio::task::spawn_blocking(move || {
-            let mut guard = model.lock().map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
-            guard.embed(owned, None)
+            let mut guard = model
+                .lock()
+                .map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
+            guard
+                .embed(owned, None)
                 .context("fastembed batch embed failed")
         })
         .await
@@ -81,7 +87,10 @@ fn resolve_model(name: &str) -> EmbeddingModel {
         "nomic-ai/nomic-embed-text-v1" => EmbeddingModel::NomicEmbedTextV1,
         "nomic-ai/nomic-embed-text-v1.5" => EmbeddingModel::NomicEmbedTextV15,
         _ => {
-            tracing::warn!(model = name, "unknown fastembed model, falling back to BGESmallENV15");
+            tracing::warn!(
+                model = name,
+                "unknown fastembed model, falling back to BGESmallENV15"
+            );
             EmbeddingModel::BGESmallENV15
         }
     }

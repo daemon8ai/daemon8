@@ -18,10 +18,8 @@ static RFC3164_RE: LazyLock<Regex> = LazyLock::new(|| {
 
 // RFC 5424: <PRI>VERSION TIMESTAMP HOSTNAME APP-NAME PROCID MSGID SD MSG
 static RFC5424_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r"^<(\d{1,3})>(\d+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(?:\[.*?\]|-)\s*(.*)",
-    )
-    .expect("rfc5424 regex is valid")
+    Regex::new(r"^<(\d{1,3})>(\d+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(?:\[.*?\]|-)\s*(.*)")
+        .expect("rfc5424 regex is valid")
 });
 
 pub struct SyslogParser;
@@ -32,7 +30,8 @@ impl Parser for SyslogParser {
     }
 
     fn parse(&self, line: &str) -> Option<ParsedLine> {
-        self.parse_rfc5424(line).or_else(|| self.parse_rfc3164(line))
+        self.parse_rfc5424(line)
+            .or_else(|| self.parse_rfc3164(line))
     }
 }
 
@@ -148,7 +147,8 @@ mod tests {
     #[test]
     fn parse_rfc3164() {
         let parser = SyslogParser;
-        let line = "<34>Oct 11 22:14:15 mymachine su[12345]: 'su root' failed for lonvick on /dev/pts/8";
+        let line =
+            "<34>Oct 11 22:14:15 mymachine su[12345]: 'su root' failed for lonvick on /dev/pts/8";
         let result = parser.parse(line).expect("should parse");
         assert_eq!(result.severity, Some(Severity::Error));
         assert_eq!(result.timestamp.as_deref(), Some("Oct 11 22:14:15"));

@@ -65,7 +65,10 @@ impl Embedder for OllamaEmbedder {
             anyhow::bail!("ollama returned {status}: {body}");
         }
 
-        let parsed: EmbedResponse = resp.json().await.context("failed to parse ollama response")?;
+        let parsed: EmbedResponse = resp
+            .json()
+            .await
+            .context("failed to parse ollama response")?;
 
         if let Some(first) = parsed.embeddings.first() {
             let _ = self.dimensions.set(first.len());

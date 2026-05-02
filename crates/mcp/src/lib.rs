@@ -263,7 +263,9 @@ pub struct SubscribeParams {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct LensParams {
-    #[schemars(description = "Filter by observation kind: log, query, http_exchange, js_exception, lifecycle, metric, custom")]
+    #[schemars(
+        description = "Filter by observation kind: log, query, http_exchange, js_exception, lifecycle, metric, custom"
+    )]
     pub kinds: Option<Vec<String>>,
 
     #[schemars(description = "Minimum severity threshold: trace, debug, info, warn, error")]
@@ -505,7 +507,8 @@ impl DaemonMcp {
 
                 let lens_obs = self.lens.drain().await;
                 if !lens_obs.is_empty() {
-                    result["lens_observations"] = serde_json::to_value(&lens_obs).unwrap_or_default();
+                    result["lens_observations"] =
+                        serde_json::to_value(&lens_obs).unwrap_or_default();
                     result["lens_count"] = serde_json::json!(lens_obs.len());
                 }
 
@@ -797,9 +800,8 @@ impl DaemonMcp {
         };
 
         match mem_store.forget_memory(&params.id).await {
-            Ok(existed) => {
-                serde_json::to_string(&serde_json::json!({ "deleted": existed })).unwrap_or_default()
-            }
+            Ok(existed) => serde_json::to_string(&serde_json::json!({ "deleted": existed }))
+                .unwrap_or_default(),
             Err(e) => error_json(&format!("forget_memory failed: {e}")),
         }
     }

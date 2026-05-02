@@ -23,10 +23,7 @@ pub enum ParseError {
         source: toml::de::Error,
     },
     #[error("invalid regex in custom parser {name}: {source}")]
-    InvalidRegex {
-        name: String,
-        source: regex::Error,
-    },
+    InvalidRegex { name: String, source: regex::Error },
     #[error("custom parser {name} missing required field mapping: {field}")]
     MissingFieldMapping { name: String, field: String },
 }

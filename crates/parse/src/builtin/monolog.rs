@@ -86,7 +86,8 @@ mod tests {
     #[test]
     fn parse_basic_error() {
         let parser = MonologParser;
-        let line = "[2024-01-15 14:32:01] app.ERROR: Something went wrong {\"context\":\"data\"} []";
+        let line =
+            "[2024-01-15 14:32:01] app.ERROR: Something went wrong {\"context\":\"data\"} []";
         let result = parser.parse(line).expect("should parse");
         assert_eq!(result.timestamp.as_deref(), Some("2024-01-15 14:32:01"));
         assert_eq!(result.severity, Some(Severity::Error));
@@ -144,7 +145,10 @@ mod tests {
                 parsed_count += 1;
             }
         }
-        assert!(parsed_count > 0, "should parse at least one line from fixture");
+        assert!(
+            parsed_count > 0,
+            "should parse at least one line from fixture"
+        );
     }
 
     #[test]
@@ -157,8 +161,13 @@ mod tests {
             if line.trim().is_empty() {
                 continue;
             }
-            let result = parser.parse(line).expect("context fixture lines should parse");
-            assert!(!result.fields.is_empty(), "context fixtures should have fields");
+            let result = parser
+                .parse(line)
+                .expect("context fixture lines should parse");
+            assert!(
+                !result.fields.is_empty(),
+                "context fixtures should have fields"
+            );
         }
     }
 }

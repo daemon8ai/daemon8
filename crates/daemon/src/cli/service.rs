@@ -99,10 +99,7 @@ pub fn restart_service() -> Result<bool> {
             .output()
             .context("failed to run launchctl kickstart")?;
         if !output.status.success() {
-            anyhow::bail!(
-                "launchctl kickstart failed: {}",
-                launchctl_message(&output)
-            );
+            anyhow::bail!("launchctl kickstart failed: {}", launchctl_message(&output));
         }
         Ok(true)
     }
@@ -146,7 +143,7 @@ pub fn cmd_install() -> Result<()> {
     let binary_str = binary.display().to_string();
     let cfg = crate::config::load(None).unwrap_or_default();
     let port = cfg.server.port;
-    let chrome_endpoint = if cfg.browser.path.is_some() || cfg.browser.auto_connect {
+    let chrome_endpoint = if cfg.browser.auto_connect {
         Some(cfg.browser.endpoint.clone())
     } else {
         None

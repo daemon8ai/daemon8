@@ -50,7 +50,7 @@ pub struct InitArgs {
 
     /// Accept defaults without prompting. Auto-enabled when stdin is not a TTY
     /// or when the `CI` env var is set.
-    #[arg(short = 'y', long)]
+    #[arg(short = 'y', long, visible_alias = "no-interaction")]
     pub yes: bool,
 
     /// Comma-separated providers to configure alongside project bootstrap.
@@ -238,41 +238,51 @@ fn detect_project_type(cwd: &Path) -> ProjectType {
 
 fn sources_example(project_type: ProjectType) -> &'static str {
     match project_type {
-        ProjectType::Laravel => r#"
+        ProjectType::Laravel => {
+            r#"
 # [sources.app-logs]
 # type = "file"
 # path = "storage/logs/laravel.log"
 # parser = "monolog"
 # tags = ["app"]
-"#,
-        ProjectType::Symfony => r#"
+"#
+        }
+        ProjectType::Symfony => {
+            r#"
 # [sources.app-logs]
 # type = "file"
 # path = "var/log/*.log"
 # parser = "monolog"
 # tags = ["app"]
-"#,
-        ProjectType::Node => r#"
+"#
+        }
+        ProjectType::Node => {
+            r#"
 # [sources.app-logs]
 # type = "file"
 # path = "logs/app.log"
 # parser = "json"
 # tags = ["app"]
-"#,
-        ProjectType::Rust => r#"
+"#
+        }
+        ProjectType::Rust => {
+            r#"
 # [sources.app-logs]
 # type = "file"
 # path = "logs/app.log"
 # parser = "line"
 # tags = ["app"]
-"#,
-        ProjectType::Generic => r#"
+"#
+        }
+        ProjectType::Generic => {
+            r#"
 # [sources.app-logs]
 # type = "file"
 # path = "logs/app.log"
 # parser = "line"
 # tags = ["app"]
-"#,
+"#
+        }
     }
 }
 

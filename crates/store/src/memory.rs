@@ -82,9 +82,8 @@ impl SurrealMemoryStore {
         }
 
         if let Some(ref text) = filter.text_match {
-            conditions.push(
-                "string::contains(string::lowercase(content), $text_lower)".to_string(),
-            );
+            conditions
+                .push("string::contains(string::lowercase(content), $text_lower)".to_string());
             binds.push((
                 "text_lower".into(),
                 serde_json::json!(text.to_ascii_lowercase()),
@@ -102,9 +101,8 @@ impl SurrealMemoryStore {
             None => String::new(),
         };
 
-        let sql = format!(
-            "SELECT * FROM memory{where_clause} ORDER BY created_at DESC{limit_clause}"
-        );
+        let sql =
+            format!("SELECT * FROM memory{where_clause} ORDER BY created_at DESC{limit_clause}");
 
         (sql, binds)
     }
@@ -433,17 +431,14 @@ mod tests {
     async fn forget_nonexistent() {
         let (_store, mem_store) = setup().await;
 
-        let deleted = mem_store
-            .forget_memory("does_not_exist_42")
-            .await
-            .unwrap();
+        let deleted = mem_store.forget_memory("does_not_exist_42").await.unwrap();
         assert!(!deleted);
     }
 
     #[tokio::test]
     async fn cleanup_isolation_memories_survive_observation_cleanup() {
         use crate::StateModel;
-        use daemon8_types::{ObservationKind, Observation, Origin, Severity};
+        use daemon8_types::{Observation, ObservationKind, Origin, Severity};
 
         let (store, mem_store) = setup().await;
 

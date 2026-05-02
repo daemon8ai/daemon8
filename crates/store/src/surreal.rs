@@ -109,9 +109,8 @@ impl SurrealStore {
         use surrealdb::engine::local::SurrealKv;
 
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                StoreError::Db(format!("creating database directory: {e}"))
-            })?;
+            std::fs::create_dir_all(parent)
+                .map_err(|e| StoreError::Db(format!("creating database directory: {e}")))?;
         }
 
         let db = Surreal::new::<SurrealKv>(path)
@@ -216,9 +215,7 @@ impl SurrealStore {
         let mut binds: Vec<(String, serde_json::Value)> = Vec::new();
 
         if !filter.include_system.unwrap_or(false) {
-            conditions.push(
-                "(tags IS NONE OR tags CONTAINSNOT '_system')".to_string(),
-            );
+            conditions.push("(tags IS NONE OR tags CONTAINSNOT '_system')".to_string());
         }
 
         if let Some(ref cp) = filter.since {
@@ -274,9 +271,13 @@ impl SurrealStore {
         }
 
         if let Some(ref text) = filter.text_match {
-            conditions
-                .push("string::contains(string::lowercase(<string> data), $text_lower)".to_string());
-            binds.push(("text_lower".into(), serde_json::json!(text.to_ascii_lowercase())));
+            conditions.push(
+                "string::contains(string::lowercase(<string> data), $text_lower)".to_string(),
+            );
+            binds.push((
+                "text_lower".into(),
+                serde_json::json!(text.to_ascii_lowercase()),
+            ));
         }
 
         let where_clause = if conditions.is_empty() {
@@ -290,9 +291,7 @@ impl SurrealStore {
             None => String::new(),
         };
 
-        let sql = format!(
-            "SELECT * FROM observation{where_clause} ORDER BY seq ASC{limit_clause}"
-        );
+        let sql = format!("SELECT * FROM observation{where_clause} ORDER BY seq ASC{limit_clause}");
 
         (sql, binds)
     }
@@ -346,7 +345,10 @@ impl StateModel for SurrealStore {
             Origin::Browser { .. } => Some(("browser", "browser")),
             Origin::Device { serial, .. } => Some((serial.as_ref(), "device")),
         } {
-            let mut conns = self.connections.lock().map_err(|_| StoreError::LockPoisoned)?;
+            let mut conns = self
+                .connections
+                .lock()
+                .map_err(|_| StoreError::LockPoisoned)?;
             if let Some(conn) = conns.iter_mut().find(|c| c.name == origin_name.0) {
                 conn.observation_count += 1;
             } else {
@@ -486,7 +488,9 @@ impl StateModel for SurrealStore {
     async fn cleanup_before(&self, timestamp_ns: u64) -> Result<u64, StoreError> {
         let mut result = self
             .db
-            .query("SELECT count() AS total FROM observation WHERE timestamp_ns < $cutoff GROUP ALL")
+            .query(
+                "SELECT count() AS total FROM observation WHERE timestamp_ns < $cutoff GROUP ALL",
+            )
             .bind(("cutoff", serde_json::json!(timestamp_ns)))
             .await
             .map_err(|e| StoreError::Db(format!("cleanup count: {e}")))?;
@@ -583,7 +587,10 @@ mod tests {
         let store = SurrealStore::memory().await.unwrap();
         assert_eq!(store.checkpoint().await.0, 0);
 
-        let id1 = store.insert(make_obs(Severity::Debug, 1_000)).await.unwrap();
+        let id1 = store
+            .insert(make_obs(Severity::Debug, 1_000))
+            .await
+            .unwrap();
         assert_eq!(store.checkpoint().await.0, id1);
 
         let id2 = store.insert(make_obs(Severity::Warn, 2_000)).await.unwrap();
@@ -602,8 +609,14 @@ mod tests {
     #[tokio::test]
     async fn severity_filter() {
         let store = SurrealStore::memory().await.unwrap();
-        store.insert(make_obs(Severity::Debug, 1_000)).await.unwrap();
-        store.insert(make_obs(Severity::Error, 2_000)).await.unwrap();
+        store
+            .insert(make_obs(Severity::Debug, 1_000))
+            .await
+            .unwrap();
+        store
+            .insert(make_obs(Severity::Error, 2_000))
+            .await
+            .unwrap();
 
         let filter = Filter {
             severity_min: Some(Severity::Warn),
@@ -645,7 +658,10 @@ mod tests {
     async fn summary_counts() {
         let store = SurrealStore::memory().await.unwrap();
         store.insert(make_obs(Severity::Info, 1_000)).await.unwrap();
-        store.insert(make_obs(Severity::Error, 2_000)).await.unwrap();
+        store
+            .insert(make_obs(Severity::Error, 2_000))
+            .await
+            .unwrap();
 
         let summary = store.summary().await.unwrap();
         assert_eq!(summary.observation_count, 2);
@@ -694,7 +710,10 @@ mod tests {
         };
         let slice = store.query(&filter).await.unwrap();
         assert_eq!(slice.observations.len(), 1);
-        assert!(matches!(slice.observations[0].origin, Origin::Browser { .. }));
+        assert!(matches!(
+            slice.observations[0].origin,
+            Origin::Browser { .. }
+        ));
     }
 
     #[tokio::test]
@@ -778,7 +797,10 @@ mod tests {
         let store = SurrealStore::memory().await.unwrap();
 
         for i in 0..10 {
-            store.insert(make_obs(Severity::Info, i * 1000)).await.unwrap();
+            store
+                .insert(make_obs(Severity::Info, i * 1000))
+                .await
+                .unwrap();
         }
 
         let mut browser_obs = make_obs(Severity::Info, 100_000);

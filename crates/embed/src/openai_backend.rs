@@ -79,7 +79,10 @@ impl Embedder for OpenaiEmbedder {
             anyhow::bail!("openai returned {status}: {body}");
         }
 
-        let parsed: EmbedResponse = resp.json().await.context("failed to parse openai response")?;
+        let parsed: EmbedResponse = resp
+            .json()
+            .await
+            .context("failed to parse openai response")?;
 
         let mut embeddings: Vec<_> = parsed
             .data

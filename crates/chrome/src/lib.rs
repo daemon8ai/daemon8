@@ -17,6 +17,8 @@ mod error;
 mod events;
 
 use std::collections::HashMap;
+use std::path::PathBuf;
+use std::process::Child;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -333,6 +335,17 @@ struct PendingRequest {
     wall_clock: std::time::Instant,
 }
 
+struct BrowserLaunch {
+    endpoint: String,
+    managed: Option<ManagedBrowser>,
+}
+
+struct ManagedBrowser {
+    pid: u32,
+    user_data_dir: PathBuf,
+    child: Option<Child>,
+}
+
 pub async fn connect_and_monitor(
     endpoint: String,
     obs_tx: UnboundedSender<Observation>,
@@ -346,9 +359,15 @@ pub async fn connect_and_monitor(
     let max_backoff = reconnect.max;
     let mut launch_attempted = false;
     let mut endpoint = endpoint;
+    let mut managed_browser: Option<ManagedBrowser> = None;
 
     loop {
         if cancel.is_cancelled() {
+            if let Some(mut browser) = managed_browser.take() {
+                browser
+                    .terminate("daemon shutdown; cleaning up managed browser")
+                    .await;
+            }
             status.transition(ConnectionState::Disconnected);
             return Ok(());
         }
@@ -361,8 +380,9 @@ pub async fn connect_and_monitor(
                 if !launch_attempted {
                     launch_attempted = true;
                     match launch_chrome(browser_path.as_deref()).await {
-                        Ok(new_endpoint) => {
-                            endpoint = new_endpoint;
+                        Ok(launch) => {
+                            managed_browser = launch.managed;
+                            endpoint = launch.endpoint;
                             backoff = Duration::from_secs(1);
                             continue;
                         }
@@ -386,6 +406,7 @@ pub async fn connect_and_monitor(
         match CdpClient::connect(&ws_url).await {
             Ok(client) => {
                 backoff = reconnect.initial;
+                launch_attempted = true; // Connection worked; don't fallback to managed launch immediately on next error
                 tracing::info!("Connected to browser at {endpoint}");
                 let client = Arc::new(client);
                 status.transition(ConnectionState::Connected);
@@ -400,11 +421,28 @@ pub async fn connect_and_monitor(
                 .await;
 
                 if cancel.is_cancelled() {
+                    if let Some(mut browser) = managed_browser.take() {
+                        browser
+                            .terminate("daemon shutdown; cleaning up managed browser")
+                            .await;
+                    }
                     status.transition(ConnectionState::Disconnected);
                     return Ok(());
                 }
 
                 status.transition(ConnectionState::Reconnecting);
+                if let Some(mut browser) = managed_browser.take() {
+                    let is_managed_child = browser.child.is_some();
+                    browser
+                        .terminate("browser monitor disconnected; restarting managed browser")
+                        .await;
+                    
+                    // Only allow relaunch if we were actually managing this browser's lifecycle.
+                    // For reattached browsers, we stay on the current endpoint and try to reconnect.
+                    if is_managed_child {
+                        launch_attempted = false;
+                    }
+                }
                 tracing::warn!(
                     "Browser disconnected, reconnecting in {}s...",
                     backoff.as_secs()
@@ -420,6 +458,106 @@ pub async fn connect_and_monitor(
 
         wait_or_cancel(backoff, &cancel).await;
         backoff = (backoff * 2).min(max_backoff);
+    }
+}
+
+impl ManagedBrowser {
+    async fn terminate(&mut self, reason: &str) {
+        if self.child.is_none() {
+            tracing::info!(
+                pid = self.pid,
+                profile = %self.user_data_dir.display(),
+                reason,
+                "releasing hold on reattached browser (not daemon-spawned)"
+            );
+            return;
+        }
+
+        tracing::warn!(
+            pid = self.pid,
+            profile = %self.user_data_dir.display(),
+            reason,
+            "terminating managed browser"
+        );
+
+        terminate_pid(self.pid);
+        if browser_exited(self, Duration::from_secs(2)).await {
+            return;
+        }
+
+        force_kill_pid(self.pid, self.child.as_mut());
+        let _ = browser_exited(self, Duration::from_secs(2)).await;
+    }
+}
+
+async fn browser_exited(browser: &mut ManagedBrowser, timeout: Duration) -> bool {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        if let Some(child) = browser.child.as_mut() {
+            match child.try_wait() {
+                Ok(Some(_)) => return true,
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::debug!(pid = browser.pid, error = %e, "failed to reap browser child");
+                    return true;
+                }
+            }
+        } else if !pid_alive(browser.pid) {
+            return true;
+        }
+
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+#[cfg(unix)]
+fn terminate_pid(pid: u32) {
+    // SAFETY: kill is called with a concrete PID discovered from Chrome's own
+    // profile lock or from the child process we spawned. SIGTERM requests
+    // normal shutdown; errors are harmless because the process may already exit.
+    let rc = unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+    if rc != 0 {
+        tracing::debug!(pid, "SIGTERM failed or process already exited");
+    }
+}
+
+#[cfg(windows)]
+fn terminate_pid(_pid: u32) {}
+
+#[cfg(not(any(unix, windows)))]
+fn terminate_pid(_pid: u32) {}
+
+#[cfg(unix)]
+fn force_kill_pid(pid: u32, _child: Option<&mut Child>) {
+    // SAFETY: same PID provenance as terminate_pid. SIGKILL is only used after
+    // a bounded graceful shutdown wait for daemon-managed browser instances.
+    let rc = unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+    if rc != 0 {
+        tracing::debug!(pid, "SIGKILL failed or process already exited");
+    }
+}
+
+#[cfg(windows)]
+fn force_kill_pid(pid: u32, child: Option<&mut Child>) {
+    if let Some(child) = child {
+        let _ = child.kill();
+        return;
+    }
+
+    let _ = std::process::Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+}
+
+#[cfg(not(any(unix, windows)))]
+fn force_kill_pid(_pid: u32, child: Option<&mut Child>) {
+    if let Some(child) = child {
+        let _ = child.kill();
     }
 }
 
@@ -1728,7 +1866,7 @@ fn find_chrome_debug_port_for_pid(_pid: u32) -> Option<u16> {
 /// holds the user-data-dir, because Chrome's singleton handler would
 /// otherwise intercept our launch args and silently open a new tab in the
 /// existing window.
-async fn launch_chrome(configured_path: Option<&str>) -> Result<String> {
+async fn launch_chrome(configured_path: Option<&str>) -> Result<BrowserLaunch> {
     let tmp = std::env::temp_dir();
     let user_data_dir = tmp.join("daemon8-browser");
     // Check legacy path for backward compat
@@ -1756,7 +1894,14 @@ async fn launch_chrome(configured_path: Option<&str>) -> Result<String> {
             let endpoint = format!("http://127.0.0.1:{port}");
             if cdp_client::discover_ws_url(&endpoint).await.is_ok() {
                 tracing::info!("Reattached to existing daemon Chrome on port {port}");
-                return Ok(endpoint);
+                return Ok(BrowserLaunch {
+                    endpoint,
+                    managed: live_pid.map(|pid| ManagedBrowser {
+                        pid,
+                        user_data_dir: user_data_dir.clone(),
+                        child: None,
+                    }),
+                });
             }
         }
         // Only delete the port file when we have positive evidence Chrome is
@@ -1778,7 +1923,14 @@ async fn launch_chrome(configured_path: Option<&str>) -> Result<String> {
                 tracing::info!(
                     "Reattached to live Chrome PID {pid} on port {port} (DevToolsActivePort recovery)"
                 );
-                return Ok(endpoint);
+                return Ok(BrowserLaunch {
+                    endpoint,
+                    managed: Some(ManagedBrowser {
+                        pid,
+                        user_data_dir: user_data_dir.clone(),
+                        child: None,
+                    }),
+                });
             }
         }
         return Err(ChromeError::Cdp(format!(
@@ -1826,8 +1978,15 @@ async fn launch_chrome(configured_path: Option<&str>) -> Result<String> {
         cmd.creation_flags(0x00000200 | 0x00000008 | 0x08000000);
     }
 
-    cmd.spawn()
+    let child = cmd
+        .spawn()
         .map_err(|e| ChromeError::Cdp(format!("failed to launch browser: {e}")))?;
+    let pid = child.id();
+    let mut managed = Some(ManagedBrowser {
+        pid,
+        user_data_dir: user_data_dir.clone(),
+        child: Some(child),
+    });
 
     // Chrome writes DevToolsActivePort once the debug server is ready.
     // First line: port number. Second line: browser WebSocket path.
@@ -1841,10 +2000,19 @@ async fn launch_chrome(configured_path: Option<&str>) -> Result<String> {
                 let endpoint = format!("http://127.0.0.1:{port}");
                 if cdp_client::discover_ws_url(&endpoint).await.is_ok() {
                     tracing::info!("Browser debug instance ready on port {port}");
-                    return Ok(endpoint);
+                    return Ok(BrowserLaunch {
+                        endpoint,
+                        managed: managed.take(),
+                    });
                 }
             }
         }
+    }
+
+    if let Some(mut browser) = managed.take() {
+        browser
+            .terminate("browser launch did not expose a DevTools port")
+            .await;
     }
 
     Err(ChromeError::Cdp(

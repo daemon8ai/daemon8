@@ -302,10 +302,7 @@ fn check_sources(cfg: &config::Config) -> Check {
                         && !parent.as_os_str().is_empty()
                         && !parent.exists()
                     {
-                        warnings.push(format!(
-                            "{name}: parent dir missing ({})",
-                            parent.display()
-                        ));
+                        warnings.push(format!("{name}: parent dir missing ({})", parent.display()));
                     }
                 } else if !path.exists() {
                     warnings.push(format!("{name}: path not found ({})", f.path));
@@ -381,10 +378,7 @@ fn check_embeddings(cfg: &config::Config) -> Check {
             if has_key {
                 Check {
                     name: "embeddings",
-                    result: CheckResult::OkHint(format!(
-                        "openai, model={}",
-                        cfg.embeddings.model
-                    )),
+                    result: CheckResult::OkHint(format!("openai, model={}", cfg.embeddings.model)),
                 }
             } else {
                 Check {

@@ -6,7 +6,7 @@ use clap::Subcommand;
 use comfy_table::{Cell, ContentArrangement, Table, presets::UTF8_FULL_CONDENSED};
 use owo_colors::OwoColorize;
 
-use super::observe::{base_url, check_response, handle_reqwest_error, truncate, ClientArgs};
+use super::observe::{ClientArgs, base_url, check_response, handle_reqwest_error, truncate};
 
 #[derive(Subcommand)]
 pub enum ChromeSubcommand {
@@ -465,7 +465,10 @@ async fn cmd_chrome_revert_css(tab: Option<String>, client_args: ClientArgs) -> 
             serde_json::to_string_pretty(&result).unwrap_or_default()
         );
     } else {
-        let count = result.get("reverted_count").and_then(|v| v.as_u64()).unwrap_or(0);
+        let count = result
+            .get("reverted_count")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
         println!("Reverted {count} injected style(s)");
     }
 

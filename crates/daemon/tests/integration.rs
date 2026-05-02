@@ -14,7 +14,7 @@ use tokio::sync::{broadcast, mpsc};
 
 use daemon8_chrome::BrowserAction;
 use daemon8_mcp::ChromeCommand;
-use daemon8_store::{SurrealStore, StateModel};
+use daemon8_store::{StateModel, SurrealStore};
 use daemon8_types::Observation;
 
 type StreamFrame = (Arc<Observation>, Arc<str>);
@@ -719,8 +719,7 @@ async fn normalization_edge_cases() {
 #[tokio::test]
 async fn surreal_store_pipeline() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let store: Arc<dyn StateModel> =
-        Arc::new(SurrealStore::open(tmp.path()).await.unwrap());
+    let store: Arc<dyn StateModel> = Arc::new(SurrealStore::open(tmp.path()).await.unwrap());
     let (base, _tx, _handle) = start_server(store).await;
 
     // Ingest

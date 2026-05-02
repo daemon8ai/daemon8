@@ -39,7 +39,12 @@ pub fn api_router(state: ApiState) -> Router {
         .route("/api/connections", get(handle_connections))
         .route("/api/connect", post(handle_connect))
         .route("/api/stream", get(handle_stream))
-        .route("/api/lens", get(handle_lens_status).put(handle_lens_set).delete(handle_lens_clear))
+        .route(
+            "/api/lens",
+            get(handle_lens_status)
+                .put(handle_lens_set)
+                .delete(handle_lens_clear),
+        )
         .route("/api/browser/act", post(handle_chrome_act))
         .with_state(state)
 }
@@ -266,7 +271,11 @@ async fn handle_observe(
 
 async fn handle_checkpoint(State(state): State<ApiState>) -> Response {
     let cp = state.store.checkpoint().await;
-    (StatusCode::OK, Json(serde_json::json!({ "checkpoint": cp.0 }))).into_response()
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({ "checkpoint": cp.0 })),
+    )
+        .into_response()
 }
 
 #[derive(Debug, Deserialize)]

@@ -136,7 +136,8 @@ mod tests {
     #[test]
     fn parse_basic_logfmt() {
         let parser = LogfmtParser;
-        let line = r#"ts=2024-01-15T14:32:01Z level=error msg="connection refused" host=db-01 port=5432"#;
+        let line =
+            r#"ts=2024-01-15T14:32:01Z level=error msg="connection refused" host=db-01 port=5432"#;
         let result = parser.parse(line).expect("should parse");
         assert_eq!(result.severity, Some(Severity::Error));
         assert_eq!(result.message, "connection refused");

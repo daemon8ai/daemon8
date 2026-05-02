@@ -182,11 +182,7 @@ pub async fn run_agent(args: AgentArgs) -> Result<()> {
     }
 }
 
-async fn run_one_shot(
-    args: AgentArgs,
-    daemon_url: &str,
-    project_root: &Path,
-) -> Result<()> {
+async fn run_one_shot(args: AgentArgs, daemon_url: &str, project_root: &Path) -> Result<()> {
     let prompt = match args.prompt {
         Some(ref prompt) => prompt.clone(),
         None => {
@@ -231,11 +227,7 @@ async fn run_one_shot(
     Ok(())
 }
 
-async fn run_background(
-    args: AgentArgs,
-    daemon_url: &str,
-    project_root: &Path,
-) -> Result<()> {
+async fn run_background(args: AgentArgs, daemon_url: &str, project_root: &Path) -> Result<()> {
     let model = OpenAiCompatibleModel::from_env(&args.model)?;
     let client = reqwest::Client::new();
     let mut stream = ObservationStream::new(&client, daemon_url);

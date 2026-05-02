@@ -153,21 +153,9 @@ fn setup_embeddings(config_path: &Path) -> Result<()> {
                 "Built-in embeddings",
                 "downloads ~24 MB model on first use",
             ),
-            (
-                "ollama",
-                "Ollama",
-                "requires running Ollama instance",
-            ),
-            (
-                "openai",
-                "OpenAI",
-                "requires API key",
-            ),
-            (
-                "none",
-                "No, skip for now",
-                "",
-            ),
+            ("ollama", "Ollama", "requires running Ollama instance"),
+            ("openai", "OpenAI", "requires API key"),
+            ("none", "No, skip for now", ""),
         ])
         .interact()?;
 
@@ -176,12 +164,7 @@ fn setup_embeddings(config_path: &Path) -> Result<()> {
     match provider {
         EmbedProvider::Fastembed => {
             write_config_value(config_path, "embeddings", "provider", "fastembed")?;
-            write_config_value(
-                config_path,
-                "embeddings",
-                "model",
-                "BAAI/bge-small-en-v1.5",
-            )?;
+            write_config_value(config_path, "embeddings", "model", "BAAI/bge-small-en-v1.5")?;
             cliclack::log::info(
                 "The embedding model (~24 MB) will download on first daemon start.",
             )?;

@@ -84,10 +84,7 @@ pub fn create_embedder(config: &EmbedConfig) -> anyhow::Result<Arc<dyn Embedder>
         #[cfg(feature = "ollama")]
         EmbedProvider::Ollama => {
             tracing::info!(model = %config.model, "initializing ollama embedder");
-            let embedder = OllamaEmbedder::new(
-                &config.model,
-                config.endpoint.as_deref(),
-            );
+            let embedder = OllamaEmbedder::new(&config.model, config.endpoint.as_deref());
             Ok(Arc::new(embedder))
         }
 
@@ -107,11 +104,7 @@ pub fn create_embedder(config: &EmbedConfig) -> anyhow::Result<Arc<dyn Embedder>
                 .ok_or_else(|| anyhow::anyhow!("openai provider requires api_key"))?;
 
             tracing::info!(model = %config.model, "initializing openai embedder");
-            let embedder = OpenaiEmbedder::new(
-                &config.model,
-                api_key,
-                config.base_url.as_deref(),
-            )?;
+            let embedder = OpenaiEmbedder::new(&config.model, api_key, config.base_url.as_deref())?;
             Ok(Arc::new(embedder))
         }
 

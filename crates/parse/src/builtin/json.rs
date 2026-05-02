@@ -27,8 +27,8 @@ impl Parser for JsonParser {
         let timestamp = extract_first(&mut obj, &["timestamp", "ts", "time", "@timestamp"])
             .map(|v| value_to_string(&v));
 
-        let channel = extract_first(&mut obj, &["channel", "logger", "name"])
-            .map(|v| value_to_string(&v));
+        let channel =
+            extract_first(&mut obj, &["channel", "logger", "name"]).map(|v| value_to_string(&v));
 
         Some(ParsedLine {
             timestamp,
@@ -40,10 +40,7 @@ impl Parser for JsonParser {
     }
 }
 
-fn extract_first(
-    obj: &mut serde_json::Map<String, Value>,
-    keys: &[&str],
-) -> Option<Value> {
+fn extract_first(obj: &mut serde_json::Map<String, Value>, keys: &[&str]) -> Option<Value> {
     for key in keys {
         if let Some(val) = obj.remove(*key) {
             return Some(val);
@@ -156,7 +153,10 @@ mod tests {
                 parsed_count += 1;
             }
         }
-        assert!(parsed_count > 0, "should parse at least one line from fixture");
+        assert!(
+            parsed_count > 0,
+            "should parse at least one line from fixture"
+        );
     }
 
     #[test]
@@ -174,6 +174,9 @@ mod tests {
                 parsed_count += 1;
             }
         }
-        assert!(parsed_count >= 5, "should parse at least 5 lines from various formats fixture");
+        assert!(
+            parsed_count >= 5,
+            "should parse at least 5 lines from various formats fixture"
+        );
     }
 }

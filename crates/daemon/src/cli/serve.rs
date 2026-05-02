@@ -10,7 +10,7 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
 use daemon8_mcp::ChromeCommand;
-use daemon8_store::{SurrealStore, StateModel};
+use daemon8_store::{StateModel, SurrealStore};
 use daemon8_types::Observation;
 
 use crate::config;
@@ -55,26 +55,27 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
 
     let store: Arc<dyn StateModel> = Arc::new(surreal_store);
 
-    let embedder: Option<Arc<dyn daemon8_embed::Embedder>> =
-        if cfg.embeddings.provider != daemon8_embed::EmbedProvider::None {
-            match daemon8_embed::create_embedder(&cfg.embeddings) {
-                Ok(e) => {
-                    tracing::info!(
-                        provider = %cfg.embeddings.provider,
-                        model = %e.model_name(),
-                        dimensions = e.dimensions(),
-                        "embedder initialized"
-                    );
-                    Some(e)
-                }
-                Err(e) => {
-                    tracing::error!(error = %e, "embedder init failed, memories will lack embeddings");
-                    None
-                }
+    let embedder: Option<Arc<dyn daemon8_embed::Embedder>> = if cfg.embeddings.provider
+        != daemon8_embed::EmbedProvider::None
+    {
+        match daemon8_embed::create_embedder(&cfg.embeddings) {
+            Ok(e) => {
+                tracing::info!(
+                    provider = %cfg.embeddings.provider,
+                    model = %e.model_name(),
+                    dimensions = e.dimensions(),
+                    "embedder initialized"
+                );
+                Some(e)
             }
-        } else {
-            None
-        };
+            Err(e) => {
+                tracing::error!(error = %e, "embedder init failed, memories will lack embeddings");
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     // Unbounded channel — deliberate policy.  The daemon captures observations
     // best-effort and losslessly: callers POST and return immediately; the store
@@ -271,9 +272,11 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
                 embedder: mcp_embedder.clone(),
             }))
         },
-        Arc::new(
-            rmcp::transport::streamable_http_server::session::local::LocalSessionManager::default(),
-        ),
+        Arc::new({
+            let mut mgr = rmcp::transport::streamable_http_server::session::local::LocalSessionManager::default();
+            mgr.session_config.keep_alive = Some(std::time::Duration::from_secs(86400));
+            mgr
+        }),
         rmcp::transport::streamable_http_server::StreamableHttpServerConfig::default()
             .with_stateful_mode(true)
             .with_cancellation_token(mcp_cancel),
@@ -335,8 +338,8 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
     });
 
     tokio::select! {
-        _ = tokio::signal::ctrl_c() => {
-            tracing::info!("received ctrl-c, shutting down...");
+        signal = shutdown_signal() => {
+            tracing::info!(signal, "received shutdown signal, shutting down...");
         }
         _ = cancel.cancelled() => {}
     }
@@ -451,8 +454,24 @@ fn decide_connect_action(
 /// `handle_connect`, which is the only place that decides whether to abort
 /// a previous task and which is the only place that mutates `current_endpoint`.
 struct ChromeHandlerState {
-    chrome_handle: Option<tokio::task::JoinHandle<()>>,
+    chrome_handle: Option<ChromeTask>,
     current_endpoint: Option<String>,
+}
+
+struct ChromeTask {
+    handle: tokio::task::JoinHandle<()>,
+    cancel: CancellationToken,
+}
+
+impl ChromeTask {
+    fn is_finished(&self) -> bool {
+        self.handle.is_finished()
+    }
+
+    #[cfg(test)]
+    fn id(&self) -> tokio::task::Id {
+        self.handle.id()
+    }
 }
 
 impl ChromeHandlerState {
@@ -473,7 +492,7 @@ impl ChromeHandlerState {
         spawn: F,
     ) -> bool
     where
-        F: FnOnce() -> tokio::task::JoinHandle<()>,
+        F: FnOnce(CancellationToken) -> tokio::task::JoinHandle<()>,
     {
         let task_alive = self
             .chrome_handle
@@ -484,19 +503,45 @@ impl ChromeHandlerState {
         match decide_connect_action(task_alive, state, same_endpoint) {
             ConnectDecision::Ignore => false,
             ConnectDecision::AbortAndSpawn => {
-                if let Some(handle) = self.chrome_handle.take() {
-                    handle.abort();
+                if let Some(task) = self.chrome_handle.take() {
+                    task.cancel.cancel();
                 }
                 self.current_endpoint = Some(endpoint.to_string());
-                self.chrome_handle = Some(spawn());
+                self.chrome_handle = Some(spawn_chrome_task(spawn));
                 true
             }
             ConnectDecision::Spawn => {
                 self.chrome_handle = None;
                 self.current_endpoint = Some(endpoint.to_string());
-                self.chrome_handle = Some(spawn());
+                self.chrome_handle = Some(spawn_chrome_task(spawn));
                 true
             }
+        }
+    }
+}
+
+fn spawn_chrome_task<F>(spawn: F) -> ChromeTask
+where
+    F: FnOnce(CancellationToken) -> tokio::task::JoinHandle<()>,
+{
+    let cancel = CancellationToken::new();
+    let handle = spawn(cancel.clone());
+    ChromeTask { handle, cancel }
+}
+
+async fn stop_chrome_task(mut task: ChromeTask) {
+    task.cancel.cancel();
+
+    tokio::select! {
+        result = &mut task.handle => {
+            if let Err(e) = result {
+                tracing::debug!("browser monitor task ended while stopping: {e}");
+            }
+        }
+        _ = tokio::time::sleep(Duration::from_secs(5)) => {
+            tracing::warn!("browser monitor did not stop within 5s; aborting task");
+            task.handle.abort();
+            let _ = task.handle.await;
         }
     }
 }
@@ -523,13 +568,12 @@ fn spawn_chrome_command_handler(
                     match cmd {
                         Some(ChromeCommand::Connect { endpoint }) => {
                             let tx = obs_tx.clone();
-                            let token = cancel.clone();
                             let (atx, action_rx) = mpsc::channel(BROWSER_ACTION_CAPACITY);
                             let task_status = status.clone();
                             let bp = browser_path.clone();
                             let endpoint_for_task = endpoint.clone();
 
-                            let spawned = handler.handle_connect(&endpoint, status.current(), || {
+                            let spawned = handler.handle_connect(&endpoint, status.current(), |token| {
                                 tokio::spawn(async move {
                                     if let Err(e) = daemon8_chrome::connect_and_monitor(
                                         endpoint_for_task, tx, action_rx, token, task_status, bp, reconnect,
@@ -570,8 +614,8 @@ fn spawn_chrome_command_handler(
             }
         }
 
-        if let Some(handle) = handler.chrome_handle.take() {
-            handle.abort();
+        if let Some(task) = handler.chrome_handle.take() {
+            stop_chrome_task(task).await;
         }
         tracing::debug!("chrome command handler stopped");
     });
@@ -675,6 +719,26 @@ fn find_port_holder(port: u16) -> Option<String> {
     stdout.lines().next().map(|s| s.trim().to_string())
 }
 
+#[cfg(unix)]
+async fn shutdown_signal() -> &'static str {
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .expect("failed to install SIGTERM handler");
+    let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+        .expect("failed to install SIGINT handler");
+
+    tokio::select! {
+        _ = sigterm.recv() => "SIGTERM",
+        _ = sigint.recv() => "SIGINT",
+        _ = tokio::signal::ctrl_c() => "ctrl-c",
+    }
+}
+
+#[cfg(not(unix))]
+async fn shutdown_signal() -> &'static str {
+    let _ = tokio::signal::ctrl_c().await;
+    "ctrl-c"
+}
+
 //
 // These tests pin down the regression we hit twice: a Connect command
 // arriving while a previous connect task is in flight should NOT abort the
@@ -747,8 +811,8 @@ mod chrome_handler_tests {
     fn counting_spawner(
         counter: Arc<AtomicUsize>,
         token: CancellationToken,
-    ) -> impl FnOnce() -> tokio::task::JoinHandle<()> {
-        move || {
+    ) -> impl FnOnce(CancellationToken) -> tokio::task::JoinHandle<()> {
+        move |_task_cancel| {
             counter.fetch_add(1, Ordering::SeqCst);
             spawn_controlled(token)
         }
@@ -1071,7 +1135,7 @@ mod chrome_handler_property_tests {
                     let my_cancel = CancellationToken::new();
                     let my_cancel_for_spawn = my_cancel.clone();
                     let sc = spawn_count.clone();
-                    let spawned = state.handle_connect(&endpoint, conn_state, || {
+                    let spawned = state.handle_connect(&endpoint, conn_state, |_task_cancel| {
                         sc.fetch_add(1, Ordering::SeqCst);
                         tokio::spawn(async move { my_cancel_for_spawn.cancelled().await; })
                     });
