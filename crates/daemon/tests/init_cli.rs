@@ -199,9 +199,11 @@ fn cli_deliber8_help_is_available() {
     );
 
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("agent"));
-    assert!(stdout.contains("inbox"));
-    assert!(stdout.contains("memory"));
+    assert!(stdout.contains("spawn"));
+    assert!(stdout.contains("list"));
+    assert!(stdout.contains("inspect"));
+    assert!(stdout.contains("stop"));
+    assert!(stdout.contains("restart"));
 }
 
 #[test]

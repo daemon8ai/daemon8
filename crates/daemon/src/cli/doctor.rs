@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use daemon8_embed::EmbedProvider;
-use daemon8_store::StateModel;
+use daemon8_store::{CardStore, StateModel};
 
 use crate::config::{self, SourceConfig};
 
@@ -55,6 +55,7 @@ pub async fn cmd_doctor(fix: bool) -> Result<()> {
         check_sources(&cfg),
         check_embeddings(&cfg),
         check_store(&cfg).await,
+        check_stuck_agents(&cfg).await,
     ];
 
     #[cfg(target_os = "macos")]
@@ -434,6 +435,60 @@ fn check_embeddings(cfg: &config::Config) -> Check {
                 }
             }
         }
+    }
+}
+
+async fn check_stuck_agents(cfg: &config::Config) -> Check {
+    let db_path = config::resolve_db_path(cfg.storage.path.as_deref());
+    if !db_path.exists() {
+        return Check {
+            name: "stuck agents",
+            result: CheckResult::OkHint("store not yet created".into()),
+        };
+    }
+
+    let store = match daemon8_store::SurrealStore::open(&db_path).await {
+        Ok(s) => s,
+        Err(e) => {
+            return Check {
+                name: "stuck agents",
+                result: CheckResult::Err(format!("could not open store: {e}")),
+            };
+        }
+    };
+    let card_store = store.card_store();
+    let agents = match card_store
+        .list_agents(&daemon8_store::AgentCardFilter {
+            statuses: Some(vec![daemon8_types::AgentStatus::Alive]),
+            project_ref: None,
+            team_ref: None,
+            limit: None,
+        })
+        .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            return Check {
+                name: "stuck agents",
+                result: CheckResult::Err(format!("listing agents failed: {e}")),
+            };
+        }
+    };
+
+    let stuck = crate::deliber8::classify_stuck(&agents, crate::deliber8::now_ns(), 3);
+    if stuck.is_empty() {
+        return Check {
+            name: "stuck agents",
+            result: CheckResult::OkHint(format!("{} alive agent(s)", agents.len())),
+        };
+    }
+    Check {
+        name: "stuck agents",
+        result: CheckResult::Warn(format!(
+            "{} agent(s) past 3x heartbeat: {}",
+            stuck.len(),
+            stuck.join(", ")
+        )),
     }
 }
 
