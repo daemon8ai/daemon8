@@ -6,6 +6,46 @@ use surrealdb::engine::local::Db;
 
 use crate::{EnvelopeFilter, EnvelopeRecord, EnvelopeStore, StoreError};
 
+// Envelope schema lives here so both SurrealStore::init_schema (workspace
+// bootstrap) and EnvelopeStore::init_schema (standalone construction) can
+// run the same idempotent DDL. `IF NOT EXISTS` makes repeated execution safe.
+pub(crate) const ENVELOPE_DDL: &str = "DEFINE TABLE IF NOT EXISTS envelope SCHEMAFULL;
+
+DEFINE FIELD IF NOT EXISTS kind            ON envelope TYPE string;
+DEFINE FIELD IF NOT EXISTS status          ON envelope TYPE string;
+DEFINE FIELD IF NOT EXISTS priority        ON envelope TYPE string;
+DEFINE FIELD IF NOT EXISTS from_address    ON envelope TYPE string;
+DEFINE FIELD IF NOT EXISTS to_address      ON envelope TYPE string;
+DEFINE FIELD IF NOT EXISTS inbox_address   ON envelope TYPE string;
+DEFINE FIELD IF NOT EXISTS subject         ON envelope TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS body            ON envelope TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS payload         ON envelope TYPE option<object> FLEXIBLE;
+DEFINE FIELD IF NOT EXISTS correlation_id  ON envelope TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS thread_id       ON envelope TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS reply_to        ON envelope TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS created_at      ON envelope TYPE int;
+DEFINE FIELD IF NOT EXISTS updated_at      ON envelope TYPE int;
+DEFINE FIELD IF NOT EXISTS deliver_after   ON envelope TYPE option<int>;
+DEFINE FIELD IF NOT EXISTS delivered_at    ON envelope TYPE option<int>;
+DEFINE FIELD IF NOT EXISTS read_at         ON envelope TYPE option<int>;
+DEFINE FIELD IF NOT EXISTS expires_at      ON envelope TYPE option<int>;
+DEFINE FIELD IF NOT EXISTS failed_at       ON envelope TYPE option<int>;
+DEFINE FIELD IF NOT EXISTS failure_reason  ON envelope TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS tags            ON envelope TYPE array<string>;
+DEFINE FIELD IF NOT EXISTS project_refs    ON envelope TYPE array<string>;
+DEFINE FIELD IF NOT EXISTS team_refs       ON envelope TYPE array<string>;
+
+DEFINE INDEX IF NOT EXISTS idx_env_inbox_status_created
+    ON envelope FIELDS inbox_address, status, created_at;
+DEFINE INDEX IF NOT EXISTS idx_env_to_status      ON envelope FIELDS to_address, status;
+DEFINE INDEX IF NOT EXISTS idx_env_correlation    ON envelope FIELDS correlation_id;
+DEFINE INDEX IF NOT EXISTS idx_env_thread         ON envelope FIELDS thread_id;
+DEFINE INDEX IF NOT EXISTS idx_env_deliver_after  ON envelope FIELDS deliver_after;
+DEFINE INDEX IF NOT EXISTS idx_env_expires        ON envelope FIELDS expires_at;
+DEFINE INDEX IF NOT EXISTS idx_env_project_refs   ON envelope FIELDS project_refs;
+DEFINE INDEX IF NOT EXISTS idx_env_team_refs      ON envelope FIELDS team_refs;
+DEFINE INDEX IF NOT EXISTS idx_env_tags           ON envelope FIELDS tags;";
+
 pub struct SurrealEnvelopeStore {
     db: Surreal<Db>,
 }
@@ -15,6 +55,25 @@ impl SurrealEnvelopeStore {
         Self { db }
     }
 
+    // Differentiate "no rows updated" between not-found and wrong-state by
+    // following up with a get. Only invoked on the failure path so the success
+    // path remains a single round trip. `allowed` is the human-readable list of
+    // statuses the caller would accept, used only to phrase the error message.
+    async fn diagnose_no_rows(&self, id: &str, op: &str, allowed: &str) -> StoreError {
+        match self.get_envelope(id).await {
+            Ok(Some(env)) => StoreError::Other(format!(
+                "envelope '{id}' is in state {} and cannot {op} (allowed: {allowed})",
+                env.status
+            )),
+            Ok(None) => StoreError::Other(format!("envelope '{id}' not found")),
+            Err(e) => e,
+        }
+    }
+
+    // Builds a SELECT against the envelope table. `since_ns` is inclusive
+    // (`created_at >= $since_ns`). When `filter.limit` is `None` the query is
+    // unbounded — matching `MemoryStore::query_memory`'s contract; callers
+    // working over large inboxes should always pass a limit.
     fn build_query_sql(filter: &EnvelopeFilter) -> (String, Vec<(String, serde_json::Value)>) {
         let mut conditions = Vec::new();
         let mut binds: Vec<(String, serde_json::Value)> = Vec::new();
@@ -146,10 +205,18 @@ fn decode_envelope(mut val: serde_json::Value) -> Result<EnvelopeRecord, StoreEr
 
 #[async_trait::async_trait]
 impl EnvelopeStore for SurrealEnvelopeStore {
+    // Idempotent — safe to call regardless of whether SurrealStore::init_schema
+    // already ran the same DDL during workspace bootstrap. Callers who construct
+    // SurrealEnvelopeStore from a raw Surreal<Db> they opened directly must
+    // invoke this before any queries; callers who got the store from
+    // SurrealStore::envelope_store() may skip it.
     async fn init_schema(&self) -> Result<(), StoreError> {
-        // Schema is owned by SurrealStore::init_schema so the envelope table
-        // shares the same namespace/database lifecycle as observations and
-        // memories. Calling this is a no-op kept for trait symmetry.
+        self.db
+            .query(ENVELOPE_DDL)
+            .await
+            .map_err(|e| StoreError::Db(format!("envelope schema init: {e}")))?
+            .check()
+            .map_err(|e| StoreError::Db(format!("envelope schema init check: {e}")))?;
         Ok(())
     }
 
@@ -159,10 +226,13 @@ impl EnvelopeStore for SurrealEnvelopeStore {
             obj.remove("id");
         }
 
-        let explicit_id = if record.id.is_empty() {
+        // Whitespace-only ids are treated as empty so callers who accidentally
+        // pass `"  "` get a generated id instead of a record keyed on whitespace.
+        let trimmed = record.id.trim();
+        let explicit_id = if trimmed.is_empty() {
             None
         } else {
-            Some(record.id.clone())
+            Some(trimmed.to_string())
         };
 
         match explicit_id {
@@ -279,104 +349,122 @@ impl EnvelopeStore for SurrealEnvelopeStore {
         rows.into_iter().map(decode_envelope).collect()
     }
 
+    // Forward-only state transitions. Each mark_* operation embeds the allowed
+    // source-state set in the SurrealQL WHERE clause so the transition is
+    // atomic — there is no read-then-write race window. When zero rows match,
+    // we follow up with a single SELECT to differentiate "envelope doesn't
+    // exist" from "envelope exists but is in a disallowed state".
     async fn mark_delivered(&self, id: &str, at_ns: u64) -> Result<(), StoreError> {
-        if self.get_envelope(id).await?.is_none() {
-            return Err(StoreError::Other(format!("envelope '{id}' not found")));
-        }
-
-        self.db
+        let mut result = self
+            .db
             .query(
                 "UPDATE type::record('envelope', $id) \
-                 SET status = 'delivered', delivered_at = $at, updated_at = $at",
+                 SET status = 'delivered', delivered_at = $at, updated_at = $at \
+                 WHERE status = 'queued' RETURN AFTER",
             )
             .bind(("id", serde_json::json!(id)))
             .bind(("at", serde_json::json!(at_ns)))
             .await
-            .map_err(|e| StoreError::Db(format!("mark_delivered: {e}")))?
-            .check()
-            .map_err(|e| StoreError::Db(format!("mark_delivered check: {e}")))?;
+            .map_err(|e| StoreError::Db(format!("mark_delivered: {e}")))?;
 
+        let rows: Vec<serde_json::Value> = result
+            .take(0)
+            .map_err(|e| StoreError::Db(format!("mark_delivered read: {e}")))?;
+
+        if rows.is_empty() {
+            return Err(self
+                .diagnose_no_rows(id, "transition to delivered", "queued")
+                .await);
+        }
         Ok(())
     }
 
     async fn mark_read(&self, id: &str, at_ns: u64) -> Result<(), StoreError> {
-        let existing = self
-            .get_envelope(id)
-            .await?
-            .ok_or_else(|| StoreError::Other(format!("envelope '{id}' not found")))?;
-
-        let delivered_at = existing.delivered_at.unwrap_or(at_ns);
-
-        self.db
+        // delivered_at is filled in-place: if the row never reached delivered,
+        // we stamp $at; otherwise we preserve whatever delivered_at already
+        // holds. This eliminates the read-then-write race that an external
+        // mark_delivered could open.
+        let mut result = self
+            .db
             .query(
                 "UPDATE type::record('envelope', $id) \
-                 SET status = 'read', read_at = $at, delivered_at = $delivered, updated_at = $at",
+                 SET status = 'read', read_at = $at, \
+                     delivered_at = IF delivered_at = NONE THEN $at ELSE delivered_at END, \
+                     updated_at = $at \
+                 WHERE status IN ['queued', 'delivered'] RETURN AFTER",
             )
             .bind(("id", serde_json::json!(id)))
             .bind(("at", serde_json::json!(at_ns)))
-            .bind(("delivered", serde_json::json!(delivered_at)))
             .await
-            .map_err(|e| StoreError::Db(format!("mark_read: {e}")))?
-            .check()
-            .map_err(|e| StoreError::Db(format!("mark_read check: {e}")))?;
+            .map_err(|e| StoreError::Db(format!("mark_read: {e}")))?;
 
+        let rows: Vec<serde_json::Value> = result
+            .take(0)
+            .map_err(|e| StoreError::Db(format!("mark_read read: {e}")))?;
+
+        if rows.is_empty() {
+            return Err(self
+                .diagnose_no_rows(id, "transition to read", "queued, delivered")
+                .await);
+        }
         Ok(())
     }
 
+    // mark_failed is allowed from queued, delivered, or read (downstream
+    // processing can discover that an already-read message was malformed).
+    // It is NOT allowed from failed/expired/cancelled — those are terminal
+    // and re-failing them would erase prior context.
     async fn mark_failed(&self, id: &str, reason: &str, at_ns: u64) -> Result<(), StoreError> {
-        if self.get_envelope(id).await?.is_none() {
-            return Err(StoreError::Other(format!("envelope '{id}' not found")));
-        }
-
-        self.db
+        let mut result = self
+            .db
             .query(
                 "UPDATE type::record('envelope', $id) \
-                 SET status = 'failed', failed_at = $at, failure_reason = $reason, updated_at = $at",
+                 SET status = 'failed', failed_at = $at, failure_reason = $reason, updated_at = $at \
+                 WHERE status IN ['queued', 'delivered', 'read'] RETURN AFTER",
             )
             .bind(("id", serde_json::json!(id)))
             .bind(("at", serde_json::json!(at_ns)))
             .bind(("reason", serde_json::json!(reason)))
             .await
-            .map_err(|e| StoreError::Db(format!("mark_failed: {e}")))?
-            .check()
-            .map_err(|e| StoreError::Db(format!("mark_failed check: {e}")))?;
+            .map_err(|e| StoreError::Db(format!("mark_failed: {e}")))?;
 
+        let rows: Vec<serde_json::Value> = result
+            .take(0)
+            .map_err(|e| StoreError::Db(format!("mark_failed read: {e}")))?;
+
+        if rows.is_empty() {
+            return Err(self
+                .diagnose_no_rows(id, "transition to failed", "queued, delivered, read")
+                .await);
+        }
         Ok(())
     }
 
     async fn cancel_envelope(&self, id: &str, at_ns: u64) -> Result<(), StoreError> {
-        let existing = self
-            .get_envelope(id)
-            .await?
-            .ok_or_else(|| StoreError::Other(format!("envelope '{id}' not found")))?;
-
-        if existing.status.is_terminal() {
-            return Err(StoreError::Other(format!(
-                "envelope '{id}' is in terminal state {} and cannot be cancelled",
-                existing.status
-            )));
-        }
-
-        self.db
+        let mut result = self
+            .db
             .query(
                 "UPDATE type::record('envelope', $id) \
-                 SET status = 'cancelled', updated_at = $at",
+                 SET status = 'cancelled', updated_at = $at \
+                 WHERE status IN ['queued', 'delivered'] RETURN AFTER",
             )
             .bind(("id", serde_json::json!(id)))
             .bind(("at", serde_json::json!(at_ns)))
             .await
-            .map_err(|e| StoreError::Db(format!("cancel_envelope: {e}")))?
-            .check()
-            .map_err(|e| StoreError::Db(format!("cancel_envelope check: {e}")))?;
+            .map_err(|e| StoreError::Db(format!("cancel_envelope: {e}")))?;
 
+        let rows: Vec<serde_json::Value> = result
+            .take(0)
+            .map_err(|e| StoreError::Db(format!("cancel_envelope read: {e}")))?;
+
+        if rows.is_empty() {
+            return Err(self
+                .diagnose_no_rows(id, "cancel", "queued, delivered")
+                .await);
+        }
         Ok(())
     }
 }
-
-// SurrealStore::init_schema creates the envelope table because all daemon8
-// tables share one namespace/database. EnvelopeStore::init_schema is a no-op
-// kept for trait symmetry; do not also call it from the SurrealStore bootstrap.
-const _: () = ();
 
 #[cfg(test)]
 mod tests {
@@ -1036,5 +1124,502 @@ mod tests {
             .unwrap();
         assert_eq!(response.len(), 1);
         assert_eq!(response[0].reply_to.as_deref(), Some(req_id.as_str()));
+    }
+
+    #[tokio::test]
+    async fn embedded_colons_in_explicit_id_roundtrip() {
+        let (_store, env_store) = setup().await;
+
+        let mut env = make_envelope(
+            "a",
+            "b",
+            "b",
+            EnvelopeKind::Notice,
+            EnvelopePriority::Normal,
+            1,
+        );
+        env.id = "env:custom:abc".into();
+
+        let id = env_store.enqueue_envelope(env).await.unwrap();
+        assert_eq!(id, "env:custom:abc");
+
+        let fetched = env_store.get_envelope("env:custom:abc").await.unwrap();
+        assert!(fetched.is_some());
+        assert_eq!(fetched.unwrap().id, "env:custom:abc");
+    }
+
+    #[tokio::test]
+    async fn whitespace_only_id_is_treated_as_empty() {
+        let (_store, env_store) = setup().await;
+
+        let mut env = make_envelope(
+            "a",
+            "b",
+            "b",
+            EnvelopeKind::Notice,
+            EnvelopePriority::Normal,
+            1,
+        );
+        env.id = "   ".into();
+
+        let id = env_store.enqueue_envelope(env).await.unwrap();
+        assert!(!id.is_empty());
+        assert_ne!(id.trim(), "", "auto-generated id must not be whitespace");
+        assert!(
+            !id.chars().all(char::is_whitespace),
+            "auto-generated id must not be whitespace"
+        );
+    }
+
+    #[tokio::test]
+    async fn explicit_id_collision_overwrites_silently() {
+        // Documented behavior: enqueue_envelope with an existing explicit id
+        // performs an UPSERT, replacing the prior payload. Mirrors the card
+        // store's upsert pattern. Callers that want fail-on-duplicate must
+        // gate on get_envelope first.
+        let (_store, env_store) = setup().await;
+
+        let mut first = make_envelope(
+            "agent:from-1",
+            "agent:to",
+            "agent:to",
+            EnvelopeKind::Message,
+            EnvelopePriority::Normal,
+            1,
+        );
+        first.id = "env_pinned".into();
+        first.subject = Some("first".into());
+        env_store.enqueue_envelope(first).await.unwrap();
+
+        let mut second = make_envelope(
+            "agent:from-2",
+            "agent:to",
+            "agent:to",
+            EnvelopeKind::Message,
+            EnvelopePriority::Normal,
+            2,
+        );
+        second.id = "env_pinned".into();
+        second.subject = Some("second".into());
+        env_store.enqueue_envelope(second).await.unwrap();
+
+        let after = env_store.get_envelope("env_pinned").await.unwrap().unwrap();
+        assert_eq!(after.subject.as_deref(), Some("second"));
+        assert_eq!(after.from_address, "agent:from-2");
+    }
+
+    #[tokio::test]
+    async fn mark_delivered_on_missing_id_errors_clearly() {
+        let (_store, env_store) = setup().await;
+        let err = env_store
+            .mark_delivered("does_not_exist", 1)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("does_not_exist"),
+            "error must include id, got: {err}"
+        );
+        assert!(
+            err.contains("not found"),
+            "error must say not found, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn mark_read_on_missing_id_errors_clearly() {
+        let (_store, env_store) = setup().await;
+        let err = env_store
+            .mark_read("ghost_envelope", 1)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("ghost_envelope"));
+        assert!(err.contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn mark_failed_on_missing_id_errors_clearly() {
+        let (_store, env_store) = setup().await;
+        let err = env_store
+            .mark_failed("ghost", "reason", 1)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("ghost"));
+        assert!(err.contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn cancel_on_missing_id_errors_clearly() {
+        let (_store, env_store) = setup().await;
+        let err = env_store
+            .cancel_envelope("ghost", 1)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("ghost"));
+        assert!(err.contains("not found"));
+    }
+
+    async fn enqueue_one(env_store: &SurrealEnvelopeStore) -> String {
+        env_store
+            .enqueue_envelope(make_envelope(
+                "a",
+                "b",
+                "b",
+                EnvelopeKind::Message,
+                EnvelopePriority::Normal,
+                1,
+            ))
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn mark_delivered_after_read_is_rejected() {
+        let (_store, env_store) = setup().await;
+        let id = enqueue_one(&env_store).await;
+        env_store.mark_read(&id, 100).await.unwrap();
+        let err = env_store
+            .mark_delivered(&id, 200)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("read"),
+            "error must mention current state: {err}"
+        );
+        assert!(
+            err.contains("delivered"),
+            "error must mention target: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn mark_delivered_after_failed_is_rejected() {
+        let (_store, env_store) = setup().await;
+        let id = enqueue_one(&env_store).await;
+        env_store.mark_failed(&id, "x", 100).await.unwrap();
+        let err = env_store
+            .mark_delivered(&id, 200)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("failed"));
+    }
+
+    #[tokio::test]
+    async fn mark_delivered_after_cancelled_is_rejected() {
+        let (_store, env_store) = setup().await;
+        let id = enqueue_one(&env_store).await;
+        env_store.cancel_envelope(&id, 100).await.unwrap();
+        let err = env_store
+            .mark_delivered(&id, 200)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("cancelled"));
+    }
+
+    #[tokio::test]
+    async fn mark_delivered_twice_is_rejected() {
+        // mark_delivered is forward-only from queued; calling it again from
+        // delivered must error so callers cannot accidentally rewrite the
+        // delivered_at timestamp.
+        let (_store, env_store) = setup().await;
+        let id = enqueue_one(&env_store).await;
+        env_store.mark_delivered(&id, 100).await.unwrap();
+        let err = env_store
+            .mark_delivered(&id, 200)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("delivered"));
+
+        let after = env_store.get_envelope(&id).await.unwrap().unwrap();
+        assert_eq!(
+            after.delivered_at,
+            Some(100),
+            "rejected mark_delivered must not overwrite the original timestamp"
+        );
+    }
+
+    #[tokio::test]
+    async fn mark_read_after_failed_is_rejected() {
+        let (_store, env_store) = setup().await;
+        let id = enqueue_one(&env_store).await;
+        env_store.mark_failed(&id, "x", 100).await.unwrap();
+        let err = env_store.mark_read(&id, 200).await.unwrap_err().to_string();
+        assert!(err.contains("failed"));
+    }
+
+    #[tokio::test]
+    async fn mark_failed_after_read_succeeds() {
+        // Documented allowed transition: downstream processing may discover
+        // an already-read message was malformed and want to fail it.
+        let (_store, env_store) = setup().await;
+        let id = enqueue_one(&env_store).await;
+        env_store.mark_read(&id, 100).await.unwrap();
+        env_store
+            .mark_failed(&id, "downstream malformed", 200)
+            .await
+            .unwrap();
+
+        let after = env_store.get_envelope(&id).await.unwrap().unwrap();
+        assert_eq!(after.status, EnvelopeStatus::Failed);
+        assert_eq!(after.failed_at, Some(200));
+        assert_eq!(
+            after.failure_reason.as_deref(),
+            Some("downstream malformed")
+        );
+        // read_at must be preserved across the read -> failed transition.
+        assert_eq!(after.read_at, Some(100));
+    }
+
+    #[tokio::test]
+    async fn mark_failed_twice_is_rejected() {
+        let (_store, env_store) = setup().await;
+        let id = enqueue_one(&env_store).await;
+        env_store.mark_failed(&id, "first", 100).await.unwrap();
+        let err = env_store
+            .mark_failed(&id, "second", 200)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("failed"));
+
+        let after = env_store.get_envelope(&id).await.unwrap().unwrap();
+        assert_eq!(after.failure_reason.as_deref(), Some("first"));
+    }
+
+    #[tokio::test]
+    async fn cancel_after_read_is_rejected() {
+        let (_store, env_store) = setup().await;
+        let id = enqueue_one(&env_store).await;
+        env_store.mark_read(&id, 100).await.unwrap();
+        let err = env_store
+            .cancel_envelope(&id, 200)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("read"));
+    }
+
+    #[tokio::test]
+    async fn query_inbox_combined_filters() {
+        let (_store, env_store) = setup().await;
+        let inbox = "agent:worker";
+
+        let mut hit = make_envelope(
+            "a",
+            inbox,
+            inbox,
+            EnvelopeKind::Request,
+            EnvelopePriority::High,
+            300,
+        );
+        hit.tags = vec!["alpha".into(), "beta".into()];
+        env_store.enqueue_envelope(hit).await.unwrap();
+
+        // Wrong kind
+        let mut wrong_kind = make_envelope(
+            "a",
+            inbox,
+            inbox,
+            EnvelopeKind::Notice,
+            EnvelopePriority::High,
+            301,
+        );
+        wrong_kind.tags = vec!["alpha".into(), "beta".into()];
+        env_store.enqueue_envelope(wrong_kind).await.unwrap();
+
+        // Missing required tag
+        let mut wrong_tag = make_envelope(
+            "a",
+            inbox,
+            inbox,
+            EnvelopeKind::Request,
+            EnvelopePriority::High,
+            302,
+        );
+        wrong_tag.tags = vec!["alpha".into()];
+        env_store.enqueue_envelope(wrong_tag).await.unwrap();
+
+        // Too old
+        let mut too_old = make_envelope(
+            "a",
+            inbox,
+            inbox,
+            EnvelopeKind::Request,
+            EnvelopePriority::High,
+            100,
+        );
+        too_old.tags = vec!["alpha".into(), "beta".into()];
+        env_store.enqueue_envelope(too_old).await.unwrap();
+
+        let results = env_store
+            .query_inbox(&EnvelopeFilter {
+                inbox_address: Some(inbox.into()),
+                statuses: Some(vec![EnvelopeStatus::Queued]),
+                kinds: Some(vec![EnvelopeKind::Request]),
+                tags: Some(vec!["alpha".into(), "beta".into()]),
+                since_ns: Some(200),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].created_at, 300);
+    }
+
+    #[tokio::test]
+    async fn envelope_filter_limit_actually_limits() {
+        let (_store, env_store) = setup().await;
+        let inbox = "agent:worker";
+
+        for ts in 1..=5 {
+            env_store
+                .enqueue_envelope(make_envelope(
+                    "a",
+                    inbox,
+                    inbox,
+                    EnvelopeKind::Message,
+                    EnvelopePriority::Normal,
+                    ts,
+                ))
+                .await
+                .unwrap();
+        }
+
+        let limited = env_store
+            .query_inbox(&EnvelopeFilter {
+                inbox_address: Some(inbox.into()),
+                limit: Some(2),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(limited.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn list_pending_limit_actually_limits() {
+        let (_store, env_store) = setup().await;
+        let inbox = "agent:worker";
+
+        for ts in 1..=5 {
+            env_store
+                .enqueue_envelope(make_envelope(
+                    "a",
+                    inbox,
+                    inbox,
+                    EnvelopeKind::Message,
+                    EnvelopePriority::Normal,
+                    ts,
+                ))
+                .await
+                .unwrap();
+        }
+
+        let pending = env_store.list_pending(inbox, None, Some(3)).await.unwrap();
+        assert_eq!(pending.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn vec_fields_roundtrip_through_db_with_multiple_entries() {
+        let (_store, env_store) = setup().await;
+
+        let mut env = make_envelope(
+            "a",
+            "b",
+            "b",
+            EnvelopeKind::Message,
+            EnvelopePriority::Normal,
+            1,
+        );
+        env.tags = vec!["one".into(), "two".into(), "three".into()];
+        env.project_refs = vec!["proj:a".into(), "proj:b".into()];
+        env.team_refs = vec!["team:x".into(), "team:y".into()];
+
+        let id = env_store.enqueue_envelope(env.clone()).await.unwrap();
+        let fetched = env_store.get_envelope(&id).await.unwrap().unwrap();
+
+        // Order may not be guaranteed by SurrealDB; compare as sets.
+        let mut got_tags = fetched.tags.clone();
+        got_tags.sort();
+        let mut want_tags = env.tags.clone();
+        want_tags.sort();
+        assert_eq!(got_tags, want_tags);
+
+        let mut got_projects = fetched.project_refs.clone();
+        got_projects.sort();
+        let mut want_projects = env.project_refs.clone();
+        want_projects.sort();
+        assert_eq!(got_projects, want_projects);
+
+        let mut got_teams = fetched.team_refs.clone();
+        got_teams.sort();
+        let mut want_teams = env.team_refs.clone();
+        want_teams.sort();
+        assert_eq!(got_teams, want_teams);
+    }
+
+    #[tokio::test]
+    async fn non_object_payload_is_rejected_with_clear_error() {
+        // Documented constraint: payload schema is `option<object> FLEXIBLE`
+        // so non-object JSON values (arrays, scalars) fail at write time.
+        // This test pins the constraint so future schema changes have to
+        // explicitly re-evaluate it.
+        let (_store, env_store) = setup().await;
+
+        let mut env = make_envelope(
+            "a",
+            "b",
+            "b",
+            EnvelopeKind::Message,
+            EnvelopePriority::Normal,
+            1,
+        );
+        env.payload = Some(json!([1, 2, 3]));
+
+        let err = env_store
+            .enqueue_envelope(env)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.to_ascii_lowercase().contains("payload")
+                || err.to_ascii_lowercase().contains("object"),
+            "expected schema error mentioning payload/object, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn standalone_envelope_store_init_schema_is_self_sufficient() {
+        // SurrealEnvelopeStore constructed against a raw Surreal<Db> (without
+        // SurrealStore::init_schema running first) must still be able to
+        // bootstrap by calling EnvelopeStore::init_schema directly.
+        use surrealdb::Surreal;
+        use surrealdb::engine::local::Mem;
+
+        let db = Surreal::new::<Mem>(()).await.unwrap();
+        db.use_ns("daemon8").use_db("observations").await.unwrap();
+
+        let store = SurrealEnvelopeStore::new(db);
+        store.init_schema().await.unwrap();
+
+        let id = store
+            .enqueue_envelope(make_envelope(
+                "a",
+                "b",
+                "b",
+                EnvelopeKind::Message,
+                EnvelopePriority::Normal,
+                1,
+            ))
+            .await
+            .unwrap();
+        assert!(store.get_envelope(&id).await.unwrap().is_some());
     }
 }

@@ -203,44 +203,7 @@ impl SurrealStore {
             .map_err(|e| StoreError::Db(format!("schema init check: {e}")))?;
 
         self.db
-            .query(
-                "DEFINE TABLE IF NOT EXISTS envelope SCHEMAFULL;
-
-                 DEFINE FIELD IF NOT EXISTS kind            ON envelope TYPE string;
-                 DEFINE FIELD IF NOT EXISTS status          ON envelope TYPE string;
-                 DEFINE FIELD IF NOT EXISTS priority        ON envelope TYPE string;
-                 DEFINE FIELD IF NOT EXISTS from_address    ON envelope TYPE string;
-                 DEFINE FIELD IF NOT EXISTS to_address      ON envelope TYPE string;
-                 DEFINE FIELD IF NOT EXISTS inbox_address   ON envelope TYPE string;
-                 DEFINE FIELD IF NOT EXISTS subject         ON envelope TYPE option<string>;
-                 DEFINE FIELD IF NOT EXISTS body            ON envelope TYPE option<string>;
-                 DEFINE FIELD IF NOT EXISTS payload         ON envelope TYPE option<object> FLEXIBLE;
-                 DEFINE FIELD IF NOT EXISTS correlation_id  ON envelope TYPE option<string>;
-                 DEFINE FIELD IF NOT EXISTS thread_id       ON envelope TYPE option<string>;
-                 DEFINE FIELD IF NOT EXISTS reply_to        ON envelope TYPE option<string>;
-                 DEFINE FIELD IF NOT EXISTS created_at      ON envelope TYPE int;
-                 DEFINE FIELD IF NOT EXISTS updated_at      ON envelope TYPE int;
-                 DEFINE FIELD IF NOT EXISTS deliver_after   ON envelope TYPE option<int>;
-                 DEFINE FIELD IF NOT EXISTS delivered_at    ON envelope TYPE option<int>;
-                 DEFINE FIELD IF NOT EXISTS read_at         ON envelope TYPE option<int>;
-                 DEFINE FIELD IF NOT EXISTS expires_at      ON envelope TYPE option<int>;
-                 DEFINE FIELD IF NOT EXISTS failed_at       ON envelope TYPE option<int>;
-                 DEFINE FIELD IF NOT EXISTS failure_reason  ON envelope TYPE option<string>;
-                 DEFINE FIELD IF NOT EXISTS tags            ON envelope TYPE array<string>;
-                 DEFINE FIELD IF NOT EXISTS project_refs    ON envelope TYPE array<string>;
-                 DEFINE FIELD IF NOT EXISTS team_refs       ON envelope TYPE array<string>;
-
-                 DEFINE INDEX IF NOT EXISTS idx_env_inbox_status_created
-                    ON envelope FIELDS inbox_address, status, created_at;
-                 DEFINE INDEX IF NOT EXISTS idx_env_to_status      ON envelope FIELDS to_address, status;
-                 DEFINE INDEX IF NOT EXISTS idx_env_correlation    ON envelope FIELDS correlation_id;
-                 DEFINE INDEX IF NOT EXISTS idx_env_thread         ON envelope FIELDS thread_id;
-                 DEFINE INDEX IF NOT EXISTS idx_env_deliver_after  ON envelope FIELDS deliver_after;
-                 DEFINE INDEX IF NOT EXISTS idx_env_expires        ON envelope FIELDS expires_at;
-                 DEFINE INDEX IF NOT EXISTS idx_env_project_refs   ON envelope FIELDS project_refs;
-                 DEFINE INDEX IF NOT EXISTS idx_env_team_refs      ON envelope FIELDS team_refs;
-                 DEFINE INDEX IF NOT EXISTS idx_env_tags           ON envelope FIELDS tags;",
-            )
+            .query(crate::envelope::ENVELOPE_DDL)
             .await
             .map_err(|e| StoreError::Db(format!("envelope schema init: {e}")))?
             .check()
