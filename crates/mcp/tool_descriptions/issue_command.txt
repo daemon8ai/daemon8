@@ -15,5 +15,7 @@ Issue a browser command (screenshot also works on ADB devices via device_serial)
 - storage_inspect: Read all localStorage, sessionStorage, and cookies. No extra params.
 - storage_set: Write storage. store_type: 'localstorage'/'sessionstorage'/'cookie'. Requires storage_key + storage_value.
 - element_at_point: What's on top at (x,y)? Requires x and y. Use when clicks aren't landing.
+- new_tab: Open a new browser tab. Optional 'url' (default: about:blank). Returns {tab_id: string}.
+- close_tab: Close a browser tab. Requires 'tab_id'. Returns {closed: true}.
 
 Use tab_id to target a specific tab (get IDs from list_tabs). Omit for the default tab.

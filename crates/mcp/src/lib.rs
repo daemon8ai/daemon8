@@ -240,7 +240,7 @@ pub struct IngestParams {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SubscribeParams {
     #[schemars(
-        description = "Filter by observation kind: log, query, http_exchange, exception, js_exception, lifecycle, metric, custom. Omit for all kinds."
+        description = "Filter by observation kind: log, query, http_exchange, exception, state_snapshot, js_exception, lifecycle, metric, custom. Omit for all kinds."
     )]
     pub kinds: Option<Vec<String>>,
 
@@ -272,7 +272,7 @@ pub struct SubscribeParams {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct LensParams {
     #[schemars(
-        description = "Filter by observation kind: log, query, http_exchange, js_exception, lifecycle, metric, custom"
+        description = "Filter by observation kind: log, query, http_exchange, exception, state_snapshot, js_exception, lifecycle, metric, custom"
     )]
     pub kinds: Option<Vec<String>>,
 
