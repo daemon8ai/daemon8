@@ -1,1 +1,3 @@
 Delete a long-term memory by ID. Use when a memory is outdated, incorrect, or no longer relevant. Returns whether the memory existed.
+
+Requires `confirm: true` to delete. Any other value (including absent) returns an error and leaves the memory intact. This gate exists to prevent silent data loss when an agent misroutes a delete intent.

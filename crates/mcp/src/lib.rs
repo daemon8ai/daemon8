@@ -345,6 +345,10 @@ pub struct QueryMemoryParams {
 pub struct ForgetMemoryParams {
     #[schemars(description = "The memory ID to delete")]
     pub id: String,
+    #[schemars(
+        description = "Required to confirm deletion. Must be true to delete the memory; any other value (including absent) returns an error and leaves the memory intact."
+    )]
+    pub confirm: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -861,6 +865,10 @@ impl DaemonMcp {
     #[doc = include_str!("../tool_descriptions/forget_memory.txt")]
     #[tool(name = "forget_memory")]
     async fn forget_memory(&self, Parameters(params): Parameters<ForgetMemoryParams>) -> String {
+        if let Err(msg) = check_forget_memory_confirm(params.confirm) {
+            return msg;
+        }
+
         let mem_store = match &self.memory_store {
             Some(s) => s,
             None => return error_json("memory store not available"),
@@ -871,6 +879,18 @@ impl DaemonMcp {
                 .unwrap_or_default(),
             Err(e) => error_json(&format!("forget_memory failed: {e}")),
         }
+    }
+}
+
+// MVP-12-A1: confirmation gate parallel to setup_apply's `yes=true` requirement.
+// Without this, an MCP client that misroutes a delete intent (or hallucinates a
+// memory id) silently destroys data. The gate forces an explicit boolean.
+fn check_forget_memory_confirm(confirm: Option<bool>) -> Result<(), String> {
+    match confirm {
+        Some(true) => Ok(()),
+        _ => Err(error_json(
+            "forget_memory requires confirm=true to delete the memory",
+        )),
     }
 }
 
@@ -1636,6 +1656,48 @@ mod logging_tests {
     fn mcp_session_ids_are_stable_and_prefixed() {
         let id = next_mcp_session_id();
         assert!(id.starts_with("mcp-"));
+    }
+
+    #[test]
+    fn forget_memory_gate_rejects_missing_confirm() {
+        let result = check_forget_memory_confirm(None);
+        let err = result.expect_err("missing confirm should error");
+        assert!(
+            err.contains("confirm=true"),
+            "error message should name the required field: {err}"
+        );
+    }
+
+    #[test]
+    fn forget_memory_gate_rejects_confirm_false() {
+        let result = check_forget_memory_confirm(Some(false));
+        assert!(result.is_err(), "confirm=false should error");
+    }
+
+    #[test]
+    fn forget_memory_gate_accepts_confirm_true() {
+        let result = check_forget_memory_confirm(Some(true));
+        assert!(result.is_ok(), "confirm=true should pass");
+    }
+
+    #[test]
+    fn forget_memory_params_parses_without_confirm() {
+        let p: ForgetMemoryParams = serde_json::from_str(r#"{"id":"abc"}"#).unwrap();
+        assert_eq!(p.id, "abc");
+        assert_eq!(p.confirm, None);
+    }
+
+    #[test]
+    fn forget_memory_params_parses_with_confirm_true() {
+        let p: ForgetMemoryParams = serde_json::from_str(r#"{"id":"abc","confirm":true}"#).unwrap();
+        assert_eq!(p.confirm, Some(true));
+    }
+
+    #[test]
+    fn forget_memory_params_parses_with_confirm_false() {
+        let p: ForgetMemoryParams =
+            serde_json::from_str(r#"{"id":"abc","confirm":false}"#).unwrap();
+        assert_eq!(p.confirm, Some(false));
     }
 
     #[test]
