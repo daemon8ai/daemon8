@@ -6,7 +6,7 @@
 //! Invoked by Claude Code, Cursor CLI, Gemini CLI, GitHub Copilot CLI,
 //! OpenAI Codex CLI, and Continue.dev. Reads a stdin JSON payload, normalizes
 //! the event name across the seven case conventions, resolves project-local
-//! `.daemon8.toml`, and POSTs the corresponding `agent.*` observation to
+//! `.daemon8.toml`, and POSTs the corresponding `cli.*` observation to
 //! the daemon's `/ingest` endpoint.
 //!
 //! Performance budget: <20ms per invocation. Uses blocking `ureq` rather than
@@ -101,36 +101,36 @@ struct HookToolInput {
 }
 
 // ---------------------------------------------------------------------------
-// Normalized agent event
+// Normalized CLI hook event
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AgentEvent {
-    Joined,
+enum CliHookEvent {
+    SessionStarted,
     PromptSubmitted,
     ToolPreUse,
     ToolPostUse,
     PermissionRequested,
-    Departed,
+    SessionEnded,
     PreCompact,
     PostCompact,
     Other,
 }
 
-fn normalize_event(raw: &str) -> AgentEvent {
+fn normalize_event(raw: &str) -> CliHookEvent {
     match raw.to_ascii_lowercase().as_str() {
-        "sessionstart" => AgentEvent::Joined,
-        "sessionend" | "stop" => AgentEvent::Departed,
+        "sessionstart" => CliHookEvent::SessionStarted,
+        "sessionend" | "stop" => CliHookEvent::SessionEnded,
         "userpromptsubmit" | "userpromptsubmitted" | "beforesubmitprompt" => {
-            AgentEvent::PromptSubmitted
+            CliHookEvent::PromptSubmitted
         }
-        "pretooluse" | "beforetool" => AgentEvent::ToolPreUse,
-        "posttooluse" | "aftertool" => AgentEvent::ToolPostUse,
-        "permissionrequest" => AgentEvent::PermissionRequested,
-        "beforeagent" | "afteragent" | "afteragentresponse" => AgentEvent::Other,
-        "precompact" | "precompress" | "session.compacting" => AgentEvent::PreCompact,
-        "postcompact" => AgentEvent::PostCompact,
-        _ => AgentEvent::Other,
+        "pretooluse" | "beforetool" => CliHookEvent::ToolPreUse,
+        "posttooluse" | "aftertool" => CliHookEvent::ToolPostUse,
+        "permissionrequest" => CliHookEvent::PermissionRequested,
+        "beforeagent" | "afteragent" | "afteragentresponse" => CliHookEvent::Other,
+        "precompact" | "precompress" | "session.compacting" => CliHookEvent::PreCompact,
+        "postcompact" => CliHookEvent::PostCompact,
+        _ => CliHookEvent::Other,
     }
 }
 
@@ -162,13 +162,13 @@ fn detect_tool(explicit: Option<&str>) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Worker card
+// CLI session card
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Serialize)]
-struct WorkerCard<'a> {
+struct CliSessionCard<'a> {
     event: &'static str,
-    agent_id: String,
+    session_ref: String,
     host: String,
     tool: &'a str,
     tool_version: Option<String>,
@@ -176,16 +176,13 @@ struct WorkerCard<'a> {
     session_id: &'a str,
     project_slug: String,
     cwd: String,
-    role: String,
     scope: &'a [String],
     pid: u32,
     parent_pid: Option<u32>,
     started_at: String,
-    capabilities: Vec<&'static str>,
-    pairs_with: Option<String>,
 }
 
-fn agent_id(host: &str, tool: &str, session_id: &str) -> String {
+fn session_ref(host: &str, tool: &str, session_id: &str) -> String {
     format!("{host}:{tool}:{session_id}")
 }
 
@@ -269,7 +266,7 @@ fn run(args: CliHookArgs) -> Result<()> {
         return Ok(());
     };
     let event = normalize_event(raw_event);
-    if matches!(event, AgentEvent::Other) {
+    if matches!(event, CliHookEvent::Other) {
         return Ok(());
     }
 
@@ -278,7 +275,7 @@ fn run(args: CliHookArgs) -> Result<()> {
     };
 
     let host = hostname();
-    let agent_id = agent_id(&host, &tool, &session_id);
+    let session_ref = session_ref(&host, &tool, &session_id);
     let slug = cli_cfg.resolved_slug(&cwd);
     let daemon_url = resolve_daemon_url(args.daemon_url.as_deref())?;
 
@@ -286,7 +283,7 @@ fn run(args: CliHookArgs) -> Result<()> {
         event,
         cli_cfg: &cli_cfg,
         tool: &tool,
-        agent_id: &agent_id,
+        session_ref: &session_ref,
         host: &host,
         session_id: &session_id,
         slug: &slug,
@@ -365,7 +362,7 @@ fn resolve_daemon_url(explicit: Option<&str>) -> Result<String> {
 struct JoinContext<'a> {
     cli_cfg: &'a CliConfig,
     tool: &'a str,
-    agent_id: &'a str,
+    session_ref: &'a str,
     host: &'a str,
     session_id: &'a str,
     slug: &'a str,
@@ -374,10 +371,10 @@ struct JoinContext<'a> {
 }
 
 struct ObservationContext<'a> {
-    event: AgentEvent,
+    event: CliHookEvent,
     cli_cfg: &'a CliConfig,
     tool: &'a str,
-    agent_id: &'a str,
+    session_ref: &'a str,
     host: &'a str,
     session_id: &'a str,
     slug: &'a str,
@@ -390,11 +387,11 @@ fn build_observations(ctx: ObservationContext<'_>) -> Vec<Value> {
     let mut observations = Vec::new();
 
     match ctx.event {
-        AgentEvent::Joined => {
+        CliHookEvent::SessionStarted => {
             observations.push(build_joined(JoinContext {
                 cli_cfg: ctx.cli_cfg,
                 tool: ctx.tool,
-                agent_id: ctx.agent_id,
+                session_ref: ctx.session_ref,
                 host: ctx.host,
                 session_id: ctx.session_id,
                 slug: ctx.slug,
@@ -402,80 +399,74 @@ fn build_observations(ctx: ObservationContext<'_>) -> Vec<Value> {
                 input: ctx.input,
             }));
             if let Some(banner) = ctx.cli_cfg.enrollment.banner.as_deref() {
-                observations.push(build_banner(ctx.agent_id, banner));
+                observations.push(build_banner(ctx.session_ref, banner));
             }
         }
-        AgentEvent::PromptSubmitted => {
+        CliHookEvent::PromptSubmitted => {
             observations.push(build_prompt_submitted(
                 ctx.tool,
-                ctx.agent_id,
+                ctx.session_ref,
                 ctx.session_id,
                 ctx.slug,
                 ctx.cwd,
                 ctx.input,
                 ctx.raw_input,
-                &ctx.cli_cfg.project.role_default,
             ));
         }
-        AgentEvent::ToolPreUse => {
+        CliHookEvent::ToolPreUse => {
             observations.push(build_tool_event(
-                "agent.tool_pre_use",
+                "cli.tool_pre_use",
                 ctx.tool,
-                ctx.agent_id,
+                ctx.session_ref,
                 ctx.session_id,
                 ctx.slug,
                 ctx.cwd,
                 ctx.input,
                 ctx.raw_input,
-                &ctx.cli_cfg.project.role_default,
             ));
-            observations.push(build_minimal("agent.heartbeat", ctx.agent_id));
         }
-        AgentEvent::ToolPostUse => {
+        CliHookEvent::ToolPostUse => {
             observations.push(build_tool_event(
-                "agent.tool_post_use",
+                "cli.tool_post_use",
                 ctx.tool,
-                ctx.agent_id,
+                ctx.session_ref,
                 ctx.session_id,
                 ctx.slug,
                 ctx.cwd,
                 ctx.input,
                 ctx.raw_input,
-                &ctx.cli_cfg.project.role_default,
             ));
-            observations.push(build_minimal("agent.heartbeat", ctx.agent_id));
         }
-        AgentEvent::PermissionRequested => {
+        CliHookEvent::PermissionRequested => {
             observations.push(build_permission_requested(
                 ctx.tool,
-                ctx.agent_id,
+                ctx.session_ref,
                 ctx.session_id,
                 ctx.slug,
                 ctx.cwd,
                 ctx.input,
                 ctx.raw_input,
-                &ctx.cli_cfg.project.role_default,
             ));
         }
-        AgentEvent::Departed => {
-            observations.push(build_minimal("agent.departed", ctx.agent_id));
+        CliHookEvent::SessionEnded => {
+            observations.push(build_minimal("cli.session_ended", ctx.session_ref));
         }
-        AgentEvent::PreCompact => {
-            observations.push(build_minimal("agent.precompact", ctx.agent_id));
+        CliHookEvent::PreCompact => {
+            observations.push(build_minimal("cli.precompact", ctx.session_ref));
         }
-        AgentEvent::PostCompact => {
-            observations.push(build_minimal("agent.postcompact", ctx.agent_id));
+        CliHookEvent::PostCompact => {
+            observations.push(build_minimal("cli.postcompact", ctx.session_ref));
         }
-        AgentEvent::Other => {}
+        CliHookEvent::Other => {}
     }
 
     observations
 }
 
 fn build_joined(ctx: JoinContext<'_>) -> Value {
-    let card = WorkerCard {
-        event: "agent.joined",
-        agent_id: ctx.agent_id.to_string(),
+    let card = CliSessionCard {
+        event: "cli.session_started",
+        session_ref: ctx.session_ref.to_string(),
         host: ctx.host.to_string(),
         tool: ctx.tool,
         tool_version: env::var("DAEMON8_TOOL_VERSION").ok(),
@@ -483,50 +474,47 @@ fn build_joined(ctx: JoinContext<'_>) -> Value {
         session_id: ctx.session_id,
         project_slug: ctx.slug.to_string(),
         cwd: ctx.cwd.display().to_string(),
-        role: ctx.cli_cfg.project.role_default.clone(),
         scope: &ctx.cli_cfg.enrollment.scope,
         pid: std::process::id(),
         parent_pid: parent_pid(),
         started_at: now_iso(),
-        capabilities: default_capabilities(&ctx.cli_cfg.project.role_default),
-        pairs_with: None,
     };
 
     json!({
         "app": "daemon8-cli-hook",
         "kind": "custom",
-        "channel": "agent",
+        "channel": "cli-hook",
         "severity": "info",
         "tags": [SYSTEM_TAG],
         "data": card,
     })
 }
 
-fn build_banner(agent_id: &str, banner: &str) -> Value {
+fn build_banner(session_ref: &str, banner: &str) -> Value {
     json!({
         "app": "daemon8-cli-hook",
         "kind": "custom",
-        "channel": "agent",
+        "channel": "cli-hook",
         "severity": "info",
         "tags": [SYSTEM_TAG],
         "data": {
-            "event": "agent.banner",
-            "agent_id": agent_id,
+            "event": "cli.banner",
+            "session_ref": session_ref,
             "banner": banner,
         },
     })
 }
 
-fn build_minimal(event: &str, agent_id: &str) -> Value {
+fn build_minimal(event: &str, session_ref: &str) -> Value {
     json!({
         "app": "daemon8-cli-hook",
         "kind": "custom",
-        "channel": "agent",
+        "channel": "cli-hook",
         "severity": "info",
         "tags": [SYSTEM_TAG],
         "data": {
             "event": event,
-            "agent_id": agent_id,
+            "session_ref": session_ref,
         },
     })
 }
@@ -534,26 +522,24 @@ fn build_minimal(event: &str, agent_id: &str) -> Value {
 #[allow(clippy::too_many_arguments)]
 fn build_prompt_submitted(
     tool: &str,
-    agent_id: &str,
+    session_ref: &str,
     session_id: &str,
     slug: &str,
     cwd: &Path,
     input: &HookInput,
     raw_input: &Value,
-    role: &str,
 ) -> Value {
     let prompt = extract_prompt(input, raw_input);
     json!({
         "app": "daemon8-cli-hook",
         "kind": "custom",
-        "channel": "agent",
+        "channel": "cli-hook",
         "severity": "info",
         "tags": [SYSTEM_TAG],
         "data": {
-            "event": "user.prompt_submitted",
-            "agent_id": agent_id,
+            "event": "cli.prompt_submitted",
+            "session_ref": session_ref,
             "tool": tool,
-            "role": role,
             "model": input.model,
             "cwd": cwd.display().to_string(),
             "session_id": session_id,
@@ -570,25 +556,23 @@ fn build_prompt_submitted(
 fn build_tool_event(
     event: &str,
     tool: &str,
-    agent_id: &str,
+    session_ref: &str,
     session_id: &str,
     slug: &str,
     cwd: &Path,
     input: &HookInput,
     raw_input: &Value,
-    role: &str,
 ) -> Value {
     json!({
         "app": "daemon8-cli-hook",
         "kind": "custom",
-        "channel": "agent",
+        "channel": "cli-hook",
         "severity": "info",
         "tags": [SYSTEM_TAG],
         "data": {
             "event": event,
-            "agent_id": agent_id,
+            "session_ref": session_ref,
             "tool": tool,
-            "role": role,
             "model": input.model,
             "cwd": cwd.display().to_string(),
             "session_id": session_id,
@@ -607,25 +591,23 @@ fn build_tool_event(
 #[allow(clippy::too_many_arguments)]
 fn build_permission_requested(
     tool: &str,
-    agent_id: &str,
+    session_ref: &str,
     session_id: &str,
     slug: &str,
     cwd: &Path,
     input: &HookInput,
     raw_input: &Value,
-    role: &str,
 ) -> Value {
     json!({
         "app": "daemon8-cli-hook",
         "kind": "custom",
-        "channel": "agent",
+        "channel": "cli-hook",
         "severity": "info",
         "tags": [SYSTEM_TAG],
         "data": {
-            "event": "agent.permission_requested",
-            "agent_id": agent_id,
+            "event": "cli.permission_requested",
+            "session_ref": session_ref,
             "tool": tool,
-            "role": role,
             "model": input.model,
             "cwd": cwd.display().to_string(),
             "session_id": session_id,
@@ -689,13 +671,6 @@ fn post_json(daemon_url: &str, body: &Value) -> Result<()> {
     Ok(())
 }
 
-fn default_capabilities(role: &str) -> Vec<&'static str> {
-    match role {
-        "watchdog" => vec!["reads_only"],
-        _ => vec!["writes_code", "runs_tests"],
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -706,39 +681,45 @@ mod tests {
 
     #[test]
     fn normalize_claude_events() {
-        assert_eq!(normalize_event("SessionStart"), AgentEvent::Joined);
-        assert_eq!(normalize_event("SessionEnd"), AgentEvent::Departed);
-        assert_eq!(normalize_event("PreToolUse"), AgentEvent::ToolPreUse);
-        assert_eq!(normalize_event("PostToolUse"), AgentEvent::ToolPostUse);
-        assert_eq!(normalize_event("PreCompact"), AgentEvent::PreCompact);
-        assert_eq!(normalize_event("PostCompact"), AgentEvent::PostCompact);
+        assert_eq!(
+            normalize_event("SessionStart"),
+            CliHookEvent::SessionStarted
+        );
+        assert_eq!(normalize_event("SessionEnd"), CliHookEvent::SessionEnded);
+        assert_eq!(normalize_event("PreToolUse"), CliHookEvent::ToolPreUse);
+        assert_eq!(normalize_event("PostToolUse"), CliHookEvent::ToolPostUse);
+        assert_eq!(normalize_event("PreCompact"), CliHookEvent::PreCompact);
+        assert_eq!(normalize_event("PostCompact"), CliHookEvent::PostCompact);
     }
 
     #[test]
     fn normalize_cursor_events() {
-        assert_eq!(normalize_event("sessionStart"), AgentEvent::Joined);
-        assert_eq!(normalize_event("sessionEnd"), AgentEvent::Departed);
-        assert_eq!(normalize_event("preToolUse"), AgentEvent::ToolPreUse);
-        assert_eq!(normalize_event("preCompact"), AgentEvent::PreCompact);
+        assert_eq!(
+            normalize_event("sessionStart"),
+            CliHookEvent::SessionStarted
+        );
+        assert_eq!(normalize_event("sessionEnd"), CliHookEvent::SessionEnded);
+        assert_eq!(normalize_event("preToolUse"), CliHookEvent::ToolPreUse);
+        assert_eq!(normalize_event("preCompact"), CliHookEvent::PreCompact);
     }
 
     #[test]
     fn normalize_gemini_events() {
-        assert_eq!(normalize_event("BeforeTool"), AgentEvent::ToolPreUse);
-        assert_eq!(normalize_event("AfterTool"), AgentEvent::ToolPostUse);
-        assert_eq!(normalize_event("PreCompress"), AgentEvent::PreCompact);
+        assert_eq!(normalize_event("BeforeTool"), CliHookEvent::ToolPreUse);
+        assert_eq!(normalize_event("AfterTool"), CliHookEvent::ToolPostUse);
+        assert_eq!(normalize_event("PreCompress"), CliHookEvent::PreCompact);
     }
 
     #[test]
     fn normalize_codex_events() {
-        assert_eq!(normalize_event("Stop"), AgentEvent::Departed);
+        assert_eq!(normalize_event("Stop"), CliHookEvent::SessionEnded);
         assert_eq!(
             normalize_event("PermissionRequest"),
-            AgentEvent::PermissionRequested
+            CliHookEvent::PermissionRequested
         );
         assert_eq!(
             normalize_event("UserPromptSubmit"),
-            AgentEvent::PromptSubmitted
+            CliHookEvent::PromptSubmitted
         );
     }
 
@@ -746,18 +727,18 @@ mod tests {
     fn normalize_opencode_events() {
         assert_eq!(
             normalize_event("session.compacting"),
-            AgentEvent::PreCompact
+            CliHookEvent::PreCompact
         );
     }
 
     #[test]
     fn unknown_event_falls_to_other() {
-        assert_eq!(normalize_event("RandomEvent"), AgentEvent::Other);
+        assert_eq!(normalize_event("RandomEvent"), CliHookEvent::Other);
     }
 
     #[test]
-    fn agent_id_format_is_stable() {
-        let id = agent_id("darkstar", "claude-code", "a3f1b2");
+    fn session_ref_format_is_stable() {
+        let id = session_ref("darkstar", "claude-code", "a3f1b2");
         assert_eq!(id, "darkstar:claude-code:a3f1b2");
     }
 
@@ -826,10 +807,15 @@ mod tests {
             Path::new("/tmp/project"),
             &input,
             &raw,
-            "solo",
         );
 
-        assert_eq!(observation["data"]["event"], "agent.permission_requested");
+        assert_eq!(observation["channel"], "cli-hook");
+        assert_eq!(observation["data"]["event"], "cli.permission_requested");
+        assert_eq!(
+            observation["data"]["session_ref"],
+            "host:codex-cli:session-1"
+        );
+        assert!(observation["data"].get("role").is_none());
         assert_eq!(observation["data"]["tool_name"], "Bash");
         assert_eq!(observation["data"]["command"], "cargo test");
         assert_eq!(observation["data"]["description"], "Escalated command");
@@ -841,9 +827,8 @@ mod tests {
     }
 
     #[test]
-    fn build_observations_for_pre_tool_use_emits_tool_event_and_heartbeat() {
-        let mut cfg = CliConfig::default();
-        cfg.project.role_default = "solo".into();
+    fn build_observations_for_pre_tool_use_emits_only_tool_event() {
+        let cfg = CliConfig::default();
         let input = HookInput {
             model: Some("claude-sonnet-4-6".into()),
             turn_id: Some("turn-tool".into()),
@@ -861,10 +846,10 @@ mod tests {
         });
 
         let observations = build_observations(ObservationContext {
-            event: AgentEvent::ToolPreUse,
+            event: CliHookEvent::ToolPreUse,
             cli_cfg: &cfg,
             tool: "codex-cli",
-            agent_id: "host:codex-cli:session-1",
+            session_ref: "host:codex-cli:session-1",
             host: "host",
             session_id: "session-1",
             slug: "daemon",
@@ -873,11 +858,16 @@ mod tests {
             raw_input: &raw,
         });
 
-        assert_eq!(observations.len(), 2);
-        assert_eq!(observations[0]["data"]["event"], "agent.tool_pre_use");
+        assert_eq!(observations.len(), 1);
+        assert_eq!(observations[0]["channel"], "cli-hook");
+        assert_eq!(observations[0]["data"]["event"], "cli.tool_pre_use");
+        assert_eq!(
+            observations[0]["data"]["session_ref"],
+            "host:codex-cli:session-1"
+        );
+        assert!(observations[0]["data"].get("role").is_none());
         assert_eq!(observations[0]["data"]["tool_use_id"], "tool-123");
         assert_eq!(observations[0]["data"]["command"], "git status");
-        assert_eq!(observations[1]["data"]["event"], "agent.heartbeat");
     }
 
     #[test]
@@ -896,20 +886,20 @@ mod tests {
         let raw = serde_json::json!({});
 
         for event in [
-            AgentEvent::Joined,
-            AgentEvent::PromptSubmitted,
-            AgentEvent::ToolPreUse,
-            AgentEvent::ToolPostUse,
-            AgentEvent::PermissionRequested,
-            AgentEvent::Departed,
-            AgentEvent::PreCompact,
-            AgentEvent::PostCompact,
+            CliHookEvent::SessionStarted,
+            CliHookEvent::PromptSubmitted,
+            CliHookEvent::ToolPreUse,
+            CliHookEvent::ToolPostUse,
+            CliHookEvent::PermissionRequested,
+            CliHookEvent::SessionEnded,
+            CliHookEvent::PreCompact,
+            CliHookEvent::PostCompact,
         ] {
             let observations = build_observations(ObservationContext {
                 event,
                 cli_cfg: &cfg,
                 tool: "test",
-                agent_id: "host:test:s1",
+                session_ref: "host:test:s1",
                 host: "host",
                 session_id: "s1",
                 slug: "proj",

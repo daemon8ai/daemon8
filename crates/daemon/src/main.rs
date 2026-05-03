@@ -71,8 +71,9 @@ enum Commands {
     Setup,
     /// Real-time alert relay for MCP clients (experimental)
     Channel,
-    /// Run a stateless background or one-shot daemon8 agent
-    Agent(cli::agent::AgentArgs),
+    /// Manage deliber8 background agents and inboxes
+    #[command(subcommand)]
+    Deliber8(cli::deliber8::Deliber8Subcommand),
     /// Diagnose common configuration and environment issues
     Doctor {
         /// Attempt to fix issues that can be repaired automatically
@@ -126,7 +127,7 @@ async fn main() -> Result<()> {
         Commands::Uninstall => cli::service::cmd_uninstall(),
         Commands::Setup => cli::setup::cmd_setup().await,
         Commands::Channel => cli::channel::cmd_channel().await,
-        Commands::Agent(args) => cli::agent::run_agent(args).await,
+        Commands::Deliber8(sub) => cli::deliber8::cmd_deliber8(sub),
         Commands::Doctor { fix } => cli::doctor::cmd_doctor(fix).await,
         Commands::CliHook(args) => cli::hook_handler::cmd_cli_hook(args),
         Commands::Init(args) => cli::init::cmd_init(args),

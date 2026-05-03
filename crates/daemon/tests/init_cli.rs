@@ -50,6 +50,14 @@ fn run_init_with_env(
     cmd.output().expect("spawn daemon8 init")
 }
 
+fn run_daemon8(args: &[&str]) -> std::process::Output {
+    Command::new(binary())
+        .args(args)
+        .stdin(Stdio::null())
+        .output()
+        .expect("spawn daemon8")
+}
+
 fn read_json(path: &Path) -> Value {
     let text = std::fs::read_to_string(path).expect("read target json");
     serde_json::from_str(&text).expect("parse target json")
@@ -107,6 +115,8 @@ fn cli_yes_writes_toml_only() {
     );
 
     assert!(work.join(".daemon8.toml").exists());
+    let toml = std::fs::read_to_string(work.join(".daemon8.toml")).unwrap();
+    assert!(!toml.contains("role_default"));
     assert!(
         !work.join(".claude").exists(),
         ".claude must NOT be created without --install-hooks"
@@ -157,6 +167,33 @@ fn cli_yes_with_install_hooks_local_writes_both() {
     assert!(
         Path::new(cmd.split(' ').next().unwrap()).is_absolute(),
         "expected absolute binary path, got {cmd}"
+    );
+}
+
+#[test]
+fn cli_deliber8_help_is_available() {
+    let out = run_daemon8(&["deliber8", "--help"]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("agent"));
+    assert!(stdout.contains("inbox"));
+    assert!(stdout.contains("memory"));
+}
+
+#[test]
+fn cli_agent_command_is_removed() {
+    let out = run_daemon8(&["agent", "--help"]);
+    assert!(!out.status.success());
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("unrecognized subcommand") || stderr.contains("unexpected argument"),
+        "stderr: {stderr}"
     );
 }
 

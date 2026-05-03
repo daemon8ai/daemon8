@@ -8,7 +8,7 @@ use std::env;
 use std::io::IsTerminal;
 use std::path::Path;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 
 use crate::cli_config::PROJECT_CONFIG_FILENAME;
 use crate::providers::{
@@ -36,10 +36,6 @@ impl From<HookInstallScope> for HookScope {
 
 #[derive(clap::Args, Default)]
 pub struct InitArgs {
-    /// Preset role for the agent declared by this config: queen | worker | solo | watchdog
-    #[arg(long, default_value = "solo")]
-    pub role: String,
-
     /// Overwrite an existing `.daemon8.toml` at this location
     #[arg(long)]
     pub force: bool,
@@ -80,10 +76,9 @@ pub fn cmd_init(args: InitArgs) -> Result<()> {
     }
 
     let non_interactive = args.yes || is_non_interactive() || !std::io::stdin().is_terminal();
-    let role = resolve_role(&args, non_interactive)?;
     let slug = args.slug.clone().unwrap_or_else(|| derive_slug(&cwd));
     let project_type = detect_project_type(&cwd);
-    let contents = render_template(&slug, &role, project_type);
+    let contents = render_template(&slug, project_type);
 
     std::fs::write(&target, contents)
         .with_context(|| format!("failed to write {}", target.display()))?;
@@ -110,7 +105,6 @@ pub fn cmd_init(args: InitArgs) -> Result<()> {
     }
 
     println!("wrote {}", target.display());
-    println!("role: {role}");
     println!("slug: {slug}");
     if !summary.provider_files.is_empty() {
         println!();
@@ -137,25 +131,6 @@ pub fn cmd_init(args: InitArgs) -> Result<()> {
     }
 
     Ok(())
-}
-
-fn resolve_role(args: &InitArgs, non_interactive: bool) -> Result<String> {
-    if non_interactive {
-        return validate_role(&args.role);
-    }
-
-    let role = cliclack::select("Choose the default role for this project")
-        .initial_value(args.role.clone())
-        .item("queen".to_string(), "queen", "orchestrator / synthesis")
-        .item(
-            "worker".to_string(),
-            "worker",
-            "specialized implementation agent",
-        )
-        .item("solo".to_string(), "solo", "single-agent default")
-        .item("watchdog".to_string(), "watchdog", "read-only observer")
-        .interact()?;
-    validate_role(&role)
 }
 
 fn resolve_providers(args: &InitArgs, non_interactive: bool) -> Result<Vec<Provider>> {
@@ -197,13 +172,6 @@ fn resolve_hook_scope(args: &InitArgs, non_interactive: bool) -> Result<Option<H
         .item(HookScope::Global, "global", "~/.claude/settings.json")
         .interact()?;
     Ok(Some(scope))
-}
-
-fn validate_role(raw: &str) -> Result<String> {
-    match raw {
-        "queen" | "worker" | "solo" | "watchdog" => Ok(raw.to_string()),
-        other => bail!("invalid --role '{other}'; expected one of: queen, worker, solo, watchdog"),
-    }
 }
 
 fn derive_slug(cwd: &Path) -> String {
@@ -286,7 +254,7 @@ fn sources_example(project_type: ProjectType) -> &'static str {
     }
 }
 
-fn render_template(slug: &str, role: &str, project_type: ProjectType) -> String {
+fn render_template(slug: &str, project_type: ProjectType) -> String {
     let sources = sources_example(project_type);
     format!(
         r##"# Daemon8 CLI hook configuration.
@@ -294,7 +262,6 @@ fn render_template(slug: &str, role: &str, project_type: ProjectType) -> String 
 
 [project]
 slug = "{slug}"
-role_default = "{role}"
 
 [enrollment]
 enabled = true
@@ -324,36 +291,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn template_includes_slug_and_role() {
-        let out = render_template("my-proj", "worker", ProjectType::Generic);
+    fn template_includes_slug_without_role() {
+        let out = render_template("my-proj", ProjectType::Generic);
         assert!(out.contains(r#"slug = "my-proj""#));
-        assert!(out.contains(r#"role_default = "worker""#));
+        assert!(!out.contains("role_default"));
     }
 
     #[test]
     fn template_laravel_sources_example() {
-        let out = render_template("my-app", "solo", ProjectType::Laravel);
+        let out = render_template("my-app", ProjectType::Laravel);
         assert!(out.contains("storage/logs/laravel.log"));
         assert!(out.contains(r#"# parser = "monolog""#));
     }
 
     #[test]
     fn template_symfony_sources_example() {
-        let out = render_template("my-app", "solo", ProjectType::Symfony);
+        let out = render_template("my-app", ProjectType::Symfony);
         assert!(out.contains("var/log/*.log"));
         assert!(out.contains(r#"# parser = "monolog""#));
     }
 
     #[test]
     fn template_node_sources_example() {
-        let out = render_template("my-app", "solo", ProjectType::Node);
+        let out = render_template("my-app", ProjectType::Node);
         assert!(out.contains("logs/app.log"));
         assert!(out.contains(r#"# parser = "json""#));
     }
 
     #[test]
     fn template_rust_sources_example() {
-        let out = render_template("my-app", "solo", ProjectType::Rust);
+        let out = render_template("my-app", ProjectType::Rust);
         assert!(out.contains("logs/app.log"));
         assert!(out.contains(r#"# parser = "line""#));
     }

@@ -46,21 +46,10 @@ pub struct CliConfig {
     pub project_config_path: Option<PathBuf>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProjectSection {
     #[serde(default)]
     pub slug: Option<String>,
-    #[serde(default = "default_role")]
-    pub role_default: String,
-}
-
-impl Default for ProjectSection {
-    fn default() -> Self {
-        Self {
-            slug: None,
-            role_default: default_role(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -141,10 +130,6 @@ pub struct ProviderEntry {
 
 fn default_true() -> bool {
     true
-}
-
-fn default_role() -> String {
-    "solo".into()
 }
 
 fn default_heartbeat() -> String {
@@ -290,9 +275,6 @@ fn merge_into(dst: &mut CliConfig, src: CliConfig) {
     if src.project.slug.is_some() {
         dst.project.slug = src.project.slug;
     }
-    if src.project.role_default != default_role() {
-        dst.project.role_default = src.project.role_default;
-    }
 
     dst.enrollment = src.enrollment;
     dst.features = src.features;
@@ -413,7 +395,6 @@ mod tests {
         let toml_text = r#"
 [project]
 slug = "daemonai"
-role_default = "solo"
 
 [enrollment]
 enabled = true
