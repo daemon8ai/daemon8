@@ -14,6 +14,9 @@ use serde::{Deserialize, Serialize};
 
 pub const SYSTEM_TAG: &str = "_system";
 
+pub mod envelope;
+pub use envelope::{EnvelopeKind, EnvelopePriority, EnvelopeRecord, EnvelopeStatus};
+
 macro_rules! arc_str_newtype {
     ($name:ident) => {
         #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

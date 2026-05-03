@@ -2,18 +2,21 @@
 // Copyright (c) 2026 Havy.tech, LLC
 
 pub mod card;
+pub mod envelope;
 mod lens;
 pub mod memory;
 mod surreal;
 
 pub use card::SurrealCardStore;
+pub use envelope::SurrealEnvelopeStore;
 pub use lens::{LensManager, LensStatus};
 pub use memory::SurrealMemoryStore;
 pub use surreal::SurrealStore;
 
 use daemon8_types::{
-    ActorCard, AgentCard, AgentStatus, Checkpoint, Filter, MemoryKind, Observation, ProjectCard,
-    RuntimeSummary, StateSlice, TeamCard, UserCard,
+    ActorCard, AgentCard, AgentStatus, Checkpoint, EnvelopeKind, EnvelopePriority, EnvelopeRecord,
+    EnvelopeStatus, Filter, MemoryKind, Observation, ProjectCard, RuntimeSummary, StateSlice,
+    TeamCard, UserCard,
 };
 use serde::{Deserialize, Serialize};
 
@@ -119,4 +122,40 @@ pub trait CardStore: Send + Sync {
         project_ref: Option<&str>,
         slug: &str,
     ) -> Result<Option<TeamCard>, StoreError>;
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct EnvelopeFilter {
+    pub inbox_address: Option<String>,
+    pub to_address: Option<String>,
+    pub from_address: Option<String>,
+    pub statuses: Option<Vec<EnvelopeStatus>>,
+    pub kinds: Option<Vec<EnvelopeKind>>,
+    pub priorities: Option<Vec<EnvelopePriority>>,
+    pub tags: Option<Vec<String>>,
+    pub project_refs: Option<Vec<String>>,
+    pub team_refs: Option<Vec<String>>,
+    pub correlation_id: Option<String>,
+    pub thread_id: Option<String>,
+    pub since_ns: Option<u64>,
+    pub limit: Option<usize>,
+}
+
+#[async_trait::async_trait]
+pub trait EnvelopeStore: Send + Sync {
+    async fn init_schema(&self) -> Result<(), StoreError>;
+    async fn enqueue_envelope(&self, record: EnvelopeRecord) -> Result<String, StoreError>;
+    async fn get_envelope(&self, id: &str) -> Result<Option<EnvelopeRecord>, StoreError>;
+    async fn query_inbox(&self, filter: &EnvelopeFilter)
+    -> Result<Vec<EnvelopeRecord>, StoreError>;
+    async fn list_pending(
+        &self,
+        inbox_address: &str,
+        now_ns: Option<u64>,
+        limit: Option<usize>,
+    ) -> Result<Vec<EnvelopeRecord>, StoreError>;
+    async fn mark_delivered(&self, id: &str, at_ns: u64) -> Result<(), StoreError>;
+    async fn mark_read(&self, id: &str, at_ns: u64) -> Result<(), StoreError>;
+    async fn mark_failed(&self, id: &str, reason: &str, at_ns: u64) -> Result<(), StoreError>;
+    async fn cancel_envelope(&self, id: &str, at_ns: u64) -> Result<(), StoreError>;
 }
