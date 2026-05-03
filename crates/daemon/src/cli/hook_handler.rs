@@ -22,7 +22,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use daemon8_types::SYSTEM_TAG;
+use daemon8_types::{SYSTEM_TAG, Severity};
 
 use crate::cli_config::{self, CliConfig};
 use crate::config;
@@ -115,6 +115,47 @@ enum CliHookEvent {
     PreCompact,
     PostCompact,
     Other,
+}
+
+// ---------------------------------------------------------------------------
+// Hook policy
+// ---------------------------------------------------------------------------
+//
+// Per MVP-07: hooks are async publishers, not prompt injectors. The policy
+// layer normalizes provider events and decides whether each event should
+// surface as an observation (and at what severity) or be dropped. The envelope
+// arm of the policy is deliberately deferred to a later MVP slice; the
+// receiver shape depends on the deliber8 runtime that lands in MVP-06.
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HookPolicy {
+    /// Drop the event entirely. No observation is emitted.
+    Drop,
+    /// Emit a `cli.*` observation at this severity.
+    Observe { severity: Severity },
+}
+
+impl HookPolicy {
+    /// Map a normalized hook event to its policy.
+    ///
+    /// Session boundaries, prompt submissions, and compactions surface at
+    /// `info` so they appear naturally in default queries. Permission
+    /// requests escalate to `warn` because the user's attention matters.
+    /// Tool pre/post events emit at `debug` because they are useful for
+    /// targeted diagnosis but flood the stream when surfaced at `info`.
+    /// Unknown events drop.
+    fn decide(event: CliHookEvent) -> HookPolicy {
+        use CliHookEvent::*;
+        use Severity::*;
+        match event {
+            SessionStarted | SessionEnded | PromptSubmitted | PreCompact | PostCompact => {
+                HookPolicy::Observe { severity: Info }
+            }
+            PermissionRequested => HookPolicy::Observe { severity: Warn },
+            ToolPreUse | ToolPostUse => HookPolicy::Observe { severity: Debug },
+            Other => HookPolicy::Drop,
+        }
+    }
 }
 
 fn normalize_event(raw: &str) -> CliHookEvent {
@@ -266,9 +307,9 @@ fn run(args: CliHookArgs) -> Result<()> {
         return Ok(());
     };
     let event = normalize_event(raw_event);
-    if matches!(event, CliHookEvent::Other) {
+    let HookPolicy::Observe { severity } = HookPolicy::decide(event) else {
         return Ok(());
-    }
+    };
 
     let Some(session_id) = effective_session_id(&input) else {
         return Ok(());
@@ -281,6 +322,7 @@ fn run(args: CliHookArgs) -> Result<()> {
 
     for observation in build_observations(ObservationContext {
         event,
+        severity,
         cli_cfg: &cli_cfg,
         tool: &tool,
         session_ref: &session_ref,
@@ -372,6 +414,7 @@ struct JoinContext<'a> {
 
 struct ObservationContext<'a> {
     event: CliHookEvent,
+    severity: Severity,
     cli_cfg: &'a CliConfig,
     tool: &'a str,
     session_ref: &'a str,
@@ -384,6 +427,18 @@ struct ObservationContext<'a> {
 }
 
 fn build_observations(ctx: ObservationContext<'_>) -> Vec<Value> {
+    let severity = ctx.severity;
+    let mut observations = build_observations_inner(ctx);
+    let severity_str = severity.to_string();
+    for obs in &mut observations {
+        if let Some(map) = obs.as_object_mut() {
+            map.insert("severity".to_string(), Value::String(severity_str.clone()));
+        }
+    }
+    observations
+}
+
+fn build_observations_inner(ctx: ObservationContext<'_>) -> Vec<Value> {
     let mut observations = Vec::new();
 
     match ctx.event {
@@ -847,6 +902,7 @@ mod tests {
 
         let observations = build_observations(ObservationContext {
             event: CliHookEvent::ToolPreUse,
+            severity: Severity::Debug,
             cli_cfg: &cfg,
             tool: "codex-cli",
             session_ref: "host:codex-cli:session-1",
@@ -861,6 +917,7 @@ mod tests {
         assert_eq!(observations.len(), 1);
         assert_eq!(observations[0]["channel"], "cli-hook");
         assert_eq!(observations[0]["data"]["event"], "cli.tool_pre_use");
+        assert_eq!(observations[0]["severity"], "debug");
         assert_eq!(
             observations[0]["data"]["session_ref"],
             "host:codex-cli:session-1"
@@ -897,6 +954,7 @@ mod tests {
         ] {
             let observations = build_observations(ObservationContext {
                 event,
+                severity: Severity::Info,
                 cli_cfg: &cfg,
                 tool: "test",
                 session_ref: "host:test:s1",
@@ -914,6 +972,98 @@ mod tests {
                     "missing _system tag on {event:?} observation: {obs}"
                 );
             }
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // HookPolicy
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn policy_drops_unknown_events() {
+        assert_eq!(HookPolicy::decide(CliHookEvent::Other), HookPolicy::Drop);
+    }
+
+    #[test]
+    fn policy_observes_session_boundaries_at_info() {
+        for event in [CliHookEvent::SessionStarted, CliHookEvent::SessionEnded] {
+            assert_eq!(
+                HookPolicy::decide(event),
+                HookPolicy::Observe {
+                    severity: Severity::Info
+                },
+                "{event:?} should be info"
+            );
+        }
+    }
+
+    #[test]
+    fn policy_observes_prompts_and_compactions_at_info() {
+        for event in [
+            CliHookEvent::PromptSubmitted,
+            CliHookEvent::PreCompact,
+            CliHookEvent::PostCompact,
+        ] {
+            assert_eq!(
+                HookPolicy::decide(event),
+                HookPolicy::Observe {
+                    severity: Severity::Info
+                },
+                "{event:?} should be info"
+            );
+        }
+    }
+
+    #[test]
+    fn policy_elevates_permission_request_to_warn() {
+        assert_eq!(
+            HookPolicy::decide(CliHookEvent::PermissionRequested),
+            HookPolicy::Observe {
+                severity: Severity::Warn
+            }
+        );
+    }
+
+    #[test]
+    fn policy_demotes_tool_events_to_debug() {
+        for event in [CliHookEvent::ToolPreUse, CliHookEvent::ToolPostUse] {
+            assert_eq!(
+                HookPolicy::decide(event),
+                HookPolicy::Observe {
+                    severity: Severity::Debug
+                },
+                "{event:?} should be debug"
+            );
+        }
+    }
+
+    #[test]
+    fn build_observations_applies_policy_severity_to_every_observation() {
+        let mut cfg = CliConfig::default();
+        cfg.enrollment.banner = Some("warn-banner".into());
+
+        let input = HookInput::default();
+        let raw = serde_json::json!({});
+
+        let observations = build_observations(ObservationContext {
+            event: CliHookEvent::SessionStarted,
+            severity: Severity::Warn,
+            cli_cfg: &cfg,
+            tool: "test",
+            session_ref: "host:test:s1",
+            host: "host",
+            session_id: "s1",
+            slug: "proj",
+            cwd: Path::new("/tmp"),
+            input: &input,
+            raw_input: &raw,
+        });
+
+        // SessionStarted with a banner emits two observations; both must carry
+        // the policy-chosen severity, not the legacy hardcoded "info".
+        assert_eq!(observations.len(), 2);
+        for obs in &observations {
+            assert_eq!(obs["severity"], "warn", "observation: {obs}");
         }
     }
 }
