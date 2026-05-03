@@ -7,7 +7,7 @@ use daemon8_chrome::ConnectionState;
 use daemon8_mcp::{DaemonMcp, DaemonMcpConfig};
 use daemon8_store::SurrealStore;
 
-const EXPECTED_TOOLS: [&str; 14] = [
+const EXPECTED_TOOLS: [&str; 17] = [
     "query_observations",
     "status",
     "create_checkpoint",
@@ -22,6 +22,9 @@ const EXPECTED_TOOLS: [&str; 14] = [
     "save_memory",
     "query_memory",
     "forget_memory",
+    "setup_status",
+    "setup_plan",
+    "setup_apply",
 ];
 
 fn tool_names(router: &rmcp::handler::server::router::tool::ToolRouter<DaemonMcp>) -> Vec<String> {
@@ -56,21 +59,31 @@ async fn make_mcp() -> DaemonMcp {
         broadcast_tx,
         lens,
         embedder: None,
+        setup_tool_fn: Some(Arc::new(|action| {
+            Box::pin(async move {
+                serde_json::to_string(&serde_json::json!({
+                    "action": action.action,
+                    "ok": true
+                }))
+                .unwrap()
+            })
+        })),
     })
 }
 
 #[test]
-fn composed_router_has_all_fourteen_tools() {
+fn composed_router_has_all_seventeen_tools() {
     let router = DaemonMcp::tool_router()
         + DaemonMcp::action_tool_router()
         + DaemonMcp::lens_tool_router()
-        + DaemonMcp::memory_tool_router();
+        + DaemonMcp::memory_tool_router()
+        + DaemonMcp::setup_tool_router();
     let names = tool_names(&router);
 
     assert_eq!(
         names.len(),
-        14,
-        "router must expose all 14 tools, got {}: {:?}",
+        17,
+        "router must expose all 17 tools, got {}: {:?}",
         names.len(),
         names
     );
@@ -86,7 +99,7 @@ fn composed_router_has_all_fourteen_tools() {
 }
 
 #[tokio::test]
-async fn live_mcp_exposes_all_fourteen_tools() {
+async fn live_mcp_exposes_all_seventeen_tools() {
     let mcp = make_mcp().await;
     let names: Vec<String> = mcp
         .tools_for_client()
@@ -96,8 +109,8 @@ async fn live_mcp_exposes_all_fourteen_tools() {
 
     assert_eq!(
         names.len(),
-        14,
-        "tools_for_client() must expose all 14 tools, got {}: {:?}",
+        17,
+        "tools_for_client() must expose all 17 tools, got {}: {:?}",
         names.len(),
         names
     );

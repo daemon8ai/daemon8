@@ -32,6 +32,7 @@ pub(crate) struct ServeArgs {
 
 pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> Result<()> {
     let mut cfg = config::load(config_path.as_deref()).context("failed to load configuration")?;
+    let setup_config_path = config_path.clone();
 
     if let Some(port) = args.port {
         cfg.server.port = port;
@@ -195,6 +196,12 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
 
     let (sub_tx, _sub_rx) = tokio::sync::watch::channel::<Option<daemon8_types::Filter>>(None);
     let sub_tx = Arc::new(sub_tx);
+    let setup_tool_fn: daemon8_mcp::SetupToolFn = Arc::new(move |action| {
+        let setup_config_path = setup_config_path.clone();
+        Box::pin(async move {
+            crate::cli::setup::cmd_setup_mcp(action, setup_config_path.as_deref()).await
+        })
+    });
 
     // Only start MCP stdio when stdin is a real FIFO from an MCP client.
     // A plain "not a TTY" check is insufficient: launchd, nohup, and shell
@@ -220,6 +227,7 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
             broadcast_tx: broadcast_tx.clone(),
             lens,
             embedder: embedder.clone(),
+            setup_tool_fn: Some(setup_tool_fn.clone()),
         });
         let cancel_on_eof = cancel.clone();
         tasks.spawn(async move {
@@ -270,6 +278,7 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
                     mcp_broadcast_tx.subscribe(),
                 )),
                 embedder: mcp_embedder.clone(),
+                setup_tool_fn: Some(setup_tool_fn.clone()),
             }))
         },
         Arc::new({

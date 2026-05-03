@@ -1,0 +1,1 @@
+Inspect daemon8 setup state without writing config, hook files, provider files, or runtime data.

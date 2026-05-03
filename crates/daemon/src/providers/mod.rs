@@ -7,7 +7,6 @@ pub mod hooks;
 pub use config::write_provider_config;
 pub use hooks::{install_claude_hooks, install_codex_hooks};
 
-use std::collections::BTreeMap;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
@@ -216,12 +215,4 @@ pub fn summarize_restarts(summary: &ProviderWriteSummary) -> Vec<String> {
         messages.push((*label).to_string());
     }
     messages
-}
-
-pub fn provider_map(items: &[DetectedProvider]) -> BTreeMap<Provider, DetectedProvider> {
-    let mut map = BTreeMap::new();
-    for item in items {
-        map.insert(item.provider, item.clone());
-    }
-    map
 }

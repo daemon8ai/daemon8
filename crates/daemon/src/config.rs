@@ -30,6 +30,8 @@ pub struct Config {
     pub sources: BTreeMap<String, SourceConfig>,
     #[serde(default)]
     pub embeddings: daemon8_embed::EmbedConfig,
+    #[serde(default)]
+    pub setup: SetupConfig,
     #[serde(skip)]
     pub config_dir: PathBuf,
 }
@@ -174,6 +176,27 @@ pub struct FileSourceConfig {
     pub tags: Vec<String>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SetupConfig {
+    #[serde(default)]
+    pub projects: BTreeMap<String, ProjectSetupState>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectSetupState {
+    pub slug: String,
+    pub root_path: String,
+    pub config_path: String,
+    pub applied_at_ns: u64,
+    #[serde(default)]
+    pub desired_scope: Vec<String>,
+    pub hook_policy: String,
+    #[serde(default)]
+    pub sources: Vec<String>,
+    #[serde(default)]
+    pub source_audit: Vec<String>,
+}
+
 fn default_line_parser() -> String {
     "line".into()
 }
@@ -233,6 +256,7 @@ impl Default for Config {
             logging: LoggingConfig::default(),
             sources: BTreeMap::new(),
             embeddings: daemon8_embed::EmbedConfig::default(),
+            setup: SetupConfig::default(),
             config_dir: project_dirs()
                 .map(|d| d.config_dir().to_path_buf())
                 .unwrap_or_else(|| PathBuf::from(".")),
@@ -452,6 +476,7 @@ mod tests {
         assert_eq!(cfg.logging.max_log_files, 5);
         assert!(cfg.storage.path.is_none());
         assert!(cfg.browser.path.is_none());
+        assert!(cfg.setup.projects.is_empty());
     }
 
     #[test]
@@ -643,5 +668,27 @@ path = "/tmp/test.log"
                 assert_eq!(f.parser, "line");
             }
         }
+    }
+
+    #[test]
+    fn setup_state_parses() {
+        let cfg: Config = toml::from_str(
+            r#"
+[setup.projects.daemon8]
+slug = "daemon8"
+root_path = "/tmp/daemon8"
+config_path = "/tmp/daemon8/.daemon8.toml"
+applied_at_ns = 42
+desired_scope = ["file-sources"]
+hook_policy = "manual"
+sources = ["daemon8.app-logs"]
+source_audit = ["daemon8.app-logs: registered"]
+"#,
+        )
+        .unwrap();
+
+        let state = &cfg.setup.projects["daemon8"];
+        assert_eq!(state.slug, "daemon8");
+        assert_eq!(state.sources, vec!["daemon8.app-logs"]);
     }
 }

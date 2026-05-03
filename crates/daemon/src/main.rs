@@ -67,8 +67,8 @@ enum Commands {
     Install,
     /// Remove daemon8 system service
     Uninstall,
-    /// Interactive setup wizard (run after install)
-    Setup,
+    /// Inspect, plan, or apply guided setup
+    Setup(cli::setup::SetupArgs),
     /// Real-time alert relay for MCP clients (experimental)
     Channel,
     /// Manage deliber8 background agents and inboxes
@@ -125,7 +125,7 @@ async fn main() -> Result<()> {
         }
         Commands::Install => cli::service::cmd_install(),
         Commands::Uninstall => cli::service::cmd_uninstall(),
-        Commands::Setup => cli::setup::cmd_setup().await,
+        Commands::Setup(args) => cli::setup::cmd_setup(cli.config, args).await,
         Commands::Channel => cli::channel::cmd_channel().await,
         Commands::Deliber8(sub) => cli::deliber8::cmd_deliber8(sub),
         Commands::Doctor { fix } => cli::doctor::cmd_doctor(fix).await,

@@ -1,0 +1,1 @@
+Apply daemon8 setup changes explicitly. This mutates setup state, runtime source registration, and any requested provider or hook files.

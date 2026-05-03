@@ -347,6 +347,51 @@ pub struct ForgetMemoryParams {
     pub id: String,
 }
 
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct SetupToolAction {
+    #[schemars(description = "Setup action: status, plan, or apply.")]
+    pub action: String,
+    #[schemars(description = "Project working directory. Defaults to daemon current directory.")]
+    pub cwd: Option<String>,
+    #[schemars(description = "Required to confirm mutating setup_apply.")]
+    pub yes: Option<bool>,
+    #[schemars(description = "Comma-separated providers to configure during setup_apply.")]
+    pub providers: Option<String>,
+    #[schemars(description = "Hook install scope for setup_apply: local, shared, or global.")]
+    pub install_hooks: Option<String>,
+    #[schemars(description = "Replace stale daemon8 hook entries during setup_apply.")]
+    pub force_hooks: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SetupStatusParams {
+    #[schemars(description = "Project working directory. Defaults to daemon current directory.")]
+    pub cwd: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SetupPlanParams {
+    #[schemars(description = "Project working directory. Defaults to daemon current directory.")]
+    pub cwd: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SetupApplyParams {
+    #[schemars(description = "Project working directory. Defaults to daemon current directory.")]
+    pub cwd: Option<String>,
+    #[schemars(description = "Required to confirm setup_apply writes.")]
+    pub yes: bool,
+    #[schemars(description = "Comma-separated providers to configure.")]
+    pub providers: Option<String>,
+    #[schemars(description = "Hook install scope: local, shared, or global.")]
+    pub install_hooks: Option<String>,
+    #[schemars(description = "Replace stale daemon8 hook entries.")]
+    pub force_hooks: Option<bool>,
+}
+
+pub type SetupToolFn =
+    Arc<dyn Fn(SetupToolAction) -> Pin<Box<dyn Future<Output = String> + Send>> + Send + Sync>;
+
 pub struct DaemonMcp {
     store: Arc<dyn StateModel>,
     memory_store: Option<Arc<dyn MemoryStore>>,
@@ -361,6 +406,7 @@ pub struct DaemonMcp {
     broadcast_tx: broadcast::Sender<(Arc<Observation>, Arc<str>)>,
     lens: Arc<LensManager>,
     embedder: Option<Arc<dyn daemon8_embed::Embedder>>,
+    setup_tool_fn: Option<SetupToolFn>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -377,6 +423,7 @@ pub struct DaemonMcpConfig {
     pub broadcast_tx: broadcast::Sender<(Arc<Observation>, Arc<str>)>,
     pub lens: Arc<LensManager>,
     pub embedder: Option<Arc<dyn daemon8_embed::Embedder>>,
+    pub setup_tool_fn: Option<SetupToolFn>,
 }
 
 #[tool_router(vis = "pub")]
@@ -387,6 +434,9 @@ impl DaemonMcp {
         router += Self::lens_tool_router();
         if cfg.memory_store.is_some() {
             router += Self::memory_tool_router();
+        }
+        if cfg.setup_tool_fn.is_some() {
+            router += Self::setup_tool_router();
         }
         Self {
             store: cfg.store,
@@ -402,6 +452,7 @@ impl DaemonMcp {
             broadcast_tx: cfg.broadcast_tx,
             lens: cfg.lens,
             embedder: cfg.embedder,
+            setup_tool_fn: cfg.setup_tool_fn,
             tool_router: router,
         }
     }
@@ -823,8 +874,60 @@ impl DaemonMcp {
     }
 }
 
+#[tool_router(router = setup_tool_router, vis = "pub")]
+impl DaemonMcp {
+    #[doc = include_str!("../tool_descriptions/setup_status.txt")]
+    #[tool(name = "setup_status")]
+    async fn setup_status(&self, Parameters(params): Parameters<SetupStatusParams>) -> String {
+        self.call_setup_tool(SetupToolAction {
+            action: "status".into(),
+            cwd: params.cwd,
+            yes: None,
+            providers: None,
+            install_hooks: None,
+            force_hooks: None,
+        })
+        .await
+    }
+
+    #[doc = include_str!("../tool_descriptions/setup_plan.txt")]
+    #[tool(name = "setup_plan")]
+    async fn setup_plan(&self, Parameters(params): Parameters<SetupPlanParams>) -> String {
+        self.call_setup_tool(SetupToolAction {
+            action: "plan".into(),
+            cwd: params.cwd,
+            yes: None,
+            providers: None,
+            install_hooks: None,
+            force_hooks: None,
+        })
+        .await
+    }
+
+    #[doc = include_str!("../tool_descriptions/setup_apply.txt")]
+    #[tool(name = "setup_apply")]
+    async fn setup_apply(&self, Parameters(params): Parameters<SetupApplyParams>) -> String {
+        self.call_setup_tool(SetupToolAction {
+            action: "apply".into(),
+            cwd: params.cwd,
+            yes: Some(params.yes),
+            providers: params.providers,
+            install_hooks: params.install_hooks,
+            force_hooks: params.force_hooks,
+        })
+        .await
+    }
+}
+
 // Command handler implementations (inner methods, not registered with tool_router).
 impl DaemonMcp {
+    async fn call_setup_tool(&self, action: SetupToolAction) -> String {
+        match &self.setup_tool_fn {
+            Some(f) => f(action).await,
+            None => error_json("setup tools not available"),
+        }
+    }
+
     async fn connect_browser_inner(&self, params: ConnectParams) -> String {
         let endpoint = params.endpoint.clone();
         *self
