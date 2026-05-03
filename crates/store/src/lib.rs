@@ -1,15 +1,20 @@
 // SPDX-License-Identifier: LicenseRef-FCL-1.0-ALv2
 // Copyright (c) 2026 Havy.tech, LLC
 
+pub mod card;
 mod lens;
 pub mod memory;
 mod surreal;
 
+pub use card::SurrealCardStore;
 pub use lens::{LensManager, LensStatus};
 pub use memory::SurrealMemoryStore;
 pub use surreal::SurrealStore;
 
-use daemon8_types::{Checkpoint, Filter, MemoryKind, Observation, RuntimeSummary, StateSlice};
+use daemon8_types::{
+    ActorCard, AgentCard, AgentStatus, Checkpoint, Filter, MemoryKind, Observation, ProjectCard,
+    RuntimeSummary, StateSlice, TeamCard, UserCard,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, thiserror::Error)]
@@ -73,4 +78,45 @@ pub trait MemoryStore: Send + Sync {
     async fn get_memory(&self, id: &str) -> Result<Option<Memory>, StoreError>;
     async fn update_memory(&self, memory: Memory) -> Result<(), StoreError>;
     async fn forget_memory(&self, id: &str) -> Result<bool, StoreError>;
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct AgentCardFilter {
+    pub statuses: Option<Vec<AgentStatus>>,
+    pub project_ref: Option<String>,
+    pub team_ref: Option<String>,
+    pub limit: Option<usize>,
+}
+
+#[async_trait::async_trait]
+pub trait CardStore: Send + Sync {
+    async fn init_schema(&self) -> Result<(), StoreError>;
+
+    async fn upsert_actor(&self, card: ActorCard) -> Result<(), StoreError>;
+    async fn get_actor_by_address(&self, address: &str) -> Result<Option<ActorCard>, StoreError>;
+    async fn list_actors(&self) -> Result<Vec<ActorCard>, StoreError>;
+
+    async fn upsert_user(&self, card: UserCard) -> Result<(), StoreError>;
+    async fn get_user_by_address(&self, address: &str) -> Result<Option<UserCard>, StoreError>;
+
+    async fn upsert_agent(&self, card: AgentCard) -> Result<(), StoreError>;
+    async fn get_agent_by_slug(&self, slug: &str) -> Result<Option<AgentCard>, StoreError>;
+    async fn list_agents(&self, filter: &AgentCardFilter) -> Result<Vec<AgentCard>, StoreError>;
+    async fn update_agent_status(
+        &self,
+        id: &str,
+        status: AgentStatus,
+        updated_at: u64,
+    ) -> Result<(), StoreError>;
+    async fn record_agent_heartbeat(&self, id: &str, seen_at: u64) -> Result<(), StoreError>;
+
+    async fn upsert_project(&self, card: ProjectCard) -> Result<(), StoreError>;
+    async fn get_project_by_slug(&self, slug: &str) -> Result<Option<ProjectCard>, StoreError>;
+
+    async fn upsert_team(&self, card: TeamCard) -> Result<(), StoreError>;
+    async fn get_team_by_slug(
+        &self,
+        project_ref: Option<&str>,
+        slug: &str,
+    ) -> Result<Option<TeamCard>, StoreError>;
 }

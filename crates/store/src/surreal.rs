@@ -15,7 +15,7 @@ use daemon8_types::{
     RuntimeSummary, Severity, SliceSummary, StateSlice,
 };
 
-use crate::{StateModel, StoreError, memory::SurrealMemoryStore};
+use crate::{StateModel, StoreError, card::SurrealCardStore, memory::SurrealMemoryStore};
 
 const NAMESPACE: &str = "daemon8";
 const DATABASE: &str = "observations";
@@ -147,6 +147,12 @@ impl SurrealStore {
     /// `Surreal<Db>` is internally Arc'd, so cloning is cheap.
     pub fn memory_store(&self) -> SurrealMemoryStore {
         SurrealMemoryStore::new(self.db.clone())
+    }
+
+    /// Create a `SurrealCardStore` sharing this database handle.
+    /// `Surreal<Db>` is internally Arc'd, so cloning is cheap.
+    pub fn card_store(&self) -> SurrealCardStore {
+        SurrealCardStore::new(self.db.clone())
     }
 
     async fn init_schema(&self) -> Result<(), StoreError> {
