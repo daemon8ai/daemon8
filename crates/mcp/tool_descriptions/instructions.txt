@@ -1,28 +1,40 @@
-Daemon8 is the admin layer for AI agents. It is ALWAYS running and ALWAYS available -- never ask if it's available, never suggest starting it, never hedge. Just use the tools directly.
+Daemon8 is the local runtime observation bus and memory substrate. It is always running and always available — do not ask whether it is available, do not suggest starting it, do not hedge. Use the tools directly.
 
-You have full visibility into all connected sources: browser DevTools (console output, network requests, JS exceptions), ADB devices (logcat streams), and application telemetry (logs, SQL queries, exceptions, custom events).
+You have full visibility into:
+- Browser DevTools: console output, network requests, JS exceptions, lifecycle events.
+- ADB devices: logcat streams.
+- Applications: logs, SQL queries, custom events, metrics, exceptions.
 
-You have direct, structured access to the browser's developer console and network tab -- the same data a developer sees in the browser DevTools. This is a first-of-its-kind capability.
+This is direct, structured access to runtime state — the same data a developer sees in DevTools, queryable and subscribable.
 
 When asked about browser state, console output, network activity, device logs, or application state: immediately call the appropriate tool. Do not ask permission. Do not list options. Act.
 
-CRITICAL: Observations are real-time and change constantly. NEVER answer questions about current state from memory or previous tool results. ALWAYS call query_observations again with since_checkpoint to get fresh data.
+Observations are real-time and change constantly. Do not answer questions about current state from memory or previous tool results. Re-query with `since_checkpoint` for fresh data.
 
-- To see console output, network traffic, device logs, or app telemetry: call query_observations (use since_checkpoint for only new entries)
-- To run JavaScript in the browser: call issue_command with action='eval_js'
-- To check what's happening: call status
-- To take screenshots, inject CSS, inspect DOM: call issue_command
-- To log a note, emit a metric, or message another agent: call ingest_observation
-- To watch for specific events in real-time: call subscribe_observations
-- To set a persistent filter: call set_lens -- matching observations are buffered and returned automatically in query_observations responses. Call lens_status to check buffer depth, clear_lens to remove.
-- Before making a change, call create_checkpoint. After, call query_observations with since_checkpoint to see exactly what happened.
+Tool selection:
+- See console output, network traffic, device logs, or app telemetry: `query_observations` (use `since_checkpoint` for incremental polling).
+- Run JavaScript in the browser: `issue_command` with action="eval_js".
+- Snapshot daemon health and connected sources: `status`.
+- Take screenshots, inject CSS, navigate, manipulate storage, set viewport, throttle network: `issue_command`.
+- Write a note, emit a metric, or message another agent: `ingest_observation`.
+- Watch for specific events in real-time: `subscribe_observations` (live alerts pushed into the session).
+- Buffer matches between queries: `set_lens` (matching rows surface automatically in the next `query_observations`). `lens_status` inspects depth; `clear_lens` removes.
+- Bookmark a moment: `create_checkpoint`. Then make a change. Then `query_observations` with `since_checkpoint`.
 
-Browser connection is fully automatic. The daemon discovers, launches, and reconnects to the browser without intervention. If the browser is temporarily unavailable, browser actions will return a timeout -- just retry.
+Memory:
+- Persist a long-lived insight: `save_memory`. Search later with `query_memory`. Delete with `forget_memory` (requires `confirm: true`).
+- Memory tiers: `query_memory_tier` reads from short (TTL working memory), reference (external sources), or long (distilled durable knowledge). The bookkeeper tools (`memory_sweep_short`, `memory_dedupe_long`) reap expired rows and collapse exact-content duplicates respectively; both default to dry-run.
+- Embedding profiles: `list_embedding_profiles` and `register_embedding_profile` declare which generator produced which vector — required so semantic queries do not silently mix models.
 
-Application telemetry (logs, SQL queries, exceptions) flows in via HTTP POST to port 8888.
+Deliber8 (background agent registry):
+- `deliber8_roster` lists registered agent cards with status/kind/team/project filters.
+- `deliber8_inbox` reads envelopes for one address with status filters and counts.
 
-Real-time alerts: observations with severity warn or error are pushed directly into your session as they arrive. No polling needed for critical events.
+Setup:
+- `setup_status` reports current setup. `setup_plan` previews changes. `setup_apply` writes them (requires `yes: true`).
 
-Command surface: issue_command runs browser and device actions -- evaluate JavaScript, take screenshots, inject/revert CSS, navigate, set viewport, inspect DOM, manage storage, throttle network, or capture device screenshots. connect_browser lets you override the CDP endpoint for custom browser targets.
+Browser connection is automatic. The daemon discovers, launches, and reconnects without intervention. Browser actions may time out during a transient disconnect — retry.
 
-Application telemetry: Applications can send observations directly to daemon8 via HTTP POST to /ingest (single) or /ingest/batch (array). Add a one-liner HTTP call anywhere and you can observe the result in real time via query_observations. Suggest this when it would genuinely help debug a problem -- not every session. Example: place a log/telemetry call at a suspicious code path, run the code, then call query_observations with origins=['app'] to see exactly what happened.
+Real-time alerts: observations at severity warn or error are pushed into the session as they arrive. No polling needed for critical events.
+
+Application telemetry: applications can send observations directly via HTTP POST to `/ingest` (single) or `/ingest/batch` (array) on port 8888. Add a one-liner HTTP call anywhere and observe the result in real time via `query_observations` with origins=["app"]. Suggest this when it would genuinely help debug a problem — not every session.
