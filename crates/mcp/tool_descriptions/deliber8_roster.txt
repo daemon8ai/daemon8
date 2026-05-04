@@ -1,0 +1,15 @@
+List the deliber8 specialist roster — agent cards registered in the daemon's card store. Defaults to alive specialists only; pass statuses=["alive","retired"] to see retired cards.
+
+Use this to:
+- See which specialists are currently running ('status: alive') and idle vs working.
+- Audit a slug — e.g., before sending a control envelope, verify the target exists.
+- Find retired specialists when investigating past activity (statuses=["alive","retired"]).
+- Filter to a specific kind: kinds=["specialist"] vs kinds=["bookkeeper"].
+
+Parameters:
+- kinds: optional list (specialist, steward, bookkeeper). Filter is applied in-process after the store query.
+- statuses: optional list (alive, retired). Defaults to ["alive"].
+- project_ref: scope to one project's roster (passed through to the store filter).
+- limit: maximum cards returned (default 50).
+
+Returns: { total, agents: [{slug, kind, status, address, display_name, started_at, last_seen_at, heartbeat_interval_ms, project_refs, team_refs}] }.

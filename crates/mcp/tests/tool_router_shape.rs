@@ -7,7 +7,7 @@ use daemon8_chrome::ConnectionState;
 use daemon8_mcp::{DaemonMcp, DaemonMcpConfig};
 use daemon8_store::SurrealStore;
 
-const EXPECTED_TOOLS: [&str; 18] = [
+const EXPECTED_TOOLS: [&str; 19] = [
     "query_observations",
     "status",
     "create_checkpoint",
@@ -26,6 +26,7 @@ const EXPECTED_TOOLS: [&str; 18] = [
     "setup_plan",
     "setup_apply",
     "deliber8_inbox",
+    "deliber8_roster",
 ];
 
 fn tool_names(router: &rmcp::handler::server::router::tool::ToolRouter<DaemonMcp>) -> Vec<String> {
@@ -79,7 +80,7 @@ async fn make_mcp() -> DaemonMcp {
 }
 
 #[test]
-fn composed_router_has_all_eighteen_tools() {
+fn composed_router_has_all_nineteen_tools() {
     let router = DaemonMcp::tool_router()
         + DaemonMcp::action_tool_router()
         + DaemonMcp::lens_tool_router()
@@ -90,8 +91,8 @@ fn composed_router_has_all_eighteen_tools() {
 
     assert_eq!(
         names.len(),
-        18,
-        "router must expose all 18 tools, got {}: {:?}",
+        19,
+        "router must expose all 19 tools, got {}: {:?}",
         names.len(),
         names
     );
@@ -107,7 +108,7 @@ fn composed_router_has_all_eighteen_tools() {
 }
 
 #[tokio::test]
-async fn live_mcp_exposes_all_eighteen_tools() {
+async fn live_mcp_exposes_all_nineteen_tools() {
     let mcp = make_mcp().await;
     let names: Vec<String> = mcp
         .tools_for_client()
@@ -117,8 +118,8 @@ async fn live_mcp_exposes_all_eighteen_tools() {
 
     assert_eq!(
         names.len(),
-        18,
-        "tools_for_client() must expose all 18 tools, got {}: {:?}",
+        19,
+        "tools_for_client() must expose all 19 tools, got {}: {:?}",
         names.len(),
         names
     );

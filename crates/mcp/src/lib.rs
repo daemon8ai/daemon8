@@ -407,6 +407,26 @@ pub struct Deliber8InboxParams {
     pub limit: Option<usize>,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct Deliber8RosterParams {
+    #[schemars(
+        description = "Filter by agent kind (specialist, steward, bookkeeper). Applied in-process after the store query. Omit for all kinds."
+    )]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kinds: Option<Vec<String>>,
+    #[schemars(
+        description = "Filter by agent status (alive, retired). Defaults to alive only when omitted."
+    )]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub statuses: Option<Vec<String>>,
+    #[schemars(description = "Scope to one project ref (exact match).")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_ref: Option<String>,
+    #[schemars(description = "Maximum cards to return (default 50).")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+}
+
 pub type SetupToolFn =
     Arc<dyn Fn(SetupToolAction) -> Pin<Box<dyn Future<Output = String> + Send>> + Send + Sync>;
 
@@ -414,7 +434,6 @@ pub struct DaemonMcp {
     store: Arc<dyn StateModel>,
     memory_store: Option<Arc<dyn MemoryStore>>,
     envelope_store: Option<Arc<dyn EnvelopeStore>>,
-    #[allow(dead_code)] // wired in Phase 4; consumed by deliber8_roster (Phase 5)
     card_store: Option<Arc<dyn CardStore>>,
     obs_tx: tokio::sync::mpsc::UnboundedSender<Observation>,
     chrome_tx: tokio::sync::mpsc::Sender<ChromeCommand>,
@@ -973,6 +992,88 @@ impl DaemonMcp {
         };
         deliber8_inbox_inner(envelope_store.as_ref(), params).await
     }
+
+    #[doc = include_str!("../tool_descriptions/deliber8_roster.txt")]
+    #[tool(name = "deliber8_roster")]
+    async fn deliber8_roster(
+        &self,
+        Parameters(params): Parameters<Deliber8RosterParams>,
+    ) -> String {
+        let Some(card_store) = self.card_store.as_ref() else {
+            return error_json("deliber8 tools not available: card store not configured");
+        };
+        deliber8_roster_inner(card_store.as_ref(), params).await
+    }
+}
+
+/// Pure handler for `deliber8_roster`. Same shape as `deliber8_inbox_inner` —
+/// extracted so tests can drive it without the full DaemonMcp harness.
+pub async fn deliber8_roster_inner(
+    card_store: &dyn CardStore,
+    params: Deliber8RosterParams,
+) -> String {
+    let parsed_kinds = match parse_agent_kinds(params.kinds.as_deref()) {
+        Ok(v) => v,
+        Err(e) => return error_json(&e),
+    };
+    let parsed_statuses = match parse_agent_statuses(params.statuses.as_deref()) {
+        Ok(v) => v.or_else(|| Some(vec![daemon8_types::AgentStatus::Alive])),
+        Err(e) => return error_json(&e),
+    };
+
+    let filter = daemon8_store::AgentCardFilter {
+        statuses: parsed_statuses,
+        project_ref: params.project_ref.clone(),
+        team_ref: None,
+        limit: params.limit,
+    };
+
+    let cards = match card_store.list_agents(&filter).await {
+        Ok(v) => v,
+        Err(e) => return error_json(&format!("list_agents failed: {e}")),
+    };
+
+    let agents: Vec<&daemon8_types::AgentCard> = match parsed_kinds.as_ref() {
+        Some(kinds) => cards
+            .iter()
+            .filter(|c| kinds.contains(&c.agent_kind))
+            .collect(),
+        None => cards.iter().collect(),
+    };
+
+    serde_json::json!({
+        "total": agents.len(),
+        "agents": agents,
+    })
+    .to_string()
+}
+
+fn parse_agent_kinds(
+    raw: Option<&[String]>,
+) -> Result<Option<Vec<daemon8_types::AgentKind>>, String> {
+    let Some(list) = raw else { return Ok(None) };
+    let mut parsed = Vec::with_capacity(list.len());
+    for s in list {
+        match s.parse::<daemon8_types::AgentKind>() {
+            Ok(v) => parsed.push(v),
+            Err(_) => return Err(format!("unknown agent kind: {s}")),
+        }
+    }
+    Ok(Some(parsed))
+}
+
+fn parse_agent_statuses(
+    raw: Option<&[String]>,
+) -> Result<Option<Vec<daemon8_types::AgentStatus>>, String> {
+    let Some(list) = raw else { return Ok(None) };
+    let mut parsed = Vec::with_capacity(list.len());
+    for s in list {
+        match s.parse::<daemon8_types::AgentStatus>() {
+            Ok(v) => parsed.push(v),
+            Err(_) => return Err(format!("unknown agent status: {s}")),
+        }
+    }
+    Ok(Some(parsed))
 }
 
 /// Pure handler for `deliber8_inbox`. Extracted from the MCP tool method so
