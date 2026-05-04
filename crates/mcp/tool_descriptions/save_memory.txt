@@ -1,1 +1,20 @@
-Save a long-term memory. Use this to persist patterns, decisions, error signatures, session summaries, or user-flagged insights that should survive across sessions. Memories are searchable by kind, tags, project, and text content. Returns the memory ID for later retrieval or deletion.
+Persist a long-term memory entry that survives across sessions. Memories are searchable by kind, tags, project, and text content via `query_memory`.
+
+Use this to:
+- Record a non-obvious pattern or decision so a future session can recall it.
+- Capture a stable error signature with the fix that resolved it.
+- Save a session summary at the end of a meaningful working session.
+- Flag user-stated preferences or invariants for future reference.
+
+Parameters:
+- content: string. Required. The memory body. Plain text — no formatting requirements.
+- kind: optional string. One of: pattern, decision, error_signature, session_summary, user_flagged. Defaults to user_flagged.
+- tags: optional list of strings. Free-form tags for retrieval (e.g. ["postgres", "migrations"]).
+- source_observations: optional list of integers. Observation ids that informed this memory.
+- project_slug: optional string. Scope to one project for retrieval.
+- session_id: optional string. The session that produced this memory.
+- confidence: optional number, 0.0 to 1.0. Defaults to 1.0.
+
+Returns: { id: <string>, ... full memory record }. Persist the returned id if you anticipate later updates or deletion.
+
+Memories are also embedded when an embedding provider is configured. They are stored in the legacy `memory` table; for the new tier surface (working memory, references, distilled long-term knowledge), see the `query_memory_tier` and bookkeeper tools.

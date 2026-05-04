@@ -1,3 +1,9 @@
-Delete a long-term memory by ID. Use when a memory is outdated, incorrect, or no longer relevant. Returns whether the memory existed.
+Delete a long-term memory by id. Use when a memory is outdated, incorrect, or no longer relevant.
 
-Requires `confirm: true` to delete. Any other value (including absent) returns an error and leaves the memory intact. This gate exists to prevent silent data loss when an agent misroutes a delete intent.
+Parameters:
+- id: string. Required. The memory id returned by `save_memory` or `query_memory`.
+- confirm: boolean. Required to delete. Must be `true`. Any other value (including absent) returns an error and leaves the memory intact. This gate exists to prevent silent data loss when an agent misroutes a delete intent.
+
+Returns: { deleted: true | false }. `false` means the id did not exist; otherwise the row is gone.
+
+Mutating. There is no undo. Consider `query_memory` first to confirm you have the right id.
