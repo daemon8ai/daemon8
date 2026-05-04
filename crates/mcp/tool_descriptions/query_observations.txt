@@ -1,12 +1,25 @@
-Query runtime observations from all connected sources -- browser console, network requests, JS exceptions, device telemetry, and application logs. Returns logs, HTTP exchanges, exceptions, browser console output, JS exceptions, SQL queries, and application telemetry. IMPORTANT: Observations are real-time -- ALWAYS re-call to get fresh data. Never rely on previous results.
+Query runtime observations from all connected sources — browser console, network requests, JS exceptions, device telemetry, and application logs. Returns logs, HTTP exchanges, exceptions, browser console output, JS exceptions, SQL queries, and application telemetry.
 
-Filters: kinds (log, query, http_exchange, exception, js_exception, lifecycle, state_snapshot, metric, custom), severity_min (trace/debug/info/warn/error), origins (app:name, browser, browser:tab_id, device, device:serial), text_match (substring search in data). Use since_checkpoint for incremental polling.
+Observations are real-time. Re-call to get fresh data; do not assume previous results are still current.
+
+Parameters:
+- kinds: optional list of strings. Filter by kind: log, query, http_exchange, exception, js_exception, lifecycle, state_snapshot, metric, custom.
+- severity_min: optional string. Minimum severity threshold: trace, debug, info, warn, error.
+- origins: optional list of strings. Origin patterns: "app", "app:name", "browser", "browser:tab_id", "device", "device:serial". Omit to see all origins.
+- text_match: optional string. Substring search across observation data.
+- since_checkpoint: optional integer. Return only observations recorded after this checkpoint id (from `create_checkpoint`).
+- limit: optional integer. Maximum results. Default 50.
+- correlation_id: optional string. Exact-match filter on correlation id.
+- tags: optional list of strings. All listed tags must be present.
+- include_system: optional boolean. Include system/infrastructure observations (tagged "_system"). Excluded by default.
+
+Returns: { observations: [ ... ], total: <int>, lens: { ... lens buffer slice if active } }.
 
 Common patterns:
-- After running code: check origins=['app'] for application logs, SQL queries, and exceptions
-- Monitor a specific service: origins=['app:user-api'] with since_checkpoint for incremental updates
-- Find a specific error: text_match='ConnectionRefused' or severity_min='error'
-- Read messages from another agent: origins=['app:agent-name'] with since_checkpoint
-- Browser console errors: kinds=['js_exception'] or origins=['browser'] for all browser tabs
-- Specific browser tab: origins=['browser:tab_id'] where tab_id is from issue_command with action='list_tabs'
-- Device logs: origins=['device'] or origins=['device:serial'] for a specific device
+- After running code: origins=["app"] picks up application logs, SQL queries, and exceptions.
+- Monitor a specific service: origins=["app:user-api"] with `since_checkpoint` for incremental updates.
+- Find a specific error: text_match="ConnectionRefused" or severity_min="error".
+- Read messages from another agent: origins=["app:agent-name"] with `since_checkpoint`.
+- Browser console errors: kinds=["js_exception"] or origins=["browser"] for all browser tabs.
+- Specific browser tab: origins=["browser:tab_id"] where tab_id comes from `issue_command` with action="list_tabs".
+- Device logs: origins=["device"] or origins=["device:serial"] for a specific device.

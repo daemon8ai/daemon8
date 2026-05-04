@@ -1,9 +1,19 @@
-Configure which observations trigger real-time alerts in your session. Default: severity >= warn only.
+Configure which observations trigger real-time alerts in this session. Default: severity >= warn. Subscription persists for the session; call again to change the filter.
 
-Examples:
-- Watch only exceptions: kinds=['exception'], severity_min='error'
-- Monitor a specific app: origins=['app:user-api']
-- Listen for messages from another agent: origins=['app:agent-b'], severity_min='info'
-- Reset to default: call with no parameters
+Use this to:
+- Watch only exceptions: kinds=["exception"], severity_min="error".
+- Monitor a specific app: origins=["app:user-api"].
+- Listen for messages from another agent: origins=["app:agent-b"], severity_min="info".
+- Reset to default: call with no parameters.
 
-Subscription persists for the session. Call again to change filters.
+Parameters:
+- kinds: optional list of strings. Filter by kind (log, query, http_exchange, exception, js_exception, lifecycle, state_snapshot, metric, custom).
+- severity_min: optional string. Minimum severity (trace, debug, info, warn, error).
+- origins: optional list of strings. Origin patterns ("app:name", "browser", "device:serial").
+- text_match: optional string. Substring search across observation data.
+- correlation_id: optional string. Exact-match filter.
+- tags: optional list of strings. All listed tags must be present.
+
+Returns: { active: true, filter: { ... echo of inputs ... } }.
+
+Subscription is in addition to `set_lens`: subscriptions push live alerts; lens buffers matching rows for the next `query_observations` call.
