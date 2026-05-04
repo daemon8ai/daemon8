@@ -291,7 +291,12 @@ fn apply_setup(
     write_global_config(&ctx.global_config_path, &cfg)?;
     apply_provider_and_hooks(&ctx.cwd, apply_args)?;
 
-    Ok(SetupPlan { status, actions })
+    let post_ctx = setup_context(config_path, cwd)?;
+    let post_status = build_status(&post_ctx);
+    Ok(SetupPlan {
+        status: post_status,
+        actions,
+    })
 }
 
 fn setup_context(config_path: Option<&str>, cwd: &Path) -> Result<SetupContext> {
@@ -754,6 +759,34 @@ parser = "line"
         assert!(parsed.sources.contains_key("demo.app"));
         assert_eq!(parsed.sources.len(), 1);
         assert!(parsed.setup.projects.contains_key("demo"));
+    }
+
+    #[test]
+    fn apply_reports_post_apply_state() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir(project.join(".git")).unwrap();
+        write_project_config(
+            &project,
+            r#"
+[project]
+slug = "demo"
+"#,
+        );
+        let global = tmp.path().join("config.toml");
+        let args = SetupApplyArgs {
+            yes: true,
+            ..SetupApplyArgs::default()
+        };
+
+        let result = apply_setup(Some(global.to_str().unwrap()), &project, &args).unwrap();
+
+        assert!(
+            result.status.global_setup_applied,
+            "apply output must reflect post-apply state, not the pre-apply snapshot"
+        );
+        assert!(result.status.project.config_present);
     }
 
     #[test]
