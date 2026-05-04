@@ -1,0 +1,13 @@
+Inspect a deliber8 specialist's inbox without draining it. Returns counts by envelope status (queued, delivered, read, failed, cancelled) and the matching envelopes. Read-only — does not transition envelope state.
+
+Use this to:
+- Verify a specialist is keeping up: a non-trivial 'queued' count means the consumer is not draining.
+- Audit a control-stop or message exchange: filter by status='delivered' or 'read' to see what was processed.
+- Find stuck or failed deliveries: filter by status='failed'.
+
+Parameters:
+- address: inbox address (required), e.g. 'agent:my-specialist'.
+- statuses: optional list to filter (queued, delivered, read, failed, cancelled). Omit for all.
+- limit: maximum envelopes returned (default 20).
+
+Returns: { address, total, queued, delivered, read, failed, cancelled, envelopes: [...] }.

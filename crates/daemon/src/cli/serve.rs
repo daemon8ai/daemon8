@@ -54,6 +54,10 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
         .context("initializing memory table schema")?;
     let memory_store: Arc<dyn daemon8_store::MemoryStore> = Arc::new(memory_store);
 
+    let envelope_store: Arc<dyn daemon8_store::EnvelopeStore> =
+        Arc::new(surreal_store.envelope_store());
+    let card_store: Arc<dyn daemon8_store::CardStore> = Arc::new(surreal_store.card_store());
+
     let store: Arc<dyn StateModel> = Arc::new(surreal_store);
 
     let embedder: Option<Arc<dyn daemon8_embed::Embedder>> = if cfg.embeddings.provider
@@ -217,6 +221,8 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
         let mcp = daemon8_mcp::DaemonMcp::new(daemon8_mcp::DaemonMcpConfig {
             store: store.clone(),
             memory_store: Some(memory_store.clone()),
+            envelope_store: Some(envelope_store.clone()),
+            card_store: Some(card_store.clone()),
             obs_tx: obs_tx.clone(),
             chrome_tx: chrome_cmd_tx.clone(),
             chrome_state: chrome_state_rx.clone(),
@@ -251,6 +257,8 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
 
     let mcp_store = store.clone();
     let mcp_memory_store = memory_store.clone();
+    let mcp_envelope_store = envelope_store.clone();
+    let mcp_card_store = card_store.clone();
     let mcp_obs_tx = obs_tx.clone();
     let mcp_chrome_tx = chrome_cmd_tx.clone();
     let mcp_state_rx = chrome_state_rx.clone();
@@ -266,6 +274,8 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
             Ok(daemon8_mcp::DaemonMcp::new(daemon8_mcp::DaemonMcpConfig {
                 store: mcp_store.clone(),
                 memory_store: Some(mcp_memory_store.clone()),
+                envelope_store: Some(mcp_envelope_store.clone()),
+                card_store: Some(mcp_card_store.clone()),
                 obs_tx: mcp_obs_tx.clone(),
                 chrome_tx: mcp_chrome_tx.clone(),
                 chrome_state: mcp_state_rx.clone(),

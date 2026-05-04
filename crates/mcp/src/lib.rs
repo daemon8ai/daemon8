@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use daemon8_store::{LensManager, MemoryStore, StateModel};
+use daemon8_store::{CardStore, EnvelopeStore, LensManager, MemoryStore, StateModel};
 use daemon8_types::{Checkpoint, DevicePlatform, Filter, Observation};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
@@ -393,12 +393,29 @@ pub struct SetupApplyParams {
     pub force_hooks: Option<bool>,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct Deliber8InboxParams {
+    #[schemars(description = "Inbox address to query, e.g. 'agent:my-specialist'")]
+    pub address: String,
+    #[schemars(
+        description = "Filter by envelope status (queued, delivered, read, failed, cancelled). Omit for all statuses."
+    )]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub statuses: Option<Vec<String>>,
+    #[schemars(description = "Maximum envelopes to return (default 20).")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+}
+
 pub type SetupToolFn =
     Arc<dyn Fn(SetupToolAction) -> Pin<Box<dyn Future<Output = String> + Send>> + Send + Sync>;
 
 pub struct DaemonMcp {
     store: Arc<dyn StateModel>,
     memory_store: Option<Arc<dyn MemoryStore>>,
+    envelope_store: Option<Arc<dyn EnvelopeStore>>,
+    #[allow(dead_code)] // wired in Phase 4; consumed by deliber8_roster (Phase 5)
+    card_store: Option<Arc<dyn CardStore>>,
     obs_tx: tokio::sync::mpsc::UnboundedSender<Observation>,
     chrome_tx: tokio::sync::mpsc::Sender<ChromeCommand>,
     chrome_state: tokio::sync::watch::Receiver<daemon8_chrome::ConnectionState>,
@@ -417,6 +434,8 @@ pub struct DaemonMcp {
 pub struct DaemonMcpConfig {
     pub store: Arc<dyn StateModel>,
     pub memory_store: Option<Arc<dyn MemoryStore>>,
+    pub envelope_store: Option<Arc<dyn EnvelopeStore>>,
+    pub card_store: Option<Arc<dyn CardStore>>,
     pub obs_tx: tokio::sync::mpsc::UnboundedSender<Observation>,
     pub chrome_tx: tokio::sync::mpsc::Sender<ChromeCommand>,
     pub chrome_state: tokio::sync::watch::Receiver<daemon8_chrome::ConnectionState>,
@@ -439,12 +458,17 @@ impl DaemonMcp {
         if cfg.memory_store.is_some() {
             router += Self::memory_tool_router();
         }
+        if cfg.envelope_store.is_some() && cfg.card_store.is_some() {
+            router += Self::deliber8_tool_router();
+        }
         if cfg.setup_tool_fn.is_some() {
             router += Self::setup_tool_router();
         }
         Self {
             store: cfg.store,
             memory_store: cfg.memory_store,
+            envelope_store: cfg.envelope_store,
+            card_store: cfg.card_store,
             obs_tx: cfg.obs_tx,
             chrome_tx: cfg.chrome_tx,
             chrome_state: cfg.chrome_state,
@@ -937,6 +961,91 @@ impl DaemonMcp {
         })
         .await
     }
+}
+
+#[tool_router(router = deliber8_tool_router, vis = "pub")]
+impl DaemonMcp {
+    #[doc = include_str!("../tool_descriptions/deliber8_inbox.txt")]
+    #[tool(name = "deliber8_inbox")]
+    async fn deliber8_inbox(&self, Parameters(params): Parameters<Deliber8InboxParams>) -> String {
+        let Some(envelope_store) = self.envelope_store.as_ref() else {
+            return error_json("deliber8 tools not available: envelope store not configured");
+        };
+        deliber8_inbox_inner(envelope_store.as_ref(), params).await
+    }
+}
+
+/// Pure handler for `deliber8_inbox`. Extracted from the MCP tool method so
+/// tests can drive it against an in-memory `EnvelopeStore` without spinning
+/// up the full DaemonMcp harness.
+pub async fn deliber8_inbox_inner(
+    envelope_store: &dyn EnvelopeStore,
+    params: Deliber8InboxParams,
+) -> String {
+    if params.address.trim().is_empty() {
+        return error_json("deliber8_inbox requires a non-empty address");
+    }
+
+    let parsed_statuses = match parse_envelope_statuses(params.statuses.as_deref()) {
+        Ok(v) => v,
+        Err(e) => return error_json(&e),
+    };
+
+    let filter = daemon8_store::EnvelopeFilter {
+        inbox_address: Some(params.address.clone()),
+        statuses: parsed_statuses,
+        limit: params.limit,
+        ..Default::default()
+    };
+
+    let envelopes = match envelope_store.query_inbox(&filter).await {
+        Ok(v) => v,
+        Err(e) => return error_json(&format!("query_inbox failed: {e}")),
+    };
+
+    let mut queued = 0usize;
+    let mut delivered = 0usize;
+    let mut read = 0usize;
+    let mut failed = 0usize;
+    let mut expired = 0usize;
+    let mut cancelled = 0usize;
+    for env in &envelopes {
+        match env.status {
+            daemon8_types::EnvelopeStatus::Queued => queued += 1,
+            daemon8_types::EnvelopeStatus::Delivered => delivered += 1,
+            daemon8_types::EnvelopeStatus::Read => read += 1,
+            daemon8_types::EnvelopeStatus::Failed => failed += 1,
+            daemon8_types::EnvelopeStatus::Expired => expired += 1,
+            daemon8_types::EnvelopeStatus::Cancelled => cancelled += 1,
+        }
+    }
+
+    serde_json::json!({
+        "address": params.address,
+        "total": envelopes.len(),
+        "queued": queued,
+        "delivered": delivered,
+        "read": read,
+        "failed": failed,
+        "expired": expired,
+        "cancelled": cancelled,
+        "envelopes": envelopes,
+    })
+    .to_string()
+}
+
+fn parse_envelope_statuses(
+    raw: Option<&[String]>,
+) -> Result<Option<Vec<daemon8_types::EnvelopeStatus>>, String> {
+    let Some(list) = raw else { return Ok(None) };
+    let mut parsed = Vec::with_capacity(list.len());
+    for s in list {
+        match s.parse::<daemon8_types::EnvelopeStatus>() {
+            Ok(v) => parsed.push(v),
+            Err(_) => return Err(format!("unknown envelope status: {s}")),
+        }
+    }
+    Ok(Some(parsed))
 }
 
 // Command handler implementations (inner methods, not registered with tool_router).
