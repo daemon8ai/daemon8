@@ -480,7 +480,10 @@ impl DaemonMcp {
         if cfg.memory_store.is_some() {
             router += Self::memory_tool_router();
         }
-        if cfg.envelope_store.is_some() && cfg.card_store.is_some() {
+        // Either store on its own is sufficient — each tool method checks
+        // its own store and returns error_json if unset, so the surface
+        // degrades gracefully when only one is wired.
+        if cfg.envelope_store.is_some() || cfg.card_store.is_some() {
             router += Self::deliber8_tool_router();
         }
         if cfg.setup_tool_fn.is_some() {

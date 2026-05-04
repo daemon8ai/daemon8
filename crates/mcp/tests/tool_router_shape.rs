@@ -177,6 +177,105 @@ async fn server_instructions_mention_action_surface() {
     );
 }
 
+async fn make_mcp_without_envelope_store() -> DaemonMcp {
+    let store = Arc::new(SurrealStore::memory().await.unwrap());
+    let memory_store = store.memory_store();
+    memory_store.init_schema().await.unwrap();
+    let card_store_concrete = store.card_store();
+    card_store_concrete.init_schema().await.unwrap();
+    let (obs_tx, _) = tokio::sync::mpsc::unbounded_channel();
+    let (chrome_tx, _) = tokio::sync::mpsc::channel(16);
+    let (_, chrome_state_rx) = tokio::sync::watch::channel(ConnectionState::Disconnected);
+    let (sub_tx, _) = tokio::sync::watch::channel(None);
+    let sub_tx = Arc::new(sub_tx);
+    let (broadcast_tx, _) = tokio::sync::broadcast::channel(16);
+    let lens = Arc::new(daemon8_store::LensManager::new(broadcast_tx.subscribe()));
+    let card_store: Arc<dyn daemon8_store::CardStore> = Arc::new(card_store_concrete);
+    DaemonMcp::new(DaemonMcpConfig {
+        store,
+        memory_store: Some(Arc::new(memory_store)),
+        envelope_store: None,
+        card_store: Some(card_store),
+        obs_tx,
+        chrome_tx,
+        chrome_state: chrome_state_rx,
+        chrome_endpoint: Arc::new(std::sync::Mutex::new(None)),
+        device_screenshot_fn: None,
+        screenshot_dir: std::env::temp_dir().join("daemon8-test-screenshots"),
+        subscription_tx: sub_tx,
+        broadcast_tx,
+        lens,
+        embedder: None,
+        setup_tool_fn: None,
+    })
+}
+
+async fn make_mcp_without_any_deliber8_store() -> DaemonMcp {
+    let store = Arc::new(SurrealStore::memory().await.unwrap());
+    let memory_store = store.memory_store();
+    memory_store.init_schema().await.unwrap();
+    let (obs_tx, _) = tokio::sync::mpsc::unbounded_channel();
+    let (chrome_tx, _) = tokio::sync::mpsc::channel(16);
+    let (_, chrome_state_rx) = tokio::sync::watch::channel(ConnectionState::Disconnected);
+    let (sub_tx, _) = tokio::sync::watch::channel(None);
+    let sub_tx = Arc::new(sub_tx);
+    let (broadcast_tx, _) = tokio::sync::broadcast::channel(16);
+    let lens = Arc::new(daemon8_store::LensManager::new(broadcast_tx.subscribe()));
+    DaemonMcp::new(DaemonMcpConfig {
+        store,
+        memory_store: Some(Arc::new(memory_store)),
+        envelope_store: None,
+        card_store: None,
+        obs_tx,
+        chrome_tx,
+        chrome_state: chrome_state_rx,
+        chrome_endpoint: Arc::new(std::sync::Mutex::new(None)),
+        device_screenshot_fn: None,
+        screenshot_dir: std::env::temp_dir().join("daemon8-test-screenshots"),
+        subscription_tx: sub_tx,
+        broadcast_tx,
+        lens,
+        embedder: None,
+        setup_tool_fn: None,
+    })
+}
+
+#[tokio::test]
+async fn deliber8_tools_register_when_only_card_store_wired() {
+    let mcp = make_mcp_without_envelope_store().await;
+    let names: Vec<String> = mcp
+        .tools_for_client()
+        .iter()
+        .map(|t| t.name.to_string())
+        .collect();
+    assert!(
+        names.iter().any(|n| n == "deliber8_roster"),
+        "expected deliber8_roster registered when card_store wired alone, got: {names:?}"
+    );
+    assert!(
+        names.iter().any(|n| n == "deliber8_inbox"),
+        "deliber8_inbox method exists in router and runtime-checks its store"
+    );
+}
+
+#[tokio::test]
+async fn deliber8_tools_omitted_when_neither_store_wired() {
+    let mcp = make_mcp_without_any_deliber8_store().await;
+    let names: Vec<String> = mcp
+        .tools_for_client()
+        .iter()
+        .map(|t| t.name.to_string())
+        .collect();
+    assert!(
+        !names.iter().any(|n| n == "deliber8_inbox"),
+        "deliber8_inbox must NOT register without any deliber8 store, got: {names:?}"
+    );
+    assert!(
+        !names.iter().any(|n| n == "deliber8_roster"),
+        "deliber8_roster must NOT register without any deliber8 store, got: {names:?}"
+    );
+}
+
 #[tokio::test]
 async fn list_connections_browser_key_visible() {
     let mcp = make_mcp().await;
