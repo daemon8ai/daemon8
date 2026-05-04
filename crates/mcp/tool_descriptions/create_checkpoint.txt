@@ -1,1 +1,11 @@
-Mark the current position in the observation stream. Returns a checkpoint id for use with the since_checkpoint parameter on query_observations. Use this before making a change (running code, deploying, etc.) so you can query only observations that occurred after that point. Pattern: create_checkpoint -> make change -> query_observations with since_checkpoint.
+Mark the current position in the observation stream. Returns a checkpoint id that can be passed as `since_checkpoint` to `query_observations` so subsequent queries return only observations recorded after this call.
+
+Use this to:
+- Bookmark "now" before making a change: create_checkpoint → run the change → query_observations with `since_checkpoint`.
+- Tighten subsequent queries to a known window without juggling timestamps.
+
+Parameters: none.
+
+Returns: { id: <int>, created_at_ns: <int> }. The id is monotonic and stable across the daemon's lifetime.
+
+Read-only with respect to data — observations are not affected. The checkpoint is a label, not a snapshot.

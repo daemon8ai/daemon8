@@ -1,1 +1,13 @@
-Override the browser DevTools endpoint. Default is http://localhost:9222. The daemon auto-discovers the browser and reconnects on its own -- only use this if the browser is on a non-standard port. Do NOT call this for troubleshooting; the daemon handles reconnection automatically.
+Override the Chrome DevTools Protocol endpoint the daemon connects to. The daemon auto-discovers a local browser and reconnects on its own; this tool is only for non-standard ports or remote DevTools endpoints.
+
+Use this only when:
+- The browser is running on a port other than 9222.
+- You're targeting a remote DevTools endpoint (over a tunnel, etc.).
+- You want to fail fast on a configuration mismatch rather than wait for auto-discovery.
+
+Do NOT call this as a debugging shortcut. Reconnection is automatic — repeated calls will not "fix" a transient disconnection.
+
+Parameters:
+- endpoint: string. Required. Full URL including scheme, e.g. "http://localhost:9222".
+
+Returns: { status: "connecting", endpoint: "<url>" }. The actual connection state lands in `list_connections` once the daemon attaches.
