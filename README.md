@@ -7,29 +7,86 @@
 </p>
 
 <p align="center">
-  <em>Local runtime observation bus and memory substrate for AI coding agents.</em>
-</p>
-
-<p align="center">
-  <a href="https://daemon8.ai">Website</a> ·
-  <a href="https://github.com/daemon8ai/daemon8/discussions">Discussions</a> ·
-  <a href="https://github.com/daemon8ai/daemon8/issues">Issues</a>
+  <em>A runtime layer made for AI agents.</em>
 </p>
 
 ---
 
-Daemon8 is a single local service that runs alongside your AI coding tools. It captures runtime observations from the browser, devices, and applications, and exposes them — together with a tiered memory substrate, lens-based filters, and browser actions — over MCP and HTTP. No cloud. No account. No telemetry. Everything stays on your machine.
+# What is Daemon8?
+
+Daemon8 is a local runtime layer for AI agents.
+
+Today, most agents can read and write code quickly, but they still do not have one reliable source of runtime truth while debugging. At its core, that is what Daemon8 provides: one place where logs and context converge.
+
+When agents have one place to look for errors, they can move from "I changed code" to "I can see what happened" in one loop. They query observations, filter what matters, and act on the result without guessing.
+
+Picture application logs, browser console output, network failures, traces, and device logs funneled into one stream. With lens-based filtering, the agent can ignore noise and focus directly on the signal it needs.
+
+> Note: daemon8 is in active development right now. Show support by starring, trying it out, and/or submitting issues - it's greatly appreciated!
+
+### When Context Converges
+
+Daemon8 takes this further. The simple idea of context convergence unlocks practical coordination patterns:
+
+**Multi-agent communication** - Agents can publish messages to the stream with addresses/tags so specific specialists can pick up specific tasks.
+
+**Agentic ears** - With an inbox, an agent can listen for messages sent directly to it. Under the hood, inbox messages are stored in SurrealDB and can be queried directly. For example:
+
+```sql
+SELECT * FROM envelope
+WHERE inbox_address = "agent:frontend-specialist"
+  AND read_at IS NONE
+ORDER BY created_at ASC
+LIMIT 20;
+```
+
+**Background specialists** - Long-running specialists can keep working in the background while your main coding session continues. Their updates can be routed back into the same stream.
+
+### Daily Workflow Scenarios
+
+**Working in Chrome / frontend**
+
+- While editing frontend or backend code, your agent can use `query_observations` to immediately inspect browser console and network failures.
+- It can use `issue_command` to run JS, capture screenshots, inspect DOM, and validate fixes without leaving the workflow.
+
+**Working in backend / API debugging**
+
+- App logs and ingestion events land in the same stream as browser signals, so the agent can trace cause and effect across frontend and backend in one query path.
+- `create_checkpoint` and `query_observations` make before/after verification explicit after each change.
+
+**Working with multiple agents**
+
+- Agents can emit coordination messages with `ingest_observation` and read directed inbox work from the same data layer.
+- This keeps handoffs visible and auditable in one place instead of scattered across tool-specific side channels.
+
+Daemon8 runs locally and provides one stream for context, one coordination channel for agent-to-agent messages, and one MCP surface to query, act, and broadcast. Runtime data and memory stay on your machine.
+
+Before we get into the feature list, two subsystem names will appear throughout this README:
+
+<details>
+<summary><strong>Deliber8 (expand)</strong></summary>
+
+Deliber8 is the agent coordination subsystem for long-running background agents and active session agents (addresses, inboxes, specialist runtime).
+</details>
+
+<details>
+<summary><strong>Uplink8 (expand)</strong></summary>
+
+Uplink8 is the planned plug-and-play, open-source system of pre-embedded memory banks that agents can download, mount, and use for recall. Think headjack simplicity: "I know kung fu."
+</details>
+
+Both are explained below in the Subsystems section.
 
 ## Features
 
-- **Observation bus** — unified stream of browser console, network, JS exceptions, lifecycle, device logs, and application telemetry (logs, queries, custom events, exceptions).
-- **Memory tiers** — three durable tables (`memory_short` TTL working memory, `memory_reference` external source mirrors, `memory_long` distilled knowledge) with a bookkeeper for sweep and dedup.
-- **Embedding profile registry** — per-generator metadata so vectors stored on memory rows can be safely filtered without mixing models.
-- **Lens** — per-session reactive filter with a 1000-entry ring buffer that surfaces matching observations to the next query.
-- **Browser actions** — eval JS, screenshot, inject CSS, navigate, set viewport, throttle network, manipulate storage, list/close tabs, all via Chrome DevTools Protocol.
-- **Deliber8 agents** — register specialist/steward/bookkeeper cards, send envelopes through inboxes, audit roster and backlog through `daemon8 doctor`.
-- **Doctor** — diagnose configuration, environment, store health, embedding provider, stuck agents, and inbox backlog. `--fix` repairs what it can.
-- **System service** — `daemon8 install` registers the daemon as a launchd agent (macOS), systemd unit (Linux), or Task Scheduler entry (Windows).
+- **Observation bus** — one stream for browser console, network, JS exceptions, lifecycle events, device logs, and app telemetry.
+- **Memory tiers** — durable `short`, `reference`, and `long` memory tables with sweep and dedupe tools.
+- **Embedding profiles** — provider/model metadata so vectors can be filtered safely by profile.
+- **Lens** — per-session filter with buffered matches for quick follow-up queries.
+- **Browser actions** — eval JS, screenshot, inject CSS, navigate, set viewport, throttle network, inspect/set storage, and tab controls via Chrome DevTools Protocol.
+- **Deliber8 tools** — roster and inbox operations for background agent coordination.
+- **Doctor** — checks config, storage, embedding provider setup, and stuck-agent backlog; `--fix` repairs what it can.
+- **System service** — `daemon8 install` registers launchd (macOS), systemd user service (Linux), or Task Scheduler (Windows).
 
 ## Install
 
@@ -67,17 +124,33 @@ daemon8 doctor
 ```
 Sources (inputs)                          Agents (outputs)
 -----------------                         ----------------
-Browser (CDP)    --\                  /--  Claude Code
-Applications     ----> daemon8 loop ----> Cursor
-Devices (ADB)   --/    localhost:8888 \--> Windsurf
-CLI hooks        --/                  \--> Gemini CLI, Codex
+Browser (CDP)   ---\                       /--  Codex
+Applications    ---->  daemon8            ----> Claude Code
+Devices (ADB)   ---/   [localhost:8888]    \--> Gemini CLI
+CLI hooks       --/                    
 ```
 
-Sources push observations into the loop. Agents query, subscribe, and act through MCP tools on `http://localhost:8888/mcp` or the parallel HTTP API on the same port.
+Sources push observations into the daemon loop. Agents then query, subscribe, and run actions through MCP (`http://localhost:8888/mcp`) or the parallel HTTP API.
+
+_some sources are configured by you, some are integrated directly into the daemon_
+
+## Subsystems
+
+### Deliber8
+
+Deliber8 is daemon8's coordination subsystem for long-lived agent work. It uses addressed envelopes, inboxes, and role-aware runtime behavior so specialists, stewards, and bookkeepers can coordinate without leaving the daemon8 loop.
+
+In practical terms, Deliber8 is where roster, inbox, and specialist-runtime behavior lives. You will see those surfaces in CLI and MCP tools below.
+
+### Uplink8
+
+Uplink8 is daemon8's reference-knowledge supply line. It is designed to provide mounted documentation context to agents through daemon8 rather than having each agent scrape and embed docs independently.
+
+In the current MVP sequence, Uplink8 bridge work is staged with memory/context engine milestones. Treat it as a first-class subsystem and contract direction, with rollout details continuing through the memory and MCP surfaces.
 
 ## MCP tools
 
-Twenty-four tools, organized by capability. Every tool returns JSON; mutations require explicit confirmation flags.
+There are 24 MCP tools grouped by capability. Every tool returns JSON. Mutating operations require explicit confirmation flags.
 
 ### Observation
 
@@ -224,7 +297,7 @@ Ten crates in a Cargo workspace:
 
 ## Contributing
 
-Pull requests welcome. See [`CONTRIBUTING.md`](./CONTRIBUTING.md) and the testing gauntlet in [`TESTING.md`](./TESTING.md). Code of conduct: [`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md).
+Pull requests welcome. See [`CONTRIBUTING.md`](./CONTRIBUTING.md). Code of conduct: [`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md).
 
 ## License
 

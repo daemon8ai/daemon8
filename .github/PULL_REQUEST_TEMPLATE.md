@@ -18,8 +18,11 @@ Thanks for sending a PR. A few things before you hit submit:
 
 - [ ] Daemon core (`crates/`)
 - [ ] MCP tools (`crates/mcp/`)
-- [ ] Browser / ADB bridges
+- [ ] HTTP API (`crates/api/`)
+- [ ] Store / memory / embeddings (`crates/store/`, `crates/embed/`)
+- [ ] Browser / ADB bridges (`crates/chrome/`, `crates/adb/`)
 - [ ] CLI (`crates/daemon/`)
+- [ ] Setup / doctor / deliber8
 - [ ] Docs / meta (root files, .github/, etc.)
 
 ## Tests
@@ -27,15 +30,16 @@ Thanks for sending a PR. A few things before you hit submit:
 <!-- What you ran locally. Paste the last few lines of output or a summary. -->
 
 - [ ] `cargo test --workspace -- --test-threads=1` green
-- [ ] `cargo clippy --workspace -- -D warnings` clean
+- [ ] `cargo clippy --workspace --all-targets -- -D warnings` clean
 - [ ] `cargo fmt --check` clean
+- [ ] `cargo deny check` clean
 
 ## Checklist
 
 - [ ] CLA signed (CLA Assistant will prompt automatically)
-- [ ] CHANGELOG updated under `[Unreleased]` if this is a user-visible change
+- [ ] CHANGELOG updated if this is a user-visible change
 - [ ] New behavior is covered by a test; bug fixes include a regression test
-- [ ] Commit message is a single line, lowercase prefix (`core:`, `mcp:`, `cli:`, `repo:`)
+- [ ] Commit message is a single line with a scope prefix (`daemon:`, `repo:`, `ci:`)
 
 ## Notes for reviewers
 

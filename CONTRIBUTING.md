@@ -1,8 +1,7 @@
 # Contributing to Daemon8
 
-Thanks for showing up. Daemon8 is built in the open and every serious
-contribution is welcome. This doc covers how to file issues, send pull
-requests, and where contributions land across the daemon8ai org.
+Daemon8 is open source. This guide covers how to file issues,
+send pull requests, and write contributions.
 
 Before anything below: by participating, you agree to the
 [Code of Conduct](./CODE_OF_CONDUCT.md). Enforcement: `mail@daemon8.ai`.
@@ -82,10 +81,9 @@ without the fix.
   cross-module tests.
 - Integration tests that exercise the full HTTP / MCP / SSE stack live
   in [`crates/daemon/tests/integration.rs`](./crates/daemon/tests/integration.rs).
-- For **larger user-perspective coverage** (real Chrome, real service
-  install, real MCP clients) we run a **Testing Gauntlet** —
-  see [`TESTING.md`](./TESTING.md). Gauntlet phases are explicitly
-  contributor-facing and labeled `help wanted`.
+- For larger user-perspective coverage (real Chrome, real service install,
+  real MCP clients), coordinate scope in GitHub issues before building
+  additional test harnesses.
 
 ### What gets merged
 
@@ -137,4 +135,4 @@ without the fix.
 - `mail@daemon8.ai` — vulnerabilities, Code of Conduct enforcement,
   DAEMON8™ use inquiries.
 
-Thanks again. First-time PRs get a prompt review.
+First-time PRs are reviewed as quickly as possible.
