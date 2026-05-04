@@ -1367,7 +1367,7 @@ pub async fn register_embedding_profile_inner(
     }
 
     let id = match params.id.as_deref().map(str::trim) {
-        Some(s) if s.is_empty() => return error_json("id, when supplied, must be non-empty"),
+        Some("") => return error_json("id, when supplied, must be non-empty"),
         Some(s) => s.to_string(),
         None => format!("{}:{}", params.provider, params.model),
     };
