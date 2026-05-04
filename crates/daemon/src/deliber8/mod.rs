@@ -333,6 +333,38 @@ pub fn classify_stuck(
     stuck
 }
 
+/// Identify alive specialists whose oldest queued envelope predates their
+/// heartbeat cadence by more than `multiplier`× — a signal that the
+/// consumer side is alive but not draining.
+///
+/// Each input pair is `(card, oldest_queued_created_at_ns)`. A `None`
+/// second element means "no queued envelopes" and is never flagged.
+/// Returns `(slug, age_ms)` tuples for each backed-up specialist.
+pub fn classify_inbox_backlog(
+    cards: &[(daemon8_types::AgentCard, Option<u64>)],
+    now_ns: u64,
+    multiplier: u64,
+) -> Vec<(String, u64)> {
+    let mut backlog = Vec::new();
+    for (card, oldest) in cards {
+        if card.status != AgentStatus::Alive {
+            continue;
+        }
+        let Some(oldest_ns) = *oldest else {
+            continue;
+        };
+        let interval_ms = card.heartbeat_interval_ms.unwrap_or(DEFAULT_HEARTBEAT_MS);
+        let threshold_ns = interval_ms
+            .saturating_mul(multiplier)
+            .saturating_mul(1_000_000);
+        let age_ns = now_ns.saturating_sub(oldest_ns);
+        if age_ns > threshold_ns {
+            backlog.push((card.slug.clone(), age_ns / 1_000_000));
+        }
+    }
+    backlog
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -417,6 +449,69 @@ mod tests {
         let now = 1_000_000_000_000_u64;
         let stuck = classify_stuck(&cards, now, 3);
         assert_eq!(stuck, vec!["stale".to_string()]);
+    }
+
+    #[test]
+    fn inbox_backlog_skips_non_alive() {
+        // Retired card with old queued envelope should not flag.
+        let pairs = vec![(
+            agent("retired", AgentStatus::Retired, Some(1_000_000_000_000)),
+            Some(0_u64),
+        )];
+        assert!(classify_inbox_backlog(&pairs, 1_000_000_000_000, 10).is_empty());
+    }
+
+    #[test]
+    fn inbox_backlog_skips_empty_inbox() {
+        // Alive card with no queued envelopes (None) is never flagged.
+        let pairs = vec![(agent("idle", AgentStatus::Alive, Some(0)), None)];
+        assert!(classify_inbox_backlog(&pairs, 1_000_000_000_000, 10).is_empty());
+    }
+
+    #[test]
+    fn inbox_backlog_passes_below_threshold() {
+        // heartbeat = 1_000ms, multiplier = 10 => threshold = 10s = 10_000_000_000 ns.
+        // Oldest queued at age 9s => below threshold, not flagged.
+        let now = 100_000_000_000_u64;
+        let pairs = vec![(
+            agent("draining", AgentStatus::Alive, Some(now)),
+            Some(now - 9_000_000_000),
+        )];
+        assert!(classify_inbox_backlog(&pairs, now, 10).is_empty());
+    }
+
+    #[test]
+    fn inbox_backlog_flags_above_threshold() {
+        // Same setup, oldest queued at age 11s => above 10s threshold.
+        let now = 100_000_000_000_u64;
+        let pairs = vec![(
+            agent("backed-up", AgentStatus::Alive, Some(now)),
+            Some(now - 11_000_000_000),
+        )];
+        let backlog = classify_inbox_backlog(&pairs, now, 10);
+        assert_eq!(backlog.len(), 1);
+        assert_eq!(backlog[0].0, "backed-up");
+        assert_eq!(backlog[0].1, 11_000); // 11_000 ms.
+    }
+
+    #[test]
+    fn inbox_backlog_boundary_exactly_at_threshold_passes() {
+        // threshold = 10_000ms in ns. age_ns == threshold_ns is NOT flagged
+        // (strict greater-than). One ns over the line is flagged.
+        let now = 100_000_000_000_u64;
+        let threshold_ns: u64 = 10_u64 * 1_000 * 1_000_000;
+
+        let exact = vec![(
+            agent("exact", AgentStatus::Alive, Some(now)),
+            Some(now - threshold_ns),
+        )];
+        assert!(classify_inbox_backlog(&exact, now, 10).is_empty());
+
+        let over = vec![(
+            agent("over", AgentStatus::Alive, Some(now)),
+            Some(now - threshold_ns - 1),
+        )];
+        assert_eq!(classify_inbox_backlog(&over, now, 10).len(), 1);
     }
 
     #[test]

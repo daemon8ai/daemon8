@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use daemon8_embed::EmbedProvider;
-use daemon8_store::{CardStore, StateModel};
+use daemon8_store::{CardStore, EnvelopeStore, StateModel};
 
 use crate::config::{self, SourceConfig};
 
@@ -56,6 +56,7 @@ pub async fn cmd_doctor(config_path: Option<String>, fix: bool) -> Result<()> {
         check_embeddings(&cfg),
         check_store(&cfg).await,
         check_stuck_agents(&cfg).await,
+        check_inbox_backlog(&cfg).await,
     ];
 
     #[cfg(target_os = "macos")]
@@ -488,6 +489,115 @@ async fn check_stuck_agents(cfg: &config::Config) -> Check {
             "{} agent(s) past 3x heartbeat: {}",
             stuck.len(),
             stuck.join(", ")
+        )),
+    }
+}
+
+/// Flag inboxes whose oldest queued envelope predates the specialist's
+/// heartbeat cadence by more than `BACKLOG_MULTIPLIER`× — a signal that
+/// the consumer side is alive but not draining. Complements
+/// `check_stuck_agents`, which catches dead/stuck specialists.
+async fn check_inbox_backlog(cfg: &config::Config) -> Check {
+    const BACKLOG_MULTIPLIER: u64 = 10;
+    const NAME: &str = "inbox backlog";
+
+    let db_path = config::resolve_db_path(cfg.storage.path.as_deref());
+    if !db_path.exists() {
+        return Check {
+            name: NAME,
+            result: CheckResult::OkHint("store not yet created".into()),
+        };
+    }
+
+    let store = match daemon8_store::SurrealStore::open(&db_path).await {
+        Ok(s) => s,
+        Err(e) => {
+            return Check {
+                name: NAME,
+                result: CheckResult::Err(format!("could not open store: {e}")),
+            };
+        }
+    };
+    let card_store = store.card_store();
+    let envelope_store = store.envelope_store();
+
+    let agents = match card_store
+        .list_agents(&daemon8_store::AgentCardFilter {
+            statuses: Some(vec![daemon8_types::AgentStatus::Alive]),
+            project_ref: None,
+            team_ref: None,
+            limit: None,
+        })
+        .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            return Check {
+                name: NAME,
+                result: CheckResult::Err(format!("listing agents failed: {e}")),
+            };
+        }
+    };
+
+    if agents.is_empty() {
+        return Check {
+            name: NAME,
+            result: CheckResult::OkHint("no alive specialists".into()),
+        };
+    }
+
+    let mut paired: Vec<(daemon8_types::AgentCard, Option<u64>)> = Vec::with_capacity(agents.len());
+    for card in &agents {
+        let queued: Vec<daemon8_types::EnvelopeRecord> = match envelope_store
+            .query_inbox(&daemon8_store::EnvelopeFilter {
+                inbox_address: Some(card.address.clone()),
+                statuses: Some(vec![daemon8_types::EnvelopeStatus::Queued]),
+                ..Default::default()
+            })
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                return Check {
+                    name: NAME,
+                    result: CheckResult::Err(format!(
+                        "querying inbox for {} failed: {e}",
+                        card.slug
+                    )),
+                };
+            }
+        };
+        let oldest = queued.iter().map(|env| env.created_at).min();
+        paired.push((card.clone(), oldest));
+    }
+
+    let backlog = crate::deliber8::classify_inbox_backlog(
+        &paired,
+        crate::deliber8::now_ns(),
+        BACKLOG_MULTIPLIER,
+    );
+
+    if backlog.is_empty() {
+        return Check {
+            name: NAME,
+            result: CheckResult::OkHint(format!(
+                "{} alive specialist(s), all inboxes draining",
+                agents.len()
+            )),
+        };
+    }
+    Check {
+        name: NAME,
+        result: CheckResult::Warn(format!(
+            "{} of {} inbox(es) backed up beyond {}× heartbeat: {}",
+            backlog.len(),
+            agents.len(),
+            BACKLOG_MULTIPLIER,
+            backlog
+                .iter()
+                .map(|(slug, age_ms)| format!("{slug}={age_ms}ms"))
+                .collect::<Vec<_>>()
+                .join(", ")
         )),
     }
 }
