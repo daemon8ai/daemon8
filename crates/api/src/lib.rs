@@ -14,7 +14,10 @@ use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post};
 use daemon8_chrome::BrowserAction;
 use daemon8_mcp::ChromeCommand;
-use daemon8_store::{LensManager, StateModel};
+use daemon8_store::{
+    BookkeeperStore, EmbeddingProfileStore, LensManager, MemoryLongStore, MemoryReferenceStore,
+    MemoryShortStore, StateModel,
+};
 use daemon8_types::{Checkpoint, Filter, Observation};
 use serde::Deserialize;
 use tokio::sync::broadcast::error::RecvError;
@@ -29,6 +32,11 @@ pub struct ApiState {
     pub chrome_state: tokio::sync::watch::Receiver<daemon8_chrome::ConnectionState>,
     pub chrome_endpoint: Arc<std::sync::Mutex<Option<Arc<str>>>>,
     pub lens: Arc<LensManager>,
+    pub memory_short_store: Option<Arc<dyn MemoryShortStore>>,
+    pub memory_reference_store: Option<Arc<dyn MemoryReferenceStore>>,
+    pub memory_long_store: Option<Arc<dyn MemoryLongStore>>,
+    pub bookkeeper_store: Option<Arc<dyn BookkeeperStore>>,
+    pub embedding_profile_store: Option<Arc<dyn EmbeddingProfileStore>>,
 }
 
 pub fn api_router(state: ApiState) -> Router {
@@ -46,6 +54,15 @@ pub fn api_router(state: ApiState) -> Router {
                 .delete(handle_lens_clear),
         )
         .route("/api/browser/act", post(handle_chrome_act))
+        .route("/api/memory/short", get(handle_memory_short))
+        .route("/api/memory/reference", get(handle_memory_reference))
+        .route("/api/memory/long", get(handle_memory_long))
+        .route("/api/bookkeeper/sweep", post(handle_bookkeeper_sweep))
+        .route("/api/bookkeeper/dedupe", post(handle_bookkeeper_dedupe))
+        .route(
+            "/api/embedding/profiles",
+            get(handle_embedding_profiles_list).post(handle_embedding_profiles_register),
+        )
         .with_state(state)
 }
 
@@ -866,4 +883,199 @@ async fn handle_chrome_act(
             .await
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Memory tier + bookkeeper + embedding profile routes
+//
+// These routes mirror the corresponding MCP tools for non-MCP clients (web UI,
+// scripts, observability tools). The HTTP layer hands control to the same
+// pure handler functions that back the tools, then re-parses the resulting
+// JSON for axum response shaping. This keeps the surface symmetrical with one
+// authoritative implementation per operation.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct MemoryTierQuery {
+    pub agent_id: Option<String>,
+    pub scope: Option<String>,
+    pub tags_any: Option<String>,
+    pub embedding_profile_id: Option<String>,
+    pub include_expired: Option<bool>,
+    pub include_revoked: Option<bool>,
+    pub limit: Option<usize>,
+}
+
+fn split_tags(raw: Option<String>) -> Option<Vec<String>> {
+    raw.map(|s| {
+        s.split(',')
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty())
+            .collect()
+    })
+}
+
+fn relay_inner(json: String, missing_status: StatusCode) -> Response {
+    match serde_json::from_str::<serde_json::Value>(&json) {
+        Ok(value) => {
+            if let Some(err) = value.get("error").and_then(|e| e.as_str()) {
+                return error_json(missing_status, err.to_string());
+            }
+            (StatusCode::OK, Json(value)).into_response()
+        }
+        Err(e) => error_json(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("inner returned non-JSON: {e}"),
+        ),
+    }
+}
+
+fn build_tier_params(tier: &str, q: MemoryTierQuery) -> daemon8_mcp::QueryMemoryTierParams {
+    daemon8_mcp::QueryMemoryTierParams {
+        tier: tier.into(),
+        agent_id: q.agent_id,
+        scope: q.scope,
+        tags_any: split_tags(q.tags_any),
+        embedding_profile_id: q.embedding_profile_id,
+        include_expired: q.include_expired.unwrap_or(false),
+        include_revoked: q.include_revoked.unwrap_or(false),
+        limit: q.limit,
+    }
+}
+
+async fn handle_memory_short(
+    State(state): State<ApiState>,
+    Query(q): Query<MemoryTierQuery>,
+) -> Response {
+    let params = build_tier_params("short", q);
+    let json = daemon8_mcp::query_memory_tier_inner(
+        state.memory_short_store.as_deref(),
+        state.memory_reference_store.as_deref(),
+        state.memory_long_store.as_deref(),
+        params,
+    )
+    .await;
+    relay_inner(json, StatusCode::SERVICE_UNAVAILABLE)
+}
+
+async fn handle_memory_reference(
+    State(state): State<ApiState>,
+    Query(q): Query<MemoryTierQuery>,
+) -> Response {
+    let params = build_tier_params("reference", q);
+    let json = daemon8_mcp::query_memory_tier_inner(
+        state.memory_short_store.as_deref(),
+        state.memory_reference_store.as_deref(),
+        state.memory_long_store.as_deref(),
+        params,
+    )
+    .await;
+    relay_inner(json, StatusCode::SERVICE_UNAVAILABLE)
+}
+
+async fn handle_memory_long(
+    State(state): State<ApiState>,
+    Query(q): Query<MemoryTierQuery>,
+) -> Response {
+    let params = build_tier_params("long", q);
+    let json = daemon8_mcp::query_memory_tier_inner(
+        state.memory_short_store.as_deref(),
+        state.memory_reference_store.as_deref(),
+        state.memory_long_store.as_deref(),
+        params,
+    )
+    .await;
+    relay_inner(json, StatusCode::SERVICE_UNAVAILABLE)
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SweepBody {
+    #[serde(default)]
+    pub agent_id: Option<String>,
+    #[serde(default)]
+    pub apply: bool,
+}
+
+async fn handle_bookkeeper_sweep(
+    State(state): State<ApiState>,
+    Json(body): Json<SweepBody>,
+) -> Response {
+    let Some(bookkeeper) = state.bookkeeper_store.as_ref() else {
+        return error_json(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "bookkeeper store not configured",
+        );
+    };
+    let params = daemon8_mcp::MemorySweepShortParams {
+        agent_id: body.agent_id,
+        apply: body.apply,
+    };
+    let json = daemon8_mcp::memory_sweep_short_inner(bookkeeper.as_ref(), params).await;
+    relay_inner(json, StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DedupeBody {
+    #[serde(default)]
+    pub scope: Option<String>,
+    #[serde(default)]
+    pub apply: bool,
+}
+
+async fn handle_bookkeeper_dedupe(
+    State(state): State<ApiState>,
+    Json(body): Json<DedupeBody>,
+) -> Response {
+    let Some(bookkeeper) = state.bookkeeper_store.as_ref() else {
+        return error_json(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "bookkeeper store not configured",
+        );
+    };
+    let params = daemon8_mcp::MemoryDedupeLongParams {
+        scope: body.scope,
+        apply: body.apply,
+    };
+    let json = daemon8_mcp::memory_dedupe_long_inner(bookkeeper.as_ref(), params).await;
+    relay_inner(json, StatusCode::BAD_REQUEST)
+}
+
+async fn handle_embedding_profiles_list(State(state): State<ApiState>) -> Response {
+    let Some(store) = state.embedding_profile_store.as_ref() else {
+        return error_json(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "embedding profile store not configured",
+        );
+    };
+    let json = daemon8_mcp::list_embedding_profiles_inner(store.as_ref()).await;
+    relay_inner(json, StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+#[derive(Debug, Deserialize)]
+pub struct EmbeddingProfileRegisterBody {
+    pub provider: String,
+    pub model: String,
+    pub dimensions: u32,
+    #[serde(default)]
+    pub id: Option<String>,
+}
+
+async fn handle_embedding_profiles_register(
+    State(state): State<ApiState>,
+    Json(body): Json<EmbeddingProfileRegisterBody>,
+) -> Response {
+    let Some(store) = state.embedding_profile_store.as_ref() else {
+        return error_json(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "embedding profile store not configured",
+        );
+    };
+    let params = daemon8_mcp::RegisterEmbeddingProfileParams {
+        provider: body.provider,
+        model: body.model,
+        dimensions: body.dimensions,
+        id: body.id,
+    };
+    let json = daemon8_mcp::register_embedding_profile_inner(store.as_ref(), params).await;
+    relay_inner(json, StatusCode::BAD_REQUEST)
 }

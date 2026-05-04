@@ -361,6 +361,11 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
         chrome_state: chrome_state_rx.clone(),
         chrome_endpoint: chrome_endpoint.clone(),
         lens: api_lens,
+        memory_short_store: Some(memory_short_store.clone()),
+        memory_reference_store: Some(memory_reference_store.clone()),
+        memory_long_store: Some(memory_long_store.clone()),
+        bookkeeper_store: Some(bookkeeper_store.clone()),
+        embedding_profile_store: Some(embedding_profile_store.clone()),
     };
     let port = cfg.server.port;
     let app = daemon8_ingest::ingest_router(obs_tx.clone())
