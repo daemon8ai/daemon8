@@ -291,7 +291,12 @@ fn apply_setup(
     write_global_config(&ctx.global_config_path, &cfg)?;
     apply_provider_and_hooks(&ctx.cwd, apply_args)?;
 
-    let post_ctx = setup_context(config_path, cwd)?;
+    // The on-disk apply has already succeeded by this point. If we cannot
+    // re-read the post-apply state, surface that distinction explicitly so
+    // operators know the config WAS written even though we can't reflect
+    // the new state in the response.
+    let post_ctx = setup_context(config_path, cwd)
+        .with_context(|| "setup apply succeeded; rebuilding status from disk failed")?;
     let post_status = build_status(&post_ctx);
     Ok(SetupPlan {
         status: post_status,
