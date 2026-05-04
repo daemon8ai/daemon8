@@ -1052,6 +1052,9 @@ fn parse_agent_kinds(
     raw: Option<&[String]>,
 ) -> Result<Option<Vec<daemon8_types::AgentKind>>, String> {
     let Some(list) = raw else { return Ok(None) };
+    if list.is_empty() {
+        return Ok(None);
+    }
     let mut parsed = Vec::with_capacity(list.len());
     for s in list {
         match s.parse::<daemon8_types::AgentKind>() {
@@ -1066,6 +1069,9 @@ fn parse_agent_statuses(
     raw: Option<&[String]>,
 ) -> Result<Option<Vec<daemon8_types::AgentStatus>>, String> {
     let Some(list) = raw else { return Ok(None) };
+    if list.is_empty() {
+        return Ok(None);
+    }
     let mut parsed = Vec::with_capacity(list.len());
     for s in list {
         match s.parse::<daemon8_types::AgentStatus>() {
@@ -1139,6 +1145,9 @@ fn parse_envelope_statuses(
     raw: Option<&[String]>,
 ) -> Result<Option<Vec<daemon8_types::EnvelopeStatus>>, String> {
     let Some(list) = raw else { return Ok(None) };
+    if list.is_empty() {
+        return Ok(None);
+    }
     let mut parsed = Vec::with_capacity(list.len());
     for s in list {
         match s.parse::<daemon8_types::EnvelopeStatus>() {

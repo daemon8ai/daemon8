@@ -209,6 +209,57 @@ async fn default_limit_caps_at_fifty() {
 }
 
 #[tokio::test]
+async fn empty_status_list_falls_back_to_alive_default() {
+    let (_store, card_store) = setup().await;
+    card_store
+        .upsert_agent(agent("alive", AgentKind::Specialist, AgentStatus::Alive))
+        .await
+        .unwrap();
+    card_store
+        .upsert_agent(agent(
+            "retired",
+            AgentKind::Specialist,
+            AgentStatus::Retired,
+        ))
+        .await
+        .unwrap();
+
+    let params = Deliber8RosterParams {
+        kinds: None,
+        statuses: Some(vec![]),
+        project_ref: None,
+        limit: None,
+    };
+    let res = deliber8_roster_inner(&card_store, params).await;
+    let v = parse(&res);
+    assert_eq!(v["total"], 1);
+    assert_eq!(v["agents"][0]["slug"], "alive");
+}
+
+#[tokio::test]
+async fn empty_kind_list_treated_as_omitted() {
+    let (_store, card_store) = setup().await;
+    card_store
+        .upsert_agent(agent("a", AgentKind::Specialist, AgentStatus::Alive))
+        .await
+        .unwrap();
+    card_store
+        .upsert_agent(agent("b", AgentKind::Bookkeeper, AgentStatus::Alive))
+        .await
+        .unwrap();
+
+    let params = Deliber8RosterParams {
+        kinds: Some(vec![]),
+        statuses: None,
+        project_ref: None,
+        limit: None,
+    };
+    let res = deliber8_roster_inner(&card_store, params).await;
+    let v = parse(&res);
+    assert_eq!(v["total"], 2);
+}
+
+#[tokio::test]
 async fn explicit_limit_clamped_at_500() {
     let (_store, card_store) = setup().await;
     let params = Deliber8RosterParams {

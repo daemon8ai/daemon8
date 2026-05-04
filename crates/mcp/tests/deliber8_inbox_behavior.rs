@@ -175,6 +175,31 @@ async fn default_limit_caps_at_twenty() {
 }
 
 #[tokio::test]
+async fn empty_status_list_returns_all() {
+    let (_store, env_store) = setup().await;
+    let addr = "agent:empty";
+    env_store
+        .enqueue_envelope(envelope("env_q", addr, EnvelopeStatus::Queued))
+        .await
+        .unwrap();
+    env_store
+        .enqueue_envelope(envelope("env_d", addr, EnvelopeStatus::Queued))
+        .await
+        .unwrap();
+    env_store.mark_delivered("env_d", 2_000_000).await.unwrap();
+
+    let params = Deliber8InboxParams {
+        address: addr.into(),
+        statuses: Some(vec![]),
+        limit: None,
+    };
+    let res = deliber8_inbox_inner(&env_store, params).await;
+    let v = parse(&res);
+
+    assert_eq!(v["total"], 2);
+}
+
+#[tokio::test]
 async fn explicit_limit_clamped_at_500() {
     let (_store, env_store) = setup().await;
     let params = Deliber8InboxParams {
