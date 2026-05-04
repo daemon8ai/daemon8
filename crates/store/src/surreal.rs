@@ -16,8 +16,10 @@ use daemon8_types::{
 };
 
 use crate::{
-    StateModel, StoreError, card::SurrealCardStore, envelope::SurrealEnvelopeStore,
-    memory::SurrealMemoryStore,
+    StateModel, StoreError, bookkeeper::SurrealBookkeeperStore, card::SurrealCardStore,
+    envelope::SurrealEnvelopeStore, memory::SurrealMemoryStore,
+    memory_long::SurrealMemoryLongStore, memory_reference::SurrealMemoryReferenceStore,
+    memory_short::SurrealMemoryShortStore,
 };
 
 const NAMESPACE: &str = "daemon8";
@@ -164,6 +166,29 @@ impl SurrealStore {
         SurrealEnvelopeStore::new(self.db.clone())
     }
 
+    /// Create a `SurrealMemoryShortStore` sharing this database handle.
+    pub fn memory_short_store(&self) -> SurrealMemoryShortStore {
+        SurrealMemoryShortStore::new(self.db.clone())
+    }
+
+    /// Create a `SurrealMemoryReferenceStore` sharing this database handle.
+    pub fn memory_reference_store(&self) -> SurrealMemoryReferenceStore {
+        SurrealMemoryReferenceStore::new(self.db.clone())
+    }
+
+    /// Create a `SurrealMemoryLongStore` sharing this database handle.
+    pub fn memory_long_store(&self) -> SurrealMemoryLongStore {
+        SurrealMemoryLongStore::new(self.db.clone())
+    }
+
+    /// Create a `SurrealBookkeeperStore` sharing this database handle.
+    /// The bookkeeper composes the three tier stores; this accessor returns
+    /// a thin handle that runs the dedup / sweep operations directly via
+    /// SurrealQL rather than going through the per-tier stores.
+    pub fn bookkeeper_store(&self) -> SurrealBookkeeperStore {
+        SurrealBookkeeperStore::new(self.db.clone())
+    }
+
     async fn init_schema(&self) -> Result<(), StoreError> {
         self.db
             .use_ns(NAMESPACE)
@@ -208,6 +233,27 @@ impl SurrealStore {
             .map_err(|e| StoreError::Db(format!("envelope schema init: {e}")))?
             .check()
             .map_err(|e| StoreError::Db(format!("envelope schema init check: {e}")))?;
+
+        self.db
+            .query(crate::memory_short::MEMORY_SHORT_DDL)
+            .await
+            .map_err(|e| StoreError::Db(format!("memory_short schema init: {e}")))?
+            .check()
+            .map_err(|e| StoreError::Db(format!("memory_short schema init check: {e}")))?;
+
+        self.db
+            .query(crate::memory_reference::MEMORY_REFERENCE_DDL)
+            .await
+            .map_err(|e| StoreError::Db(format!("memory_reference schema init: {e}")))?
+            .check()
+            .map_err(|e| StoreError::Db(format!("memory_reference schema init check: {e}")))?;
+
+        self.db
+            .query(crate::memory_long::MEMORY_LONG_DDL)
+            .await
+            .map_err(|e| StoreError::Db(format!("memory_long schema init: {e}")))?
+            .check()
+            .map_err(|e| StoreError::Db(format!("memory_long schema init check: {e}")))?;
 
         Ok(())
     }

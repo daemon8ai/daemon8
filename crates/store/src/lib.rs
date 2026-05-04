@@ -1,22 +1,31 @@
 // SPDX-License-Identifier: LicenseRef-FCL-1.0-ALv2
 // Copyright (c) 2026 Havy.tech, LLC
 
+pub mod bookkeeper;
 pub mod card;
 pub mod envelope;
 mod lens;
 pub mod memory;
+pub mod memory_long;
+pub mod memory_reference;
+pub mod memory_short;
 mod surreal;
 
+pub use bookkeeper::SurrealBookkeeperStore;
 pub use card::SurrealCardStore;
 pub use envelope::SurrealEnvelopeStore;
 pub use lens::{LensManager, LensStatus};
 pub use memory::SurrealMemoryStore;
+pub use memory_long::SurrealMemoryLongStore;
+pub use memory_reference::SurrealMemoryReferenceStore;
+pub use memory_short::SurrealMemoryShortStore;
 pub use surreal::SurrealStore;
 
 use daemon8_types::{
     ActorCard, AgentCard, AgentStatus, Checkpoint, EnvelopeKind, EnvelopePriority, EnvelopeRecord,
-    EnvelopeStatus, Filter, MemoryKind, Observation, ProjectCard, RuntimeSummary, StateSlice,
-    TeamCard, UserCard,
+    EnvelopeStatus, Filter, LongContentKind, MemoryKind, MemoryScope, Observation, ProjectCard,
+    ProvenanceEntry, ReferenceSourceKind, RuntimeSummary, ShortContentKind, StateSlice, TeamCard,
+    UserCard,
 };
 use serde::{Deserialize, Serialize};
 
@@ -139,6 +148,201 @@ pub struct EnvelopeFilter {
     pub thread_id: Option<String>,
     pub since_ns: Option<u64>,
     pub limit: Option<usize>,
+}
+
+// ----------------------------------------------------------------------------
+// Memory tier records and stores
+//
+// These three structs back the `memory_short`, `memory_reference`, and
+// `memory_long` tables defined in
+// `50-projects/daemon8/poc/deliber8/21-memory-tiers.md`. The legacy `Memory`
+// struct above continues to back the original `memory` table used by MCP
+// `save_memory` / `query_memory` and the CLI `memory query` surface; the new
+// tier tables coexist with it until a separate migration round wires the MCP
+// surface over to the tier model.
+//
+// Embedding fields (`embedding`, `embedding_profile_id`) are deferred to
+// MVP-09. Promotion (`memory_short` -> `memory_long`) is embedding-driven and
+// also deferred. This round only ships the substrate shapes plus the two
+// bookkeeper operations that do not require embeddings: TTL sweep on
+// `memory_short` and content-hash dedup on `memory_long`.
+// ----------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryShortRecord {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub content: String,
+    pub content_kind: ShortContentKind,
+    pub agent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
+    pub scope: MemoryScope,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    pub content_hash: String,
+    pub expires_at: u64,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct MemoryShortFilter {
+    pub agent_id: Option<String>,
+    pub thread_id: Option<String>,
+    pub scope: Option<MemoryScope>,
+    pub content_kinds: Option<Vec<ShortContentKind>>,
+    pub tags_any: Option<Vec<String>>,
+    pub include_expired: bool,
+    pub now_ns: Option<u64>,
+    pub limit: Option<usize>,
+}
+
+#[async_trait::async_trait]
+pub trait MemoryShortStore: Send + Sync {
+    async fn init_schema(&self) -> Result<(), StoreError>;
+    async fn save(&self, record: MemoryShortRecord) -> Result<String, StoreError>;
+    async fn get(&self, id: &str) -> Result<Option<MemoryShortRecord>, StoreError>;
+    async fn list(&self, filter: &MemoryShortFilter) -> Result<Vec<MemoryShortRecord>, StoreError>;
+    async fn delete(&self, id: &str) -> Result<bool, StoreError>;
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryReferenceRecord {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub content: String,
+    pub source_kind: ReferenceSourceKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_url: Option<String>,
+    pub source_hash: String,
+    pub scope: MemoryScope,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    pub content_hash: String,
+    pub refreshed_at: u64,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct MemoryReferenceFilter {
+    pub source_kinds: Option<Vec<ReferenceSourceKind>>,
+    pub scope: Option<MemoryScope>,
+    pub tags_any: Option<Vec<String>>,
+    pub limit: Option<usize>,
+}
+
+#[async_trait::async_trait]
+pub trait MemoryReferenceStore: Send + Sync {
+    async fn init_schema(&self) -> Result<(), StoreError>;
+    async fn save(&self, record: MemoryReferenceRecord) -> Result<String, StoreError>;
+    async fn get(&self, id: &str) -> Result<Option<MemoryReferenceRecord>, StoreError>;
+    async fn list(
+        &self,
+        filter: &MemoryReferenceFilter,
+    ) -> Result<Vec<MemoryReferenceRecord>, StoreError>;
+    async fn find_by_source_hash(
+        &self,
+        source_hash: &str,
+    ) -> Result<Option<MemoryReferenceRecord>, StoreError>;
+    async fn mark_refreshed(&self, id: &str, refreshed_at: u64) -> Result<(), StoreError>;
+    async fn delete(&self, id: &str) -> Result<bool, StoreError>;
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryLongRecord {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub content: String,
+    pub content_kind: LongContentKind,
+    pub scope: MemoryScope,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    pub content_hash: String,
+    #[serde(default)]
+    pub provenance: Vec<ProvenanceEntry>,
+    pub confidence: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supersedes: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revoked_at: Option<u64>,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct MemoryLongFilter {
+    pub scope: Option<MemoryScope>,
+    pub content_kinds: Option<Vec<LongContentKind>>,
+    pub tags_any: Option<Vec<String>>,
+    pub include_revoked: bool,
+    pub limit: Option<usize>,
+}
+
+#[async_trait::async_trait]
+pub trait MemoryLongStore: Send + Sync {
+    async fn init_schema(&self) -> Result<(), StoreError>;
+    async fn save(&self, record: MemoryLongRecord) -> Result<String, StoreError>;
+    async fn get(&self, id: &str) -> Result<Option<MemoryLongRecord>, StoreError>;
+    async fn list(&self, filter: &MemoryLongFilter) -> Result<Vec<MemoryLongRecord>, StoreError>;
+    async fn find_by_content_hash(
+        &self,
+        content_hash: &str,
+        scope: Option<MemoryScope>,
+    ) -> Result<Vec<MemoryLongRecord>, StoreError>;
+    async fn supersede(&self, old_id: &str, new_id: &str, at_ns: u64) -> Result<(), StoreError>;
+    async fn revoke(&self, id: &str, at_ns: u64) -> Result<(), StoreError>;
+    async fn delete(&self, id: &str) -> Result<bool, StoreError>;
+}
+
+// ----------------------------------------------------------------------------
+// Bookkeeper substrate
+//
+// `sweep_short` enforces the vault's MT-2 nightly TTL on `memory_short`.
+// `dedupe_long` collapses exact `content_hash` collisions on `memory_long`,
+// keeping the highest-confidence entry (ties broken by oldest `created_at`).
+// Embedding-aware semantic dedup at promotion time is MVP-09 work.
+// ----------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Default)]
+pub struct SweepShortScope {
+    /// Restrict the sweep to a single agent's working memory. `None` sweeps
+    /// every agent's expired short entries in one pass.
+    pub agent_id: Option<String>,
+    /// Optional injection point so tests can pin "now" and the runtime can
+    /// quantize sweep cadence. `None` uses `SystemTime::now()`.
+    pub now_ns: Option<u64>,
+    /// `false` is dry-run; `true` performs the deletion.
+    pub apply: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SweepReport {
+    pub examined: usize,
+    pub expired: usize,
+    pub deleted_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct DedupLongScope {
+    pub scope: Option<MemoryScope>,
+    pub apply: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DedupReport {
+    pub examined: usize,
+    /// Distinct content_hashes in scope with at least two members.
+    pub groups: usize,
+    pub redundant: usize,
+    pub removed_ids: Vec<String>,
+}
+
+#[async_trait::async_trait]
+pub trait BookkeeperStore: Send + Sync {
+    async fn sweep_short(&self, scope: SweepShortScope) -> Result<SweepReport, StoreError>;
+    async fn dedupe_long(&self, scope: DedupLongScope) -> Result<DedupReport, StoreError>;
 }
 
 #[async_trait::async_trait]
