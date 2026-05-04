@@ -1,0 +1,12 @@
+List the embedding profiles registered with the daemon. Each profile records which generator (provider + model + dimensions) produced the embedding vectors stored on memory tier rows.
+
+Use this to:
+- Discover which embedding profiles are available before populating embeddings on a memory record.
+- Verify the profile id you're about to filter `query_memory_tier` against actually exists.
+- Audit which generators have been used in this daemon's history.
+
+Parameters: none.
+
+Returns: { total: <int>, profiles: [ { id, provider, model, dimensions, created_at }, ... ] }.
+
+Read-only. To register a new profile, use `register_embedding_profile`.

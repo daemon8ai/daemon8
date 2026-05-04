@@ -38,6 +38,8 @@ const TIER_TOOLS: [&str; 3] = [
     "query_memory_tier",
 ];
 
+const EMBEDDING_TOOLS: [&str; 2] = ["list_embedding_profiles", "register_embedding_profile"];
+
 fn tool_names(router: &rmcp::handler::server::router::tool::ToolRouter<DaemonMcp>) -> Vec<String> {
     router
         .list_all()
@@ -113,17 +115,18 @@ async fn make_mcp() -> DaemonMcp {
 }
 
 #[test]
-fn composed_router_has_all_twenty_two_tools() {
+fn composed_router_has_full_tool_surface() {
     let router = DaemonMcp::tool_router()
         + DaemonMcp::action_tool_router()
         + DaemonMcp::lens_tool_router()
         + DaemonMcp::memory_tool_router()
         + DaemonMcp::setup_tool_router()
         + DaemonMcp::deliber8_tool_router()
-        + DaemonMcp::tier_tool_router();
+        + DaemonMcp::tier_tool_router()
+        + DaemonMcp::embedding_tool_router();
     let names = tool_names(&router);
 
-    let expected_total = EXPECTED_TOOLS.len() + TIER_TOOLS.len();
+    let expected_total = EXPECTED_TOOLS.len() + TIER_TOOLS.len() + EMBEDDING_TOOLS.len();
     assert_eq!(
         names.len(),
         expected_total,
@@ -132,7 +135,11 @@ fn composed_router_has_all_twenty_two_tools() {
         names
     );
 
-    for expected in EXPECTED_TOOLS.iter().chain(TIER_TOOLS.iter()) {
+    for expected in EXPECTED_TOOLS
+        .iter()
+        .chain(TIER_TOOLS.iter())
+        .chain(EMBEDDING_TOOLS.iter())
+    {
         assert!(
             names.iter().any(|n| n == expected),
             "router missing expected tool '{}'. Present: {:?}",
@@ -151,7 +158,7 @@ async fn live_mcp_exposes_full_tool_surface() {
         .map(|t| t.name.to_string())
         .collect();
 
-    let expected_total = EXPECTED_TOOLS.len() + TIER_TOOLS.len();
+    let expected_total = EXPECTED_TOOLS.len() + TIER_TOOLS.len() + EMBEDDING_TOOLS.len();
     assert_eq!(
         names.len(),
         expected_total,
@@ -159,7 +166,11 @@ async fn live_mcp_exposes_full_tool_surface() {
         names.len(),
         names
     );
-    for expected in EXPECTED_TOOLS.iter().chain(TIER_TOOLS.iter()) {
+    for expected in EXPECTED_TOOLS
+        .iter()
+        .chain(TIER_TOOLS.iter())
+        .chain(EMBEDDING_TOOLS.iter())
+    {
         assert!(
             names.iter().any(|n| n == expected),
             "tools_for_client() missing '{}'. Present: {:?}",

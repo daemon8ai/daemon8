@@ -496,6 +496,28 @@ pub struct QueryMemoryTierParams {
     pub limit: Option<usize>,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct RegisterEmbeddingProfileParams {
+    #[schemars(
+        description = "Provider name. Free-form (e.g. \"openai\", \"fastembed\", \"ollama\", \"local-onnx\")."
+    )]
+    pub provider: String,
+    #[schemars(
+        description = "Model name as understood by the provider (e.g. \"text-embedding-3-small\")."
+    )]
+    pub model: String,
+    #[schemars(description = "Vector dimensions produced by this profile.")]
+    pub dimensions: u32,
+    #[schemars(
+        description = "Optional explicit profile id. Defaults to \"<provider>:<model>\". Must be non-empty when supplied."
+    )]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ListEmbeddingProfilesParams {}
+
 pub type SetupToolFn =
     Arc<dyn Fn(SetupToolAction) -> Pin<Box<dyn Future<Output = String> + Send>> + Send + Sync>;
 
@@ -508,7 +530,6 @@ pub struct DaemonMcp {
     memory_reference_store: Option<Arc<dyn MemoryReferenceStore>>,
     memory_long_store: Option<Arc<dyn MemoryLongStore>>,
     bookkeeper_store: Option<Arc<dyn BookkeeperStore>>,
-    #[allow(dead_code)] // consumed by embedding-profile MCP tools in the next slice
     embedding_profile_store: Option<Arc<dyn EmbeddingProfileStore>>,
     obs_tx: tokio::sync::mpsc::UnboundedSender<Observation>,
     chrome_tx: tokio::sync::mpsc::Sender<ChromeCommand>,
@@ -571,6 +592,9 @@ impl DaemonMcp {
             || cfg.memory_long_store.is_some()
         {
             router += Self::tier_tool_router();
+        }
+        if cfg.embedding_profile_store.is_some() {
+            router += Self::embedding_tool_router();
         }
         if cfg.setup_tool_fn.is_some() {
             router += Self::setup_tool_router();
@@ -1277,6 +1301,102 @@ pub async fn query_memory_tier_inner(
         other => error_json(&format!(
             "unknown tier: {other} (expected short, reference, or long)"
         )),
+    }
+}
+
+#[tool_router(router = embedding_tool_router, vis = "pub")]
+impl DaemonMcp {
+    #[doc = include_str!("../tool_descriptions/list_embedding_profiles.txt")]
+    #[tool(name = "list_embedding_profiles")]
+    async fn list_embedding_profiles(
+        &self,
+        Parameters(params): Parameters<ListEmbeddingProfilesParams>,
+    ) -> String {
+        let _ = params;
+        let Some(store) = self.embedding_profile_store.as_ref() else {
+            return error_json(
+                "list_embedding_profiles unavailable: embedding profile store not configured",
+            );
+        };
+        list_embedding_profiles_inner(store.as_ref()).await
+    }
+
+    #[doc = include_str!("../tool_descriptions/register_embedding_profile.txt")]
+    #[tool(name = "register_embedding_profile")]
+    async fn register_embedding_profile(
+        &self,
+        Parameters(params): Parameters<RegisterEmbeddingProfileParams>,
+    ) -> String {
+        let Some(store) = self.embedding_profile_store.as_ref() else {
+            return error_json(
+                "register_embedding_profile unavailable: embedding profile store not configured",
+            );
+        };
+        register_embedding_profile_inner(store.as_ref(), params).await
+    }
+}
+
+/// Pure handler for `list_embedding_profiles`.
+pub async fn list_embedding_profiles_inner(store: &dyn EmbeddingProfileStore) -> String {
+    match store.list().await {
+        Ok(profiles) => serde_json::json!({
+            "total": profiles.len(),
+            "profiles": profiles,
+        })
+        .to_string(),
+        Err(e) => error_json(&format!("list_embedding_profiles failed: {e}")),
+    }
+}
+
+/// Pure handler for `register_embedding_profile`. Defaults the profile id to
+/// `<provider>:<model>` when none is supplied. Idempotent on `(provider, model)`
+/// — the underlying `upsert` returns the canonical row, including its original
+/// `created_at`, so callers can register repeatedly without duplicating data.
+pub async fn register_embedding_profile_inner(
+    store: &dyn EmbeddingProfileStore,
+    params: RegisterEmbeddingProfileParams,
+) -> String {
+    if params.provider.trim().is_empty() {
+        return error_json("provider must be non-empty");
+    }
+    if params.model.trim().is_empty() {
+        return error_json("model must be non-empty");
+    }
+    if params.dimensions == 0 {
+        return error_json("dimensions must be greater than zero");
+    }
+
+    let id = match params.id.as_deref().map(str::trim) {
+        Some(s) if s.is_empty() => return error_json("id, when supplied, must be non-empty"),
+        Some(s) => s.to_string(),
+        None => format!("{}:{}", params.provider, params.model),
+    };
+
+    let now_ns = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+
+    let profile = daemon8_types::EmbeddingProfile {
+        id,
+        provider: params.provider,
+        model: params.model,
+        dimensions: params.dimensions,
+        created_at: now_ns,
+    };
+
+    match store.upsert(profile.clone()).await {
+        Ok(_) => match store
+            .find_by_provider_and_model(&profile.provider, &profile.model)
+            .await
+        {
+            Ok(Some(canonical)) => serde_json::to_string(&canonical).unwrap_or_else(|e| {
+                error_json(&format!("register_embedding_profile serialize failed: {e}"))
+            }),
+            Ok(None) => error_json("register_embedding_profile: profile vanished after upsert"),
+            Err(e) => error_json(&format!("register_embedding_profile lookup failed: {e}")),
+        },
+        Err(e) => error_json(&format!("register_embedding_profile upsert failed: {e}")),
     }
 }
 

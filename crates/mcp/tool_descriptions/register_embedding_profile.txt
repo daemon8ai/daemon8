@@ -1,0 +1,17 @@
+Register an embedding profile so future memory rows can record which generator produced their embedding. Idempotent on `(provider, model)` — re-registering the same pair returns the existing profile rather than creating a duplicate.
+
+Memory rows store an `embedding_profile_id` alongside their vector; semantic queries must filter on an exact profile id, because mixing models silently corrupts retrieval. This tool is the only way to declare a new profile id.
+
+Use this to:
+- Declare a new embedder before saving memories with embeddings (e.g. before flipping the daemon's embeddings provider).
+- Re-register an existing profile after a clean install — the call is safe and returns the canonical row.
+
+Parameters:
+- provider: string. Required. Free-form provider name (e.g. "openai", "fastembed", "ollama").
+- model: string. Required. Provider-specific model name (e.g. "text-embedding-3-small").
+- dimensions: integer. Required. Vector length produced by this profile.
+- id: optional string. Profile id. Defaults to "<provider>:<model>". Must be non-empty when supplied.
+
+Returns: { id, provider, model, dimensions, created_at }.
+
+Idempotent: same (provider, model) pair returns the canonical row — including its original `created_at`.
