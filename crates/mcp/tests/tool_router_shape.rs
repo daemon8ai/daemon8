@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use daemon8_chrome::ConnectionState;
 use daemon8_mcp::{DaemonMcp, DaemonMcpConfig};
-use daemon8_store::SurrealStore;
+use daemon8_store::{EnvelopeStore, SurrealStore};
 
 const EXPECTED_TOOLS: [&str; 19] = [
     "query_observations",
@@ -41,6 +41,10 @@ async fn make_mcp() -> DaemonMcp {
     let store = Arc::new(SurrealStore::memory().await.unwrap());
     let memory_store = store.memory_store();
     memory_store.init_schema().await.unwrap();
+    let envelope_store_concrete = store.envelope_store();
+    envelope_store_concrete.init_schema().await.unwrap();
+    let card_store_concrete = store.card_store();
+    card_store_concrete.init_schema().await.unwrap();
     let (obs_tx, _) = tokio::sync::mpsc::unbounded_channel();
     let (chrome_tx, _) = tokio::sync::mpsc::channel(16);
     let (_, chrome_state_rx) = tokio::sync::watch::channel(ConnectionState::Disconnected);
@@ -48,10 +52,8 @@ async fn make_mcp() -> DaemonMcp {
     let sub_tx = Arc::new(sub_tx);
     let (broadcast_tx, _) = tokio::sync::broadcast::channel(16);
     let lens = Arc::new(daemon8_store::LensManager::new(broadcast_tx.subscribe()));
-    let envelope_store: Arc<dyn daemon8_store::EnvelopeStore> =
-        Arc::new(SurrealStore::memory().await.unwrap().envelope_store());
-    let card_store: Arc<dyn daemon8_store::CardStore> =
-        Arc::new(SurrealStore::memory().await.unwrap().card_store());
+    let envelope_store: Arc<dyn daemon8_store::EnvelopeStore> = Arc::new(envelope_store_concrete);
+    let card_store: Arc<dyn daemon8_store::CardStore> = Arc::new(card_store_concrete);
     DaemonMcp::new(DaemonMcpConfig {
         store,
         memory_store: Some(Arc::new(memory_store)),
