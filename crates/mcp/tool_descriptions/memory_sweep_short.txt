@@ -1,0 +1,13 @@
+Reap expired rows from the short-tier working memory table (`memory_short`). The short tier is TTL-bound; rows whose `expires_at` is in the past are eligible for sweeping.
+
+Use this to:
+- Run periodic cleanup of working memory once daily, when a session ends, or before a heavy memory query.
+- Preview what would be removed before mutating: pass `apply: false` (the default) to get a dry-run report.
+
+Parameters:
+- agent_id: optional string. Restrict the sweep to one agent's working memory. Omit to sweep every agent's expired short-tier rows in one pass.
+- apply: boolean. Required to delete. Defaults to false (dry-run). When false, the report names every id that would be deleted but no rows are removed.
+
+Returns: { examined: <int>, expired: <int>, deleted_ids: [<id>...] }. `expired` is the count of rows past TTL; `deleted_ids` is empty on dry-run.
+
+Idempotent: safe to invoke repeatedly. Only deletes rows past TTL, so consecutive applies converge.

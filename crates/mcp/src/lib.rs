@@ -433,6 +433,69 @@ pub struct Deliber8RosterParams {
     pub limit: Option<usize>,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct MemorySweepShortParams {
+    #[schemars(
+        description = "Restrict the sweep to one agent's working memory. Omit to sweep every agent's expired short-tier rows in one pass."
+    )]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    #[schemars(
+        description = "Required to actually delete. When false (default), the sweep runs as a dry-run and only reports what would be removed."
+    )]
+    #[serde(default)]
+    pub apply: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct MemoryDedupeLongParams {
+    #[schemars(
+        description = "Optional memory scope (e.g. \"global\", \"project:slug\", \"agent:slug\"). Omit to dedupe across all scopes."
+    )]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    #[schemars(
+        description = "Required to actually delete duplicate rows. When false (default), the dedupe runs as a dry-run and only reports redundant ids."
+    )]
+    #[serde(default)]
+    pub apply: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct QueryMemoryTierParams {
+    #[schemars(
+        description = "Tier to query: \"short\" (TTL-bound working memory), \"reference\" (durable external sources), or \"long\" (durable distilled knowledge)."
+    )]
+    pub tier: String,
+    #[schemars(description = "Filter by agent_id (short tier only).")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    #[schemars(
+        description = "Filter by memory scope (e.g. \"global\", \"project:slug\", \"agent:slug\")."
+    )]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    #[schemars(description = "Filter by tags (any-match).")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tags_any: Option<Vec<String>>,
+    #[schemars(description = "Filter by exact embedding profile id.")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embedding_profile_id: Option<String>,
+    #[schemars(
+        description = "Short tier only: include rows whose `expires_at` has passed. Default false."
+    )]
+    #[serde(default)]
+    pub include_expired: bool,
+    #[schemars(
+        description = "Long tier only: include rows whose `revoked_at` is set. Default false."
+    )]
+    #[serde(default)]
+    pub include_revoked: bool,
+    #[schemars(description = "Maximum rows to return. Default 20, capped at 500.")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+}
+
 pub type SetupToolFn =
     Arc<dyn Fn(SetupToolAction) -> Pin<Box<dyn Future<Output = String> + Send>> + Send + Sync>;
 
@@ -445,6 +508,7 @@ pub struct DaemonMcp {
     memory_reference_store: Option<Arc<dyn MemoryReferenceStore>>,
     memory_long_store: Option<Arc<dyn MemoryLongStore>>,
     bookkeeper_store: Option<Arc<dyn BookkeeperStore>>,
+    #[allow(dead_code)] // consumed by embedding-profile MCP tools in the next slice
     embedding_profile_store: Option<Arc<dyn EmbeddingProfileStore>>,
     obs_tx: tokio::sync::mpsc::UnboundedSender<Observation>,
     chrome_tx: tokio::sync::mpsc::Sender<ChromeCommand>,
@@ -498,6 +562,15 @@ impl DaemonMcp {
         // degrades gracefully when only one is wired.
         if cfg.envelope_store.is_some() || cfg.card_store.is_some() {
             router += Self::deliber8_tool_router();
+        }
+        // Tier surface: any of the tier stores is sufficient. Each tool method
+        // checks the specific store(s) it needs and returns error_json otherwise.
+        if cfg.bookkeeper_store.is_some()
+            || cfg.memory_short_store.is_some()
+            || cfg.memory_reference_store.is_some()
+            || cfg.memory_long_store.is_some()
+        {
+            router += Self::tier_tool_router();
         }
         if cfg.setup_tool_fn.is_some() {
             router += Self::setup_tool_router();
@@ -1027,6 +1100,183 @@ impl DaemonMcp {
             return error_json("deliber8 tools not available: card store not configured");
         };
         deliber8_roster_inner(card_store.as_ref(), params).await
+    }
+}
+
+#[tool_router(router = tier_tool_router, vis = "pub")]
+impl DaemonMcp {
+    #[doc = include_str!("../tool_descriptions/memory_sweep_short.txt")]
+    #[tool(name = "memory_sweep_short")]
+    async fn memory_sweep_short(
+        &self,
+        Parameters(params): Parameters<MemorySweepShortParams>,
+    ) -> String {
+        let Some(bookkeeper) = self.bookkeeper_store.as_ref() else {
+            return error_json("memory_sweep_short unavailable: bookkeeper store not configured");
+        };
+        memory_sweep_short_inner(bookkeeper.as_ref(), params).await
+    }
+
+    #[doc = include_str!("../tool_descriptions/memory_dedupe_long.txt")]
+    #[tool(name = "memory_dedupe_long")]
+    async fn memory_dedupe_long(
+        &self,
+        Parameters(params): Parameters<MemoryDedupeLongParams>,
+    ) -> String {
+        let Some(bookkeeper) = self.bookkeeper_store.as_ref() else {
+            return error_json("memory_dedupe_long unavailable: bookkeeper store not configured");
+        };
+        memory_dedupe_long_inner(bookkeeper.as_ref(), params).await
+    }
+
+    #[doc = include_str!("../tool_descriptions/query_memory_tier.txt")]
+    #[tool(name = "query_memory_tier")]
+    async fn query_memory_tier(
+        &self,
+        Parameters(params): Parameters<QueryMemoryTierParams>,
+    ) -> String {
+        query_memory_tier_inner(
+            self.memory_short_store.as_deref(),
+            self.memory_reference_store.as_deref(),
+            self.memory_long_store.as_deref(),
+            params,
+        )
+        .await
+    }
+}
+
+/// Pure handler for `memory_sweep_short`. Extracted so tests can drive it
+/// against an in-memory `BookkeeperStore` without spinning up DaemonMcp.
+pub async fn memory_sweep_short_inner(
+    bookkeeper: &dyn BookkeeperStore,
+    params: MemorySweepShortParams,
+) -> String {
+    let scope = daemon8_store::SweepShortScope {
+        agent_id: params.agent_id,
+        now_ns: None,
+        apply: params.apply,
+    };
+    match bookkeeper.sweep_short(scope).await {
+        Ok(report) => serde_json::to_string(&report)
+            .unwrap_or_else(|e| error_json(&format!("sweep_short serialize failed: {e}"))),
+        Err(e) => error_json(&format!("sweep_short failed: {e}")),
+    }
+}
+
+/// Pure handler for `memory_dedupe_long`. Extracted so tests can drive it
+/// against an in-memory `BookkeeperStore` without spinning up DaemonMcp.
+pub async fn memory_dedupe_long_inner(
+    bookkeeper: &dyn BookkeeperStore,
+    params: MemoryDedupeLongParams,
+) -> String {
+    let scope = match params.scope.as_deref() {
+        Some(s) => match s.parse::<daemon8_types::MemoryScope>() {
+            Ok(v) => Some(v),
+            Err(e) => return error_json(&e),
+        },
+        None => None,
+    };
+    let dedupe_scope = daemon8_store::DedupLongScope {
+        scope,
+        apply: params.apply,
+    };
+    match bookkeeper.dedupe_long(dedupe_scope).await {
+        Ok(report) => serde_json::to_string(&report)
+            .unwrap_or_else(|e| error_json(&format!("dedupe_long serialize failed: {e}"))),
+        Err(e) => error_json(&format!("dedupe_long failed: {e}")),
+    }
+}
+
+/// Pure handler for `query_memory_tier`. Dispatches to the right tier store
+/// based on `tier`. Extracted so tests can drive it against any concrete tier
+/// store implementation without spinning up DaemonMcp.
+pub async fn query_memory_tier_inner(
+    short: Option<&dyn MemoryShortStore>,
+    reference: Option<&dyn MemoryReferenceStore>,
+    long: Option<&dyn MemoryLongStore>,
+    params: QueryMemoryTierParams,
+) -> String {
+    let scope = match params.scope.as_deref() {
+        Some(s) => match s.parse::<daemon8_types::MemoryScope>() {
+            Ok(v) => Some(v),
+            Err(e) => return error_json(&e),
+        },
+        None => None,
+    };
+    let limit = Some(params.limit.unwrap_or(20).min(500));
+
+    match params.tier.to_ascii_lowercase().as_str() {
+        "short" => {
+            let Some(store) = short else {
+                return error_json("query_memory_tier: memory_short_store not configured");
+            };
+            let filter = daemon8_store::MemoryShortFilter {
+                agent_id: params.agent_id.clone(),
+                thread_id: None,
+                scope,
+                content_kinds: None,
+                tags_any: params.tags_any.clone(),
+                embedding_profile_id: params.embedding_profile_id.clone(),
+                include_expired: params.include_expired,
+                now_ns: None,
+                limit,
+            };
+            match store.list(&filter).await {
+                Ok(rows) => serde_json::json!({
+                    "tier": "short",
+                    "total": rows.len(),
+                    "records": rows,
+                })
+                .to_string(),
+                Err(e) => error_json(&format!("memory_short list failed: {e}")),
+            }
+        }
+        "reference" => {
+            let Some(store) = reference else {
+                return error_json("query_memory_tier: memory_reference_store not configured");
+            };
+            let filter = daemon8_store::MemoryReferenceFilter {
+                source_kinds: None,
+                scope,
+                tags_any: params.tags_any.clone(),
+                embedding_profile_id: params.embedding_profile_id.clone(),
+                limit,
+            };
+            match store.list(&filter).await {
+                Ok(rows) => serde_json::json!({
+                    "tier": "reference",
+                    "total": rows.len(),
+                    "records": rows,
+                })
+                .to_string(),
+                Err(e) => error_json(&format!("memory_reference list failed: {e}")),
+            }
+        }
+        "long" => {
+            let Some(store) = long else {
+                return error_json("query_memory_tier: memory_long_store not configured");
+            };
+            let filter = daemon8_store::MemoryLongFilter {
+                scope,
+                content_kinds: None,
+                tags_any: params.tags_any.clone(),
+                embedding_profile_id: params.embedding_profile_id.clone(),
+                include_revoked: params.include_revoked,
+                limit,
+            };
+            match store.list(&filter).await {
+                Ok(rows) => serde_json::json!({
+                    "tier": "long",
+                    "total": rows.len(),
+                    "records": rows,
+                })
+                .to_string(),
+                Err(e) => error_json(&format!("memory_long list failed: {e}")),
+            }
+        }
+        other => error_json(&format!(
+            "unknown tier: {other} (expected short, reference, or long)"
+        )),
     }
 }
 

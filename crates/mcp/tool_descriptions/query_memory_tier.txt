@@ -1,0 +1,20 @@
+Read rows from a specific memory tier — short (TTL-bound working memory), reference (durable external source mirrors), or long (durable distilled knowledge). Read-only.
+
+Use this to:
+- Inspect a specialist's recent working memory: tier="short", agent_id="agent:slug".
+- Audit reference material registered in the daemon: tier="reference".
+- Browse durable long-tier knowledge by scope: tier="long", scope="project".
+
+Parameters:
+- tier: string. Required. One of "short", "reference", "long".
+- agent_id: optional string. Short tier only. Filter to one agent's working memory.
+- scope: optional string. Filter by memory scope: "agent", "team", "project", or "global".
+- tags_any: optional list of strings. Match any tag in the list.
+- embedding_profile_id: optional string. Filter to rows produced by a specific embedding profile (exact match required to avoid mixing models).
+- include_expired: optional boolean. Short tier only. Default false.
+- include_revoked: optional boolean. Long tier only. Default false.
+- limit: optional integer. Default 20, capped at 500.
+
+Returns: { tier, total, records: [...] }. Record shape varies by tier: short rows include `expires_at`, reference rows include `source_kind`/`source_url`/`refreshed_at`, long rows include `confidence`/`provenance`/`supersedes`/`revoked_at`.
+
+Mutations go through `save_memory` (legacy table) and the bookkeeper tools (`memory_sweep_short`, `memory_dedupe_long`); this tool does not write.

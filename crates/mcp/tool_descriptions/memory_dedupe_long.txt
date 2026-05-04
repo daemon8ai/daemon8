@@ -1,0 +1,15 @@
+Collapse exact `content_hash` collisions in the long-tier durable memory (`memory_long`). When two or more rows share a content hash within a scope, the highest-confidence row wins (ties broken by oldest `created_at`); the rest are removed.
+
+This is content-equality dedup, not semantic dedup. Embedding-aware promotion-time dedup is a separate operation tracked under MVP-09.
+
+Use this to:
+- Reclaim space after batch ingestion when the same fact lands multiple times.
+- Preview duplicates before deletion: pass `apply: false` (the default) for a dry-run report.
+
+Parameters:
+- scope: optional string. Limit the dedupe to one memory scope. One of: agent, team, project, global. Omit to scan every scope.
+- apply: boolean. Required to delete. Defaults to false (dry-run). When false, the report names every redundant id but no rows are removed.
+
+Returns: { examined: <int>, groups: <int>, redundant: <int>, removed_ids: [<id>...] }. `groups` is the number of distinct content hashes with at least two rows; `redundant` is the total number of rows beyond the kept survivor across all groups.
+
+Idempotent: safe to invoke repeatedly. Each apply only collapses remaining duplicates.

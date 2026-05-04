@@ -5,7 +5,10 @@ use std::sync::Arc;
 
 use daemon8_chrome::ConnectionState;
 use daemon8_mcp::{DaemonMcp, DaemonMcpConfig};
-use daemon8_store::{EnvelopeStore, SurrealStore};
+use daemon8_store::{
+    EmbeddingProfileStore, EnvelopeStore, MemoryLongStore, MemoryReferenceStore, MemoryShortStore,
+    SurrealStore,
+};
 
 const EXPECTED_TOOLS: [&str; 19] = [
     "query_observations",
@@ -29,6 +32,12 @@ const EXPECTED_TOOLS: [&str; 19] = [
     "deliber8_roster",
 ];
 
+const TIER_TOOLS: [&str; 3] = [
+    "memory_sweep_short",
+    "memory_dedupe_long",
+    "query_memory_tier",
+];
+
 fn tool_names(router: &rmcp::handler::server::router::tool::ToolRouter<DaemonMcp>) -> Vec<String> {
     router
         .list_all()
@@ -45,6 +54,14 @@ async fn make_mcp() -> DaemonMcp {
     envelope_store_concrete.init_schema().await.unwrap();
     let card_store_concrete = store.card_store();
     card_store_concrete.init_schema().await.unwrap();
+    let memory_short_concrete = store.memory_short_store();
+    memory_short_concrete.init_schema().await.unwrap();
+    let memory_reference_concrete = store.memory_reference_store();
+    memory_reference_concrete.init_schema().await.unwrap();
+    let memory_long_concrete = store.memory_long_store();
+    memory_long_concrete.init_schema().await.unwrap();
+    let embedding_profile_concrete = store.embedding_profile_store();
+    embedding_profile_concrete.init_schema().await.unwrap();
     let (obs_tx, _) = tokio::sync::mpsc::unbounded_channel();
     let (chrome_tx, _) = tokio::sync::mpsc::channel(16);
     let (_, chrome_state_rx) = tokio::sync::watch::channel(ConnectionState::Disconnected);
@@ -54,6 +71,15 @@ async fn make_mcp() -> DaemonMcp {
     let lens = Arc::new(daemon8_store::LensManager::new(broadcast_tx.subscribe()));
     let envelope_store: Arc<dyn daemon8_store::EnvelopeStore> = Arc::new(envelope_store_concrete);
     let card_store: Arc<dyn daemon8_store::CardStore> = Arc::new(card_store_concrete);
+    let memory_short_store: Arc<dyn daemon8_store::MemoryShortStore> =
+        Arc::new(memory_short_concrete);
+    let memory_reference_store: Arc<dyn daemon8_store::MemoryReferenceStore> =
+        Arc::new(memory_reference_concrete);
+    let memory_long_store: Arc<dyn daemon8_store::MemoryLongStore> = Arc::new(memory_long_concrete);
+    let bookkeeper_store: Arc<dyn daemon8_store::BookkeeperStore> =
+        Arc::new(store.bookkeeper_store());
+    let embedding_profile_store: Arc<dyn daemon8_store::EmbeddingProfileStore> =
+        Arc::new(embedding_profile_concrete);
     DaemonMcp::new(DaemonMcpConfig {
         store,
         memory_store: Some(Arc::new(memory_store)),
@@ -68,11 +94,11 @@ async fn make_mcp() -> DaemonMcp {
         subscription_tx: sub_tx,
         broadcast_tx,
         lens,
-        memory_short_store: None,
-        memory_reference_store: None,
-        memory_long_store: None,
-        bookkeeper_store: None,
-        embedding_profile_store: None,
+        memory_short_store: Some(memory_short_store),
+        memory_reference_store: Some(memory_reference_store),
+        memory_long_store: Some(memory_long_store),
+        bookkeeper_store: Some(bookkeeper_store),
+        embedding_profile_store: Some(embedding_profile_store),
         embedder: None,
         setup_tool_fn: Some(Arc::new(|action| {
             Box::pin(async move {
@@ -87,24 +113,26 @@ async fn make_mcp() -> DaemonMcp {
 }
 
 #[test]
-fn composed_router_has_all_nineteen_tools() {
+fn composed_router_has_all_twenty_two_tools() {
     let router = DaemonMcp::tool_router()
         + DaemonMcp::action_tool_router()
         + DaemonMcp::lens_tool_router()
         + DaemonMcp::memory_tool_router()
         + DaemonMcp::setup_tool_router()
-        + DaemonMcp::deliber8_tool_router();
+        + DaemonMcp::deliber8_tool_router()
+        + DaemonMcp::tier_tool_router();
     let names = tool_names(&router);
 
+    let expected_total = EXPECTED_TOOLS.len() + TIER_TOOLS.len();
     assert_eq!(
         names.len(),
-        19,
-        "router must expose all 19 tools, got {}: {:?}",
+        expected_total,
+        "router must expose {expected_total} tools, got {}: {:?}",
         names.len(),
         names
     );
 
-    for expected in EXPECTED_TOOLS.iter() {
+    for expected in EXPECTED_TOOLS.iter().chain(TIER_TOOLS.iter()) {
         assert!(
             names.iter().any(|n| n == expected),
             "router missing expected tool '{}'. Present: {:?}",
@@ -115,7 +143,7 @@ fn composed_router_has_all_nineteen_tools() {
 }
 
 #[tokio::test]
-async fn live_mcp_exposes_all_nineteen_tools() {
+async fn live_mcp_exposes_full_tool_surface() {
     let mcp = make_mcp().await;
     let names: Vec<String> = mcp
         .tools_for_client()
@@ -123,14 +151,15 @@ async fn live_mcp_exposes_all_nineteen_tools() {
         .map(|t| t.name.to_string())
         .collect();
 
+    let expected_total = EXPECTED_TOOLS.len() + TIER_TOOLS.len();
     assert_eq!(
         names.len(),
-        19,
-        "tools_for_client() must expose all 19 tools, got {}: {:?}",
+        expected_total,
+        "tools_for_client() must expose {expected_total} tools, got {}: {:?}",
         names.len(),
         names
     );
-    for expected in EXPECTED_TOOLS.iter() {
+    for expected in EXPECTED_TOOLS.iter().chain(TIER_TOOLS.iter()) {
         assert!(
             names.iter().any(|n| n == expected),
             "tools_for_client() missing '{}'. Present: {:?}",
