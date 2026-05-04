@@ -422,7 +422,10 @@ pub struct Deliber8RosterParams {
     #[schemars(description = "Scope to one project ref (exact match).")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_ref: Option<String>,
-    #[schemars(description = "Maximum cards to return (default 50).")]
+    #[schemars(description = "Scope to one team ref (exact match).")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team_ref: Option<String>,
+    #[schemars(description = "Maximum cards to return (default 50, capped at 500).")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<usize>,
 }
@@ -1021,11 +1024,15 @@ pub async fn deliber8_roster_inner(
         Err(e) => return error_json(&e),
     };
 
+    // Kind filter runs in-process AFTER the store query, so we pull a wider slice
+    // from the store and then narrow + truncate here. Otherwise a kind=bookkeeper
+    // query with limit=50 could return zero rows even when bookkeepers exist —
+    // the store would yield 50 specialists first.
     let filter = daemon8_store::AgentCardFilter {
         statuses: parsed_statuses,
         project_ref: params.project_ref.clone(),
-        team_ref: None,
-        limit: Some(params.limit.unwrap_or(50).min(500)),
+        team_ref: params.team_ref.clone(),
+        limit: None,
     };
 
     let cards = match card_store.list_agents(&filter).await {
@@ -1033,12 +1040,14 @@ pub async fn deliber8_roster_inner(
         Err(e) => return error_json(&format!("list_agents failed: {e}")),
     };
 
+    let cap = params.limit.unwrap_or(50).min(500);
     let agents: Vec<&daemon8_types::AgentCard> = match parsed_kinds.as_ref() {
         Some(kinds) => cards
             .iter()
             .filter(|c| kinds.contains(&c.agent_kind))
+            .take(cap)
             .collect(),
-        None => cards.iter().collect(),
+        None => cards.iter().take(cap).collect(),
     };
 
     serde_json::json!({

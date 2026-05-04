@@ -77,6 +77,7 @@ async fn defaults_to_alive_only() {
         kinds: None,
         statuses: None,
         project_ref: None,
+        team_ref: None,
         limit: None,
     };
     let res = deliber8_roster_inner(&card_store, params).await;
@@ -101,6 +102,7 @@ async fn explicit_status_returns_all() {
         kinds: None,
         statuses: Some(vec!["alive".into(), "retired".into()]),
         project_ref: None,
+        team_ref: None,
         limit: None,
     };
     let res = deliber8_roster_inner(&card_store, params).await;
@@ -124,6 +126,7 @@ async fn kind_filter_isolates() {
         kinds: Some(vec!["specialist".into()]),
         statuses: None,
         project_ref: None,
+        team_ref: None,
         limit: None,
     };
     let res = deliber8_roster_inner(&card_store, params).await;
@@ -139,6 +142,7 @@ async fn unknown_kind_errors() {
         kinds: Some(vec!["dragon".into()]),
         statuses: None,
         project_ref: None,
+        team_ref: None,
         limit: None,
     };
     let res = deliber8_roster_inner(&card_store, params).await;
@@ -153,6 +157,7 @@ async fn unknown_status_errors() {
         kinds: None,
         statuses: Some(vec!["zombie".into()]),
         project_ref: None,
+        team_ref: None,
         limit: None,
     };
     let res = deliber8_roster_inner(&card_store, params).await;
@@ -177,6 +182,7 @@ async fn respects_limit() {
         kinds: None,
         statuses: None,
         project_ref: None,
+        team_ref: None,
         limit: Some(2),
     };
     let res = deliber8_roster_inner(&card_store, params).await;
@@ -201,6 +207,7 @@ async fn default_limit_caps_at_fifty() {
         kinds: None,
         statuses: None,
         project_ref: None,
+        team_ref: None,
         limit: None,
     };
     let res = deliber8_roster_inner(&card_store, params).await;
@@ -228,6 +235,7 @@ async fn empty_status_list_falls_back_to_alive_default() {
         kinds: None,
         statuses: Some(vec![]),
         project_ref: None,
+        team_ref: None,
         limit: None,
     };
     let res = deliber8_roster_inner(&card_store, params).await;
@@ -252,6 +260,7 @@ async fn empty_kind_list_treated_as_omitted() {
         kinds: Some(vec![]),
         statuses: None,
         project_ref: None,
+        team_ref: None,
         limit: None,
     };
     let res = deliber8_roster_inner(&card_store, params).await;
@@ -266,10 +275,69 @@ async fn explicit_limit_clamped_at_500() {
         kinds: None,
         statuses: None,
         project_ref: None,
+        team_ref: None,
         limit: Some(10_000),
     };
     let res = deliber8_roster_inner(&card_store, params).await;
     let v = parse(&res);
     assert!(v["error"].is_null(), "unexpected error: {res}");
     assert_eq!(v["total"], 0);
+}
+
+#[tokio::test]
+async fn kind_filter_runs_before_limit() {
+    let (_store, card_store) = setup().await;
+    for i in 0..40 {
+        card_store
+            .upsert_agent(agent(
+                &format!("spec_{i:02}"),
+                AgentKind::Specialist,
+                AgentStatus::Alive,
+            ))
+            .await
+            .unwrap();
+    }
+    for i in 0..3 {
+        card_store
+            .upsert_agent(agent(
+                &format!("bk_{i}"),
+                AgentKind::Bookkeeper,
+                AgentStatus::Alive,
+            ))
+            .await
+            .unwrap();
+    }
+    let params = Deliber8RosterParams {
+        kinds: Some(vec!["bookkeeper".into()]),
+        statuses: None,
+        project_ref: None,
+        team_ref: None,
+        limit: Some(10),
+    };
+    let res = deliber8_roster_inner(&card_store, params).await;
+    let v = parse(&res);
+    assert_eq!(v["total"], 3, "expected 3 bookkeepers, got: {res}");
+}
+
+#[tokio::test]
+async fn team_ref_filter_isolates() {
+    let (_store, card_store) = setup().await;
+    let mut card_a = agent("with_team", AgentKind::Specialist, AgentStatus::Alive);
+    card_a.team_refs = vec!["team:alpha".into()];
+    card_a.primary_team_ref = Some("team:alpha".into());
+    let card_b = agent("no_team", AgentKind::Specialist, AgentStatus::Alive);
+    card_store.upsert_agent(card_a).await.unwrap();
+    card_store.upsert_agent(card_b).await.unwrap();
+
+    let params = Deliber8RosterParams {
+        kinds: None,
+        statuses: None,
+        project_ref: None,
+        team_ref: Some("team:alpha".into()),
+        limit: None,
+    };
+    let res = deliber8_roster_inner(&card_store, params).await;
+    let v = parse(&res);
+    assert_eq!(v["total"], 1);
+    assert_eq!(v["agents"][0]["slug"], "with_team");
 }
