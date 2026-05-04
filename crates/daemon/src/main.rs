@@ -50,6 +50,9 @@ enum Commands {
     /// Manage per-session observation lens (filter + ring buffer)
     #[command(subcommand)]
     Lens(cli::lens::LensSubcommand),
+    /// Export memory query results
+    #[command(subcommand)]
+    Memory(cli::memory::MemorySubcommand),
     /// Show log file location or tail logs
     Logs {
         /// Follow the log file (like tail -f)
@@ -118,6 +121,7 @@ async fn main() -> Result<()> {
         Commands::Connections(args) => cli::observe::connections::cmd_connections(args).await,
         Commands::Browser(sub) => cli::browser::cmd_chrome(sub).await,
         Commands::Lens(sub) => cli::lens::cmd_lens(sub).await,
+        Commands::Memory(sub) => cli::memory::cmd_memory(cli.config, sub).await,
         Commands::Logs { follow } => cli::logs::cmd_logs(cli.config, follow),
         Commands::Config(sub) => cli::config_cmd::cmd_config(cli.config, sub),
         Commands::Completions { shell } => {
