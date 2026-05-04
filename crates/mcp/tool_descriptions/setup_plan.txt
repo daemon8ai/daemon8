@@ -1,1 +1,13 @@
-Preview daemon8 setup changes without applying them. Reports planned source registration, setup state, provider config, and hook actions.
+Compute and return the action plan that `setup_apply` would execute, without writing anything. Reports planned source registration, provider configuration, hook installation, and any setup-state diffs.
+
+Use this to:
+- Preview a setup change before mutating any files.
+- Diff against `setup_status` to understand exactly what will change.
+- Decide whether to invoke `setup_apply` (and with which options).
+
+Parameters:
+- cwd: optional string. Project working directory. Defaults to the daemon's current directory.
+
+Returns: { status: { ... same as setup_status ... }, actions: [ { kind, target, description, idempotent } ] }. The action list is empty when nothing needs to change.
+
+Read-only. Re-running `setup_plan` produces the same plan unless the underlying state changed.

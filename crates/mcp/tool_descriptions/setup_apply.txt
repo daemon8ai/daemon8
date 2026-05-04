@@ -1,1 +1,17 @@
-Apply daemon8 setup changes explicitly. This mutates setup state, runtime source registration, and any requested provider or hook files.
+Apply the plan computed by `setup_plan` for one project. Writes global config, registers runtime sources, installs hooks, and writes provider config files. Idempotent — re-running on an unchanged tree is a no-op.
+
+Use this to:
+- Wire a new project into the daemon (typically the first time you run setup).
+- Re-apply after editing `.daemon8.toml` to push changes into the global runtime.
+- Repair drift after `setup_status` reports stale state.
+
+Parameters:
+- yes: boolean. Required. Must be `true` to confirm the mutation. The MCP gate refuses any other value.
+- cwd: optional string. Project working directory. Defaults to the daemon's current directory.
+- providers: optional string. Comma-separated providers to configure (e.g. "claude,cursor,windsurf"). Omit to use the project's declared providers.
+- install_hooks: optional string. Hook install scope: "local", "shared", or "global".
+- force_hooks: optional boolean. Replace stale daemon8 hook entries that point at older versions.
+
+Returns: { status: { ... post-apply state ... }, actions: [ ... actions executed ... ] }. The status reflects the on-disk state AFTER mutation, so callers can confirm the change took effect.
+
+Mutating. Set `apply: false` is not an option here — use `setup_plan` for previews.
