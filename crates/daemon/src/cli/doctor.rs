@@ -42,7 +42,13 @@ impl std::fmt::Display for Check {
 }
 
 pub async fn cmd_doctor(config_path: Option<String>, fix: bool) -> Result<()> {
-    let cfg = crate::config::load(config_path.as_deref()).unwrap_or_default();
+    let cfg = match crate::config::load(config_path.as_deref()) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[ERR]    config load ({e})");
+            std::process::exit(1);
+        }
+    };
     let config_path = cfg.config_dir.join("config.toml");
 
     let mut checks = vec![
@@ -548,10 +554,14 @@ async fn check_inbox_backlog(cfg: &config::Config) -> Check {
 
     let mut paired: Vec<(daemon8_types::AgentCard, Option<u64>)> = Vec::with_capacity(agents.len());
     for card in &agents {
+        // Cap per-specialist scan: backlog classification only needs counts and
+        // the oldest queued created_at, so a generous head slice is sufficient
+        // and avoids dragging the full inbox into memory on large deployments.
         let queued: Vec<daemon8_types::EnvelopeRecord> = match envelope_store
             .query_inbox(&daemon8_store::EnvelopeFilter {
                 inbox_address: Some(card.address.clone()),
                 statuses: Some(vec![daemon8_types::EnvelopeStatus::Queued]),
+                limit: Some(200),
                 ..Default::default()
             })
             .await
@@ -892,14 +902,27 @@ mod tests {
 
     #[test]
     fn config_load_honors_explicit_path() {
-        // Verify that the config-path threading cmd_doctor relies on
-        // actually picks up a sandbox config dir. cmd_doctor itself only
-        // forwards this path to crate::config::load.
         let tmp = tempfile::tempdir().unwrap();
         let cfg_path = tmp.path().join("config.toml");
         std::fs::write(&cfg_path, "version = 1\n").unwrap();
 
         let cfg = crate::config::load(Some(cfg_path.to_str().unwrap())).unwrap();
         assert_eq!(cfg.config_dir, tmp.path());
+    }
+
+    #[test]
+    fn config_load_surfaces_parse_errors() {
+        // cmd_doctor relies on this returning Err so it can exit early
+        // with a meaningful diagnostic. Silent fallback to defaults
+        // (the old unwrap_or_default behavior) hides config bugs.
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_path = tmp.path().join("config.toml");
+        std::fs::write(&cfg_path, "this is = not [valid] toml ===\n").unwrap();
+
+        let result = crate::config::load(Some(cfg_path.to_str().unwrap()));
+        assert!(
+            result.is_err(),
+            "malformed config must surface as Err, got: {result:?}"
+        );
     }
 }
