@@ -22,12 +22,15 @@ DEFINE FIELD IF NOT EXISTS supersedes   ON memory_long TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS revoked_at   ON memory_long TYPE option<int>;
 DEFINE FIELD IF NOT EXISTS created_at   ON memory_long TYPE int;
 DEFINE FIELD IF NOT EXISTS updated_at   ON memory_long TYPE int;
+DEFINE FIELD IF NOT EXISTS embedding             ON memory_long TYPE option<array<float>>;
+DEFINE FIELD IF NOT EXISTS embedding_profile_id  ON memory_long TYPE option<string>;
 
 DEFINE INDEX IF NOT EXISTS idx_long_scope      ON memory_long FIELDS scope;
 DEFINE INDEX IF NOT EXISTS idx_long_hash       ON memory_long FIELDS content_hash;
 DEFINE INDEX IF NOT EXISTS idx_long_supersedes ON memory_long FIELDS supersedes;
 DEFINE INDEX IF NOT EXISTS idx_long_revoked    ON memory_long FIELDS revoked_at;
-DEFINE INDEX IF NOT EXISTS idx_long_kind       ON memory_long FIELDS content_kind;";
+DEFINE INDEX IF NOT EXISTS idx_long_kind       ON memory_long FIELDS content_kind;
+DEFINE INDEX IF NOT EXISTS idx_long_emb_pid    ON memory_long FIELDS embedding_profile_id;";
 
 pub struct SurrealMemoryLongStore {
     db: Surreal<Db>,
@@ -62,6 +65,11 @@ impl SurrealMemoryLongStore {
         {
             conditions.push("tags ANYINSIDE $any_tags".to_string());
             binds.push(("any_tags".into(), serde_json::json!(tags)));
+        }
+
+        if let Some(ref pid) = filter.embedding_profile_id {
+            conditions.push("embedding_profile_id = $emb_pid".to_string());
+            binds.push(("emb_pid".into(), serde_json::json!(pid)));
         }
 
         if !filter.include_revoked {
@@ -330,6 +338,8 @@ mod tests {
             revoked_at: None,
             created_at: 100,
             updated_at: 100,
+            embedding: None,
+            embedding_profile_id: None,
         }
     }
 
@@ -449,6 +459,39 @@ mod tests {
 
         let again = store.revoke(&id, 888).await;
         assert!(again.is_err(), "second revoke must fail (already revoked)");
+    }
+
+    #[tokio::test]
+    async fn embedding_fields_roundtrip_when_set() {
+        let (_s, store) = setup().await;
+        let mut r = make("fact x", LongContentKind::Fact, "h-x");
+        r.embedding = Some(vec![1.0, 2.0, 3.0, 4.0]);
+        r.embedding_profile_id = Some("openai:large".into());
+        let id = store.save(r.clone()).await.unwrap();
+        let got = store.get(&id).await.unwrap().unwrap();
+        assert_eq!(got.embedding, r.embedding);
+        assert_eq!(got.embedding_profile_id, r.embedding_profile_id);
+    }
+
+    #[tokio::test]
+    async fn list_filters_by_embedding_profile_id() {
+        let (_s, store) = setup().await;
+        let mut a = make("a", LongContentKind::Fact, "h1");
+        a.embedding_profile_id = Some("openai:small".into());
+        store.save(a).await.unwrap();
+        let mut b = make("b", LongContentKind::Fact, "h2");
+        b.embedding_profile_id = Some("openai:large".into());
+        store.save(b).await.unwrap();
+
+        let small = store
+            .list(&MemoryLongFilter {
+                embedding_profile_id: Some("openai:small".into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(small.len(), 1);
+        assert_eq!(small[0].content, "a");
     }
 
     #[tokio::test]

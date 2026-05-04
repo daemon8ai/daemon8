@@ -22,11 +22,14 @@ DEFINE FIELD IF NOT EXISTS content_hash ON memory_reference TYPE string;
 DEFINE FIELD IF NOT EXISTS refreshed_at ON memory_reference TYPE int;
 DEFINE FIELD IF NOT EXISTS created_at   ON memory_reference TYPE int;
 DEFINE FIELD IF NOT EXISTS updated_at   ON memory_reference TYPE int;
+DEFINE FIELD IF NOT EXISTS embedding             ON memory_reference TYPE option<array<float>>;
+DEFINE FIELD IF NOT EXISTS embedding_profile_id  ON memory_reference TYPE option<string>;
 
 DEFINE INDEX IF NOT EXISTS idx_ref_source_hash ON memory_reference FIELDS source_hash;
 DEFINE INDEX IF NOT EXISTS idx_ref_scope       ON memory_reference FIELDS scope;
 DEFINE INDEX IF NOT EXISTS idx_ref_refreshed   ON memory_reference FIELDS refreshed_at;
-DEFINE INDEX IF NOT EXISTS idx_ref_kind        ON memory_reference FIELDS source_kind;";
+DEFINE INDEX IF NOT EXISTS idx_ref_kind        ON memory_reference FIELDS source_kind;
+DEFINE INDEX IF NOT EXISTS idx_ref_emb_pid     ON memory_reference FIELDS embedding_profile_id;";
 
 pub struct SurrealMemoryReferenceStore {
     db: Surreal<Db>,
@@ -61,6 +64,11 @@ impl SurrealMemoryReferenceStore {
         {
             conditions.push("tags ANYINSIDE $any_tags".to_string());
             binds.push(("any_tags".into(), serde_json::json!(tags)));
+        }
+
+        if let Some(ref pid) = filter.embedding_profile_id {
+            conditions.push("embedding_profile_id = $emb_pid".to_string());
+            binds.push(("emb_pid".into(), serde_json::json!(pid)));
         }
 
         let where_clause = if conditions.is_empty() {
@@ -290,6 +298,8 @@ mod tests {
             refreshed_at: 100,
             created_at: 100,
             updated_at: 100,
+            embedding: None,
+            embedding_profile_id: None,
         }
     }
 
@@ -362,6 +372,39 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("ghost"));
+    }
+
+    #[tokio::test]
+    async fn embedding_fields_roundtrip_when_set() {
+        let (_s, store) = setup().await;
+        let mut r = make("note", ReferenceSourceKind::Note, "h-note");
+        r.embedding = Some(vec![0.5, -0.5]);
+        r.embedding_profile_id = Some("local:onnx-small".into());
+        let id = store.save(r.clone()).await.unwrap();
+        let got = store.get(&id).await.unwrap().unwrap();
+        assert_eq!(got.embedding, r.embedding);
+        assert_eq!(got.embedding_profile_id, r.embedding_profile_id);
+    }
+
+    #[tokio::test]
+    async fn list_filters_by_embedding_profile_id() {
+        let (_s, store) = setup().await;
+        let mut a = make("a", ReferenceSourceKind::Doc, "h1");
+        a.embedding_profile_id = Some("openai:small".into());
+        store.save(a).await.unwrap();
+        let mut b = make("b", ReferenceSourceKind::Doc, "h2");
+        b.embedding_profile_id = Some("local:onnx".into());
+        store.save(b).await.unwrap();
+
+        let openai = store
+            .list(&MemoryReferenceFilter {
+                embedding_profile_id: Some("openai:small".into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(openai.len(), 1);
+        assert_eq!(openai[0].content, "a");
     }
 
     #[tokio::test]

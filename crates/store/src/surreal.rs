@@ -17,9 +17,9 @@ use daemon8_types::{
 
 use crate::{
     StateModel, StoreError, bookkeeper::SurrealBookkeeperStore, card::SurrealCardStore,
-    envelope::SurrealEnvelopeStore, memory::SurrealMemoryStore,
-    memory_long::SurrealMemoryLongStore, memory_reference::SurrealMemoryReferenceStore,
-    memory_short::SurrealMemoryShortStore,
+    embedding_profile::SurrealEmbeddingProfileStore, envelope::SurrealEnvelopeStore,
+    memory::SurrealMemoryStore, memory_long::SurrealMemoryLongStore,
+    memory_reference::SurrealMemoryReferenceStore, memory_short::SurrealMemoryShortStore,
 };
 
 const NAMESPACE: &str = "daemon8";
@@ -189,6 +189,11 @@ impl SurrealStore {
         SurrealBookkeeperStore::new(self.db.clone())
     }
 
+    /// Create a `SurrealEmbeddingProfileStore` sharing this database handle.
+    pub fn embedding_profile_store(&self) -> SurrealEmbeddingProfileStore {
+        SurrealEmbeddingProfileStore::new(self.db.clone())
+    }
+
     async fn init_schema(&self) -> Result<(), StoreError> {
         self.db
             .use_ns(NAMESPACE)
@@ -254,6 +259,13 @@ impl SurrealStore {
             .map_err(|e| StoreError::Db(format!("memory_long schema init: {e}")))?
             .check()
             .map_err(|e| StoreError::Db(format!("memory_long schema init check: {e}")))?;
+
+        self.db
+            .query(crate::embedding_profile::EMBEDDING_PROFILE_DDL)
+            .await
+            .map_err(|e| StoreError::Db(format!("embedding_profile schema init: {e}")))?
+            .check()
+            .map_err(|e| StoreError::Db(format!("embedding_profile schema init check: {e}")))?;
 
         Ok(())
     }

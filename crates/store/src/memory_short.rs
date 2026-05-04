@@ -22,12 +22,15 @@ DEFINE FIELD IF NOT EXISTS content_hash  ON memory_short TYPE string;
 DEFINE FIELD IF NOT EXISTS expires_at    ON memory_short TYPE int;
 DEFINE FIELD IF NOT EXISTS created_at    ON memory_short TYPE int;
 DEFINE FIELD IF NOT EXISTS updated_at    ON memory_short TYPE int;
+DEFINE FIELD IF NOT EXISTS embedding             ON memory_short TYPE option<array<float>>;
+DEFINE FIELD IF NOT EXISTS embedding_profile_id  ON memory_short TYPE option<string>;
 
 DEFINE INDEX IF NOT EXISTS idx_short_agent   ON memory_short FIELDS agent_id;
 DEFINE INDEX IF NOT EXISTS idx_short_thread  ON memory_short FIELDS thread_id;
 DEFINE INDEX IF NOT EXISTS idx_short_expires ON memory_short FIELDS expires_at;
 DEFINE INDEX IF NOT EXISTS idx_short_hash    ON memory_short FIELDS content_hash;
-DEFINE INDEX IF NOT EXISTS idx_short_scope   ON memory_short FIELDS scope;";
+DEFINE INDEX IF NOT EXISTS idx_short_scope   ON memory_short FIELDS scope;
+DEFINE INDEX IF NOT EXISTS idx_short_emb_pid ON memory_short FIELDS embedding_profile_id;";
 
 pub struct SurrealMemoryShortStore {
     db: Surreal<Db>,
@@ -72,6 +75,11 @@ impl SurrealMemoryShortStore {
         {
             conditions.push("tags ANYINSIDE $any_tags".to_string());
             binds.push(("any_tags".into(), serde_json::json!(tags)));
+        }
+
+        if let Some(ref pid) = filter.embedding_profile_id {
+            conditions.push("embedding_profile_id = $emb_pid".to_string());
+            binds.push(("emb_pid".into(), serde_json::json!(pid)));
         }
 
         if !filter.include_expired {
@@ -284,6 +292,8 @@ mod tests {
             expires_at,
             created_at,
             updated_at: created_at,
+            embedding: None,
+            embedding_profile_id: None,
         }
     }
 
@@ -476,6 +486,44 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(with_expired.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn embedding_fields_roundtrip_when_set() {
+        let (_s, store) = setup().await;
+        let mut r = make("a", "v", ShortContentKind::Fact, 1, 999_999);
+        r.embedding = Some(vec![0.1, 0.2, 0.3]);
+        r.embedding_profile_id = Some("openai:text-embedding-3-small".into());
+        let id = store.save(r.clone()).await.unwrap();
+        let got = store.get(&id).await.unwrap().unwrap();
+        assert_eq!(got.embedding, r.embedding);
+        assert_eq!(got.embedding_profile_id, r.embedding_profile_id);
+    }
+
+    #[tokio::test]
+    async fn list_filters_by_embedding_profile_id() {
+        let (_s, store) = setup().await;
+        let mut r1 = make("a", "with", ShortContentKind::Fact, 1, 999_999);
+        r1.embedding_profile_id = Some("openai:small".into());
+        store.save(r1).await.unwrap();
+        let mut r2 = make("a", "different", ShortContentKind::Fact, 2, 999_999);
+        r2.embedding_profile_id = Some("local:onnx".into());
+        store.save(r2).await.unwrap();
+        store
+            .save(make("a", "no-pid", ShortContentKind::Fact, 3, 999_999))
+            .await
+            .unwrap();
+
+        let openai_only = store
+            .list(&MemoryShortFilter {
+                embedding_profile_id: Some("openai:small".into()),
+                now_ns: Some(0),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(openai_only.len(), 1);
+        assert_eq!(openai_only[0].content, "with");
     }
 
     #[tokio::test]

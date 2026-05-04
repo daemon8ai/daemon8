@@ -3,6 +3,7 @@
 
 pub mod bookkeeper;
 pub mod card;
+pub mod embedding_profile;
 pub mod envelope;
 mod lens;
 pub mod memory;
@@ -13,6 +14,7 @@ mod surreal;
 
 pub use bookkeeper::SurrealBookkeeperStore;
 pub use card::SurrealCardStore;
+pub use embedding_profile::SurrealEmbeddingProfileStore;
 pub use envelope::SurrealEnvelopeStore;
 pub use lens::{LensManager, LensStatus};
 pub use memory::SurrealMemoryStore;
@@ -22,10 +24,10 @@ pub use memory_short::SurrealMemoryShortStore;
 pub use surreal::SurrealStore;
 
 use daemon8_types::{
-    ActorCard, AgentCard, AgentStatus, Checkpoint, EnvelopeKind, EnvelopePriority, EnvelopeRecord,
-    EnvelopeStatus, Filter, LongContentKind, MemoryKind, MemoryScope, Observation, ProjectCard,
-    ProvenanceEntry, ReferenceSourceKind, RuntimeSummary, ShortContentKind, StateSlice, TeamCard,
-    UserCard,
+    ActorCard, AgentCard, AgentStatus, Checkpoint, EmbeddingProfile, EnvelopeKind,
+    EnvelopePriority, EnvelopeRecord, EnvelopeStatus, Filter, LongContentKind, MemoryKind,
+    MemoryScope, Observation, ProjectCard, ProvenanceEntry, ReferenceSourceKind, RuntimeSummary,
+    ShortContentKind, StateSlice, TeamCard, UserCard,
 };
 use serde::{Deserialize, Serialize};
 
@@ -151,6 +153,29 @@ pub struct EnvelopeFilter {
 }
 
 // ----------------------------------------------------------------------------
+// Embedding profile registry (MVP-09 substrate)
+//
+// Vectors stored on memory rows must be compared only against vectors
+// produced by the same `EmbeddingProfile`. The store records "which
+// generator produced which vector" so a future semantic-search layer can
+// gate KNN queries on profile id.
+// ----------------------------------------------------------------------------
+
+#[async_trait::async_trait]
+pub trait EmbeddingProfileStore: Send + Sync {
+    async fn init_schema(&self) -> Result<(), StoreError>;
+    async fn upsert(&self, profile: EmbeddingProfile) -> Result<String, StoreError>;
+    async fn get(&self, id: &str) -> Result<Option<EmbeddingProfile>, StoreError>;
+    async fn list(&self) -> Result<Vec<EmbeddingProfile>, StoreError>;
+    async fn find_by_provider_and_model(
+        &self,
+        provider: &str,
+        model: &str,
+    ) -> Result<Option<EmbeddingProfile>, StoreError>;
+    async fn delete(&self, id: &str) -> Result<bool, StoreError>;
+}
+
+// ----------------------------------------------------------------------------
 // Memory tier records and stores
 //
 // These three structs back the `memory_short`, `memory_reference`, and
@@ -161,11 +186,12 @@ pub struct EnvelopeFilter {
 // tier tables coexist with it until a separate migration round wires the MCP
 // surface over to the tier model.
 //
-// Embedding fields (`embedding`, `embedding_profile_id`) are deferred to
-// MVP-09. Promotion (`memory_short` -> `memory_long`) is embedding-driven and
-// also deferred. This round only ships the substrate shapes plus the two
-// bookkeeper operations that do not require embeddings: TTL sweep on
-// `memory_short` and content-hash dedup on `memory_long`.
+// Embedding columns (`embedding`, `embedding_profile_id`) landed in MVP-09 as
+// optional fields. Vectors must only be searched within an exact
+// `embedding_profile_id` -- mixing models silently corrupts retrieval. The
+// `EmbeddingProfile` table records which generator produced which vector.
+// Actual semantic search (KNN over an mtree index) is deferred to a later
+// round; this substrate just stores the columns and lets callers filter.
 // ----------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -184,6 +210,10 @@ pub struct MemoryShortRecord {
     pub expires_at: u64,
     pub created_at: u64,
     pub updated_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embedding: Option<Vec<f32>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embedding_profile_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -193,6 +223,7 @@ pub struct MemoryShortFilter {
     pub scope: Option<MemoryScope>,
     pub content_kinds: Option<Vec<ShortContentKind>>,
     pub tags_any: Option<Vec<String>>,
+    pub embedding_profile_id: Option<String>,
     pub include_expired: bool,
     pub now_ns: Option<u64>,
     pub limit: Option<usize>,
@@ -223,6 +254,10 @@ pub struct MemoryReferenceRecord {
     pub refreshed_at: u64,
     pub created_at: u64,
     pub updated_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embedding: Option<Vec<f32>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embedding_profile_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -230,6 +265,7 @@ pub struct MemoryReferenceFilter {
     pub source_kinds: Option<Vec<ReferenceSourceKind>>,
     pub scope: Option<MemoryScope>,
     pub tags_any: Option<Vec<String>>,
+    pub embedding_profile_id: Option<String>,
     pub limit: Option<usize>,
 }
 
@@ -269,6 +305,10 @@ pub struct MemoryLongRecord {
     pub revoked_at: Option<u64>,
     pub created_at: u64,
     pub updated_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embedding: Option<Vec<f32>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embedding_profile_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -276,6 +316,7 @@ pub struct MemoryLongFilter {
     pub scope: Option<MemoryScope>,
     pub content_kinds: Option<Vec<LongContentKind>>,
     pub tags_any: Option<Vec<String>>,
+    pub embedding_profile_id: Option<String>,
     pub include_revoked: bool,
     pub limit: Option<usize>,
 }

@@ -296,6 +296,8 @@ mod tests {
             expires_at: expires,
             created_at: created,
             updated_at: created,
+            embedding: None,
+            embedding_profile_id: None,
         }
     }
 
@@ -313,6 +315,8 @@ mod tests {
             revoked_at: None,
             created_at: created,
             updated_at: created,
+            embedding: None,
+            embedding_profile_id: None,
         }
     }
 

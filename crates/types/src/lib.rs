@@ -23,6 +23,9 @@ pub use memory::{
     ShortContentKind,
 };
 
+pub mod embedding;
+pub use embedding::EmbeddingProfile;
+
 macro_rules! arc_str_newtype {
     ($name:ident) => {
         #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
