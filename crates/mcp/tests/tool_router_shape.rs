@@ -68,6 +68,11 @@ async fn make_mcp() -> DaemonMcp {
         subscription_tx: sub_tx,
         broadcast_tx,
         lens,
+        memory_short_store: None,
+        memory_reference_store: None,
+        memory_long_store: None,
+        bookkeeper_store: None,
+        embedding_profile_store: None,
         embedder: None,
         setup_tool_fn: Some(Arc::new(|action| {
             Box::pin(async move {
@@ -205,6 +210,11 @@ async fn make_mcp_without_envelope_store() -> DaemonMcp {
         subscription_tx: sub_tx,
         broadcast_tx,
         lens,
+        memory_short_store: None,
+        memory_reference_store: None,
+        memory_long_store: None,
+        bookkeeper_store: None,
+        embedding_profile_store: None,
         embedder: None,
         setup_tool_fn: None,
     })
@@ -235,6 +245,11 @@ async fn make_mcp_without_any_deliber8_store() -> DaemonMcp {
         subscription_tx: sub_tx,
         broadcast_tx,
         lens,
+        memory_short_store: None,
+        memory_reference_store: None,
+        memory_long_store: None,
+        bookkeeper_store: None,
+        embedding_profile_store: None,
         embedder: None,
         setup_tool_fn: None,
     })

@@ -10,7 +10,10 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
 use daemon8_mcp::ChromeCommand;
-use daemon8_store::{StateModel, SurrealStore};
+use daemon8_store::{
+    EmbeddingProfileStore, MemoryLongStore, MemoryReferenceStore, MemoryShortStore, StateModel,
+    SurrealStore,
+};
 use daemon8_types::Observation;
 
 use crate::config;
@@ -57,6 +60,40 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
     let envelope_store: Arc<dyn daemon8_store::EnvelopeStore> =
         Arc::new(surreal_store.envelope_store());
     let card_store: Arc<dyn daemon8_store::CardStore> = Arc::new(surreal_store.card_store());
+
+    let memory_short_concrete = surreal_store.memory_short_store();
+    memory_short_concrete
+        .init_schema()
+        .await
+        .context("initializing memory_short table schema")?;
+    let memory_short_store: Arc<dyn daemon8_store::MemoryShortStore> =
+        Arc::new(memory_short_concrete);
+
+    let memory_reference_concrete = surreal_store.memory_reference_store();
+    memory_reference_concrete
+        .init_schema()
+        .await
+        .context("initializing memory_reference table schema")?;
+    let memory_reference_store: Arc<dyn daemon8_store::MemoryReferenceStore> =
+        Arc::new(memory_reference_concrete);
+
+    let memory_long_concrete = surreal_store.memory_long_store();
+    memory_long_concrete
+        .init_schema()
+        .await
+        .context("initializing memory_long table schema")?;
+    let memory_long_store: Arc<dyn daemon8_store::MemoryLongStore> = Arc::new(memory_long_concrete);
+
+    let bookkeeper_store: Arc<dyn daemon8_store::BookkeeperStore> =
+        Arc::new(surreal_store.bookkeeper_store());
+
+    let embedding_profile_concrete = surreal_store.embedding_profile_store();
+    embedding_profile_concrete
+        .init_schema()
+        .await
+        .context("initializing embedding_profile table schema")?;
+    let embedding_profile_store: Arc<dyn daemon8_store::EmbeddingProfileStore> =
+        Arc::new(embedding_profile_concrete);
 
     let store: Arc<dyn StateModel> = Arc::new(surreal_store);
 
@@ -223,6 +260,11 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
             memory_store: Some(memory_store.clone()),
             envelope_store: Some(envelope_store.clone()),
             card_store: Some(card_store.clone()),
+            memory_short_store: Some(memory_short_store.clone()),
+            memory_reference_store: Some(memory_reference_store.clone()),
+            memory_long_store: Some(memory_long_store.clone()),
+            bookkeeper_store: Some(bookkeeper_store.clone()),
+            embedding_profile_store: Some(embedding_profile_store.clone()),
             obs_tx: obs_tx.clone(),
             chrome_tx: chrome_cmd_tx.clone(),
             chrome_state: chrome_state_rx.clone(),
@@ -259,6 +301,11 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
     let mcp_memory_store = memory_store.clone();
     let mcp_envelope_store = envelope_store.clone();
     let mcp_card_store = card_store.clone();
+    let mcp_memory_short = memory_short_store.clone();
+    let mcp_memory_reference = memory_reference_store.clone();
+    let mcp_memory_long = memory_long_store.clone();
+    let mcp_bookkeeper = bookkeeper_store.clone();
+    let mcp_embedding_profile = embedding_profile_store.clone();
     let mcp_obs_tx = obs_tx.clone();
     let mcp_chrome_tx = chrome_cmd_tx.clone();
     let mcp_state_rx = chrome_state_rx.clone();
@@ -276,6 +323,11 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
                 memory_store: Some(mcp_memory_store.clone()),
                 envelope_store: Some(mcp_envelope_store.clone()),
                 card_store: Some(mcp_card_store.clone()),
+                memory_short_store: Some(mcp_memory_short.clone()),
+                memory_reference_store: Some(mcp_memory_reference.clone()),
+                memory_long_store: Some(mcp_memory_long.clone()),
+                bookkeeper_store: Some(mcp_bookkeeper.clone()),
+                embedding_profile_store: Some(mcp_embedding_profile.clone()),
                 obs_tx: mcp_obs_tx.clone(),
                 chrome_tx: mcp_chrome_tx.clone(),
                 chrome_state: mcp_state_rx.clone(),

@@ -7,7 +7,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use daemon8_store::{CardStore, EnvelopeStore, LensManager, MemoryStore, StateModel};
+use daemon8_store::{
+    BookkeeperStore, CardStore, EmbeddingProfileStore, EnvelopeStore, LensManager, MemoryLongStore,
+    MemoryReferenceStore, MemoryShortStore, MemoryStore, StateModel,
+};
 use daemon8_types::{Checkpoint, DevicePlatform, Filter, Observation};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
@@ -438,6 +441,11 @@ pub struct DaemonMcp {
     memory_store: Option<Arc<dyn MemoryStore>>,
     envelope_store: Option<Arc<dyn EnvelopeStore>>,
     card_store: Option<Arc<dyn CardStore>>,
+    memory_short_store: Option<Arc<dyn MemoryShortStore>>,
+    memory_reference_store: Option<Arc<dyn MemoryReferenceStore>>,
+    memory_long_store: Option<Arc<dyn MemoryLongStore>>,
+    bookkeeper_store: Option<Arc<dyn BookkeeperStore>>,
+    embedding_profile_store: Option<Arc<dyn EmbeddingProfileStore>>,
     obs_tx: tokio::sync::mpsc::UnboundedSender<Observation>,
     chrome_tx: tokio::sync::mpsc::Sender<ChromeCommand>,
     chrome_state: tokio::sync::watch::Receiver<daemon8_chrome::ConnectionState>,
@@ -458,6 +466,11 @@ pub struct DaemonMcpConfig {
     pub memory_store: Option<Arc<dyn MemoryStore>>,
     pub envelope_store: Option<Arc<dyn EnvelopeStore>>,
     pub card_store: Option<Arc<dyn CardStore>>,
+    pub memory_short_store: Option<Arc<dyn MemoryShortStore>>,
+    pub memory_reference_store: Option<Arc<dyn MemoryReferenceStore>>,
+    pub memory_long_store: Option<Arc<dyn MemoryLongStore>>,
+    pub bookkeeper_store: Option<Arc<dyn BookkeeperStore>>,
+    pub embedding_profile_store: Option<Arc<dyn EmbeddingProfileStore>>,
     pub obs_tx: tokio::sync::mpsc::UnboundedSender<Observation>,
     pub chrome_tx: tokio::sync::mpsc::Sender<ChromeCommand>,
     pub chrome_state: tokio::sync::watch::Receiver<daemon8_chrome::ConnectionState>,
@@ -494,6 +507,11 @@ impl DaemonMcp {
             memory_store: cfg.memory_store,
             envelope_store: cfg.envelope_store,
             card_store: cfg.card_store,
+            memory_short_store: cfg.memory_short_store,
+            memory_reference_store: cfg.memory_reference_store,
+            memory_long_store: cfg.memory_long_store,
+            bookkeeper_store: cfg.bookkeeper_store,
+            embedding_profile_store: cfg.embedding_profile_store,
             obs_tx: cfg.obs_tx,
             chrome_tx: cfg.chrome_tx,
             chrome_state: cfg.chrome_state,
