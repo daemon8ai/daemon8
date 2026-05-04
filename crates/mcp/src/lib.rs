@@ -1025,7 +1025,7 @@ pub async fn deliber8_roster_inner(
         statuses: parsed_statuses,
         project_ref: params.project_ref.clone(),
         team_ref: None,
-        limit: params.limit,
+        limit: Some(params.limit.unwrap_or(50).min(500)),
     };
 
     let cards = match card_store.list_agents(&filter).await {
@@ -1095,7 +1095,7 @@ pub async fn deliber8_inbox_inner(
     let filter = daemon8_store::EnvelopeFilter {
         inbox_address: Some(params.address.clone()),
         statuses: parsed_statuses,
-        limit: params.limit,
+        limit: Some(params.limit.unwrap_or(20).min(500)),
         ..Default::default()
     };
 

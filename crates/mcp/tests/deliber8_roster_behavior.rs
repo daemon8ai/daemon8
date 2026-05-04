@@ -183,3 +183,42 @@ async fn respects_limit() {
     let v = parse(&res);
     assert_eq!(v["total"], 2);
 }
+
+#[tokio::test]
+async fn default_limit_caps_at_fifty() {
+    let (_store, card_store) = setup().await;
+    for i in 0..60 {
+        card_store
+            .upsert_agent(agent(
+                &format!("a{i:02}"),
+                AgentKind::Specialist,
+                AgentStatus::Alive,
+            ))
+            .await
+            .unwrap();
+    }
+    let params = Deliber8RosterParams {
+        kinds: None,
+        statuses: None,
+        project_ref: None,
+        limit: None,
+    };
+    let res = deliber8_roster_inner(&card_store, params).await;
+    let v = parse(&res);
+    assert_eq!(v["total"], 50);
+}
+
+#[tokio::test]
+async fn explicit_limit_clamped_at_500() {
+    let (_store, card_store) = setup().await;
+    let params = Deliber8RosterParams {
+        kinds: None,
+        statuses: None,
+        project_ref: None,
+        limit: Some(10_000),
+    };
+    let res = deliber8_roster_inner(&card_store, params).await;
+    let v = parse(&res);
+    assert!(v["error"].is_null(), "unexpected error: {res}");
+    assert_eq!(v["total"], 0);
+}

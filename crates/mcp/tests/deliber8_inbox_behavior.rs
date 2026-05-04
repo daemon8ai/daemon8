@@ -150,3 +150,41 @@ async fn respects_limit() {
     assert_eq!(v["total"], 2);
     assert_eq!(v["envelopes"].as_array().unwrap().len(), 2);
 }
+
+#[tokio::test]
+async fn default_limit_caps_at_twenty() {
+    let (_store, env_store) = setup().await;
+    let addr = "agent:default";
+    for i in 0..25 {
+        env_store
+            .enqueue_envelope(envelope(&format!("env_{i}"), addr, EnvelopeStatus::Queued))
+            .await
+            .unwrap();
+    }
+
+    let params = Deliber8InboxParams {
+        address: addr.into(),
+        statuses: None,
+        limit: None,
+    };
+    let res = deliber8_inbox_inner(&env_store, params).await;
+    let v = parse(&res);
+
+    assert_eq!(v["total"], 20);
+    assert_eq!(v["envelopes"].as_array().unwrap().len(), 20);
+}
+
+#[tokio::test]
+async fn explicit_limit_clamped_at_500() {
+    let (_store, env_store) = setup().await;
+    let params = Deliber8InboxParams {
+        address: "agent:none".into(),
+        statuses: None,
+        limit: Some(10_000),
+    };
+    let res = deliber8_inbox_inner(&env_store, params).await;
+    let v = parse(&res);
+
+    assert!(v["error"].is_null(), "unexpected error: {res}");
+    assert_eq!(v["total"], 0);
+}
