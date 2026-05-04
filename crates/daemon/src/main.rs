@@ -129,7 +129,7 @@ async fn main() -> Result<()> {
         Commands::Setup(args) => cli::setup::cmd_setup(cli.config, args).await,
         Commands::Channel => cli::channel::cmd_channel().await,
         Commands::Deliber8(sub) => cli::deliber8::cmd_deliber8(cli.config, sub).await,
-        Commands::Doctor { fix } => cli::doctor::cmd_doctor(fix).await,
+        Commands::Doctor { fix } => cli::doctor::cmd_doctor(cli.config, fix).await,
         Commands::CliHook(args) => cli::hook_handler::cmd_cli_hook(args),
         Commands::Init(args) => cli::init::cmd_init(args),
     }

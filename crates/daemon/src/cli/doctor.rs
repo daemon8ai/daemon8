@@ -41,8 +41,8 @@ impl std::fmt::Display for Check {
     }
 }
 
-pub async fn cmd_doctor(fix: bool) -> Result<()> {
-    let cfg = crate::config::load(None).unwrap_or_default();
+pub async fn cmd_doctor(config_path: Option<String>, fix: bool) -> Result<()> {
+    let cfg = crate::config::load(config_path.as_deref()).unwrap_or_default();
     let config_path = cfg.config_dir.join("config.toml");
 
     let mut checks = vec![
@@ -778,5 +778,18 @@ mod tests {
             matches!(result.result, CheckResult::Warn(_)),
             "occupied port should return Warn"
         );
+    }
+
+    #[test]
+    fn config_load_honors_explicit_path() {
+        // Verify that the config-path threading cmd_doctor relies on
+        // actually picks up a sandbox config dir. cmd_doctor itself only
+        // forwards this path to crate::config::load.
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_path = tmp.path().join("config.toml");
+        std::fs::write(&cfg_path, "version = 1\n").unwrap();
+
+        let cfg = crate::config::load(Some(cfg_path.to_str().unwrap())).unwrap();
+        assert_eq!(cfg.config_dir, tmp.path());
     }
 }
