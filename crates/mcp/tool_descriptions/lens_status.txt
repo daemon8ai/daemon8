@@ -1,1 +1,10 @@
-Check the current lens state: whether a lens is active, its filter, how many observations are buffered, buffer capacity, and the cursor position (highest observation id seen).
+Inspect the active lens (if any) and the ring buffer behind it. Read-only.
+
+Use this to:
+- Verify the lens you set is matching what you expected.
+- Check buffer depth before calling `query_observations` (a deep buffer means the next query will return a lot of matches).
+- Confirm the lens is still active after a long session.
+
+Parameters: none.
+
+Returns: { active: <bool>, filter: { ... lens filter or null ... }, buffered: <int>, capacity: <int>, cursor: <int> }. `cursor` is the highest observation id the lens has processed; `buffered` is the count currently held in the ring buffer.
