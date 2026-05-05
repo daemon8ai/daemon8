@@ -10,10 +10,7 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
 use daemon8_mcp::ChromeCommand;
-use daemon8_store::{
-    EmbeddingProfileStore, MemoryLongStore, MemoryReferenceStore, MemoryShortStore, StateModel,
-    SurrealStore,
-};
+use daemon8_store::{StateModel, SurrealStore};
 use daemon8_types::Observation;
 
 use crate::config;
@@ -50,50 +47,26 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
         .await
         .with_context(|| format!("opening database: {}", db_path.display()))?;
 
-    let memory_store = surreal_store.memory_store();
-    memory_store
-        .init_schema()
-        .await
-        .context("initializing memory table schema")?;
-    let memory_store: Arc<dyn daemon8_store::MemoryStore> = Arc::new(memory_store);
+    let memory_store: Arc<dyn daemon8_store::MemoryStore> = Arc::new(surreal_store.memory_store());
 
     let envelope_store: Arc<dyn daemon8_store::EnvelopeStore> =
         Arc::new(surreal_store.envelope_store());
     let card_store: Arc<dyn daemon8_store::CardStore> = Arc::new(surreal_store.card_store());
 
-    let memory_short_concrete = surreal_store.memory_short_store();
-    memory_short_concrete
-        .init_schema()
-        .await
-        .context("initializing memory_short table schema")?;
     let memory_short_store: Arc<dyn daemon8_store::MemoryShortStore> =
-        Arc::new(memory_short_concrete);
+        Arc::new(surreal_store.memory_short_store());
 
-    let memory_reference_concrete = surreal_store.memory_reference_store();
-    memory_reference_concrete
-        .init_schema()
-        .await
-        .context("initializing memory_reference table schema")?;
     let memory_reference_store: Arc<dyn daemon8_store::MemoryReferenceStore> =
-        Arc::new(memory_reference_concrete);
+        Arc::new(surreal_store.memory_reference_store());
 
-    let memory_long_concrete = surreal_store.memory_long_store();
-    memory_long_concrete
-        .init_schema()
-        .await
-        .context("initializing memory_long table schema")?;
-    let memory_long_store: Arc<dyn daemon8_store::MemoryLongStore> = Arc::new(memory_long_concrete);
+    let memory_long_store: Arc<dyn daemon8_store::MemoryLongStore> =
+        Arc::new(surreal_store.memory_long_store());
 
     let bookkeeper_store: Arc<dyn daemon8_store::BookkeeperStore> =
         Arc::new(surreal_store.bookkeeper_store());
 
-    let embedding_profile_concrete = surreal_store.embedding_profile_store();
-    embedding_profile_concrete
-        .init_schema()
-        .await
-        .context("initializing embedding_profile table schema")?;
     let embedding_profile_store: Arc<dyn daemon8_store::EmbeddingProfileStore> =
-        Arc::new(embedding_profile_concrete);
+        Arc::new(surreal_store.embedding_profile_store());
 
     let store: Arc<dyn StateModel> = Arc::new(surreal_store);
 

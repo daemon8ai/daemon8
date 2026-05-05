@@ -254,6 +254,13 @@ impl SurrealStore {
             .map_err(|e| StoreError::Db(format!("envelope schema init check: {e}")))?;
 
         self.db
+            .query(crate::card::CARD_DDL)
+            .await
+            .map_err(|e| StoreError::Db(format!("card schema init: {e}")))?
+            .check()
+            .map_err(|e| StoreError::Db(format!("card schema init check: {e}")))?;
+
+        self.db
             .query(crate::memory_short::MEMORY_SHORT_DDL)
             .await
             .map_err(|e| StoreError::Db(format!("memory_short schema init: {e}")))?

@@ -19,17 +19,9 @@ impl SurrealCardStore {
     pub fn new(db: Surreal<Db>) -> Self {
         Self { db }
     }
+}
 
-    pub async fn init_schema(&self) -> Result<(), StoreError> {
-        self.db
-            .use_ns(NAMESPACE)
-            .use_db(DATABASE)
-            .await
-            .map_err(|e| StoreError::Db(format!("selecting namespace/database: {e}")))?;
-
-        self.db
-            .query(
-                "DEFINE TABLE IF NOT EXISTS actor_card SCHEMAFULL;
+pub const CARD_DDL: &str = "DEFINE TABLE IF NOT EXISTS actor_card SCHEMAFULL;
                  DEFINE FIELD IF NOT EXISTS address      ON actor_card TYPE string;
                  DEFINE FIELD IF NOT EXISTS actor_kind   ON actor_card TYPE string;
                  DEFINE FIELD IF NOT EXISTS slug         ON actor_card TYPE option<string>;
@@ -124,8 +116,18 @@ impl SurrealCardStore {
                  DEFINE FIELD IF NOT EXISTS created_at  ON team_card TYPE int;
                  DEFINE FIELD IF NOT EXISTS updated_at  ON team_card TYPE int;
                  DEFINE INDEX IF NOT EXISTS team_slug_project ON team_card FIELDS project_ref, slug;
-                 DEFINE INDEX IF NOT EXISTS team_steward      ON team_card FIELDS steward_ref;",
-            )
+                 DEFINE INDEX IF NOT EXISTS team_steward      ON team_card FIELDS steward_ref;";
+
+impl SurrealCardStore {
+    pub async fn init_schema(&self) -> Result<(), StoreError> {
+        self.db
+            .use_ns(NAMESPACE)
+            .use_db(DATABASE)
+            .await
+            .map_err(|e| StoreError::Db(format!("selecting namespace/database: {e}")))?;
+
+        self.db
+            .query(CARD_DDL)
             .await
             .map_err(|e| StoreError::Db(format!("card schema init: {e}")))?
             .check()
