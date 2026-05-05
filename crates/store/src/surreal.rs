@@ -649,7 +649,51 @@ fn build_slice_summary(observations: &[Observation]) -> SliceSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use daemon8_types::ObservationKind;
+    use crate::CardStore;
+    use daemon8_types::{AgentCard, AgentKind, AgentStatus, ObservationKind};
+
+    fn make_agent(id: &str, slug: &str) -> AgentCard {
+        AgentCard {
+            id: id.into(),
+            actor_ref: format!("agent.{slug}"),
+            address: format!("agent.{slug}"),
+            slug: slug.into(),
+            display_name: Some(slug.into()),
+            agent_kind: AgentKind::Specialist,
+            status: AgentStatus::Alive,
+            persona: serde_json::json!({}),
+            model: serde_json::json!({}),
+            capabilities: Vec::new(),
+            subjects_handled: Vec::new(),
+            project_refs: vec!["project:daemon8".into()],
+            team_refs: vec!["team:core".into()],
+            primary_team_ref: Some("team:core".into()),
+            spawned_by_actor_ref: None,
+            spawned_from_cwd: None,
+            spawned_from_project_ref: None,
+            host_id: None,
+            pid: None,
+            parent_pid: None,
+            process_group_id: None,
+            executable_path: None,
+            argv_hash: None,
+            runtime_kind: Some("daemon8.deliber8".into()),
+            runtime_version: None,
+            launch_nonce: None,
+            started_at: None,
+            last_seen_at: None,
+            heartbeat_interval_ms: None,
+            stop_state: serde_json::json!({}),
+            last_stop_request_at: None,
+            last_exit_code: None,
+            last_signal: None,
+            cost_window_usd: 0.0,
+            cost_total_usd: 0.0,
+            budget_daily_usd: None,
+            created_at: 1,
+            updated_at: 1,
+        }
+    }
 
     fn make_obs(severity: Severity, ts: u64) -> Observation {
         Observation {
@@ -681,6 +725,20 @@ mod tests {
         assert_eq!(slice.observations.len(), 1);
         assert_eq!(slice.observations[0].id, id);
         assert_eq!(slice.observations[0].severity, Severity::Info);
+    }
+
+    #[tokio::test]
+    async fn global_schema_bootstrap_creates_deliber8_card_tables() {
+        let store = SurrealStore::memory().await.unwrap();
+        let cards = store.card_store();
+
+        cards
+            .upsert_agent(make_agent("agent-bootstrap", "bootstrap"))
+            .await
+            .unwrap();
+
+        let agent = cards.get_agent_by_slug("bootstrap").await.unwrap().unwrap();
+        assert_eq!(agent.id, "agent-bootstrap");
     }
 
     #[tokio::test]

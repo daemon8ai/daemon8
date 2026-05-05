@@ -346,6 +346,20 @@ struct ManagedBrowser {
     child: Option<Child>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MonitorDisconnectAction {
+    WaitForNextRequest,
+    RetryEndpoint,
+}
+
+fn monitor_disconnect_action(has_managed_browser: bool) -> MonitorDisconnectAction {
+    if has_managed_browser {
+        MonitorDisconnectAction::WaitForNextRequest
+    } else {
+        MonitorDisconnectAction::RetryEndpoint
+    }
+}
+
 pub async fn connect_and_monitor(
     endpoint: String,
     obs_tx: UnboundedSender<Observation>,
@@ -431,17 +445,19 @@ pub async fn connect_and_monitor(
                 }
 
                 status.transition(ConnectionState::Reconnecting);
+                let action = monitor_disconnect_action(managed_browser.is_some());
                 if let Some(mut browser) = managed_browser.take() {
-                    let is_managed_child = browser.child.is_some();
                     browser
-                        .terminate("browser monitor disconnected; restarting managed browser")
+                        .terminate("browser monitor disconnected; waiting for next browser request")
                         .await;
+                }
 
-                    // Only allow relaunch if we were actually managing this browser's lifecycle.
-                    // For reattached browsers, we stay on the current endpoint and try to reconnect.
-                    if is_managed_child {
-                        launch_attempted = false;
-                    }
+                if action == MonitorDisconnectAction::WaitForNextRequest {
+                    status.transition(ConnectionState::Disconnected);
+                    tracing::info!(
+                        "Managed browser disconnected; waiting for next browser request"
+                    );
+                    return Ok(());
                 }
                 tracing::warn!(
                     "Browser disconnected, reconnecting in {}s...",
@@ -2040,5 +2056,26 @@ mod pid_alive_tests {
     fn very_high_pid_is_dead() {
         // PIDs above the kernel's pid_max are guaranteed unused.
         assert!(!pid_alive(u32::MAX - 1));
+    }
+}
+
+#[cfg(test)]
+mod monitor_disconnect_tests {
+    use super::{MonitorDisconnectAction, monitor_disconnect_action};
+
+    #[test]
+    fn managed_browser_waits_for_next_request_after_disconnect() {
+        assert_eq!(
+            monitor_disconnect_action(true),
+            MonitorDisconnectAction::WaitForNextRequest
+        );
+    }
+
+    #[test]
+    fn external_endpoint_keeps_retrying_after_disconnect() {
+        assert_eq!(
+            monitor_disconnect_action(false),
+            MonitorDisconnectAction::RetryEndpoint
+        );
     }
 }

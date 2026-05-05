@@ -1500,7 +1500,7 @@ dependencies = [
 
 [[package]]
 name = "daemon8"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "axum",
@@ -1548,7 +1548,7 @@ dependencies = [
 
 [[package]]
 name = "daemon8-adb"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "adb_client",
  "daemon8-types",
@@ -1561,7 +1561,7 @@ dependencies = [
 
 [[package]]
 name = "daemon8-api"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "axum",
  "daemon8-chrome",
@@ -1578,7 +1578,7 @@ dependencies = [
 
 [[package]]
 name = "daemon8-chrome"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "base64 0.22.1",
  "daemon8-types",
@@ -1597,7 +1597,7 @@ dependencies = [
 
 [[package]]
 name = "daemon8-embed"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1612,7 +1612,7 @@ dependencies = [
 
 [[package]]
 name = "daemon8-ingest"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "axum",
  "daemon8-types",
@@ -1628,7 +1628,7 @@ dependencies = [
 
 [[package]]
 name = "daemon8-mcp"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "daemon8-chrome",
@@ -1645,7 +1645,7 @@ dependencies = [
 
 [[package]]
 name = "daemon8-parse"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "daemon8-types",
  "dirs",
@@ -1659,7 +1659,7 @@ dependencies = [
 
 [[package]]
 name = "daemon8-store"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "async-trait",
  "daemon8-types",
@@ -1673,7 +1673,7 @@ dependencies = [
 
 [[package]]
 name = "daemon8-types"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "rmcp",
  "serde",
