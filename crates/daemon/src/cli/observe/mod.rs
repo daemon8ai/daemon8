@@ -32,7 +32,7 @@ impl ClientArgs {
 }
 
 pub fn base_url(port: u16) -> String {
-    format!("http://localhost:{port}")
+    format!("http://127.0.0.1:{port}")
 }
 
 pub fn handle_reqwest_error(e: reqwest::Error, port: u16) -> anyhow::Error {

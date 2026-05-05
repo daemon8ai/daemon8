@@ -58,8 +58,9 @@ pub fn api_router(state: ApiState) -> Router {
                 .delete(handle_lens_clear),
         )
         .route("/api/browser/act", post(handle_chrome_act))
-        .route("/api/deliber8/roster", get(handle_deliber8_roster))
+        .route("/api/deliber8/roster", get(handle_deliber8_roster).post(handle_deliber8_spawn))
         .route("/api/deliber8/inbox/{address}", get(handle_deliber8_inbox))
+        .route("/api/deliber8/enqueue", post(handle_deliber8_enqueue))
         .route("/api/memory", get(handle_memory_query).post(handle_memory_save))
         .route("/api/query/raw", post(handle_query_raw))
         .route("/api/memory/short", get(handle_memory_short))
@@ -1113,6 +1114,41 @@ async fn handle_deliber8_roster(
     };
     let json = daemon8_mcp::deliber8_roster_inner(store.as_ref(), params).await;
     relay_inner(json, StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+async fn handle_deliber8_spawn(
+    State(state): State<ApiState>,
+    Json(card): Json<daemon8_types::AgentCard>,
+) -> Response {
+    let Some(store) = state.card_store.as_ref() else {
+        return error_json(StatusCode::SERVICE_UNAVAILABLE, "card store not configured");
+    };
+    match store.upsert_agent(card).await {
+        Ok(()) => (StatusCode::CREATED, Json(serde_json::json!({ "ok": true }))).into_response(),
+        Err(e) => error_json(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("upsert_agent failed: {e}"),
+        ),
+    }
+}
+
+async fn handle_deliber8_enqueue(
+    State(state): State<ApiState>,
+    Json(envelope): Json<daemon8_types::EnvelopeRecord>,
+) -> Response {
+    let Some(store) = state.envelope_store.as_ref() else {
+        return error_json(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "envelope store not configured",
+        );
+    };
+    match store.enqueue_envelope(envelope).await {
+        Ok(id) => (StatusCode::CREATED, Json(serde_json::json!({ "id": id }))).into_response(),
+        Err(e) => error_json(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("enqueue_envelope failed: {e}"),
+        ),
+    }
 }
 
 #[derive(Debug, Deserialize)]

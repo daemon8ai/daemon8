@@ -378,7 +378,7 @@ impl SurrealStore {
             None => String::new(),
         };
 
-        let sql = format!("SELECT * FROM observation{where_clause} ORDER BY seq ASC{limit_clause}");
+        let sql = format!("SELECT * FROM observation{where_clause} ORDER BY seq DESC{limit_clause}");
 
         (sql, binds)
     }

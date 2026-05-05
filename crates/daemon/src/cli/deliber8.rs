@@ -16,8 +16,8 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use clap::Subcommand;
-use daemon8_store::{AgentCardFilter, CardStore, EnvelopeFilter, EnvelopeStore, SurrealStore};
-use daemon8_types::{AgentCard, AgentKind, AgentStatus, EnvelopeStatus};
+use daemon8_store::{AgentCardFilter, CardStore, EnvelopeStore, SurrealStore};
+use daemon8_types::{AgentCard, AgentKind, AgentStatus};
 use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 
@@ -148,18 +148,8 @@ async fn open_store(config_override: Option<String>) -> Result<Arc<SurrealStore>
 }
 
 async fn cmd_spawn(config_override: Option<String>, args: SpawnArgs) -> Result<()> {
-    // Attempt API first for spawn
-    // (Note: We don't have a POST /api/deliber8/spawn yet, so we'll stick to local for now
-    // but the pattern is established).
-    let store = open_store(config_override).await?;
-    let card_store = store.card_store();
-
-    if card_store.get_agent_by_slug(&args.slug).await?.is_some() {
-        bail!(
-            "agent '{}' already exists; use 'daemon8 deliber8 restart' to reuse",
-            args.slug
-        );
-    }
+    let port = args.client.resolved_port();
+    let url = format!("{}/api/deliber8/roster", base_url(port));
 
     let kind = parse_agent_kind(&args.kind)?;
     let inbox = args
@@ -213,16 +203,45 @@ async fn cmd_spawn(config_override: Option<String>, args: SpawnArgs) -> Result<(
         updated_at: now,
     };
 
-    card_store
-        .upsert_agent(card)
+    match reqwest::Client::new()
+        .post(&url)
+        .json(&card)
+        .send()
         .await
-        .context("upserting agent card")?;
-    println!(
-        "spawned agent '{}' (kind={}, inbox={})",
-        args.slug, args.kind, inbox
-    );
-    println!("invoke: daemon8 deliber8 run --slug {}", args.slug);
-    Ok(())
+    {
+        Ok(resp) => {
+            check_response(resp).await?;
+            println!(
+                "spawned agent '{}' via API (kind={}, inbox={})",
+                args.slug, args.kind, inbox
+            );
+            println!("invoke: daemon8 deliber8 run --slug {}", args.slug);
+            Ok(())
+        }
+        Err(e) if e.is_connect() => {
+            let store = open_store(config_override).await?;
+            let card_store = store.card_store();
+
+            if card_store.get_agent_by_slug(&args.slug).await?.is_some() {
+                bail!(
+                    "agent '{}' already exists; use 'daemon8 deliber8 restart' to reuse",
+                    args.slug
+                );
+            }
+
+            card_store
+                .upsert_agent(card)
+                .await
+                .context("upserting agent card")?;
+            println!(
+                "spawned agent '{}' via store (kind={}, inbox={})",
+                args.slug, args.kind, inbox
+            );
+            println!("invoke: daemon8 deliber8 run --slug {}", args.slug);
+            Ok(())
+        }
+        Err(e) => Err(handle_reqwest_error(e, port)),
+    }
 }
 
 async fn cmd_list(config_override: Option<String>, args: ListArgs) -> Result<()> {
@@ -381,72 +400,175 @@ async fn cmd_inspect(config_override: Option<String>, args: InspectArgs) -> Resu
 }
 
 async fn cmd_stop(config_override: Option<String>, args: StopArgs) -> Result<()> {
-    // Stop currently only supports local store as it enqueues a control envelope
-    // and wait-polls the status. In the future, this could be bridged.
-    let store = open_store(config_override).await?;
-    stop_inner(store, &args.slug, args.timeout_secs).await
+    stop_inner(config_override, &args.slug, args.timeout_secs, &args.client).await
 }
 
-async fn stop_inner(store: Arc<SurrealStore>, slug: &str, timeout_secs: u64) -> Result<()> {
-    let card_store = store.card_store();
-    let envelope_store = store.envelope_store();
+async fn stop_inner(
+    config_override: Option<String>,
+    slug: &str,
+    timeout_secs: u64,
+    client_args: &ClientArgs,
+) -> Result<()> {
+    let port = client_args.resolved_port();
+    let roster_url = format!("{}/api/deliber8/roster", base_url(port));
 
-    let card = card_store
-        .get_agent_by_slug(slug)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("agent '{}' not found", slug))?;
+    // 1. Find agent (API first)
+    let card = match reqwest::get(&roster_url).await {
+        Ok(resp) => {
+            if let Ok(resp) = check_response(resp).await {
+                #[derive(serde::Deserialize)]
+                struct RosterResponse {
+                    agents: Vec<AgentCard>,
+                }
+                if let Ok(data) = resp.json::<RosterResponse>().await {
+                    data.agents.into_iter().find(|c| c.slug == slug)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        }
+        Err(e) if e.is_connect() => {
+            let store = open_store(config_override.clone()).await?;
+            store.card_store().get_agent_by_slug(slug).await?
+        }
+        Err(e) => return Err(handle_reqwest_error(e, port)),
+    };
 
+    let Some(card) = card else {
+        bail!("agent '{}' not found", slug);
+    };
+
+    if card.status == AgentStatus::Retired {
+        println!("agent '{}' is already retired", slug);
+        return Ok(());
+    }
+
+    // 2. Send stop envelope (API first)
     let stop_env = build_stop_envelope(&card.address, "operator:cli");
-    envelope_store
-        .enqueue_envelope(stop_env)
-        .await
-        .context("enqueueing stop envelope")?;
+    let enqueue_url = format!("{}/api/deliber8/enqueue", base_url(port));
+    let mut api_sent = false;
 
-    let deadline = std::time::Instant::now() + Duration::from_secs(timeout_secs);
-    let card_store_arc = card_store;
-    loop {
-        sleep(Duration::from_millis(500)).await;
-        if let Some(c) = card_store_arc.get_agent_by_slug(slug).await? {
-            if c.status == AgentStatus::Retired {
-                println!("specialist '{}' acknowledged stop (status=retired)", slug);
-                return Ok(());
+    match reqwest::Client::new()
+        .post(&enqueue_url)
+        .json(&stop_env)
+        .send()
+        .await
+    {
+        Ok(resp) => {
+            check_response(resp).await?;
+            api_sent = true;
+        }
+        Err(e) if e.is_connect() => {
+            let store = open_store(config_override.clone()).await?;
+            store.envelope_store().enqueue_envelope(stop_env).await?;
+        }
+        Err(e) => return Err(handle_reqwest_error(e, port)),
+    }
+
+    println!("stop signal sent to '{}'; waiting for retirement...", slug);
+
+    // 3. Wait for retirement
+    let start = std::time::Instant::now();
+    let timeout = Duration::from_secs(timeout_secs);
+
+    while start.elapsed() < timeout {
+        let status = if api_sent {
+            match reqwest::get(&roster_url).await {
+                Ok(resp) => {
+                    if let Ok(resp) = check_response(resp).await {
+                        #[derive(serde::Deserialize)]
+                        struct RosterResponse {
+                            agents: Vec<AgentCard>,
+                        }
+                        if let Ok(data) = resp.json::<RosterResponse>().await {
+                            data.agents.iter().find(|c| c.slug == slug).map(|c| c.status)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                }
+                Err(_) => None,
             }
         } else {
-            println!("specialist '{}' acknowledged stop (no longer alive)", slug);
+            let store = open_store(config_override.clone()).await?;
+            store
+                .card_store()
+                .get_agent_by_slug(slug)
+                .await?
+                .map(|c| c.status)
+        };
+
+        if let Some(AgentStatus::Retired) | None = status {
+            println!("agent '{}' has retired", slug);
             return Ok(());
         }
-        if std::time::Instant::now() >= deadline {
-            let pending = envelope_store
-                .query_inbox(&EnvelopeFilter {
-                    inbox_address: Some(card.address.clone()),
-                    statuses: Some(vec![EnvelopeStatus::Queued]),
-                    ..Default::default()
-                })
-                .await?
-                .len();
-            bail!(
-                "timed out after {}s waiting for '{}' to retire (queued envelopes in inbox: {}). \
-                 The specialist may not be running; start it with: daemon8 deliber8 run --slug {}",
-                timeout_secs,
-                slug,
-                pending,
-                slug,
-            );
-        }
+        sleep(Duration::from_millis(1000)).await;
     }
+
+    bail!(
+        "timed out after {}s waiting for '{}' to retire. \
+         The specialist may not be running; start it with: daemon8 deliber8 run --slug {}",
+        timeout_secs,
+        slug,
+        slug
+    );
 }
 
 async fn cmd_restart(config_override: Option<String>, args: RestartArgs) -> Result<()> {
-    let store = open_store(config_override.clone()).await?;
-    stop_inner(store.clone(), &args.slug, args.timeout_secs).await?;
+    stop_inner(
+        config_override.clone(),
+        &args.slug,
+        args.timeout_secs,
+        &args.client,
+    )
+    .await?;
 
-    let card_store = store.card_store();
-    let card_id = format!("agent_{}", args.slug);
-    card_store
-        .update_agent_status(&card_id, AgentStatus::Alive, now_ns())
+    // Resetting status is a write op; attempt API first
+    let port = args.client.resolved_port();
+    let roster_url = format!("{}/api/deliber8/roster", base_url(port));
+    let mut api_reset = false;
+
+    // We don't have a direct "update status" API yet, but we can re-spawn the card
+    // which uses UPSERT logic.
+    let store = open_store(config_override.clone()).await?;
+    let card = store
+        .card_store()
+        .get_agent_by_slug(&args.slug)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("agent '{}' not found", args.slug))?;
+
+    let mut new_card = card.clone();
+    new_card.status = AgentStatus::Alive;
+    new_card.updated_at = now_ns();
+
+    match reqwest::Client::new()
+        .post(&roster_url)
+        .json(&new_card)
+        .send()
         .await
-        .context("resetting agent status to alive")?;
-    println!("agent '{}' reset to alive", args.slug);
+    {
+        Ok(resp) => {
+            check_response(resp).await?;
+            api_reset = true;
+        }
+        Err(e) if e.is_connect() => {
+            store
+                .card_store()
+                .update_agent_status(&card.id, AgentStatus::Alive, now_ns())
+                .await?;
+        }
+        Err(e) => return Err(handle_reqwest_error(e, port)),
+    }
+
+    println!(
+        "agent '{}' reset to alive ({})",
+        args.slug,
+        if api_reset { "via API" } else { "via store" }
+    );
     println!("re-invoke: daemon8 deliber8 run --slug {}", args.slug);
     Ok(())
 }
