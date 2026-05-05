@@ -55,6 +55,7 @@ pub trait StateModel: Send + Sync {
     async fn oldest_id(&self) -> Option<u64>;
     async fn cleanup_before(&self, timestamp_ns: u64) -> Result<u64, StoreError>;
     async fn health_check(&self) -> Result<(), StoreError>;
+    async fn raw_select_rows(&self, query: &str) -> Result<Vec<serde_json::Value>, StoreError>;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

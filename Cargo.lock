@@ -1565,6 +1565,7 @@ version = "0.2.5"
 dependencies = [
  "axum",
  "daemon8-chrome",
+ "daemon8-embed",
  "daemon8-mcp",
  "daemon8-store",
  "daemon8-types",

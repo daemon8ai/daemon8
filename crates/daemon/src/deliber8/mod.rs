@@ -269,7 +269,7 @@ pub fn build_stop_envelope(inbox_address: &str, from: &str) -> EnvelopeRecord {
 }
 
 /// Inbox counts surfaced by `daemon8 deliber8 inspect`.
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct InboxCounts {
     pub queued: usize,
     pub delivered: usize,

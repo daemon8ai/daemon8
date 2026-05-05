@@ -7,8 +7,10 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use daemon8_embed::EmbedProvider;
 use daemon8_store::{CardStore, EnvelopeStore, StateModel};
+use daemon8_types::{AgentCard, EnvelopeRecord};
 
 use crate::config::{self, SourceConfig};
+use super::observe::{base_url, check_response};
 
 struct Check {
     name: &'static str,
@@ -49,20 +51,21 @@ pub async fn cmd_doctor(config_path: Option<String>, fix: bool) -> Result<()> {
             std::process::exit(1);
         }
     };
-    let config_path = cfg.config_dir.join("config.toml");
+    let config_path_abs = cfg.config_dir.join("config.toml");
+    let port = cfg.server.port;
 
     let mut checks = vec![
-        check_config_file(&config_path, fix),
+        check_config_file(&config_path_abs, fix),
         check_screenshot_dir(&cfg, fix),
         check_data_dir(&cfg, fix),
-        check_port(cfg.server.port),
+        check_port(port),
         check_network(),
         check_setup_state(&cfg),
         check_sources(&cfg),
         check_embeddings(&cfg),
-        check_store(&cfg).await,
-        check_stuck_agents(&cfg).await,
-        check_inbox_backlog(&cfg).await,
+        check_store(&cfg, port).await,
+        check_stuck_agents(&cfg, port).await,
+        check_inbox_backlog(&cfg, port).await,
     ];
 
     #[cfg(target_os = "macos")]
@@ -288,12 +291,6 @@ fn check_network() -> Check {
     }
 }
 
-// MVP-13 slice: surface drift between recorded setup state and the actual
-// filesystem. `daemon8 setup apply` writes a `[setup.projects.<slug>]` entry
-// per project that captures `root_path` and `config_path` at apply time. If
-// the project later moves or the project config gets deleted, the runtime
-// source registration still exists but becomes orphaned. Doctor warns so the
-// user can re-run setup apply or remove the stale entry.
 fn check_setup_state(cfg: &config::Config) -> Check {
     if cfg.setup.projects.is_empty() {
         return Check {
@@ -345,8 +342,6 @@ fn check_sources(cfg: &config::Config) -> Check {
     for (name, source) in &cfg.sources {
         match source {
             SourceConfig::File(f) => {
-                // For glob patterns, verify the parent directory exists.
-                // For plain paths, verify the file itself.
                 let path = Path::new(&f.path);
                 let is_glob = f.path.contains('*') || f.path.contains('?');
 
@@ -398,7 +393,6 @@ fn check_embeddings(cfg: &config::Config) -> Check {
                 .as_deref()
                 .unwrap_or("http://localhost:11434");
 
-            // Parse host:port from the endpoint URL for a TCP probe
             let reachable = parse_host_port(endpoint).is_some_and(|addr| {
                 std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(2))
                     .is_ok()
@@ -445,11 +439,58 @@ fn check_embeddings(cfg: &config::Config) -> Check {
     }
 }
 
-async fn check_stuck_agents(cfg: &config::Config) -> Check {
+async fn check_stuck_agents(cfg: &config::Config, port: u16) -> Check {
+    const NAME: &str = "stuck agents";
+
+    // Try API first
+    let url = format!("{}/api/deliber8/roster?statuses=alive", base_url(port));
+    match reqwest::get(&url).await {
+        Ok(resp) => {
+            if let Ok(resp) = check_response(resp).await {
+                #[derive(serde::Deserialize)]
+                struct RosterResponse {
+                    agents: Vec<AgentCard>,
+                }
+                match resp.json::<RosterResponse>().await {
+                    Ok(data) => {
+                        let stuck = crate::deliber8::classify_stuck(&data.agents, crate::deliber8::now_ns(), 3);
+                        if stuck.is_empty() {
+                            return Check {
+                                name: NAME,
+                                result: CheckResult::OkHint(format!("{} alive agent(s)", data.agents.len())),
+                            };
+                        }
+                        return Check {
+                            name: NAME,
+                            result: CheckResult::Warn(format!(
+                                "{} agent(s) past 3x heartbeat: {}",
+                                stuck.len(),
+                                stuck.join(", ")
+                            )),
+                        };
+                    }
+                    Err(e) => {
+                        return Check {
+                            name: NAME,
+                            result: CheckResult::Err(format!("failed to parse API roster: {e}")),
+                        };
+                    }
+                }
+            }
+        }
+        Err(e) if e.is_connect() => {} // Fall through only if not connected
+        Err(e) => {
+            return Check {
+                name: NAME,
+                result: CheckResult::Err(format!("API communication failed: {e}")),
+            };
+        }
+    }
+
     let db_path = config::resolve_db_path(cfg.storage.path.as_deref());
     if !db_path.exists() {
         return Check {
-            name: "stuck agents",
+            name: NAME,
             result: CheckResult::OkHint("store not yet created".into()),
         };
     }
@@ -458,7 +499,7 @@ async fn check_stuck_agents(cfg: &config::Config) -> Check {
         Ok(s) => s,
         Err(e) => {
             return Check {
-                name: "stuck agents",
+                name: NAME,
                 result: CheckResult::Err(format!("could not open store: {e}")),
             };
         }
@@ -476,7 +517,7 @@ async fn check_stuck_agents(cfg: &config::Config) -> Check {
         Ok(v) => v,
         Err(e) => {
             return Check {
-                name: "stuck agents",
+                name: NAME,
                 result: CheckResult::Err(format!("listing agents failed: {e}")),
             };
         }
@@ -485,12 +526,12 @@ async fn check_stuck_agents(cfg: &config::Config) -> Check {
     let stuck = crate::deliber8::classify_stuck(&agents, crate::deliber8::now_ns(), 3);
     if stuck.is_empty() {
         return Check {
-            name: "stuck agents",
+            name: NAME,
             result: CheckResult::OkHint(format!("{} alive agent(s)", agents.len())),
         };
     }
     Check {
-        name: "stuck agents",
+        name: NAME,
         result: CheckResult::Warn(format!(
             "{} agent(s) past 3x heartbeat: {}",
             stuck.len(),
@@ -499,13 +540,85 @@ async fn check_stuck_agents(cfg: &config::Config) -> Check {
     }
 }
 
-/// Flag inboxes whose oldest queued envelope predates the specialist's
-/// heartbeat cadence by more than `BACKLOG_MULTIPLIER`× — a signal that
-/// the consumer side is alive but not draining. Complements
-/// `check_stuck_agents`, which catches dead/stuck specialists.
-async fn check_inbox_backlog(cfg: &config::Config) -> Check {
+async fn check_inbox_backlog(cfg: &config::Config, port: u16) -> Check {
     const BACKLOG_MULTIPLIER: u64 = 10;
     const NAME: &str = "inbox backlog";
+
+    // Try API first
+    let url = format!("{}/api/deliber8/roster?statuses=alive", base_url(port));
+    match reqwest::get(&url).await {
+        Ok(resp) => {
+            if let Ok(resp) = check_response(resp).await {
+                #[derive(serde::Deserialize)]
+                struct RosterResponse {
+                    agents: Vec<AgentCard>,
+                }
+                match resp.json::<RosterResponse>().await {
+                    Ok(data) => {
+                        let mut paired = Vec::with_capacity(data.agents.len());
+                        for card in &data.agents {
+                            let inbox_url = format!("{}/api/deliber8/inbox/{}?statuses=queued&limit=200", base_url(port), card.address);
+                            if let Ok(inbox_resp) = reqwest::get(&inbox_url).await
+                                && let Ok(inbox_resp) = check_response(inbox_resp).await
+                            {
+                                 #[derive(serde::Deserialize)]
+                                 struct InboxResponse {
+                                     envelopes: Vec<EnvelopeRecord>,
+                                 }
+                                 if let Ok(inbox_data) = inbox_resp.json::<InboxResponse>().await {
+                                     let oldest = inbox_data.envelopes.iter().map(|env| env.created_at).min();
+                                     paired.push((card.clone(), oldest));
+                                 }
+                            }
+                        }
+                        
+                        let backlog = crate::deliber8::classify_inbox_backlog(
+                            &paired,
+                            crate::deliber8::now_ns(),
+                            BACKLOG_MULTIPLIER,
+                        );
+
+                        if backlog.is_empty() {
+                            return Check {
+                                name: NAME,
+                                result: CheckResult::OkHint(format!(
+                                    "{} alive specialist(s), all inboxes draining",
+                                    data.agents.len()
+                                )),
+                            };
+                        }
+                        return Check {
+                            name: NAME,
+                            result: CheckResult::Warn(format!(
+                                "{} of {} inbox(es) backed up beyond {}× heartbeat: {}",
+                                backlog.len(),
+                                data.agents.len(),
+                                BACKLOG_MULTIPLIER,
+                                backlog
+                                    .iter()
+                                    .map(|(slug, age_ms)| format!("{slug}={age_ms}ms"))
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            )),
+                        };
+                    }
+                    Err(e) => {
+                        return Check {
+                            name: NAME,
+                            result: CheckResult::Err(format!("failed to parse API roster: {e}")),
+                        };
+                    }
+                }
+            }
+        }
+        Err(e) if e.is_connect() => {} // Fall through only if not connected
+        Err(e) => {
+            return Check {
+                name: NAME,
+                result: CheckResult::Err(format!("API communication failed: {e}")),
+            };
+        }
+    }
 
     let db_path = config::resolve_db_path(cfg.storage.path.as_deref());
     if !db_path.exists() {
@@ -554,9 +667,6 @@ async fn check_inbox_backlog(cfg: &config::Config) -> Check {
 
     let mut paired: Vec<(daemon8_types::AgentCard, Option<u64>)> = Vec::with_capacity(agents.len());
     for card in &agents {
-        // Cap per-specialist scan: backlog classification only needs counts and
-        // the oldest queued created_at, so a generous head slice is sufficient
-        // and avoids dragging the full inbox into memory on large deployments.
         let queued: Vec<daemon8_types::EnvelopeRecord> = match envelope_store
             .query_inbox(&daemon8_store::EnvelopeFilter {
                 inbox_address: Some(card.address.clone()),
@@ -612,14 +722,25 @@ async fn check_inbox_backlog(cfg: &config::Config) -> Check {
     }
 }
 
-async fn check_store(cfg: &config::Config) -> Check {
+async fn check_store(cfg: &config::Config, port: u16) -> Check {
+    const NAME: &str = "store";
+
+    // Try API first
+    let url = format!("{}/api/summary", base_url(port));
+    if let Ok(resp) = reqwest::get(&url).await
+        && let Ok(_) = check_response(resp).await
+    {
+        return Check {
+            name: NAME,
+            result: CheckResult::Ok,
+        };
+    }
+
     let db_path = config::resolve_db_path(cfg.storage.path.as_deref());
 
-    // Only probe an existing store — opening SurrealDB creates directories and
-    // schema as a side effect, which doctor should not do.
     if !db_path.exists() {
         return Check {
-            name: "store",
+            name: NAME,
             result: CheckResult::OkHint("not yet created (first run will initialize)".into()),
         };
     }
@@ -627,16 +748,16 @@ async fn check_store(cfg: &config::Config) -> Check {
     match daemon8_store::SurrealStore::open(&db_path).await {
         Ok(store) => match store.health_check().await {
             Ok(()) => Check {
-                name: "store",
+                name: NAME,
                 result: CheckResult::Ok,
             },
             Err(e) => Check {
-                name: "store",
+                name: NAME,
                 result: CheckResult::Err(format!("health check failed: {e}")),
             },
         },
         Err(e) => Check {
-            name: "store",
+            name: NAME,
             result: CheckResult::Err(format!("could not open database: {e}")),
         },
     }
@@ -646,8 +767,6 @@ async fn check_store(cfg: &config::Config) -> Check {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Same resolution as `config::resolve_screenshot_path` but without auto-creating
-/// the directory -- we need to detect whether it exists for the check.
 fn resolve_screenshot_path_no_create(cfg: &config::Config) -> PathBuf {
     if let Some(raw) = cfg.storage.screenshot_path.as_deref() {
         let raw_str = raw.to_string_lossy();
@@ -679,10 +798,6 @@ fn resolve_screenshot_path_no_create(cfg: &config::Config) -> PathBuf {
     .unwrap_or_else(|| PathBuf::from("screenshots"))
 }
 
-// macOS launchd service state probe. On Sonoma+ a failed launchctl load
-// usually means either the ad-hoc codesign identity churned OR the user
-// hasn't granted App Management in System Settings. Both are recoverable
-// without code changes, so the remediation text is the load-bearing output.
 #[cfg(target_os = "macos")]
 fn check_macos_launchd_state() -> Check {
     let uid = unsafe { libc::geteuid() };
@@ -740,8 +855,6 @@ fn check_macos_launchd_state() -> Check {
     }
 }
 
-/// Extract host:port from a URL like `http://localhost:11434` and resolve to a
-/// `SocketAddr` suitable for `TcpStream::connect_timeout`.
 fn parse_host_port(url: &str) -> Option<std::net::SocketAddr> {
     use std::net::ToSocketAddrs;
 
@@ -750,11 +863,7 @@ fn parse_host_port(url: &str) -> Option<std::net::SocketAddr> {
         .or_else(|| url.strip_prefix("https://"))
         .unwrap_or(url);
 
-    // stripped is now "host:port" or "host:port/path"
     let authority = stripped.split('/').next().unwrap_or(stripped);
-
-    // Default port 80/443 isn't relevant here — Ollama/OpenAI endpoints always
-    // include the port. If they don't, the resolve will fail, which is fine.
     authority.to_socket_addrs().ok()?.next()
 }
 
@@ -784,10 +893,6 @@ mod tests {
             "missing config file with fix=false should return Warn"
         );
     }
-
-    // ---------------------------------------------------------------------
-    // check_setup_state
-    // ---------------------------------------------------------------------
 
     fn applied_state(slug: &str, root: &Path, cfg_path: &Path) -> config::ProjectSetupState {
         config::ProjectSetupState {
@@ -912,9 +1017,6 @@ mod tests {
 
     #[test]
     fn config_load_surfaces_parse_errors() {
-        // cmd_doctor relies on this returning Err so it can exit early
-        // with a meaningful diagnostic. Silent fallback to defaults
-        // (the old unwrap_or_default behavior) hides config bugs.
         let tmp = tempfile::tempdir().unwrap();
         let cfg_path = tmp.path().join("config.toml");
         std::fs::write(&cfg_path, "this is = not [valid] toml ===\n").unwrap();

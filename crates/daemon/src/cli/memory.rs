@@ -8,11 +8,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use clap::Subcommand;
-use daemon8_store::SurrealStore;
+use daemon8_store::{StateModel, SurrealStore};
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
 
 use crate::config;
+
+use super::observe::{ClientArgs, base_url, check_response, handle_reqwest_error};
 
 #[derive(Subcommand)]
 pub enum MemorySubcommand {
@@ -31,6 +33,9 @@ pub struct MemoryExportArgs {
     /// Output path (.md for plain export, .zip for one markdown file per section)
     #[arg(long)]
     pub out: PathBuf,
+
+    #[command(flatten)]
+    pub client: ClientArgs,
 }
 
 pub async fn cmd_memory(
@@ -45,23 +50,62 @@ pub async fn cmd_memory(
 async fn cmd_memory_export(config_override: Option<String>, args: MemoryExportArgs) -> Result<()> {
     validate_export_args(&args)?;
 
-    let cfg = config::load(config_override.as_deref()).unwrap_or_default();
-    let db_path = config::resolve_db_path(cfg.storage.path.as_deref());
-    let store = SurrealStore::open(&db_path)
-        .await
-        .with_context(|| format!("opening daemon8 store at {}", db_path.display()))?;
-
     let mut sections = Vec::with_capacity(args.table.len());
+    let port = args.client.resolved_port();
+
+    // Try API first
+    let url = format!("{}/api/query/raw", base_url(port));
+    let client = reqwest::Client::new();
+
+    let mut api_failed = false;
     for (table, query) in args.table.iter().zip(args.query.iter()) {
-        let rows = store
-            .raw_select_rows(query)
+        let resp = match client
+            .post(&url)
+            .json(&serde_json::json!({ "query": query }))
+            .send()
             .await
-            .with_context(|| format!("query failed for table '{table}'"))?;
+        {
+            Ok(r) => r,
+            Err(e) if e.is_connect() => {
+                api_failed = true;
+                break;
+            }
+            Err(e) => return Err(handle_reqwest_error(e, port)),
+        };
+
+        let resp = check_response(resp).await?;
+        let rows: Vec<serde_json::Value> = resp.json().await?;
         sections.push(ExportSection {
             table: table.clone(),
             query: query.clone(),
             rows,
         });
+    }
+
+    let db_path_display: String;
+
+    if api_failed {
+        sections.clear();
+        let cfg = config::load(config_override.as_deref()).unwrap_or_default();
+        let db_path = config::resolve_db_path(cfg.storage.path.as_deref());
+        let store = SurrealStore::open(&db_path)
+            .await
+            .with_context(|| format!("opening daemon8 store at {}", db_path.display()))?;
+
+        for (table, query) in args.table.iter().zip(args.query.iter()) {
+            let rows: Vec<serde_json::Value> = store
+                .raw_select_rows(query)
+                .await
+                .with_context(|| format!("query failed for table '{table}'"))?;
+            sections.push(ExportSection {
+                table: table.clone(),
+                query: query.clone(),
+                rows,
+            });
+        }
+        db_path_display = db_path.display().to_string();
+    } else {
+        db_path_display = format!("localhost:{port} (remote)");
     }
 
     if let Some(parent) = args.out.parent()
@@ -73,14 +117,14 @@ async fn cmd_memory_export(config_override: Option<String>, args: MemoryExportAr
 
     let generated_at_unix_s = now_unix_s();
     if is_zip_path(&args.out) {
-        write_zip_export(&args.out, &sections, generated_at_unix_s, &db_path)?;
+        write_zip_export(&args.out, &sections, generated_at_unix_s, Path::new(&db_path_display))?;
         println!(
             "exported {} markdown files in zip archive {}",
             sections.len(),
             args.out.display()
         );
     } else {
-        let markdown = render_combined_markdown(&sections, generated_at_unix_s, &db_path)?;
+        let markdown = render_combined_markdown(&sections, generated_at_unix_s, Path::new(&db_path_display))?;
         std::fs::write(&args.out, markdown)
             .with_context(|| format!("writing export file {}", args.out.display()))?;
         println!(

@@ -13,7 +13,7 @@ use anyhow::Result;
 use comfy_table::{Cell, ContentArrangement, Table, presets::UTF8_FULL_CONDENSED};
 use daemon8_types::{ConnectionInfo, ConnectionKind, Origin, Severity};
 
-#[derive(clap::Args, Clone)]
+#[derive(clap::Args, Clone, Debug)]
 pub struct ClientArgs {
     #[arg(long)]
     pub port: Option<u16>,

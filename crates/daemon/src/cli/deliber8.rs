@@ -27,6 +27,8 @@ use crate::deliber8::{
     run_specialist,
 };
 
+use super::observe::{ClientArgs, base_url, check_response, handle_reqwest_error};
+
 #[derive(Subcommand)]
 pub enum Deliber8Subcommand {
     /// Register a new specialist agent card
@@ -61,6 +63,9 @@ pub struct SpawnArgs {
     /// Heartbeat interval in milliseconds (recorded on the card)
     #[arg(long, default_value_t = DEFAULT_HEARTBEAT_MS)]
     pub heartbeat_ms: u64,
+
+    #[command(flatten)]
+    pub client: ClientArgs,
 }
 
 #[derive(clap::Args)]
@@ -68,11 +73,17 @@ pub struct ListArgs {
     /// Filter by status (repeatable). Defaults to non-retired.
     #[arg(long)]
     pub status: Vec<String>,
+
+    #[command(flatten)]
+    pub client: ClientArgs,
 }
 
 #[derive(clap::Args)]
 pub struct InspectArgs {
     pub slug: String,
+
+    #[command(flatten)]
+    pub client: ClientArgs,
 }
 
 #[derive(clap::Args)]
@@ -81,6 +92,9 @@ pub struct StopArgs {
     /// Maximum seconds to wait for the specialist to acknowledge (Retired)
     #[arg(long, default_value_t = 30)]
     pub timeout_secs: u64,
+
+    #[command(flatten)]
+    pub client: ClientArgs,
 }
 
 #[derive(clap::Args)]
@@ -88,6 +102,9 @@ pub struct RestartArgs {
     pub slug: String,
     #[arg(long, default_value_t = 30)]
     pub timeout_secs: u64,
+
+    #[command(flatten)]
+    pub client: ClientArgs,
 }
 
 #[derive(clap::Args)]
@@ -104,26 +121,38 @@ pub async fn cmd_deliber8(
     config_override: Option<String>,
     subcommand: Deliber8Subcommand,
 ) -> Result<()> {
+    match subcommand {
+        Deliber8Subcommand::Spawn(args) => cmd_spawn(config_override, args).await,
+        Deliber8Subcommand::List(args) => cmd_list(config_override, args).await,
+        Deliber8Subcommand::Inspect(args) => cmd_inspect(config_override, args).await,
+        Deliber8Subcommand::Stop(args) => cmd_stop(config_override, args).await,
+        Deliber8Subcommand::Restart(args) => cmd_restart(config_override, args).await,
+        Deliber8Subcommand::Run(args) => {
+            let cfg = config::load(config_override.as_deref()).unwrap_or_default();
+            let db_path = config::resolve_db_path(cfg.storage.path.as_deref());
+            let store = SurrealStore::open(&db_path)
+                .await
+                .with_context(|| format!("opening daemon8 store at {}", db_path.display()))?;
+            cmd_run(Arc::new(store), args).await
+        }
+    }
+}
+
+async fn open_store(config_override: Option<String>) -> Result<Arc<SurrealStore>> {
     let cfg = config::load(config_override.as_deref()).unwrap_or_default();
     let db_path = config::resolve_db_path(cfg.storage.path.as_deref());
     let store = SurrealStore::open(&db_path)
         .await
         .with_context(|| format!("opening daemon8 store at {}", db_path.display()))?;
-    let store = Arc::new(store);
-
-    match subcommand {
-        Deliber8Subcommand::Spawn(args) => cmd_spawn(store, args).await,
-        Deliber8Subcommand::List(args) => cmd_list(store, args).await,
-        Deliber8Subcommand::Inspect(args) => cmd_inspect(store, args).await,
-        Deliber8Subcommand::Stop(args) => cmd_stop(store, args).await,
-        Deliber8Subcommand::Restart(args) => cmd_restart(store, args).await,
-        Deliber8Subcommand::Run(args) => cmd_run(store, args).await,
-    }
+    Ok(Arc::new(store))
 }
 
-async fn cmd_spawn(store: Arc<SurrealStore>, args: SpawnArgs) -> Result<()> {
+async fn cmd_spawn(config_override: Option<String>, args: SpawnArgs) -> Result<()> {
+    // Attempt API first for spawn
+    // (Note: We don't have a POST /api/deliber8/spawn yet, so we'll stick to local for now
+    // but the pattern is established).
+    let store = open_store(config_override).await?;
     let card_store = store.card_store();
-    card_store.init_schema().await.context("init card schema")?;
 
     if card_store.get_agent_by_slug(&args.slug).await?.is_some() {
         bail!(
@@ -196,138 +225,171 @@ async fn cmd_spawn(store: Arc<SurrealStore>, args: SpawnArgs) -> Result<()> {
     Ok(())
 }
 
-async fn cmd_list(store: Arc<SurrealStore>, args: ListArgs) -> Result<()> {
-    let card_store = store.card_store();
-    card_store.init_schema().await.context("init card schema")?;
-
-    let statuses = if args.status.is_empty() {
-        // Default: everything except Retired.
-        Some(vec![
-            AgentStatus::Created,
-            AgentStatus::Starting,
-            AgentStatus::Alive,
-            AgentStatus::Busy,
-            AgentStatus::Paused,
-            AgentStatus::Degraded,
-            AgentStatus::Stopping,
-            AgentStatus::Failed,
-        ])
+async fn cmd_list(config_override: Option<String>, args: ListArgs) -> Result<()> {
+    let port = args.client.resolved_port();
+    let url = format!("{}/api/deliber8/roster", base_url(port));
+    let mut query = Vec::new();
+    if !args.status.is_empty() {
+        query.push(format!("statuses={}", args.status.join(",")));
+    }
+    let url = if query.is_empty() {
+        url
     } else {
-        let mut acc = Vec::with_capacity(args.status.len());
-        for s in &args.status {
-            acc.push(s.parse::<AgentStatus>().map_err(|e| anyhow::anyhow!(e))?);
+        format!("{}?{}", url, query.join("&"))
+    };
+
+    match reqwest::get(&url).await {
+        Ok(resp) => {
+            let resp = check_response(resp).await?;
+            if args.client.json {
+                let raw: serde_json::Value = resp.json().await.unwrap_or_default();
+                println!("{}", serde_json::to_string_pretty(&raw).unwrap_or_default());
+                return Ok(());
+            }
+
+            #[derive(serde::Deserialize)]
+            struct RosterResponse {
+                agents: Vec<AgentCard>,
+            }
+            let data: RosterResponse = resp.json().await?;
+            if data.agents.is_empty() {
+                println!("no agents matching filter");
+            } else {
+                print_roster_table(&data.agents);
+            }
+            return Ok(());
         }
-        Some(acc)
-    };
+        Err(e) if e.is_connect() => {
+            let store = open_store(config_override).await?;
+            let card_store = store.card_store();
+            let statuses = if args.status.is_empty() {
+                Some(vec![
+                    AgentStatus::Created,
+                    AgentStatus::Starting,
+                    AgentStatus::Alive,
+                    AgentStatus::Busy,
+                    AgentStatus::Paused,
+                    AgentStatus::Degraded,
+                    AgentStatus::Stopping,
+                    AgentStatus::Failed,
+                ])
+            } else {
+                let mut acc = Vec::with_capacity(args.status.len());
+                for s in &args.status {
+                    acc.push(s.parse::<AgentStatus>().map_err(|e| anyhow::anyhow!(e))?);
+                }
+                Some(acc)
+            };
 
-    let filter = AgentCardFilter {
-        statuses,
-        project_ref: None,
-        team_ref: None,
-        limit: None,
-    };
-    let agents = card_store.list_agents(&filter).await?;
+            let filter = AgentCardFilter {
+                statuses,
+                project_ref: None,
+                team_ref: None,
+                limit: None,
+            };
+            let agents = card_store.list_agents(&filter).await?;
 
-    if agents.is_empty() {
-        println!("no agents matching filter");
-        return Ok(());
+            if agents.is_empty() {
+                println!("no agents matching filter");
+                return Ok(());
+            }
+
+            if args.client.json {
+                println!("{}", serde_json::to_string_pretty(&agents)?);
+            } else {
+                print_roster_table(&agents);
+            }
+            Ok(())
+        }
+        Err(e) => Err(handle_reqwest_error(e, port)),
     }
+}
 
-    println!(
-        "{:<20} {:<12} {:<12} {:<28} INBOX",
-        "SLUG", "KIND", "STATUS", "LAST_SEEN_NS"
-    );
-    for a in agents {
-        println!(
-            "{:<20} {:<12} {:<12} {:<28} {}",
-            a.slug,
-            a.agent_kind.to_string(),
-            a.status.to_string(),
-            a.last_seen_at
-                .map(|t| t.to_string())
-                .unwrap_or_else(|| "-".into()),
-            a.address
-        );
+async fn cmd_inspect(config_override: Option<String>, args: InspectArgs) -> Result<()> {
+    let port = args.client.resolved_port();
+    let url = format!("{}/api/deliber8/roster", base_url(port));
+    
+    match reqwest::get(&url).await {
+        Ok(resp) => {
+            let resp = check_response(resp).await?;
+            #[derive(serde::Deserialize)]
+            struct RosterResponse {
+                agents: Vec<AgentCard>,
+            }
+            let data: RosterResponse = resp.json().await?;
+            let card = data.agents.iter().find(|c| c.slug == args.slug).cloned();
+            
+            if let Some(card) = card {
+                let inbox_url = format!("{}/api/deliber8/inbox/{}", base_url(port), card.address);
+                let inbox_resp = reqwest::get(&inbox_url).await?;
+                let inbox_resp = check_response(inbox_resp).await?;
+                
+                #[derive(serde::Deserialize)]
+                struct InboxResponse {
+                    queued: usize,
+                    delivered: usize,
+                    read: usize,
+                    failed: usize,
+                    cancelled: usize,
+                }
+                let counts: InboxResponse = inbox_resp.json().await?;
+                let counts = InboxCounts {
+                    queued: counts.queued,
+                    delivered: counts.delivered,
+                    read: counts.read,
+                    failed: counts.failed,
+                    cancelled: counts.cancelled,
+                };
+                
+                if args.client.json {
+                    println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                        "card": card,
+                        "inbox": counts
+                    }))?);
+                } else {
+                    print_inspect_report(&card, &counts);
+                }
+                return Ok(());
+            } else {
+                bail!("agent '{}' not found", args.slug);
+            }
+        }
+        Err(e) if e.is_connect() => {
+            let store = open_store(config_override).await?;
+            let card_store = store.card_store();
+            let envelope_store = store.envelope_store();
+
+            let card = card_store
+                .get_agent_by_slug(&args.slug)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("agent '{}' not found", args.slug))?;
+
+            let counts = inbox_counts(&envelope_store, &card.address).await?;
+
+            if args.client.json {
+                println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                    "card": card,
+                    "inbox": counts
+                }))?);
+            } else {
+                print_inspect_report(&card, &counts);
+            }
+            Ok(())
+        }
+        Err(e) => Err(handle_reqwest_error(e, port)),
     }
-    Ok(())
 }
 
-async fn cmd_inspect(store: Arc<SurrealStore>, args: InspectArgs) -> Result<()> {
-    let card_store = store.card_store();
-    let envelope_store = store.envelope_store();
-    card_store.init_schema().await.context("init card schema")?;
-    envelope_store
-        .init_schema()
-        .await
-        .context("init envelope schema")?;
-
-    let card = card_store
-        .get_agent_by_slug(&args.slug)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("agent '{}' not found", args.slug))?;
-
-    let counts = inbox_counts(&envelope_store, &card.address)
-        .await
-        .context("counting envelopes")?;
-
-    let now = now_ns();
-    let last_seen_age_ms = card
-        .last_seen_at
-        .map(|t| (now.saturating_sub(t)) / 1_000_000);
-
-    println!("slug:                {}", card.slug);
-    println!("kind:                {}", card.agent_kind);
-    println!("status:              {}", card.status);
-    println!("address:             {}", card.address);
-    println!(
-        "display_name:        {}",
-        card.display_name.as_deref().unwrap_or("-")
-    );
-    println!(
-        "started_at_ns:       {}",
-        card.started_at
-            .map(|t| t.to_string())
-            .unwrap_or_else(|| "-".into())
-    );
-    println!(
-        "last_seen_age_ms:    {}",
-        last_seen_age_ms
-            .map(|m| m.to_string())
-            .unwrap_or_else(|| "-".into())
-    );
-    println!(
-        "heartbeat_ms:        {}",
-        card.heartbeat_interval_ms
-            .map(|m| m.to_string())
-            .unwrap_or_else(|| "-".into())
-    );
-    println!();
-    println!("inbox counts ({}):", card.address);
-    print_counts(&counts);
-
-    Ok(())
-}
-
-fn print_counts(counts: &InboxCounts) {
-    println!("  queued:    {}", counts.queued);
-    println!("  delivered: {}", counts.delivered);
-    println!("  read:      {}", counts.read);
-    println!("  failed:    {}", counts.failed);
-    println!("  cancelled: {}", counts.cancelled);
-}
-
-async fn cmd_stop(store: Arc<SurrealStore>, args: StopArgs) -> Result<()> {
+async fn cmd_stop(config_override: Option<String>, args: StopArgs) -> Result<()> {
+    // Stop currently only supports local store as it enqueues a control envelope
+    // and wait-polls the status. In the future, this could be bridged.
+    let store = open_store(config_override).await?;
     stop_inner(store, &args.slug, args.timeout_secs).await
 }
 
 async fn stop_inner(store: Arc<SurrealStore>, slug: &str, timeout_secs: u64) -> Result<()> {
     let card_store = store.card_store();
     let envelope_store = store.envelope_store();
-    card_store.init_schema().await.context("init card schema")?;
-    envelope_store
-        .init_schema()
-        .await
-        .context("init envelope schema")?;
 
     let card = card_store
         .get_agent_by_slug(slug)
@@ -350,13 +412,10 @@ async fn stop_inner(store: Arc<SurrealStore>, slug: &str, timeout_secs: u64) -> 
                 return Ok(());
             }
         } else {
-            // get_agent_by_slug filters out retired; treat absence as success
             println!("specialist '{}' acknowledged stop (no longer alive)", slug);
             return Ok(());
         }
         if std::time::Instant::now() >= deadline {
-            // Inspect pending stop envelopes so the operator can see whether
-            // the message was even consumed.
             let pending = envelope_store
                 .query_inbox(&EnvelopeFilter {
                     inbox_address: Some(card.address.clone()),
@@ -377,7 +436,8 @@ async fn stop_inner(store: Arc<SurrealStore>, slug: &str, timeout_secs: u64) -> 
     }
 }
 
-async fn cmd_restart(store: Arc<SurrealStore>, args: RestartArgs) -> Result<()> {
+async fn cmd_restart(config_override: Option<String>, args: RestartArgs) -> Result<()> {
+    let store = open_store(config_override.clone()).await?;
     stop_inner(store.clone(), &args.slug, args.timeout_secs).await?;
 
     let card_store = store.card_store();
@@ -393,13 +453,6 @@ async fn cmd_restart(store: Arc<SurrealStore>, args: RestartArgs) -> Result<()> 
 
 async fn cmd_run(store: Arc<SurrealStore>, args: RunArgs) -> Result<()> {
     let card_store = store.card_store();
-    let envelope_store = store.envelope_store();
-    card_store.init_schema().await.context("init card schema")?;
-    envelope_store
-        .init_schema()
-        .await
-        .context("init envelope schema")?;
-
     let card = card_store
         .get_agent_by_slug(&args.slug)
         .await?
@@ -434,13 +487,71 @@ async fn cmd_run(store: Arc<SurrealStore>, args: RunArgs) -> Result<()> {
     Ok(())
 }
 
+fn print_roster_table(agents: &[AgentCard]) {
+    println!(
+        "{:<20} {:<12} {:<12} {:<28} INBOX",
+        "SLUG", "KIND", "STATUS", "LAST_SEEN_NS"
+    );
+    for a in agents {
+        println!(
+            "{:<20} {:<12} {:<12} {:<28} {}",
+            a.slug,
+            a.agent_kind.to_string(),
+            a.status.to_string(),
+            a.last_seen_at
+                .map(|t| t.to_string())
+                .unwrap_or_else(|| "-".into()),
+            a.address
+        );
+    }
+}
+
+fn print_inspect_report(card: &AgentCard, counts: &InboxCounts) {
+    let now = now_ns();
+    let last_seen_age_ms = card
+        .last_seen_at
+        .map(|t| (now.saturating_sub(t)) / 1_000_000);
+
+    println!("slug:                {}", card.slug);
+    println!("kind:                {}", card.agent_kind);
+    println!("status:              {}", card.status);
+    println!("address:             {}", card.address);
+    println!(
+        "display_name:        {}",
+        card.display_name.as_deref().unwrap_or("-")
+    );
+    println!(
+        "started_at_ns:       {}",
+        card.started_at
+            .map(|t| t.to_string())
+            .unwrap_or_else(|| "-".into())
+    );
+    println!(
+        "last_seen_age_ms:    {}",
+        last_seen_age_ms
+            .map(|m| m.to_string())
+            .unwrap_or_else(|| "-".into())
+    );
+    println!(
+        "heartbeat_ms:        {}",
+        card.heartbeat_interval_ms
+            .map(|m| m.to_string())
+            .unwrap_or_else(|| "-".into())
+    );
+    println!();
+    println!("inbox counts ({}):", card.address);
+    println!("  queued:    {}", counts.queued);
+    println!("  delivered: {}", counts.delivered);
+    println!("  read:      {}", counts.read);
+    println!("  failed:    {}", counts.failed);
+    println!("  cancelled: {}", counts.cancelled);
+}
+
 fn parse_agent_kind(s: &str) -> Result<AgentKind> {
     s.parse::<AgentKind>().map_err(|e| anyhow::anyhow!(e))
 }
 
 fn hostname_string() -> Option<String> {
-    // Cheap best-effort hostname capture without adding a dep. Falls back to
-    // None if the env var isn't set.
     std::env::var("HOST")
         .ok()
         .or_else(|| std::env::var("HOSTNAME").ok())

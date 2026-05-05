@@ -952,48 +952,7 @@ impl DaemonMcp {
             Some(s) => s,
             None => return error_json("memory store not available"),
         };
-
-        let kind = params
-            .kind
-            .as_deref()
-            .and_then(|s| s.parse::<daemon8_types::MemoryKind>().ok())
-            .unwrap_or(daemon8_types::MemoryKind::UserFlagged);
-
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos() as u64;
-
-        let embedding = match &self.embedder {
-            Some(embedder) => match embedder.embed(&params.content).await {
-                Ok(v) if v.is_empty() => None,
-                Ok(v) => Some(v),
-                Err(e) => {
-                    tracing::warn!(error = %e, "embedding failed, saving without");
-                    None
-                }
-            },
-            None => None,
-        };
-
-        let memory = daemon8_store::Memory {
-            id: None,
-            created_at: now,
-            updated_at: now,
-            kind,
-            content: params.content,
-            embedding,
-            source_observations: params.source_observations.unwrap_or_default(),
-            tags: params.tags.unwrap_or_default(),
-            project_slug: params.project_slug.unwrap_or_default(),
-            session_id: params.session_id,
-            confidence: params.confidence.unwrap_or(1.0),
-        };
-
-        match mem_store.save_memory(memory).await {
-            Ok(id) => serde_json::to_string(&serde_json::json!({ "id": id })).unwrap_or_default(),
-            Err(e) => error_json(&format!("save_memory failed: {e}")),
-        }
+        save_memory_inner(mem_store.as_ref(), self.embedder.as_deref(), params).await
     }
 
     #[doc = include_str!("../tool_descriptions/query_memory.txt")]
@@ -1003,27 +962,7 @@ impl DaemonMcp {
             Some(s) => s,
             None => return error_json("memory store not available"),
         };
-
-        let kinds = params.kinds.map(|v| {
-            v.into_iter()
-                .filter_map(|s| s.parse::<daemon8_types::MemoryKind>().ok())
-                .collect()
-        });
-
-        let filter = daemon8_store::MemoryFilter {
-            kinds,
-            tags: params.tags,
-            project_slug: params.project_slug,
-            session_id: None,
-            text_match: params.text,
-            limit: Some(params.limit.unwrap_or(20).min(500) as usize),
-        };
-
-        match mem_store.query_memory(&filter).await {
-            Ok(memories) => serde_json::to_string_pretty(&memories)
-                .unwrap_or_else(|e| error_json(&format!("serialization failed: {e}"))),
-            Err(e) => error_json(&format!("query_memory failed: {e}")),
-        }
+        query_memory_inner(mem_store.as_ref(), params).await
     }
 
     #[doc = include_str!("../tool_descriptions/forget_memory.txt")]
@@ -2230,6 +2169,84 @@ impl ServerHandler for DaemonMcp {
 
     fn get_tool(&self, name: &str) -> Option<rmcp::model::Tool> {
         self.tool_router.get(name).cloned()
+    }
+}
+
+/// Pure handler for `save_memory`. Extracted so tests can drive it
+/// against an in-memory `MemoryStore` without spinning up DaemonMcp.
+pub async fn save_memory_inner(
+    mem_store: &dyn MemoryStore,
+    embedder: Option<&dyn daemon8_embed::Embedder>,
+    params: SaveMemoryParams,
+) -> String {
+    let kind = params
+        .kind
+        .as_deref()
+        .and_then(|s| s.parse::<daemon8_types::MemoryKind>().ok())
+        .unwrap_or(daemon8_types::MemoryKind::UserFlagged);
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64;
+
+    let embedding = match embedder {
+        Some(embedder) => match embedder.embed(&params.content).await {
+            Ok(v) if v.is_empty() => None,
+            Ok(v) => Some(v),
+            Err(e) => {
+                tracing::warn!(error = %e, "embedding failed, saving without");
+                None
+            }
+        },
+        None => None,
+    };
+
+    let memory = daemon8_store::Memory {
+        id: None,
+        created_at: now,
+        updated_at: now,
+        kind,
+        content: params.content,
+        embedding,
+        source_observations: params.source_observations.unwrap_or_default(),
+        tags: params.tags.unwrap_or_default(),
+        project_slug: params.project_slug.unwrap_or_default(),
+        session_id: params.session_id,
+        confidence: params.confidence.unwrap_or(1.0),
+    };
+
+    match mem_store.save_memory(memory).await {
+        Ok(id) => serde_json::to_string(&serde_json::json!({ "id": id })).unwrap_or_default(),
+        Err(e) => error_json(&format!("save_memory failed: {e}")),
+    }
+}
+
+/// Pure handler for `query_memory`. Extracted so tests can drive it
+/// against an in-memory `MemoryStore` without spinning up DaemonMcp.
+pub async fn query_memory_inner(
+    mem_store: &dyn MemoryStore,
+    params: QueryMemoryParams,
+) -> String {
+    let kinds = params.kinds.map(|v| {
+        v.into_iter()
+            .filter_map(|s| s.parse::<daemon8_types::MemoryKind>().ok())
+            .collect()
+    });
+
+    let filter = daemon8_store::MemoryFilter {
+        kinds,
+        tags: params.tags,
+        project_slug: params.project_slug,
+        session_id: None,
+        text_match: params.text,
+        limit: Some(params.limit.unwrap_or(20).min(500) as usize),
+    };
+
+    match mem_store.query_memory(&filter).await {
+        Ok(memories) => serde_json::to_string_pretty(&memories)
+            .unwrap_or_else(|e| error_json(&format!("serialization failed: {e}"))),
+        Err(e) => error_json(&format!("query_memory failed: {e}")),
     }
 }
 

@@ -194,20 +194,6 @@ impl SurrealStore {
         SurrealEmbeddingProfileStore::new(self.db.clone())
     }
 
-    /// Execute one raw read-only SELECT query and return the first result set
-    /// as JSON rows.
-    pub async fn raw_select_rows(&self, sql: &str) -> Result<Vec<serde_json::Value>, StoreError> {
-        let mut result = self
-            .db
-            .query(sql)
-            .await
-            .map_err(|e| StoreError::Db(format!("raw select: {e}")))?;
-
-        result
-            .take(0)
-            .map_err(|e| StoreError::Db(format!("raw select read: {e}")))
-    }
-
     async fn init_schema(&self) -> Result<(), StoreError> {
         self.db
             .use_ns(NAMESPACE)
@@ -623,6 +609,18 @@ impl StateModel for SurrealStore {
             .check()
             .map_err(|e| StoreError::Db(format!("health check: {e}")))?;
         Ok(())
+    }
+
+    async fn raw_select_rows(&self, query: &str) -> Result<Vec<serde_json::Value>, StoreError> {
+        let mut result = self
+            .db
+            .query(query)
+            .await
+            .map_err(|e| StoreError::Db(format!("raw select: {e}")))?;
+
+        result
+            .take(0)
+            .map_err(|e| StoreError::Db(format!("raw select read: {e}")))
     }
 }
 

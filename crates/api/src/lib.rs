@@ -15,8 +15,8 @@ use axum::routing::{get, post};
 use daemon8_chrome::BrowserAction;
 use daemon8_mcp::ChromeCommand;
 use daemon8_store::{
-    BookkeeperStore, EmbeddingProfileStore, LensManager, MemoryLongStore, MemoryReferenceStore,
-    MemoryShortStore, StateModel,
+    BookkeeperStore, CardStore, EmbeddingProfileStore, EnvelopeStore, LensManager, MemoryLongStore,
+    MemoryReferenceStore, MemoryShortStore, MemoryStore, StateModel,
 };
 use daemon8_types::{Checkpoint, Filter, Observation};
 use serde::Deserialize;
@@ -32,6 +32,10 @@ pub struct ApiState {
     pub chrome_state: tokio::sync::watch::Receiver<daemon8_chrome::ConnectionState>,
     pub chrome_endpoint: Arc<std::sync::Mutex<Option<Arc<str>>>>,
     pub lens: Arc<LensManager>,
+    pub embedder: Option<Arc<dyn daemon8_embed::Embedder>>,
+    pub memory_store: Option<Arc<dyn MemoryStore>>,
+    pub card_store: Option<Arc<dyn CardStore>>,
+    pub envelope_store: Option<Arc<dyn EnvelopeStore>>,
     pub memory_short_store: Option<Arc<dyn MemoryShortStore>>,
     pub memory_reference_store: Option<Arc<dyn MemoryReferenceStore>>,
     pub memory_long_store: Option<Arc<dyn MemoryLongStore>>,
@@ -54,6 +58,10 @@ pub fn api_router(state: ApiState) -> Router {
                 .delete(handle_lens_clear),
         )
         .route("/api/browser/act", post(handle_chrome_act))
+        .route("/api/deliber8/roster", get(handle_deliber8_roster))
+        .route("/api/deliber8/inbox/{address}", get(handle_deliber8_inbox))
+        .route("/api/memory", get(handle_memory_query).post(handle_memory_save))
+        .route("/api/query/raw", post(handle_query_raw))
         .route("/api/memory/short", get(handle_memory_short))
         .route("/api/memory/reference", get(handle_memory_reference))
         .route("/api/memory/long", get(handle_memory_long))
@@ -1078,4 +1086,138 @@ async fn handle_embedding_profiles_register(
     };
     let json = daemon8_mcp::register_embedding_profile_inner(store.as_ref(), params).await;
     relay_inner(json, StatusCode::BAD_REQUEST)
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Deliber8RosterQuery {
+    pub kinds: Option<String>,
+    pub statuses: Option<String>,
+    pub project_ref: Option<String>,
+    pub team_ref: Option<String>,
+    pub limit: Option<usize>,
+}
+
+async fn handle_deliber8_roster(
+    State(state): State<ApiState>,
+    Query(q): Query<Deliber8RosterQuery>,
+) -> Response {
+    let Some(store) = state.card_store.as_ref() else {
+        return error_json(StatusCode::SERVICE_UNAVAILABLE, "card store not configured");
+    };
+    let params = daemon8_mcp::Deliber8RosterParams {
+        kinds: split_tags(q.kinds),
+        statuses: split_tags(q.statuses),
+        project_ref: q.project_ref,
+        team_ref: q.team_ref,
+        limit: q.limit,
+    };
+    let json = daemon8_mcp::deliber8_roster_inner(store.as_ref(), params).await;
+    relay_inner(json, StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Deliber8InboxQuery {
+    pub statuses: Option<String>,
+    pub limit: Option<usize>,
+}
+
+async fn handle_deliber8_inbox(
+    State(state): State<ApiState>,
+    axum::extract::Path(address): axum::extract::Path<String>,
+    Query(q): Query<Deliber8InboxQuery>,
+) -> Response {
+    let Some(store) = state.envelope_store.as_ref() else {
+        return error_json(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "envelope store not configured",
+        );
+    };
+    let params = daemon8_mcp::Deliber8InboxParams {
+        address,
+        statuses: split_tags(q.statuses),
+        limit: q.limit,
+    };
+    let json = daemon8_mcp::deliber8_inbox_inner(store.as_ref(), params).await;
+    relay_inner(json, StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MemoryQueryParams {
+    pub text: Option<String>,
+    pub kinds: Option<String>,
+    pub tags: Option<String>,
+    pub project_slug: Option<String>,
+    pub limit: Option<usize>,
+}
+
+async fn handle_memory_query(
+    State(state): State<ApiState>,
+    Query(q): Query<MemoryQueryParams>,
+) -> Response {
+    let Some(store) = state.memory_store.as_ref() else {
+        return error_json(StatusCode::SERVICE_UNAVAILABLE, "memory store not configured");
+    };
+    let params = daemon8_mcp::QueryMemoryParams {
+        text: q.text,
+        kinds: split_tags(q.kinds),
+        tags: split_tags(q.tags),
+        project_slug: q.project_slug,
+        limit: q.limit.map(|l| l as u64),
+    };
+    let json = daemon8_mcp::query_memory_inner(store.as_ref(), params).await;
+    relay_inner(json, StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MemorySaveBody {
+    pub content: String,
+    pub kind: Option<String>,
+    pub tags: Option<Vec<String>>,
+    pub source_observations: Option<Vec<u64>>,
+    pub project_slug: Option<String>,
+    pub session_id: Option<String>,
+    pub confidence: Option<f64>,
+}
+
+async fn handle_memory_save(
+    State(state): State<ApiState>,
+    Json(body): Json<MemorySaveBody>,
+) -> Response {
+    let Some(store) = state.memory_store.as_ref() else {
+        return error_json(StatusCode::SERVICE_UNAVAILABLE, "memory store not configured");
+    };
+    let params = daemon8_mcp::SaveMemoryParams {
+        content: body.content,
+        kind: body.kind,
+        tags: body.tags,
+        source_observations: body.source_observations,
+        project_slug: body.project_slug,
+        session_id: body.session_id,
+        confidence: body.confidence,
+    };
+    let json = daemon8_mcp::save_memory_inner(
+        store.as_ref(),
+        state.embedder.as_ref().map(|a| a.as_ref()),
+        params,
+    )
+    .await;
+    relay_inner(json, StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RawQueryBody {
+    pub query: String,
+}
+
+async fn handle_query_raw(
+    State(state): State<ApiState>,
+    Json(body): Json<RawQueryBody>,
+) -> Response {
+    match state.store.raw_select_rows(&body.query).await {
+        Ok(rows) => (StatusCode::OK, Json(rows)).into_response(),
+        Err(e) => error_json(
+            StatusCode::BAD_REQUEST,
+            format!("raw query failed: {e}"),
+        ),
+    }
 }
