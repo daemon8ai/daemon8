@@ -360,6 +360,15 @@ fn monitor_disconnect_action(has_managed_browser: bool) -> MonitorDisconnectActi
     }
 }
 
+impl MonitorDisconnectAction {
+    fn connection_state(self) -> ConnectionState {
+        match self {
+            Self::WaitForNextRequest => ConnectionState::Disconnected,
+            Self::RetryEndpoint => ConnectionState::Reconnecting,
+        }
+    }
+}
+
 pub async fn connect_and_monitor(
     endpoint: String,
     obs_tx: UnboundedSender<Observation>,
@@ -444,8 +453,8 @@ pub async fn connect_and_monitor(
                     return Ok(());
                 }
 
-                status.transition(ConnectionState::Reconnecting);
                 let action = monitor_disconnect_action(managed_browser.is_some());
+                status.transition(action.connection_state());
                 if let Some(mut browser) = managed_browser.take() {
                     browser
                         .terminate("browser monitor disconnected; waiting for next browser request")
@@ -2061,21 +2070,21 @@ mod pid_alive_tests {
 
 #[cfg(test)]
 mod monitor_disconnect_tests {
-    use super::{MonitorDisconnectAction, monitor_disconnect_action};
+    use super::{ConnectionState, MonitorDisconnectAction, monitor_disconnect_action};
 
     #[test]
-    fn managed_browser_waits_for_next_request_after_disconnect() {
-        assert_eq!(
-            monitor_disconnect_action(true),
-            MonitorDisconnectAction::WaitForNextRequest
-        );
+    fn managed_browser_marks_disconnected_and_waits_for_next_request() {
+        let action = monitor_disconnect_action(true);
+
+        assert_eq!(action, MonitorDisconnectAction::WaitForNextRequest);
+        assert_eq!(action.connection_state(), ConnectionState::Disconnected);
     }
 
     #[test]
-    fn external_endpoint_keeps_retrying_after_disconnect() {
-        assert_eq!(
-            monitor_disconnect_action(false),
-            MonitorDisconnectAction::RetryEndpoint
-        );
+    fn external_endpoint_marks_reconnecting_and_retries() {
+        let action = monitor_disconnect_action(false);
+
+        assert_eq!(action, MonitorDisconnectAction::RetryEndpoint);
+        assert_eq!(action.connection_state(), ConnectionState::Reconnecting);
     }
 }

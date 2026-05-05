@@ -730,6 +730,22 @@ mod tests {
     #[tokio::test]
     async fn global_schema_bootstrap_creates_deliber8_card_tables() {
         let store = SurrealStore::memory().await.unwrap();
+        let schema_probe = store
+            .db
+            .query(
+                "CREATE type::record('agent_card', 'schema-probe') CONTENT {
+                    slug: 'schema-probe',
+                    unexpected_schema_probe_field: true
+                }",
+            )
+            .await
+            .unwrap()
+            .check();
+        assert!(
+            schema_probe.is_err(),
+            "agent_card must be SCHEMAFULL from global SurrealStore bootstrap"
+        );
+
         let cards = store.card_store();
 
         cards
