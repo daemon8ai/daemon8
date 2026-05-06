@@ -2,165 +2,333 @@
 // Copyright (c) 2026 Havy.tech, LLC
 
 use std::collections::HashSet;
-use std::io::{Seek, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use clap::Subcommand;
-use daemon8_store::{StateModel, SurrealStore};
-use zip::write::SimpleFileOptions;
-use zip::{CompressionMethod, ZipWriter};
-
-use crate::config;
+use futures::StreamExt;
+use serde_json::Value;
 
 use super::observe::{ClientArgs, base_url, check_response, handle_reqwest_error};
 
+const MAX_NDJSON_LINE_BYTES: usize = 16 * 1024 * 1024;
+
 #[derive(Subcommand)]
 pub enum MemorySubcommand {
-    /// Export memory query results to Markdown or ZIP
+    /// Export memory query rows to one Markdown file per row
     Export(MemoryExportArgs),
 }
 
 #[derive(clap::Args, Debug, Clone)]
 pub struct MemoryExportArgs {
-    /// Table name (repeat for multiple sections)
-    #[arg(long = "table", required = true)]
-    pub table: Vec<String>,
-    /// Read-only SurrealQL SELECT query (repeat to pair with each table)
-    #[arg(long = "query", required = true)]
-    pub query: Vec<String>,
-    /// Output path (.md for plain export, .zip for one markdown file per section)
+    /// Read-only SurrealQL SELECT query. Must include ORDER BY for deterministic paging.
+    #[arg(long)]
+    pub query: String,
+
+    /// Output directory. One Markdown file is written per returned row.
     #[arg(long)]
     pub out: PathBuf,
+
+    /// Rows fetched per bounded daemon API page.
+    #[arg(long, default_value_t = daemon8_api::MEMORY_EXPORT_DEFAULT_PAGE_SIZE)]
+    pub page_size: u64,
 
     #[command(flatten)]
     pub client: ClientArgs,
 }
 
 pub async fn cmd_memory(
-    config_override: Option<String>,
+    _config_override: Option<String>,
     subcommand: MemorySubcommand,
 ) -> Result<()> {
     match subcommand {
-        MemorySubcommand::Export(args) => cmd_memory_export(config_override, args).await,
+        MemorySubcommand::Export(args) => cmd_memory_export(args).await,
     }
 }
 
-async fn cmd_memory_export(config_override: Option<String>, args: MemoryExportArgs) -> Result<()> {
+async fn cmd_memory_export(args: MemoryExportArgs) -> Result<()> {
     validate_export_args(&args)?;
+    prepare_output_dir(&args.out)?;
 
-    let mut sections = Vec::with_capacity(args.table.len());
     let port = args.client.resolved_port();
-
-    // Try API first
-    let url = format!("{}/api/query/raw", base_url(port));
+    let url = format!("{}/api/memory/export", base_url(port));
     let client = reqwest::Client::new();
-
-    let mut api_failed = false;
-    for (table, query) in args.table.iter().zip(args.query.iter()) {
-        let resp = match client
-            .post(&url)
-            .json(&serde_json::json!({ "query": query }))
-            .send()
-            .await
-        {
-            Ok(r) => r,
-            Err(e) if e.is_connect() => {
-                api_failed = true;
-                break;
-            }
-            Err(e) => return Err(handle_reqwest_error(e, port)),
-        };
-
-        let resp = check_response(resp).await?;
-        let rows: Vec<serde_json::Value> = resp.json().await?;
-        sections.push(ExportSection {
-            table: table.clone(),
-            query: query.clone(),
-            rows,
-        });
-    }
-
-    let db_path_display: String;
-
-    if api_failed {
-        sections.clear();
-        let cfg = config::load(config_override.as_deref()).unwrap_or_default();
-        let db_path = config::resolve_db_path(cfg.storage.path.as_deref());
-        let store = SurrealStore::open(&db_path)
-            .await
-            .with_context(|| format!("opening daemon8 store at {}", db_path.display()))?;
-
-        for (table, query) in args.table.iter().zip(args.query.iter()) {
-            let rows: Vec<serde_json::Value> = store
-                .raw_select_rows(query)
-                .await
-                .with_context(|| format!("query failed for table '{table}'"))?;
-            sections.push(ExportSection {
-                table: table.clone(),
-                query: query.clone(),
-                rows,
-            });
-        }
-        db_path_display = db_path.display().to_string();
-    } else {
-        db_path_display = format!("localhost:{port} (remote)");
-    }
-
-    if let Some(parent) = args.out.parent()
-        && !parent.as_os_str().is_empty()
+    let resp = match client
+        .post(&url)
+        .json(&serde_json::json!({
+            "query": args.query.trim(),
+            "page_size": args.page_size,
+        }))
+        .send()
+        .await
     {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("creating output directory {}", parent.display()))?;
-    }
+        Ok(resp) => resp,
+        Err(e) if e.is_connect() => bail!(
+            "daemon8 memory export requires a running daemon API at localhost:{port}. Start with: daemon8 serve"
+        ),
+        Err(e) => return Err(handle_reqwest_error(e, port)),
+    };
 
-    let generated_at_unix_s = now_unix_s();
-    if is_zip_path(&args.out) {
-        write_zip_export(&args.out, &sections, generated_at_unix_s, Path::new(&db_path_display))?;
-        println!(
-            "exported {} markdown files in zip archive {}",
-            sections.len(),
-            args.out.display()
-        );
-    } else {
-        let markdown = render_combined_markdown(&sections, generated_at_unix_s, Path::new(&db_path_display))?;
-        std::fs::write(&args.out, markdown)
-            .with_context(|| format!("writing export file {}", args.out.display()))?;
-        println!(
-            "exported {} query sections to {}",
-            sections.len(),
-            args.out.display()
-        );
-    }
+    let resp = check_response(resp).await?;
+    let exported_at_unix_s = now_unix_s();
+    let query_hash = short_stable_hash(args.query.trim().as_bytes());
+    let rows = write_ndjson_response(resp, &args.out, exported_at_unix_s, &query_hash).await?;
+
+    println!("exported {rows} markdown files to {}", args.out.display());
     Ok(())
-}
-
-#[derive(Debug, Clone)]
-struct ExportSection {
-    table: String,
-    query: String,
-    rows: Vec<serde_json::Value>,
 }
 
 fn validate_export_args(args: &MemoryExportArgs) -> Result<()> {
-    if args.table.len() != args.query.len() {
+    if let Err(message) = daemon8_api::validate_memory_export_query(&args.query) {
+        bail!(message);
+    }
+    if !(1..=daemon8_api::MEMORY_EXPORT_MAX_PAGE_SIZE).contains(&args.page_size) {
         bail!(
-            "--table count ({}) must match --query count ({})",
-            args.table.len(),
-            args.query.len()
+            "page_size must be between 1 and {}",
+            daemon8_api::MEMORY_EXPORT_MAX_PAGE_SIZE
         );
     }
+    validate_output_target(&args.out)
+}
 
-    for table in &args.table {
-        validate_table_name(table)?;
+fn validate_output_target(out: &Path) -> Result<()> {
+    if out.as_os_str().is_empty() {
+        bail!("--out cannot be empty");
     }
-
-    for (table, query) in args.table.iter().zip(args.query.iter()) {
-        validate_select_query(table, query)?;
+    if out.exists() && !out.is_dir() {
+        bail!("--out must be a directory, got file {}", out.display());
     }
-
+    if out.exists() && out.read_dir()?.next().is_some() {
+        bail!(
+            "--out must be a new or empty directory so stale export files cannot be mixed with current results"
+        );
+    }
     Ok(())
+}
+
+fn prepare_output_dir(out: &Path) -> Result<()> {
+    validate_output_target(out)?;
+    std::fs::create_dir_all(out)
+        .with_context(|| format!("creating output directory {}", out.display()))
+}
+
+async fn write_ndjson_response(
+    resp: reqwest::Response,
+    out_dir: &Path,
+    exported_at_unix_s: u64,
+    query_hash: &str,
+) -> Result<usize> {
+    let mut stream = resp.bytes_stream();
+    let mut buffer = Vec::<u8>::new();
+    let mut row_index = 0usize;
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.context("reading memory export response chunk")?;
+        buffer.extend_from_slice(&chunk);
+        drain_complete_lines(
+            &mut buffer,
+            out_dir,
+            exported_at_unix_s,
+            query_hash,
+            &mut row_index,
+        )?;
+    }
+
+    if !buffer.is_empty() {
+        write_ndjson_line(
+            &buffer,
+            out_dir,
+            exported_at_unix_s,
+            query_hash,
+            &mut row_index,
+        )?;
+    }
+
+    Ok(row_index)
+}
+
+fn drain_complete_lines(
+    buffer: &mut Vec<u8>,
+    out_dir: &Path,
+    exported_at_unix_s: u64,
+    query_hash: &str,
+    row_index: &mut usize,
+) -> Result<()> {
+    while let Some(pos) = buffer.iter().position(|byte| *byte == b'\n') {
+        let line: Vec<u8> = buffer.drain(..=pos).collect();
+        if line.len() > MAX_NDJSON_LINE_BYTES + 1 {
+            bail!("memory export row exceeded {} bytes", MAX_NDJSON_LINE_BYTES);
+        }
+        write_ndjson_line(
+            &line[..line.len() - 1],
+            out_dir,
+            exported_at_unix_s,
+            query_hash,
+            row_index,
+        )?;
+    }
+    if buffer.len() > MAX_NDJSON_LINE_BYTES {
+        bail!("memory export row exceeded {} bytes", MAX_NDJSON_LINE_BYTES);
+    }
+    Ok(())
+}
+
+fn write_ndjson_line(
+    line: &[u8],
+    out_dir: &Path,
+    exported_at_unix_s: u64,
+    query_hash: &str,
+    row_index: &mut usize,
+) -> Result<()> {
+    if line.is_empty() {
+        return Ok(());
+    }
+
+    let row: Value = serde_json::from_slice(line).context("parsing memory export row")?;
+    *row_index += 1;
+    write_row_markdown(out_dir, &row, *row_index, exported_at_unix_s, query_hash)?;
+    Ok(())
+}
+
+fn write_row_markdown(
+    out_dir: &Path,
+    row: &Value,
+    row_index: usize,
+    exported_at_unix_s: u64,
+    query_hash: &str,
+) -> Result<PathBuf> {
+    let filename = row_filename(row, row_index)?;
+    let path = out_dir.join(filename);
+    let markdown = render_row_markdown(row, row_index, exported_at_unix_s, query_hash)?;
+    std::fs::write(&path, markdown).with_context(|| format!("writing {}", path.display()))?;
+    Ok(path)
+}
+
+fn row_filename(row: &Value, row_index: usize) -> Result<String> {
+    let stem = row
+        .get("id")
+        .and_then(scalar_filename_value)
+        .map(sanitize_filename_stem)
+        .filter(|stem| stem != "row")
+        .unwrap_or_else(|| {
+            let row_json = serde_json::to_vec(row).unwrap_or_default();
+            format!("row-{:06}-{}", row_index, short_stable_hash(&row_json))
+        });
+
+    Ok(format!("{row_index:06}-{stem}.md"))
+}
+
+fn scalar_filename_value(value: &Value) -> Option<String> {
+    match value {
+        Value::String(value) => Some(value.clone()),
+        Value::Number(value) => Some(value.to_string()),
+        Value::Bool(value) => Some(value.to_string()),
+        _ => None,
+    }
+}
+
+fn sanitize_filename_stem(input: String) -> String {
+    let mut out = String::new();
+    let mut previous_separator = false;
+
+    for ch in input.trim().chars() {
+        let next = if ch.is_ascii_alphanumeric() {
+            Some(ch.to_ascii_lowercase())
+        } else if matches!(ch, '-' | '_' | '.' | ' ' | ':' | '/' | '\\') {
+            Some('-')
+        } else {
+            None
+        };
+
+        let Some(next) = next else {
+            continue;
+        };
+        if next == '-' {
+            if previous_separator {
+                continue;
+            }
+            previous_separator = true;
+        } else {
+            previous_separator = false;
+        }
+        out.push(next);
+        if out.len() >= 120 {
+            break;
+        }
+    }
+
+    let out = out.trim_matches(['-', '.', '_']).to_string();
+    if out.is_empty() || out == "." || out == ".." {
+        "row".into()
+    } else {
+        out
+    }
+}
+
+fn render_row_markdown(
+    row: &Value,
+    row_index: usize,
+    exported_at_unix_s: u64,
+    query_hash: &str,
+) -> Result<String> {
+    let mut out = String::new();
+    out.push_str("---\n");
+    out.push_str(&format!("exported_at_unix_s: {exported_at_unix_s}\n"));
+    out.push_str(&format!("row_index: {row_index}\n"));
+    out.push_str(&format!("query_hash: \"{query_hash}\"\n"));
+    append_scalar_frontmatter(row, &mut out)?;
+    out.push_str("---\n\n");
+
+    if let Some(content) = row.get("content").and_then(Value::as_str) {
+        out.push_str(content.trim_end());
+        out.push_str("\n\n## Row JSON\n\n");
+    }
+
+    out.push_str("```json\n");
+    out.push_str(&serde_json::to_string_pretty(row).context("rendering row JSON")?);
+    out.push_str("\n```\n");
+    Ok(out)
+}
+
+fn append_scalar_frontmatter(row: &Value, out: &mut String) -> Result<()> {
+    let Some(object) = row.as_object() else {
+        return Ok(());
+    };
+
+    let reserved: HashSet<&str> = ["exported_at_unix_s", "row_index", "query_hash"]
+        .into_iter()
+        .collect();
+    for (key, value) in object {
+        if reserved.contains(key.as_str()) || !is_frontmatter_key_safe(key) {
+            continue;
+        }
+        if !is_frontmatter_scalar_safe(value) {
+            continue;
+        }
+        out.push_str(key);
+        out.push_str(": ");
+        out.push_str(&serde_json::to_string(value).context("rendering frontmatter scalar")?);
+        out.push('\n');
+    }
+    Ok(())
+}
+
+fn is_frontmatter_key_safe(key: &str) -> bool {
+    let mut chars = key.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+}
+
+fn is_frontmatter_scalar_safe(value: &Value) -> bool {
+    match value {
+        Value::Bool(_) | Value::Number(_) => true,
+        Value::String(value) => value.len() <= 200 && !value.contains(['\n', '\r']),
+        _ => false,
+    }
 }
 
 fn now_unix_s() -> u64 {
@@ -170,298 +338,241 @@ fn now_unix_s() -> u64 {
         .unwrap_or(0)
 }
 
-fn is_zip_path(path: &Path) -> bool {
-    path.extension()
-        .and_then(|v| v.to_str())
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("zip"))
-}
-
-fn validate_table_name(table: &str) -> Result<()> {
-    let mut chars = table.chars();
-    let Some(first) = chars.next() else {
-        bail!("table name cannot be empty");
-    };
-    if !(first.is_ascii_alphabetic() || first == '_') {
-        bail!("table name '{table}' must start with a letter or underscore");
+fn short_stable_hash(bytes: &[u8]) -> String {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
     }
-    if !chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_') {
-        bail!("table name '{table}' may only contain letters, digits, and underscores");
-    }
-    Ok(())
-}
-
-fn validate_select_query(table: &str, query: &str) -> Result<()> {
-    let trimmed = query.trim();
-    if trimmed.is_empty() {
-        bail!("query for table '{table}' cannot be empty");
-    }
-    if trimmed.contains(';') {
-        bail!(
-            "query for table '{table}' contains ';' - only one single SELECT statement is allowed"
-        );
-    }
-
-    let lower = trimmed.to_ascii_lowercase();
-    if !lower.starts_with("select ") && lower != "select" {
-        bail!("query for table '{table}' must start with SELECT");
-    }
-
-    let table_lower = table.to_ascii_lowercase();
-    let tokens: Vec<&str> = lower
-        .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
-        .filter(|w| !w.is_empty())
-        .collect();
-
-    let has_exact_from = tokens
-        .windows(2)
-        .any(|window| window[0] == "from" && window[1] == table_lower.as_str());
-    if !has_exact_from {
-        bail!(
-            "query for table '{table}' must include a FROM {table} clause for explicit table scoping"
-        );
-    }
-
-    let forbidden = [
-        "create", "update", "delete", "insert", "upsert", "relate", "remove", "define", "begin",
-        "commit", "cancel", "use", "let",
-    ];
-    let words: HashSet<&str> = tokens.iter().copied().collect();
-    if let Some(keyword) = forbidden.iter().find(|k| words.contains(*k)) {
-        bail!(
-            "query for table '{table}' contains forbidden keyword '{keyword}' (only read-only SELECT is allowed)"
-        );
-    }
-
-    Ok(())
-}
-
-fn render_combined_markdown(
-    sections: &[ExportSection],
-    generated_at_unix_s: u64,
-    db_path: &Path,
-) -> Result<String> {
-    let mut out = String::new();
-    out.push_str("# daemon8 memory export\n\n");
-    out.push_str(&format!("generated_at_unix_s: {generated_at_unix_s}\n\n"));
-    out.push_str(&format!("db_path: {}\n\n", db_path.display()));
-
-    for (idx, section) in sections.iter().enumerate() {
-        out.push_str(&render_section_markdown(
-            idx + 1,
-            section,
-            generated_at_unix_s,
-            db_path,
-        )?);
-    }
-
-    Ok(out)
-}
-
-fn render_section_markdown(
-    index: usize,
-    section: &ExportSection,
-    generated_at_unix_s: u64,
-    db_path: &Path,
-) -> Result<String> {
-    let mut out = String::new();
-    out.push_str(&format!("## {}. {}\n\n", index, section.table));
-    out.push_str(&format!("generated_at_unix_s: {generated_at_unix_s}\n\n"));
-    out.push_str(&format!("db_path: {}\n\n", db_path.display()));
-    out.push_str("query:\n\n");
-    out.push_str("```sql\n");
-    out.push_str(section.query.trim());
-    out.push_str("\n```\n\n");
-    out.push_str(&format!("rows: {}\n\n", section.rows.len()));
-    out.push_str("```json\n");
-    out.push_str(
-        &serde_json::to_string_pretty(&section.rows)
-            .context("serializing export rows to JSON markdown block")?,
-    );
-    out.push_str("\n```\n\n");
-    Ok(out)
-}
-
-fn write_zip_export(
-    out_path: &Path,
-    sections: &[ExportSection],
-    generated_at_unix_s: u64,
-    db_path: &Path,
-) -> Result<()> {
-    let file = std::fs::File::create(out_path)
-        .with_context(|| format!("creating zip archive {}", out_path.display()))?;
-    write_zip_to_writer(file, sections, generated_at_unix_s, db_path)
-        .with_context(|| format!("writing zip archive {}", out_path.display()))
-}
-
-fn write_zip_to_writer<W: Write + Seek>(
-    writer: W,
-    sections: &[ExportSection],
-    generated_at_unix_s: u64,
-    db_path: &Path,
-) -> Result<()> {
-    let mut zip = ZipWriter::new(writer);
-    let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
-
-    for (idx, section) in sections.iter().enumerate() {
-        let entry_name = format!("{:02}-{}.md", idx + 1, section.table);
-        zip.start_file(&entry_name, options)
-            .with_context(|| format!("starting zip entry {entry_name}"))?;
-        let section_md = render_section_markdown(idx + 1, section, generated_at_unix_s, db_path)
-            .with_context(|| format!("rendering markdown for zip entry {entry_name}"))?;
-        zip.write_all(section_md.as_bytes())
-            .with_context(|| format!("writing zip entry {entry_name}"))?;
-    }
-
-    zip.finish().context("finalizing zip archive")?;
-    Ok(())
+    format!("{hash:016x}")[..12].to_string()
 }
 
 #[cfg(test)]
 mod tests {
-    use std::io::Read;
+    use std::sync::{Arc, Mutex};
+
+    use axum::body::Body;
+    use axum::http::{HeaderMap, StatusCode, header};
+    use axum::response::IntoResponse;
+    use axum::routing::post;
+    use axum::{Json, Router};
 
     use super::*;
 
-    fn args(table: &[&str], query: &[&str]) -> MemoryExportArgs {
+    fn args(query: &str) -> MemoryExportArgs {
         MemoryExportArgs {
-            table: table.iter().map(|s| s.to_string()).collect(),
-            query: query.iter().map(|s| s.to_string()).collect(),
-            out: PathBuf::from("tmp.zip"),
+            query: query.into(),
+            out: PathBuf::from("tmp-export"),
+            page_size: daemon8_api::MEMORY_EXPORT_DEFAULT_PAGE_SIZE,
+            client: ClientArgs {
+                port: None,
+                json: false,
+            },
         }
     }
 
     #[test]
-    fn validate_export_args_rejects_mismatched_counts() {
-        let err = validate_export_args(&args(&["memory"], &["SELECT * FROM memory", "SELECT 1"]))
-            .expect_err("mismatched counts should fail");
-        assert!(err.to_string().contains("--table count"));
-    }
-
-    #[test]
     fn validate_export_args_rejects_non_select() {
-        let err = validate_export_args(&args(&["memory"], &["DELETE FROM memory"]))
+        let err = validate_export_args(&args("DELETE FROM memory ORDER BY created_at DESC"))
             .expect_err("non-select should fail");
         assert!(err.to_string().contains("must start with SELECT"));
     }
 
     #[test]
-    fn validate_export_args_rejects_wrong_table_scope() {
-        let err = validate_export_args(&args(&["memory"], &["SELECT * FROM memory_long"]))
-            .expect_err("wrong table scope should fail");
-        assert!(err.to_string().contains("FROM memory"));
+    fn validate_export_args_rejects_query_without_order_by() {
+        let err = validate_export_args(&args("SELECT * FROM memory"))
+            .expect_err("missing order by should fail");
+        assert!(err.to_string().contains("ORDER BY"));
     }
 
     #[test]
-    fn is_zip_path_accepts_uppercase_extension() {
-        assert!(is_zip_path(Path::new("export.ZIP")));
-        assert!(!is_zip_path(Path::new("export.md")));
+    fn validate_export_args_accepts_paged_select_contract() {
+        validate_export_args(&args("SELECT * FROM memory ORDER BY created_at DESC"))
+            .expect("valid export query");
     }
 
     #[test]
-    fn write_zip_to_writer_creates_expected_markdown_entries() {
-        let mut cursor = std::io::Cursor::new(Vec::<u8>::new());
-        let sections = vec![
-            ExportSection {
-                table: "memory".into(),
-                query: "SELECT * FROM memory LIMIT 1".into(),
-                rows: vec![serde_json::json!({"id":"abc"})],
-            },
-            ExportSection {
-                table: "memory_long".into(),
-                query: "SELECT * FROM memory_long LIMIT 1".into(),
-                rows: vec![serde_json::json!({"id":"def"})],
-            },
-        ];
+    fn validate_output_target_rejects_existing_non_empty_directory() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("old.md"), "stale").expect("write stale file");
 
-        write_zip_to_writer(&mut cursor, &sections, 1_700_000_000, Path::new("/tmp/db"))
-            .expect("write zip");
-        cursor.set_position(0);
+        let err = validate_output_target(dir.path()).expect_err("non-empty dir should fail");
 
-        let mut archive = zip::ZipArchive::new(cursor).expect("open zip archive");
-        assert_eq!(archive.len(), 2);
-        assert!(archive.by_name("01-memory.md").is_ok());
-        assert!(archive.by_name("02-memory_long.md").is_ok());
-
-        let mut first = archive.by_name("01-memory.md").expect("first entry exists");
-        let mut first_text = String::new();
-        first
-            .read_to_string(&mut first_text)
-            .expect("read first entry");
-        assert!(first_text.contains("## 1. memory"));
-        assert!(first_text.contains("\"id\": \"abc\""));
+        assert!(err.to_string().contains("new or empty directory"));
     }
 
     #[test]
-    fn validate_export_args_accepts_valid_select_pairs() {
-        validate_export_args(&args(
-            &["memory", "memory_long"],
-            &[
-                "SELECT * FROM memory ORDER BY created_at DESC LIMIT 5",
-                "SELECT * FROM memory_long LIMIT 10",
-            ],
-        ))
-        .expect("valid export args");
-    }
-
-    #[test]
-    fn validate_export_args_rejects_semicolon() {
-        let err = validate_export_args(&args(&["memory"], &["SELECT * FROM memory;"]))
-            .expect_err("semicolon should fail");
-        assert!(err.to_string().contains("only one single SELECT statement"));
-    }
-
-    #[test]
-    fn validate_export_args_rejects_invalid_table_name() {
-        let err = validate_export_args(&args(&["memory-long"], &["SELECT * FROM memory-long"]))
-            .expect_err("invalid table should fail");
-        assert!(
-            err.to_string()
-                .contains("may only contain letters, digits, and underscores")
+    fn sanitize_filename_stem_blocks_path_traversal_and_hidden_names() {
+        assert_eq!(
+            sanitize_filename_stem("../.env/secret".into()),
+            "env-secret"
         );
+        assert_eq!(sanitize_filename_stem("///".into()), "row");
     }
 
     #[test]
-    fn render_section_markdown_includes_query_and_rows() {
-        let md = render_section_markdown(
-            2,
-            &ExportSection {
-                table: "memory".into(),
-                query: "SELECT * FROM memory LIMIT 1".into(),
-                rows: vec![serde_json::json!({"id":"abc","content":"hello"})],
+    fn row_filename_uses_scalar_id_slug() {
+        let filename = row_filename(
+            &serde_json::json!({"id":"memory:abc/../def","content":"hello"}),
+            7,
+        )
+        .expect("filename");
+        assert_eq!(filename, "000007-memory-abc-def.md");
+    }
+
+    #[test]
+    fn row_filename_falls_back_to_index_and_hash() {
+        let filename = row_filename(&serde_json::json!({"content":"hello"}), 3).expect("filename");
+        assert!(filename.starts_with("000003-row-000003-"));
+        assert!(filename.ends_with(".md"));
+    }
+
+    #[test]
+    fn render_row_markdown_uses_content_body_and_lossless_json_block() {
+        let row = serde_json::json!({
+            "id": "memory:abc",
+            "content": "hello",
+            "tags": ["project:daemon8"],
+            "confidence": 0.95,
+            "metadata": {"nested": true}
+        });
+        let markdown = render_row_markdown(&row, 1, 1_700_000_000, "abcd1234").expect("markdown");
+
+        assert!(markdown.starts_with("---\n"));
+        assert!(markdown.contains("row_index: 1\n"));
+        assert!(markdown.contains("id: \"memory:abc\"\n"));
+        assert!(markdown.contains("confidence: 0.95\n"));
+        assert!(markdown.contains("\n---\n\nhello\n\n## Row JSON\n\n```json\n"));
+        assert!(markdown.contains("\"tags\": ["));
+
+        let json_block = markdown
+            .split("```json\n")
+            .nth(1)
+            .and_then(|rest| rest.split("\n```").next())
+            .expect("json block");
+        let rendered_row: Value = serde_json::from_str(json_block).expect("valid row json block");
+        assert_eq!(rendered_row, row);
+    }
+
+    #[test]
+    fn write_ndjson_line_writes_each_row_immediately() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut row_index = 0usize;
+        write_ndjson_line(
+            br#"{"id":"memory:first","content":"one"}"#,
+            dir.path(),
+            1,
+            "hash",
+            &mut row_index,
+        )
+        .expect("write first row");
+
+        assert_eq!(row_index, 1);
+        assert!(dir.path().join("000001-memory-first.md").exists());
+
+        write_ndjson_line(
+            br#"{"id":"memory:second","content":"two"}"#,
+            dir.path(),
+            1,
+            "hash",
+            &mut row_index,
+        )
+        .expect("write second row");
+
+        assert_eq!(row_index, 2);
+        assert!(dir.path().join("000002-memory-second.md").exists());
+    }
+
+    #[test]
+    fn drain_complete_lines_keeps_partial_next_row_buffered() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut row_index = 0usize;
+        let mut buffer = br#"{"id":"memory:first","content":"one"}
+{"id":"memory:second","content":"two"}"#
+            .to_vec();
+
+        drain_complete_lines(&mut buffer, dir.path(), 1, "hash", &mut row_index)
+            .expect("drain one complete row");
+
+        assert_eq!(row_index, 1);
+        assert!(dir.path().join("000001-memory-first.md").exists());
+        assert!(!dir.path().join("000002-memory-second.md").exists());
+        assert!(String::from_utf8(buffer).unwrap().contains("memory:second"));
+    }
+
+    #[test]
+    fn drain_complete_lines_rejects_unbounded_row_buffer() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut row_index = 0usize;
+        let mut buffer = vec![b'a'; MAX_NDJSON_LINE_BYTES + 1];
+
+        let err = drain_complete_lines(&mut buffer, dir.path(), 1, "hash", &mut row_index)
+            .expect_err("oversized row should fail");
+
+        assert!(err.to_string().contains("exceeded"));
+        assert_eq!(row_index, 0);
+    }
+
+    #[tokio::test]
+    async fn cmd_memory_export_posts_query_and_writes_response_rows() {
+        let captured_body = Arc::new(Mutex::new(None::<Value>));
+        let captured = captured_body.clone();
+        let app = Router::new().route(
+            "/api/memory/export",
+            post(move |headers: HeaderMap, Json(body): Json<Value>| {
+                let captured = captured.clone();
+                async move {
+                    assert_eq!(
+                        headers
+                            .get(header::CONTENT_TYPE)
+                            .and_then(|value| value.to_str().ok()),
+                        Some("application/json")
+                    );
+                    *captured.lock().expect("capture mutex") = Some(body);
+                    (
+                        StatusCode::OK,
+                        [(header::CONTENT_TYPE, "application/x-ndjson")],
+                        Body::from(
+                            "{\"id\":\"memory:first\",\"content\":\"one\"}\n{\"id\":\"memory:second\",\"content\":\"two\"}\n",
+                        ),
+                    )
+                        .into_response()
+                }
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let port = listener.local_addr().expect("local addr").port();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("serve test app");
+        });
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let out = dir.path().join("export");
+        let args = MemoryExportArgs {
+            query: "  SELECT * FROM memory ORDER BY created_at DESC  ".into(),
+            out: out.clone(),
+            page_size: 2,
+            client: ClientArgs {
+                port: Some(port),
+                json: false,
             },
-            1_700_000_000,
-            Path::new("/tmp/db"),
-        )
-        .expect("render section");
-        assert!(md.contains("## 2. memory"));
-        assert!(md.contains("SELECT * FROM memory LIMIT 1"));
-        assert!(md.contains("rows: 1"));
-    }
+        };
 
-    #[test]
-    fn render_combined_markdown_includes_sections_and_counts() {
-        let md = render_combined_markdown(
-            &[ExportSection {
-                table: "memory".into(),
-                query: "SELECT * FROM memory LIMIT 1".into(),
-                rows: vec![serde_json::json!({"id":"abc","content":"hello"})],
-            }],
-            1_700_000_000,
-            Path::new("/tmp/daemon8.db"),
-        )
-        .expect("render markdown");
+        cmd_memory_export(args).await.expect("memory export");
+        server.abort();
 
-        assert!(md.contains("# daemon8 memory export"));
-        assert!(md.contains("## 1. memory"));
-        assert!(md.contains("rows: 1"));
-        assert!(md.contains("\"id\": \"abc\""));
-        assert!(md.contains("db_path: /tmp/daemon8.db"));
-    }
-
-    #[test]
-    fn validate_export_args_rejects_mutating_keyword() {
-        let err = validate_export_args(&args(&["memory"], &["SELECT * FROM memory UPDATE foo"]))
-            .expect_err("mutating keyword should fail");
-        assert!(err.to_string().contains("forbidden keyword"));
+        assert_eq!(
+            captured_body.lock().expect("capture mutex").as_ref(),
+            Some(&serde_json::json!({
+                "query": "SELECT * FROM memory ORDER BY created_at DESC",
+                "page_size": 2
+            }))
+        );
+        assert!(out.join("000001-memory-first.md").exists());
+        assert!(out.join("000002-memory-second.md").exists());
+        assert_eq!(std::fs::read_dir(&out).expect("export dir").count(), 2);
     }
 }

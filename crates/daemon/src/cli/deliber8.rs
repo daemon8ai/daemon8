@@ -276,7 +276,7 @@ async fn cmd_list(config_override: Option<String>, args: ListArgs) -> Result<()>
             } else {
                 print_roster_table(&data.agents);
             }
-            return Ok(());
+            Ok(())
         }
         Err(e) if e.is_connect() => {
             let store = open_store(config_override).await?;
@@ -368,7 +368,7 @@ async fn cmd_inspect(config_override: Option<String>, args: InspectArgs) -> Resu
                 } else {
                     print_inspect_report(&card, &counts);
                 }
-                return Ok(());
+                Ok(())
             } else {
                 bail!("agent '{}' not found", args.slug);
             }

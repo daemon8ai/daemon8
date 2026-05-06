@@ -1,14 +1,17 @@
 // SPDX-License-Identifier: LicenseRef-FCL-1.0-ALv2
 // Copyright (c) 2026 Havy.tech, LLC
 
+use std::collections::{HashSet, VecDeque};
 use std::convert::Infallible;
+use std::io;
 use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
+use axum::body::{Body, Bytes};
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post};
@@ -19,10 +22,14 @@ use daemon8_store::{
     MemoryReferenceStore, MemoryShortStore, MemoryStore, StateModel,
 };
 use daemon8_types::{Checkpoint, Filter, Observation};
+use futures::stream;
 use serde::Deserialize;
 use tokio::sync::broadcast::error::RecvError;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::warn;
+
+pub const MEMORY_EXPORT_DEFAULT_PAGE_SIZE: u64 = 100;
+pub const MEMORY_EXPORT_MAX_PAGE_SIZE: u64 = 1_000;
 
 #[derive(Clone)]
 pub struct ApiState {
@@ -58,11 +65,17 @@ pub fn api_router(state: ApiState) -> Router {
                 .delete(handle_lens_clear),
         )
         .route("/api/browser/act", post(handle_chrome_act))
-        .route("/api/deliber8/roster", get(handle_deliber8_roster).post(handle_deliber8_spawn))
+        .route(
+            "/api/deliber8/roster",
+            get(handle_deliber8_roster).post(handle_deliber8_spawn),
+        )
         .route("/api/deliber8/inbox/{address}", get(handle_deliber8_inbox))
         .route("/api/deliber8/enqueue", post(handle_deliber8_enqueue))
-        .route("/api/memory", get(handle_memory_query).post(handle_memory_save))
-        .route("/api/query/raw", post(handle_query_raw))
+        .route(
+            "/api/memory",
+            get(handle_memory_query).post(handle_memory_save),
+        )
+        .route("/api/memory/export", post(handle_memory_export))
         .route("/api/memory/short", get(handle_memory_short))
         .route("/api/memory/reference", get(handle_memory_reference))
         .route("/api/memory/long", get(handle_memory_long))
@@ -1191,7 +1204,10 @@ async fn handle_memory_query(
     Query(q): Query<MemoryQueryParams>,
 ) -> Response {
     let Some(store) = state.memory_store.as_ref() else {
-        return error_json(StatusCode::SERVICE_UNAVAILABLE, "memory store not configured");
+        return error_json(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "memory store not configured",
+        );
     };
     let params = daemon8_mcp::QueryMemoryParams {
         text: q.text,
@@ -1220,7 +1236,10 @@ async fn handle_memory_save(
     Json(body): Json<MemorySaveBody>,
 ) -> Response {
     let Some(store) = state.memory_store.as_ref() else {
-        return error_json(StatusCode::SERVICE_UNAVAILABLE, "memory store not configured");
+        return error_json(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "memory store not configured",
+        );
     };
     let params = daemon8_mcp::SaveMemoryParams {
         content: body.content,
@@ -1241,19 +1260,335 @@ async fn handle_memory_save(
 }
 
 #[derive(Debug, Deserialize)]
-pub struct RawQueryBody {
+pub struct MemoryExportBody {
     pub query: String,
+    pub page_size: Option<u64>,
 }
 
-async fn handle_query_raw(
+struct MemoryExportStreamState {
+    store: Arc<dyn StateModel>,
+    query: String,
+    rows: VecDeque<serde_json::Value>,
+    page_size: u64,
+    next_start: u64,
+    done: bool,
+}
+
+async fn handle_memory_export(
     State(state): State<ApiState>,
-    Json(body): Json<RawQueryBody>,
+    Json(body): Json<MemoryExportBody>,
 ) -> Response {
-    match state.store.raw_select_rows(&body.query).await {
-        Ok(rows) => (StatusCode::OK, Json(rows)).into_response(),
-        Err(e) => error_json(
+    let query = match validated_memory_export_query(body.query.trim()) {
+        Ok(query) => query,
+        Err(message) => return error_json(StatusCode::BAD_REQUEST, message),
+    };
+
+    let page_size = body.page_size.unwrap_or(MEMORY_EXPORT_DEFAULT_PAGE_SIZE);
+    if !(1..=MEMORY_EXPORT_MAX_PAGE_SIZE).contains(&page_size) {
+        return error_json(
             StatusCode::BAD_REQUEST,
-            format!("raw query failed: {e}"),
-        ),
+            format!("page_size must be between 1 and {MEMORY_EXPORT_MAX_PAGE_SIZE}"),
+        );
+    }
+
+    let first_page = match state
+        .store
+        .memory_export_select_page(&query, page_size, 0)
+        .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            warn!("memory export query failed: {e}");
+            return error_json(StatusCode::BAD_REQUEST, "memory export query failed");
+        }
+    };
+
+    let done = first_page.len() < page_size as usize;
+    let stream_state = MemoryExportStreamState {
+        store: state.store,
+        query,
+        rows: VecDeque::from(first_page),
+        page_size,
+        next_start: page_size,
+        done,
+    };
+
+    let row_stream = stream::unfold(stream_state, |mut state| async move {
+        loop {
+            if let Some(row) = state.rows.pop_front() {
+                return Some((encode_ndjson_row(row), state));
+            }
+
+            if state.done {
+                return None;
+            }
+
+            match state
+                .store
+                .memory_export_select_page(&state.query, state.page_size, state.next_start)
+                .await
+            {
+                Ok(rows) => {
+                    state.next_start += state.page_size;
+                    state.done = rows.len() < state.page_size as usize;
+                    state.rows = VecDeque::from(rows);
+                }
+                Err(e) => {
+                    warn!("memory export stream page failed: {e}");
+                    state.done = true;
+                    return Some((Err(io::Error::other("memory export stream failed")), state));
+                }
+            }
+        }
+    });
+
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/x-ndjson")],
+        Body::from_stream(row_stream),
+    )
+        .into_response()
+}
+
+fn encode_ndjson_row(row: serde_json::Value) -> Result<Bytes, io::Error> {
+    let mut bytes = serde_json::to_vec(&row).map_err(io::Error::other)?;
+    bytes.push(b'\n');
+    Ok(Bytes::from(bytes))
+}
+
+pub fn validate_memory_export_query(query: &str) -> Result<(), String> {
+    validated_memory_export_query(query).map(|_| ())
+}
+
+fn validated_memory_export_query(query: &str) -> Result<String, String> {
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        return Err("query cannot be empty".into());
+    }
+
+    let query_without_literals = query_without_string_literals(trimmed)?;
+    if query_without_literals.contains(';') {
+        return Err("query must be one single SELECT statement without semicolons".into());
+    }
+    if query_without_literals.contains("--")
+        || query_without_literals.contains("/*")
+        || query_without_literals.contains("*/")
+    {
+        return Err("query comments are not allowed in memory export".into());
+    }
+
+    let tokens = tokenize_query(&query_without_literals);
+    if !matches!(tokens.first().map(String::as_str), Some("select")) {
+        return Err("query must start with SELECT".into());
+    }
+
+    let Some(from_index) = tokens.iter().position(|token| token == "from") else {
+        return Err("query must include FROM with an allowed memory table".into());
+    };
+    let Some(table) = tokens.get(from_index + 1) else {
+        return Err("query must include FROM with an allowed memory table".into());
+    };
+    if !is_allowed_memory_export_table(table) {
+        return Err(
+            "query may only export memory tables: memory, memory_short, memory_reference, memory_long"
+                .into(),
+        );
+    }
+
+    let Some(order_index) = tokens
+        .windows(2)
+        .position(|window| window[0] == "order" && window[1] == "by")
+    else {
+        return Err("query must include ORDER BY so paged export is deterministic".into());
+    };
+    if order_index < from_index {
+        return Err("ORDER BY must appear after FROM".into());
+    }
+
+    let forbidden = [
+        "create", "update", "delete", "insert", "upsert", "relate", "remove", "define", "begin",
+        "commit", "cancel", "use", "let", "limit", "start",
+    ];
+    let words: HashSet<&str> = tokens.iter().map(String::as_str).collect();
+    if let Some(keyword) = forbidden.iter().find(|keyword| words.contains(**keyword)) {
+        return Err(format!(
+            "query contains forbidden keyword '{keyword}' (memory export accepts one paged read-only SELECT)"
+        ));
+    }
+
+    if tokens[(order_index + 2)..]
+        .iter()
+        .any(|token| token == "id")
+    {
+        Ok(trimmed.to_string())
+    } else {
+        Ok(format!("{trimmed}, id ASC"))
+    }
+}
+
+fn is_allowed_memory_export_table(table: &str) -> bool {
+    matches!(
+        table,
+        "memory" | "memory_short" | "memory_reference" | "memory_long"
+    )
+}
+
+fn query_without_string_literals(query: &str) -> Result<String, String> {
+    let mut out = String::with_capacity(query.len());
+    let mut chars = query.chars();
+    let mut quote = None;
+
+    while let Some(ch) = chars.next() {
+        if let Some(active_quote) = quote {
+            if ch == '\\' {
+                out.push(' ');
+                if chars.next().is_some() {
+                    out.push(' ');
+                }
+                continue;
+            }
+            if ch == active_quote {
+                quote = None;
+            }
+            out.push(' ');
+            continue;
+        }
+
+        if ch == '\'' || ch == '"' {
+            quote = Some(ch);
+            out.push(' ');
+        } else {
+            out.push(ch);
+        }
+    }
+
+    if quote.is_some() {
+        return Err("query contains an unterminated string literal".into());
+    }
+
+    Ok(out)
+}
+
+fn tokenize_query(query: &str) -> Vec<String> {
+    query
+        .to_ascii_lowercase()
+        .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
+        .filter(|token| !token.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_memory_export_query_accepts_ordered_select() {
+        validate_memory_export_query("SELECT * FROM memory ORDER BY created_at DESC")
+            .expect("ordered select should be valid");
+        assert_eq!(
+            validated_memory_export_query("SELECT * FROM memory ORDER BY created_at DESC")
+                .expect("validated query"),
+            "SELECT * FROM memory ORDER BY created_at DESC, id ASC"
+        );
+        assert_eq!(
+            validated_memory_export_query("SELECT * FROM memory ORDER BY created_at DESC, id ASC")
+                .expect("validated query"),
+            "SELECT * FROM memory ORDER BY created_at DESC, id ASC"
+        );
+    }
+
+    #[test]
+    fn validate_memory_export_query_rejects_empty_query() {
+        let err = validate_memory_export_query(" ").expect_err("empty query should fail");
+        assert!(err.contains("cannot be empty"));
+    }
+
+    #[test]
+    fn validate_memory_export_query_rejects_semicolon_smuggling() {
+        let err = validate_memory_export_query(
+            "SELECT * FROM memory ORDER BY created_at DESC; DELETE memory",
+        )
+        .expect_err("semicolon should fail");
+        assert!(err.contains("single SELECT"));
+    }
+
+    #[test]
+    fn validate_memory_export_query_rejects_comments_that_can_hide_paging() {
+        let err = validate_memory_export_query("SELECT * FROM memory ORDER BY created_at DESC --")
+            .expect_err("line comments should fail");
+        assert!(err.contains("comments"));
+
+        let err = validate_memory_export_query("SELECT * FROM memory ORDER BY created_at DESC /*")
+            .expect_err("block comments should fail");
+        assert!(err.contains("comments"));
+    }
+
+    #[test]
+    fn validate_memory_export_query_rejects_non_select() {
+        let err = validate_memory_export_query("DELETE FROM memory ORDER BY created_at DESC")
+            .expect_err("mutating query should fail");
+        assert!(err.contains("must start with SELECT"));
+    }
+
+    #[test]
+    fn validate_memory_export_query_rejects_non_memory_table() {
+        let err = validate_memory_export_query("SELECT * FROM observation ORDER BY seq DESC")
+            .expect_err("non-memory table should fail");
+        assert!(err.contains("memory tables"));
+    }
+
+    #[test]
+    fn validate_memory_export_query_rejects_missing_from() {
+        let err = validate_memory_export_query("SELECT 1 ORDER BY id ASC")
+            .expect_err("missing FROM should fail");
+        assert!(err.contains("FROM"));
+    }
+
+    #[test]
+    fn validate_memory_export_query_ignores_string_literal_tokens() {
+        let err = validate_memory_export_query("SELECT * FROM memory WHERE content = 'order by'")
+            .expect_err("literal order by should not count as clause");
+        assert!(err.contains("ORDER BY"));
+
+        validate_memory_export_query(
+            "SELECT * FROM memory WHERE content = 'delete limit start' ORDER BY created_at DESC",
+        )
+        .expect("forbidden words inside strings should be allowed");
+
+        validate_memory_export_query(
+            "SELECT * FROM memory WHERE content = 'semi; -- /* */' ORDER BY created_at DESC",
+        )
+        .expect("comment and semicolon markers inside strings should be allowed");
+    }
+
+    #[test]
+    fn validate_memory_export_query_rejects_mutating_keywords() {
+        let err = validate_memory_export_query(
+            "SELECT * FROM memory WHERE content = 'x' ORDER BY created_at DESC UPDATE memory",
+        )
+        .expect_err("mutating keyword should fail");
+        assert!(err.contains("forbidden keyword"));
+    }
+
+    #[test]
+    fn validate_memory_export_query_rejects_unstable_paging() {
+        let err = validate_memory_export_query("SELECT * FROM memory")
+            .expect_err("missing order by should fail");
+        assert!(err.contains("ORDER BY"));
+    }
+
+    #[test]
+    fn validate_memory_export_query_rejects_caller_limit() {
+        let err =
+            validate_memory_export_query("SELECT * FROM memory ORDER BY created_at DESC LIMIT 10")
+                .expect_err("caller limit should fail");
+        assert!(err.contains("forbidden keyword 'limit'"));
+    }
+
+    #[test]
+    fn encode_ndjson_row_writes_one_json_line() {
+        let bytes = encode_ndjson_row(serde_json::json!({"id":"memory:abc"})).expect("encode row");
+        assert_eq!(bytes.as_ref(), b"{\"id\":\"memory:abc\"}\n");
     }
 }

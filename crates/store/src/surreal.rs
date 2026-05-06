@@ -378,7 +378,8 @@ impl SurrealStore {
             None => String::new(),
         };
 
-        let sql = format!("SELECT * FROM observation{where_clause} ORDER BY seq DESC{limit_clause}");
+        let sql =
+            format!("SELECT * FROM observation{where_clause} ORDER BY seq DESC{limit_clause}");
 
         (sql, binds)
     }
@@ -476,6 +477,7 @@ impl StateModel for SurrealStore {
             let rec: ObsRecord = serde_json::from_value(val)?;
             observations.push(rec.into_observation()?);
         }
+        observations.reverse();
 
         let checkpoint = observations
             .last()
@@ -611,16 +613,24 @@ impl StateModel for SurrealStore {
         Ok(())
     }
 
-    async fn raw_select_rows(&self, query: &str) -> Result<Vec<serde_json::Value>, StoreError> {
+    async fn memory_export_select_page(
+        &self,
+        query: &str,
+        limit: u64,
+        start: u64,
+    ) -> Result<Vec<serde_json::Value>, StoreError> {
+        let paged_query = format!("{} LIMIT $limit START $start", query.trim());
         let mut result = self
             .db
-            .query(query)
+            .query(&paged_query)
+            .bind(("limit", serde_json::json!(limit)))
+            .bind(("start", serde_json::json!(start)))
             .await
-            .map_err(|e| StoreError::Db(format!("raw select: {e}")))?;
+            .map_err(|e| StoreError::Db(format!("memory export select page: {e}")))?;
 
         result
             .take(0)
-            .map_err(|e| StoreError::Db(format!("raw select read: {e}")))
+            .map_err(|e| StoreError::Db(format!("memory export select page read: {e}")))
     }
 }
 
@@ -647,8 +657,8 @@ fn build_slice_summary(observations: &[Observation]) -> SliceSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::CardStore;
-    use daemon8_types::{AgentCard, AgentKind, AgentStatus, ObservationKind};
+    use crate::{CardStore, Memory, MemoryStore};
+    use daemon8_types::{AgentCard, AgentKind, AgentStatus, MemoryKind, ObservationKind};
 
     fn make_agent(id: &str, slug: &str) -> AgentCard {
         AgentCard {
@@ -777,6 +787,45 @@ mod tests {
         let slice = store.query(&filter).await.unwrap();
         assert_eq!(slice.observations.len(), 1);
         assert_eq!(slice.observations[0].id, id2);
+    }
+
+    #[tokio::test]
+    async fn memory_export_select_page_returns_bounded_page() {
+        let store = SurrealStore::memory().await.unwrap();
+        let memory_store = store.memory_store();
+        for (created_at, content) in [(1, "one"), (2, "two"), (3, "three")] {
+            memory_store
+                .save_memory(Memory {
+                    id: None,
+                    created_at,
+                    updated_at: created_at,
+                    kind: MemoryKind::Pattern,
+                    content: content.into(),
+                    embedding: None,
+                    source_observations: Vec::new(),
+                    tags: vec!["project:daemon8".into()],
+                    project_slug: "daemon8".into(),
+                    session_id: None,
+                    confidence: 1.0,
+                })
+                .await
+                .unwrap();
+        }
+
+        let first_page = store
+            .memory_export_select_page("SELECT * FROM memory ORDER BY created_at ASC", 2, 0)
+            .await
+            .unwrap();
+        assert_eq!(first_page.len(), 2);
+        assert_eq!(first_page[0]["content"], "one");
+        assert_eq!(first_page[1]["content"], "two");
+
+        let second_page = store
+            .memory_export_select_page("SELECT * FROM memory ORDER BY created_at ASC", 2, 2)
+            .await
+            .unwrap();
+        assert_eq!(second_page.len(), 1);
+        assert_eq!(second_page[0]["content"], "three");
     }
 
     #[tokio::test]

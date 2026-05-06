@@ -49,8 +49,8 @@ cliclack.workspace = true
 dirs.workspace = true
 notify.workspace = true
 glob.workspace = true
+futures.workspace = true
 libc = "0.2"
-zip = { version = "2", default-features = false, features = ["deflate"] }
 xcap = { version = "0.9", optional = true }
 image = { version = "0.25", optional = true, default-features = false, features = ["png"] }
 
@@ -62,5 +62,4 @@ xcap = ["dep:xcap", "dep:image"]
 tempfile = "3"
 http-body-util = "0.1"
 rmcp = { version = "1.2", features = ["client", "transport-io"] }
-futures.workspace = true
 proptest = "1"
