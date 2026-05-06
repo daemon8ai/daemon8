@@ -3,7 +3,7 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use clap::Subcommand;
@@ -71,9 +71,9 @@ async fn cmd_memory_export(args: MemoryExportArgs) -> Result<()> {
     };
 
     let resp = check_response(resp).await?;
-    let exported_at_unix_s = now_unix_s();
+    let exported_at = now_exported_at();
     let query_hash = short_stable_hash(args.query.trim().as_bytes());
-    let rows = write_ndjson_response(resp, &args.out, exported_at_unix_s, &query_hash).await?;
+    let rows = write_ndjson_response(resp, &args.out, &exported_at, &query_hash).await?;
 
     println!("exported {rows} markdown files to {}", args.out.display());
     Ok(())
@@ -116,7 +116,7 @@ fn prepare_output_dir(out: &Path) -> Result<()> {
 async fn write_ndjson_response(
     resp: reqwest::Response,
     out_dir: &Path,
-    exported_at_unix_s: u64,
+    exported_at: &str,
     query_hash: &str,
 ) -> Result<usize> {
     let mut stream = resp.bytes_stream();
@@ -129,20 +129,14 @@ async fn write_ndjson_response(
         drain_complete_lines(
             &mut buffer,
             out_dir,
-            exported_at_unix_s,
+            exported_at,
             query_hash,
             &mut row_index,
         )?;
     }
 
     if !buffer.is_empty() {
-        write_ndjson_line(
-            &buffer,
-            out_dir,
-            exported_at_unix_s,
-            query_hash,
-            &mut row_index,
-        )?;
+        write_ndjson_line(&buffer, out_dir, exported_at, query_hash, &mut row_index)?;
     }
 
     Ok(row_index)
@@ -151,7 +145,7 @@ async fn write_ndjson_response(
 fn drain_complete_lines(
     buffer: &mut Vec<u8>,
     out_dir: &Path,
-    exported_at_unix_s: u64,
+    exported_at: &str,
     query_hash: &str,
     row_index: &mut usize,
 ) -> Result<()> {
@@ -163,7 +157,7 @@ fn drain_complete_lines(
         write_ndjson_line(
             &line[..line.len() - 1],
             out_dir,
-            exported_at_unix_s,
+            exported_at,
             query_hash,
             row_index,
         )?;
@@ -177,7 +171,7 @@ fn drain_complete_lines(
 fn write_ndjson_line(
     line: &[u8],
     out_dir: &Path,
-    exported_at_unix_s: u64,
+    exported_at: &str,
     query_hash: &str,
     row_index: &mut usize,
 ) -> Result<()> {
@@ -187,7 +181,7 @@ fn write_ndjson_line(
 
     let row: Value = serde_json::from_slice(line).context("parsing memory export row")?;
     *row_index += 1;
-    write_row_markdown(out_dir, &row, *row_index, exported_at_unix_s, query_hash)?;
+    write_row_markdown(out_dir, &row, *row_index, exported_at, query_hash)?;
     Ok(())
 }
 
@@ -195,28 +189,50 @@ fn write_row_markdown(
     out_dir: &Path,
     row: &Value,
     row_index: usize,
-    exported_at_unix_s: u64,
+    exported_at: &str,
     query_hash: &str,
 ) -> Result<PathBuf> {
     let filename = row_filename(row, row_index)?;
     let path = out_dir.join(filename);
-    let markdown = render_row_markdown(row, row_index, exported_at_unix_s, query_hash)?;
+    let markdown = render_row_markdown(row, row_index, exported_at, query_hash)?;
     std::fs::write(&path, markdown).with_context(|| format!("writing {}", path.display()))?;
     Ok(path)
 }
 
 fn row_filename(row: &Value, row_index: usize) -> Result<String> {
-    let stem = row
-        .get("id")
-        .and_then(scalar_filename_value)
-        .map(sanitize_filename_stem)
-        .filter(|stem| stem != "row")
-        .unwrap_or_else(|| {
+    let mut parts = Vec::new();
+    if let Some(project) = row_string(row, "project_slug") {
+        parts.push(project);
+    }
+    if let Some(kind) = row_string(row, "kind") {
+        parts.push(kind);
+    }
+    if let Some(id) = row.get("id").and_then(scalar_filename_value) {
+        parts.push(id);
+    }
+
+    let stem = if parts.is_empty() {
+        let row_json = serde_json::to_vec(row).unwrap_or_default();
+        format!("row-{:06}-{}", row_index, short_stable_hash(&row_json))
+    } else {
+        let stem = sanitize_filename_stem(parts.join("-"));
+        if stem == "row" {
             let row_json = serde_json::to_vec(row).unwrap_or_default();
             format!("row-{:06}-{}", row_index, short_stable_hash(&row_json))
-        });
+        } else {
+            stem
+        }
+    };
 
     Ok(format!("{row_index:06}-{stem}.md"))
+}
+
+fn row_string(row: &Value, key: &str) -> Option<String> {
+    row.get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 fn scalar_filename_value(value: &Value) -> Option<String> {
@@ -269,12 +285,12 @@ fn sanitize_filename_stem(input: String) -> String {
 fn render_row_markdown(
     row: &Value,
     row_index: usize,
-    exported_at_unix_s: u64,
+    exported_at: &str,
     query_hash: &str,
 ) -> Result<String> {
     let mut out = String::new();
     out.push_str("---\n");
-    out.push_str(&format!("exported_at_unix_s: {exported_at_unix_s}\n"));
+    out.push_str(&format!("exported_at: \"{exported_at}\"\n"));
     out.push_str(&format!("row_index: {row_index}\n"));
     out.push_str(&format!("query_hash: \"{query_hash}\"\n"));
     append_scalar_frontmatter(row, &mut out)?;
@@ -282,12 +298,8 @@ fn render_row_markdown(
 
     if let Some(content) = row.get("content").and_then(Value::as_str) {
         out.push_str(content.trim_end());
-        out.push_str("\n\n## Row JSON\n\n");
+        out.push('\n');
     }
-
-    out.push_str("```json\n");
-    out.push_str(&serde_json::to_string_pretty(row).context("rendering row JSON")?);
-    out.push_str("\n```\n");
     Ok(out)
 }
 
@@ -296,14 +308,21 @@ fn append_scalar_frontmatter(row: &Value, out: &mut String) -> Result<()> {
         return Ok(());
     };
 
-    let reserved: HashSet<&str> = ["exported_at_unix_s", "row_index", "query_hash"]
-        .into_iter()
-        .collect();
+    let reserved: HashSet<&str> = [
+        "content",
+        "created_at",
+        "exported_at",
+        "row_index",
+        "query_hash",
+        "updated_at",
+    ]
+    .into_iter()
+    .collect();
     for (key, value) in object {
         if reserved.contains(key.as_str()) || !is_frontmatter_key_safe(key) {
             continue;
         }
-        if !is_frontmatter_scalar_safe(value) {
+        if !is_frontmatter_value_safe(value) {
             continue;
         }
         out.push_str(key);
@@ -311,6 +330,19 @@ fn append_scalar_frontmatter(row: &Value, out: &mut String) -> Result<()> {
         out.push_str(&serde_json::to_string(value).context("rendering frontmatter scalar")?);
         out.push('\n');
     }
+    append_memory_timestamp_frontmatter(row, out, "created_at")?;
+    append_memory_timestamp_frontmatter(row, out, "updated_at")?;
+    Ok(())
+}
+
+fn append_memory_timestamp_frontmatter(row: &Value, out: &mut String, key: &str) -> Result<()> {
+    let Some(value) = row.get(key).and_then(Value::as_u64) else {
+        return Ok(());
+    };
+    out.push_str(key);
+    out.push_str(": ");
+    out.push_str(&serde_json::to_string(&memory_timestamp(value)).context("rendering timestamp")?);
+    out.push('\n');
     Ok(())
 }
 
@@ -323,19 +355,33 @@ fn is_frontmatter_key_safe(key: &str) -> bool {
         && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
 }
 
-fn is_frontmatter_scalar_safe(value: &Value) -> bool {
+fn is_frontmatter_value_safe(value: &Value) -> bool {
     match value {
         Value::Bool(_) | Value::Number(_) => true,
         Value::String(value) => value.len() <= 200 && !value.contains(['\n', '\r']),
+        Value::Array(values) => {
+            values.len() <= 100
+                && values.iter().all(|value| match value {
+                    Value::Bool(_) | Value::Number(_) => true,
+                    Value::String(value) => value.len() <= 200 && !value.contains(['\n', '\r']),
+                    _ => false,
+                })
+        }
         _ => false,
     }
 }
 
-fn now_unix_s() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+fn now_exported_at() -> String {
+    humantime::format_rfc3339_seconds(SystemTime::now()).to_string()
+}
+
+fn memory_timestamp(value: u64) -> String {
+    let since_epoch = if value > 10_000_000_000 {
+        Duration::from_nanos(value)
+    } else {
+        Duration::from_secs(value)
+    };
+    humantime::format_rfc3339_seconds(UNIX_EPOCH + since_epoch).to_string()
 }
 
 fn short_stable_hash(bytes: &[u8]) -> String {
@@ -413,11 +459,16 @@ mod tests {
     #[test]
     fn row_filename_uses_scalar_id_slug() {
         let filename = row_filename(
-            &serde_json::json!({"id":"memory:abc/../def","content":"hello"}),
+            &serde_json::json!({
+                "id":"memory:abc/../def",
+                "project_slug": "daemon8",
+                "kind": "pattern",
+                "content":"hello"
+            }),
             7,
         )
         .expect("filename");
-        assert_eq!(filename, "000007-memory-abc-def.md");
+        assert_eq!(filename, "000007-daemon8-pattern-memory-abc-def.md");
     }
 
     #[test]
@@ -428,30 +479,35 @@ mod tests {
     }
 
     #[test]
-    fn render_row_markdown_uses_content_body_and_lossless_json_block() {
+    fn render_row_markdown_uses_content_body_and_metadata_frontmatter() {
         let row = serde_json::json!({
             "id": "memory:abc",
             "content": "hello",
+            "project_slug": "daemon8",
+            "kind": "pattern",
             "tags": ["project:daemon8"],
+            "created_at": 1_778_084_707_000_000_000_u64,
+            "updated_at": 1_778_084_708_000_000_000_u64,
             "confidence": 0.95,
             "metadata": {"nested": true}
         });
-        let markdown = render_row_markdown(&row, 1, 1_700_000_000, "abcd1234").expect("markdown");
+        let markdown =
+            render_row_markdown(&row, 1, "2026-05-06T13:42:10Z", "abcd1234").expect("markdown");
 
         assert!(markdown.starts_with("---\n"));
+        assert!(markdown.contains("exported_at: \"2026-05-06T13:42:10Z\"\n"));
         assert!(markdown.contains("row_index: 1\n"));
         assert!(markdown.contains("id: \"memory:abc\"\n"));
+        assert!(markdown.contains("project_slug: \"daemon8\"\n"));
+        assert!(markdown.contains("kind: \"pattern\"\n"));
+        assert!(markdown.contains("tags: [\"project:daemon8\"]\n"));
+        assert!(markdown.contains("created_at: \"2026-05-06T16:25:07Z\"\n"));
+        assert!(markdown.contains("updated_at: \"2026-05-06T16:25:08Z\"\n"));
         assert!(markdown.contains("confidence: 0.95\n"));
-        assert!(markdown.contains("\n---\n\nhello\n\n## Row JSON\n\n```json\n"));
-        assert!(markdown.contains("\"tags\": ["));
-
-        let json_block = markdown
-            .split("```json\n")
-            .nth(1)
-            .and_then(|rest| rest.split("\n```").next())
-            .expect("json block");
-        let rendered_row: Value = serde_json::from_str(json_block).expect("valid row json block");
-        assert_eq!(rendered_row, row);
+        assert!(!markdown.contains("created_at: 1778084707000000000"));
+        assert!(!markdown.contains("content: \"hello\""));
+        assert!(!markdown.contains("metadata:"));
+        assert_eq!(markdown.split("\n---\n\n").nth(1).expect("body"), "hello\n");
     }
 
     #[test]
@@ -461,7 +517,7 @@ mod tests {
         write_ndjson_line(
             br#"{"id":"memory:first","content":"one"}"#,
             dir.path(),
-            1,
+            "2026-05-06T13:42:10Z",
             "hash",
             &mut row_index,
         )
@@ -473,7 +529,7 @@ mod tests {
         write_ndjson_line(
             br#"{"id":"memory:second","content":"two"}"#,
             dir.path(),
-            1,
+            "2026-05-06T13:42:10Z",
             "hash",
             &mut row_index,
         )
@@ -491,8 +547,14 @@ mod tests {
 {"id":"memory:second","content":"two"}"#
             .to_vec();
 
-        drain_complete_lines(&mut buffer, dir.path(), 1, "hash", &mut row_index)
-            .expect("drain one complete row");
+        drain_complete_lines(
+            &mut buffer,
+            dir.path(),
+            "2026-05-06T13:42:10Z",
+            "hash",
+            &mut row_index,
+        )
+        .expect("drain one complete row");
 
         assert_eq!(row_index, 1);
         assert!(dir.path().join("000001-memory-first.md").exists());
@@ -506,8 +568,14 @@ mod tests {
         let mut row_index = 0usize;
         let mut buffer = vec![b'a'; MAX_NDJSON_LINE_BYTES + 1];
 
-        let err = drain_complete_lines(&mut buffer, dir.path(), 1, "hash", &mut row_index)
-            .expect_err("oversized row should fail");
+        let err = drain_complete_lines(
+            &mut buffer,
+            dir.path(),
+            "2026-05-06T13:42:10Z",
+            "hash",
+            &mut row_index,
+        )
+        .expect_err("oversized row should fail");
 
         assert!(err.to_string().contains("exceeded"));
         assert_eq!(row_index, 0);

@@ -50,6 +50,7 @@ dirs.workspace = true
 notify.workspace = true
 glob.workspace = true
 futures.workspace = true
+humantime = "2"
 libc = "0.2"
 xcap = { version = "0.9", optional = true }
 image = { version = "0.25", optional = true, default-features = false, features = ["png"] }
