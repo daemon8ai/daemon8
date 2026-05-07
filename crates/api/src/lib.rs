@@ -7,14 +7,15 @@ use std::io;
 use std::sync::Arc;
 use std::time::Duration;
 
+use async_trait::async_trait;
 use axum::Router;
 use axum::body::{Body, Bytes};
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{Query, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Json, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, patch, post};
 use daemon8_chrome::BrowserAction;
 use daemon8_mcp::ChromeCommand;
 use daemon8_store::{
@@ -30,6 +31,47 @@ use tracing::warn;
 
 pub const MEMORY_EXPORT_DEFAULT_PAGE_SIZE: u64 = 100;
 pub const MEMORY_EXPORT_MAX_PAGE_SIZE: u64 = 1_000;
+
+/// Specialist lifecycle controller plumbed into HTTP handlers. The concrete
+/// implementation lives in the `daemon` crate (`SpecialistRegistry`); we
+/// invert the dependency here so the `api` crate doesn't pull in the runtime.
+#[async_trait]
+pub trait SpecialistController: Send + Sync {
+    async fn start(&self, slug: &str) -> Result<(), SpecialistControlError>;
+    async fn stop(&self, slug: &str) -> Result<(), SpecialistControlError>;
+    async fn restart(&self, slug: &str) -> Result<(), SpecialistControlError>;
+    async fn patch(
+        &self,
+        slug: &str,
+        persona: Option<serde_json::Value>,
+        model: Option<serde_json::Value>,
+    ) -> Result<bool, SpecialistControlError>;
+}
+
+#[derive(Debug)]
+pub enum SpecialistControlError {
+    NotFound { slug: String },
+    NotASpecialist { slug: String },
+    BadConfig { slug: String, reason: String },
+    MissingApiKey { var: String },
+    AlreadyRunning { slug: String },
+    NotRunning { slug: String },
+    Internal(String),
+}
+
+impl std::fmt::Display for SpecialistControlError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotFound { slug } => write!(f, "agent '{slug}' not found"),
+            Self::NotASpecialist { slug } => write!(f, "agent '{slug}' is not a Specialist"),
+            Self::BadConfig { slug, reason } => write!(f, "agent '{slug}' bad config: {reason}"),
+            Self::MissingApiKey { var } => write!(f, "missing API key for env var {var}"),
+            Self::AlreadyRunning { slug } => write!(f, "agent '{slug}' is already running"),
+            Self::NotRunning { slug } => write!(f, "agent '{slug}' is not running"),
+            Self::Internal(s) => write!(f, "internal error: {s}"),
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct ApiState {
@@ -48,6 +90,7 @@ pub struct ApiState {
     pub memory_long_store: Option<Arc<dyn MemoryLongStore>>,
     pub bookkeeper_store: Option<Arc<dyn BookkeeperStore>>,
     pub embedding_profile_store: Option<Arc<dyn EmbeddingProfileStore>>,
+    pub specialist_controller: Option<Arc<dyn SpecialistController>>,
 }
 
 pub fn api_router(state: ApiState) -> Router {
@@ -71,6 +114,22 @@ pub fn api_router(state: ApiState) -> Router {
         )
         .route("/api/deliber8/inbox/{address}", get(handle_deliber8_inbox))
         .route("/api/deliber8/enqueue", post(handle_deliber8_enqueue))
+        .route(
+            "/api/deliber8/agents/{slug}/start",
+            post(handle_specialist_start),
+        )
+        .route(
+            "/api/deliber8/agents/{slug}/stop",
+            post(handle_specialist_stop),
+        )
+        .route(
+            "/api/deliber8/agents/{slug}/restart",
+            post(handle_specialist_restart),
+        )
+        .route(
+            "/api/deliber8/roster/{slug}",
+            patch(handle_specialist_patch),
+        )
         .route(
             "/api/memory",
             get(handle_memory_query).post(handle_memory_save),
@@ -1476,6 +1535,108 @@ fn tokenize_query(query: &str) -> Vec<String> {
         .filter(|token| !token.is_empty())
         .map(str::to_string)
         .collect()
+}
+
+fn map_specialist_error(e: SpecialistControlError) -> Response {
+    use SpecialistControlError as E;
+    let (status, msg) = match &e {
+        E::NotFound { .. } => (StatusCode::NOT_FOUND, e.to_string()),
+        E::NotASpecialist { .. } => (StatusCode::BAD_REQUEST, e.to_string()),
+        E::BadConfig { .. } => (StatusCode::BAD_REQUEST, e.to_string()),
+        E::MissingApiKey { .. } => (StatusCode::FAILED_DEPENDENCY, e.to_string()),
+        E::AlreadyRunning { .. } | E::NotRunning { .. } => (StatusCode::CONFLICT, e.to_string()),
+        E::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    };
+    error_json(status, msg)
+}
+
+async fn handle_specialist_start(
+    State(state): State<ApiState>,
+    Path(slug): Path<String>,
+) -> Response {
+    let Some(controller) = state.specialist_controller.as_ref() else {
+        return error_json(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "specialist controller not configured",
+        );
+    };
+    match controller.start(&slug).await {
+        Ok(()) => Json(serde_json::json!({
+            "ok": true, "slug": slug, "status": "running"
+        }))
+        .into_response(),
+        Err(e) => map_specialist_error(e),
+    }
+}
+
+async fn handle_specialist_stop(
+    State(state): State<ApiState>,
+    Path(slug): Path<String>,
+) -> Response {
+    let Some(controller) = state.specialist_controller.as_ref() else {
+        return error_json(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "specialist controller not configured",
+        );
+    };
+    match controller.stop(&slug).await {
+        Ok(()) => Json(serde_json::json!({
+            "ok": true, "slug": slug, "status": "stopped"
+        }))
+        .into_response(),
+        Err(e) => map_specialist_error(e),
+    }
+}
+
+async fn handle_specialist_restart(
+    State(state): State<ApiState>,
+    Path(slug): Path<String>,
+) -> Response {
+    let Some(controller) = state.specialist_controller.as_ref() else {
+        return error_json(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "specialist controller not configured",
+        );
+    };
+    match controller.restart(&slug).await {
+        Ok(()) => Json(serde_json::json!({
+            "ok": true, "slug": slug, "status": "running"
+        }))
+        .into_response(),
+        Err(e) => map_specialist_error(e),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SpecialistPatchBody {
+    pub persona: Option<serde_json::Value>,
+    pub model: Option<serde_json::Value>,
+}
+
+async fn handle_specialist_patch(
+    State(state): State<ApiState>,
+    Path(slug): Path<String>,
+    Json(body): Json<SpecialistPatchBody>,
+) -> Response {
+    let Some(controller) = state.specialist_controller.as_ref() else {
+        return error_json(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "specialist controller not configured",
+        );
+    };
+    if body.persona.is_none() && body.model.is_none() {
+        return error_json(
+            StatusCode::BAD_REQUEST,
+            "patch body must include at least one of: persona, model",
+        );
+    }
+    match controller.patch(&slug, body.persona, body.model).await {
+        Ok(restarted) => Json(serde_json::json!({
+            "ok": true, "slug": slug, "restarted": restarted
+        }))
+        .into_response(),
+        Err(e) => map_specialist_error(e),
+    }
 }
 
 #[cfg(test)]

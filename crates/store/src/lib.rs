@@ -129,6 +129,20 @@ pub trait CardStore: Send + Sync {
         updated_at: u64,
     ) -> Result<(), StoreError>;
     async fn record_agent_heartbeat(&self, id: &str, seen_at: u64) -> Result<(), StoreError>;
+    async fn update_agent_persona(
+        &self,
+        id: &str,
+        persona: serde_json::Value,
+        updated_at: u64,
+    ) -> Result<(), StoreError>;
+    async fn update_agent_model(
+        &self,
+        id: &str,
+        model: serde_json::Value,
+        updated_at: u64,
+    ) -> Result<(), StoreError>;
+    async fn record_agent_failure(&self, id: &str, reason: &str, at: u64)
+    -> Result<(), StoreError>;
 
     async fn upsert_project(&self, card: ProjectCard) -> Result<(), StoreError>;
     async fn get_project_by_slug(&self, slug: &str) -> Result<Option<ProjectCard>, StoreError>;

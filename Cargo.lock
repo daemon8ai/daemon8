@@ -1510,6 +1510,7 @@ name = "daemon8"
 version = "0.2.5"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
  "clap",
  "clap_complete",
@@ -1543,6 +1544,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror 2.0.18",
  "tokio",
  "tokio-stream",
  "tokio-util",
@@ -1571,6 +1573,7 @@ dependencies = [
 name = "daemon8-api"
 version = "0.2.5"
 dependencies = [
+ "async-trait",
  "axum",
  "daemon8-chrome",
  "daemon8-embed",

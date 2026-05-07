@@ -381,6 +381,76 @@ impl CardStore for SurrealCardStore {
         Ok(())
     }
 
+    async fn update_agent_persona(
+        &self,
+        id: &str,
+        persona: serde_json::Value,
+        updated_at: u64,
+    ) -> Result<(), StoreError> {
+        if self.agent_by_id(id).await?.is_none() {
+            return Err(StoreError::Other(format!(
+                "agent card '{id}' does not exist"
+            )));
+        }
+        self.db
+            .query("UPDATE type::record('agent_card', $id) SET persona = $persona, updated_at = $updated_at")
+            .bind(("id", serde_json::json!(id)))
+            .bind(("persona", persona))
+            .bind(("updated_at", serde_json::json!(updated_at)))
+            .await
+            .map_err(|e| StoreError::Db(format!("update agent persona: {e}")))?
+            .check()
+            .map_err(|e| StoreError::Db(format!("update agent persona check: {e}")))?;
+        Ok(())
+    }
+
+    async fn update_agent_model(
+        &self,
+        id: &str,
+        model: serde_json::Value,
+        updated_at: u64,
+    ) -> Result<(), StoreError> {
+        if self.agent_by_id(id).await?.is_none() {
+            return Err(StoreError::Other(format!(
+                "agent card '{id}' does not exist"
+            )));
+        }
+        self.db
+            .query("UPDATE type::record('agent_card', $id) SET model = $model, updated_at = $updated_at")
+            .bind(("id", serde_json::json!(id)))
+            .bind(("model", model))
+            .bind(("updated_at", serde_json::json!(updated_at)))
+            .await
+            .map_err(|e| StoreError::Db(format!("update agent model: {e}")))?
+            .check()
+            .map_err(|e| StoreError::Db(format!("update agent model check: {e}")))?;
+        Ok(())
+    }
+
+    async fn record_agent_failure(
+        &self,
+        id: &str,
+        reason: &str,
+        at: u64,
+    ) -> Result<(), StoreError> {
+        if self.agent_by_id(id).await?.is_none() {
+            return Err(StoreError::Other(format!(
+                "agent card '{id}' does not exist"
+            )));
+        }
+        self.db
+            .query("UPDATE type::record('agent_card', $id) SET failure_reason = $reason, status = $status, updated_at = $at")
+            .bind(("id", serde_json::json!(id)))
+            .bind(("reason", serde_json::json!(reason)))
+            .bind(("status", serde_json::json!(AgentStatus::Failed.to_string())))
+            .bind(("at", serde_json::json!(at)))
+            .await
+            .map_err(|e| StoreError::Db(format!("record agent failure: {e}")))?
+            .check()
+            .map_err(|e| StoreError::Db(format!("record agent failure check: {e}")))?;
+        Ok(())
+    }
+
     async fn record_agent_heartbeat(&self, id: &str, seen_at: u64) -> Result<(), StoreError> {
         if self.agent_by_id(id).await?.is_none() {
             return Err(StoreError::Other(format!(

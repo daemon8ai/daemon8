@@ -198,6 +198,7 @@ async fn start_server(
         memory_long_store: None,
         bookkeeper_store: None,
         embedding_profile_store: None,
+        specialist_controller: None,
     };
 
     let app =
@@ -1165,6 +1166,7 @@ async fn start_act_server() -> (
         memory_long_store: None,
         bookkeeper_store: None,
         embedding_profile_store: None,
+        specialist_controller: None,
     };
     let app = daemon8_api::api_router(api_state);
 

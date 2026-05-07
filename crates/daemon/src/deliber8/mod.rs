@@ -18,6 +18,8 @@
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+pub mod host;
+
 use anyhow::{Context, Result};
 use daemon8_deliber8_llm::{CallOpts, LlmClient, Message};
 use daemon8_store::{
