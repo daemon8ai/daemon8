@@ -484,6 +484,7 @@ mod tests {
             cost_window_usd: 0.0,
             cost_total_usd: 0.0,
             budget_daily_usd: None,
+            failure_reason: None,
             created_at: 0,
             updated_at: 0,
         }
@@ -643,6 +644,43 @@ mod tests {
         assert_eq!(response.body.as_deref(), Some("echo: walk repo"));
         assert!(response.tags.iter().any(|t| t == "deliber8.llm"));
         assert!(response.tags.iter().any(|t| t == "model:mock-1"));
+    }
+
+    #[tokio::test]
+    async fn build_llm_response_propagates_llm_errors() {
+        use daemon8_deliber8_llm::{LlmError, MockLlmClient};
+        let llm = Arc::new(MockLlmClient::new("mock", "mock-1").always_fail(|| LlmError::Timeout));
+        let cfg = SpecialistConfig::new("specialist-a", "agent:specialist-a", llm);
+        let request = EnvelopeRecord {
+            id: "env_req_err".into(),
+            kind: EnvelopeKind::Request,
+            status: EnvelopeStatus::Queued,
+            priority: EnvelopePriority::Normal,
+            from_address: "agent:supervisor".into(),
+            to_address: "agent:specialist-a".into(),
+            inbox_address: "agent:specialist-a".into(),
+            subject: None,
+            body: Some("anything".into()),
+            payload: None,
+            correlation_id: None,
+            thread_id: None,
+            reply_to: None,
+            created_at: 200,
+            updated_at: 200,
+            deliver_after: None,
+            delivered_at: None,
+            read_at: None,
+            expires_at: None,
+            failed_at: None,
+            failure_reason: None,
+            tags: vec![],
+            project_refs: vec![],
+            team_refs: vec![],
+        };
+        let err = build_llm_response(&cfg, &request).await.unwrap_err();
+        // The LlmError must propagate exactly so run_specialist can mark_failed
+        // with a useful reason.
+        assert!(matches!(err, LlmError::Timeout));
     }
 }
 

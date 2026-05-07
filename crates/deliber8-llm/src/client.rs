@@ -228,21 +228,28 @@ mod tests {
 
     #[test]
     fn missing_api_key_env_surfaces_error() {
-        // Invent an env var name that won't exist.
+        // Use a uniquely-named env var that's never set anywhere. We do NOT
+        // touch the env table — set_var/remove_var are unsafe in 2024
+        // edition because they race with other threads reading env. By
+        // picking a name that no test or production code references, we
+        // get the "missing key" path without any global mutation.
+        let unique = format!(
+            "DAEMON8_LLM_NEVER_SET_KEY_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        );
         let cfg = ProviderConfig {
             provider: "openrouter".into(),
             model: "x".into(),
             base_url: "https://openrouter.ai/api/v1".into(),
-            api_key_env: Some("__DAEMON8_TEST_KEY_THAT_DOES_NOT_EXIST_42".into()),
+            api_key_env: Some(unique),
             temperature: 0.2,
             max_tokens: 128,
             extra_headers: Default::default(),
         };
-        // SAFETY: explicitly remove the env var if it somehow exists.
-        // SAFETY: std::env::remove_var is unsafe in 2024 edition (multi-threaded racing).
-        unsafe {
-            std::env::remove_var("__DAEMON8_TEST_KEY_THAT_DOES_NOT_EXIST_42");
-        }
         let err = OpenAiCompatClient::from_config(&cfg).unwrap_err();
         assert!(matches!(err, LlmError::MissingApiKey { .. }));
     }

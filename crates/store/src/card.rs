@@ -84,6 +84,7 @@ pub const CARD_DDL: &str = "DEFINE TABLE IF NOT EXISTS actor_card SCHEMAFULL;
                  DEFINE FIELD IF NOT EXISTS cost_window_usd            ON agent_card TYPE float;
                  DEFINE FIELD IF NOT EXISTS cost_total_usd             ON agent_card TYPE float;
                  DEFINE FIELD IF NOT EXISTS budget_daily_usd           ON agent_card TYPE option<float>;
+                 DEFINE FIELD IF NOT EXISTS failure_reason             ON agent_card TYPE option<string>;
                  DEFINE FIELD IF NOT EXISTS created_at                 ON agent_card TYPE int;
                  DEFINE FIELD IF NOT EXISTS updated_at                 ON agent_card TYPE int;
                  DEFINE INDEX IF NOT EXISTS agent_slug      ON agent_card FIELDS slug;
@@ -602,6 +603,7 @@ mod tests {
             cost_window_usd: 0.0,
             cost_total_usd: 0.0,
             budget_daily_usd: Some(2.0),
+            failure_reason: None,
             created_at: 1,
             updated_at: 2,
         }
@@ -783,6 +785,100 @@ mod tests {
 
         let heartbeat = cards.record_agent_heartbeat("missing-agent", 99).await;
         assert!(heartbeat.is_err());
+
+        let persona = cards
+            .update_agent_persona(
+                "missing-agent",
+                serde_json::json!({"identity_prompt": "x"}),
+                100,
+            )
+            .await;
+        assert!(persona.is_err());
+
+        let model = cards
+            .update_agent_model(
+                "missing-agent",
+                serde_json::json!({"provider": "ollama"}),
+                101,
+            )
+            .await;
+        assert!(model.is_err());
+
+        let failure = cards
+            .record_agent_failure("missing-agent", "boom", 102)
+            .await;
+        assert!(failure.is_err());
+    }
+
+    #[tokio::test]
+    async fn update_agent_persona_replaces_field_and_bumps_updated_at() {
+        let (_store, cards) = setup().await;
+        cards
+            .upsert_agent(agent("agent-rust", "rust", AgentStatus::Alive))
+            .await
+            .unwrap();
+
+        let new_persona = serde_json::json!({
+            "identity_prompt": "you are a rust borrow-checker specialist",
+            "extra": [1, 2, 3],
+        });
+        cards
+            .update_agent_persona("agent-rust", new_persona.clone(), 4242)
+            .await
+            .unwrap();
+
+        let found = cards.get_agent_by_slug("rust").await.unwrap().unwrap();
+        assert_eq!(found.persona, new_persona);
+        assert_eq!(found.updated_at, 4242);
+        // Identity fields preserved.
+        assert_eq!(found.pid, Some(1234));
+        assert_eq!(found.executable_path.as_deref(), Some("/bin/daemon8"));
+    }
+
+    #[tokio::test]
+    async fn update_agent_model_replaces_model_block() {
+        let (_store, cards) = setup().await;
+        cards
+            .upsert_agent(agent("agent-rust", "rust", AgentStatus::Alive))
+            .await
+            .unwrap();
+
+        let new_model = serde_json::json!({
+            "provider": "openrouter",
+            "model": "openai/gpt-4o-mini",
+            "temperature": 0.4,
+        });
+        cards
+            .update_agent_model("agent-rust", new_model.clone(), 5151)
+            .await
+            .unwrap();
+
+        let found = cards.get_agent_by_slug("rust").await.unwrap().unwrap();
+        assert_eq!(found.model, new_model);
+        assert_eq!(found.updated_at, 5151);
+        assert_eq!(found.status, AgentStatus::Alive);
+    }
+
+    #[tokio::test]
+    async fn record_agent_failure_drives_status_to_failed_and_writes_reason() {
+        let (_store, cards) = setup().await;
+        cards
+            .upsert_agent(agent("agent-rust", "rust", AgentStatus::Alive))
+            .await
+            .unwrap();
+
+        cards
+            .record_agent_failure("agent-rust", "missing API key for env var FOO", 6262)
+            .await
+            .unwrap();
+
+        let found = cards.get_agent_by_slug("rust").await.unwrap().unwrap();
+        assert_eq!(found.status, AgentStatus::Failed);
+        assert_eq!(found.updated_at, 6262);
+        assert_eq!(
+            found.failure_reason.as_deref(),
+            Some("missing API key for env var FOO")
+        );
     }
 
     #[tokio::test]

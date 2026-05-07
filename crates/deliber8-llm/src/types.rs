@@ -85,10 +85,16 @@ pub struct Completion {
 
 /// Failure modes a `LlmClient::complete` call can produce.
 ///
-/// `MissingApiKey` is non-retriable; the caller should transition the agent
-/// to `Failed` with a clear human-readable reason. `Http`/`Network`/`Timeout`
-/// are per-envelope failures: the runtime marks the offending envelope failed
-/// and continues processing the next one.
+/// `MissingApiKey` is non-retriable at the *task* level: API keys are read
+/// once at task spawn from the env var named in `agent.model.api_key_env`,
+/// and a running daemon does not re-read them. The caller should transition
+/// the agent to `Failed` with the env var name in `failure_reason`, and the
+/// operator must restart the specialist (`POST /api/deliber8/agents/{slug}/restart`
+/// or the admin UI) after exporting the key.
+///
+/// `Http`/`Network`/`Timeout`/`Decode`/`EmptyResponse` are per-envelope
+/// failures: the runtime marks the offending envelope failed and continues
+/// processing the next one.
 #[derive(Debug, Error)]
 pub enum LlmError {
     #[error("missing API key for env var {var}")]

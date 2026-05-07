@@ -8,23 +8,31 @@ use daemon8_deliber8_llm::{
     CallOpts, LlmClient, LlmError, Message, OpenAiCompatClient, ProviderConfig, parse_from_card,
 };
 use serde_json::json;
+use std::sync::atomic::{AtomicU32, Ordering};
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-const TEST_KEY_VAR: &str = "DAEMON8_LLM_TEST_KEY";
+static TEST_KEY_COUNTER: AtomicU32 = AtomicU32::new(0);
 
-fn set_test_key(value: &str) {
-    // SAFETY: tests in this file run sequentially via the default per-file
-    // wiremock fixture and do not race other code that reads this env var.
-    unsafe { std::env::set_var(TEST_KEY_VAR, value) };
+/// Allocate a unique env var name per test so concurrent test execution
+/// can't clobber one test's key with another's. `unsafe set_var` is only
+/// safe when no other thread is reading the same name; unique-per-test
+/// guarantees that.
+fn fresh_test_key(value: &str) -> String {
+    let n = TEST_KEY_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let var_name = format!("DAEMON8_LLM_TEST_KEY_{n}");
+    // SAFETY: var_name is unique to this test, so no other thread reads it
+    // before we set it. The set is not racing with any other env access.
+    unsafe { std::env::set_var(&var_name, value) };
+    var_name
 }
 
-fn cfg_for(server: &MockServer, provider: &str) -> ProviderConfig {
+fn cfg_for(server: &MockServer, provider: &str, var_name: &str) -> ProviderConfig {
     ProviderConfig {
         provider: provider.to_string(),
         model: "test-model".into(),
         base_url: server.uri(),
-        api_key_env: Some(TEST_KEY_VAR.into()),
+        api_key_env: Some(var_name.to_string()),
         temperature: 0.2,
         max_tokens: 64,
         extra_headers: Default::default(),
@@ -33,7 +41,7 @@ fn cfg_for(server: &MockServer, provider: &str) -> ProviderConfig {
 
 #[tokio::test]
 async fn complete_returns_assistant_content_and_usage() {
-    set_test_key("sk-test");
+    let var = fresh_test_key("sk-test");
     let server = MockServer::start().await;
 
     Mock::given(method("POST"))
@@ -49,7 +57,7 @@ async fn complete_returns_assistant_content_and_usage() {
         .mount(&server)
         .await;
 
-    let client = OpenAiCompatClient::from_config(&cfg_for(&server, "openai")).unwrap();
+    let client = OpenAiCompatClient::from_config(&cfg_for(&server, "openai", &var)).unwrap();
     let out = client
         .complete(
             "you are terse",
@@ -67,7 +75,7 @@ async fn complete_returns_assistant_content_and_usage() {
 
 #[tokio::test]
 async fn non_2xx_propagates_status_and_body() {
-    set_test_key("sk-test");
+    let var = fresh_test_key("sk-test");
     let server = MockServer::start().await;
 
     Mock::given(method("POST"))
@@ -78,7 +86,7 @@ async fn non_2xx_propagates_status_and_body() {
         .mount(&server)
         .await;
 
-    let client = OpenAiCompatClient::from_config(&cfg_for(&server, "openai")).unwrap();
+    let client = OpenAiCompatClient::from_config(&cfg_for(&server, "openai", &var)).unwrap();
     let err = client
         .complete("", &[Message::user("hi")], &CallOpts::default())
         .await
@@ -95,7 +103,7 @@ async fn non_2xx_propagates_status_and_body() {
 
 #[tokio::test]
 async fn empty_choices_response_is_empty_response_error() {
-    set_test_key("sk-test");
+    let var = fresh_test_key("sk-test");
     let server = MockServer::start().await;
 
     Mock::given(method("POST"))
@@ -104,7 +112,7 @@ async fn empty_choices_response_is_empty_response_error() {
         .mount(&server)
         .await;
 
-    let client = OpenAiCompatClient::from_config(&cfg_for(&server, "openai")).unwrap();
+    let client = OpenAiCompatClient::from_config(&cfg_for(&server, "openai", &var)).unwrap();
     let err = client
         .complete("", &[Message::user("x")], &CallOpts::default())
         .await
@@ -114,7 +122,7 @@ async fn empty_choices_response_is_empty_response_error() {
 
 #[tokio::test]
 async fn openrouter_headers_are_forwarded() {
-    set_test_key("sk-test");
+    let var = fresh_test_key("sk-test");
     let server = MockServer::start().await;
 
     Mock::given(method("POST"))
@@ -128,11 +136,12 @@ async fn openrouter_headers_are_forwarded() {
         .await;
 
     // Build via parse_from_card so the openrouter defaults kick in, then
-    // override base_url to point at wiremock.
+    // override base_url to point at wiremock and api_key_env to our unique
+    // per-test name.
     let mut cfg = parse_from_card(&json!({
         "provider": "openrouter",
         "model": "openai/gpt-4o-mini",
-        "api_key_env": TEST_KEY_VAR,
+        "api_key_env": var,
     }))
     .unwrap();
     cfg.base_url = server.uri();
@@ -143,4 +152,29 @@ async fn openrouter_headers_are_forwarded() {
         .await
         .unwrap();
     assert_eq!(out.content, "ok");
+}
+
+/// `LlmError::Decode` covers the case where the provider returns 200 but
+/// the body is not valid JSON. Worth a single test because OpenAI/OpenRouter
+/// JSON shape is the most likely wire-level regression as providers diverge.
+#[tokio::test]
+async fn malformed_json_response_is_decode_error() {
+    let var = fresh_test_key("sk-test");
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("this is not json"))
+        .mount(&server)
+        .await;
+
+    let client = OpenAiCompatClient::from_config(&cfg_for(&server, "openai", &var)).unwrap();
+    let err = client
+        .complete("", &[Message::user("x")], &CallOpts::default())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, LlmError::Decode { .. }),
+        "expected Decode error, got {err:?}"
+    );
 }

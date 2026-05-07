@@ -200,6 +200,7 @@ async fn cmd_spawn(config_override: Option<String>, args: SpawnArgs) -> Result<(
         cost_window_usd: 0.0,
         cost_total_usd: 0.0,
         budget_daily_usd: None,
+        failure_reason: None,
         created_at: now,
         updated_at: now,
     };

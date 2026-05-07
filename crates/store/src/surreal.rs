@@ -796,6 +796,7 @@ mod tests {
             cost_window_usd: 0.0,
             cost_total_usd: 0.0,
             budget_daily_usd: None,
+            failure_reason: None,
             created_at: 1,
             updated_at: 1,
         }

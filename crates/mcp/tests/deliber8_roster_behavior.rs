@@ -52,6 +52,7 @@ fn agent(slug: &str, kind: AgentKind, status: AgentStatus) -> AgentCard {
         cost_window_usd: 0.0,
         cost_total_usd: 0.0,
         budget_daily_usd: None,
+        failure_reason: None,
         created_at: 0,
         updated_at: 0,
     }

@@ -854,6 +854,12 @@ pub struct AgentCard {
     pub cost_window_usd: f64,
     pub cost_total_usd: f64,
     pub budget_daily_usd: Option<f64>,
+    /// Last terminal failure reason recorded by the runtime (e.g. "missing
+    /// API key for env var FOO"). Set by `record_agent_failure`; surfaced
+    /// to operators via the admin UI's status pill. `None` for healthy and
+    /// historically-Failed-then-recovered agents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_reason: Option<String>,
     pub created_at: u64,
     pub updated_at: u64,
 }
