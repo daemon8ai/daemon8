@@ -216,9 +216,8 @@ impl SurrealStore {
         self.db
             .query(
                 "DEFINE TABLE IF NOT EXISTS observation SCHEMAFULL;
-                 DEFINE ANALYZER IF NOT EXISTS obs_search
-                   TOKENIZERS blank,class
-                   FILTERS lowercase,ascii;
+                 REMOVE INDEX IF EXISTS idx_obs_search ON observation;
+                 REMOVE ANALYZER IF EXISTS obs_search;
 
                  DEFINE FIELD IF NOT EXISTS seq            ON observation TYPE int;
                  DEFINE FIELD IF NOT EXISTS timestamp_ns   ON observation TYPE int;
@@ -253,10 +252,7 @@ impl SurrealStore {
                  DEFINE INDEX IF NOT EXISTS idx_obs_origin_key_seq
                    ON observation FIELDS origin_key, seq CONCURRENTLY;
                  DEFINE INDEX IF NOT EXISTS idx_obs_tags
-                   ON observation FIELDS tags CONCURRENTLY;
-                 DEFINE INDEX IF NOT EXISTS idx_obs_search
-                   ON observation FIELDS search_text
-                   FULLTEXT ANALYZER obs_search BM25 CONCURRENTLY;",
+                   ON observation FIELDS tags CONCURRENTLY;",
             )
             .await
             .map_err(|e| StoreError::Db(format!("schema init: {e}")))?
@@ -452,8 +448,14 @@ impl SurrealStore {
         if let Some(ref text) = filter.text_match {
             let text = text.trim();
             if !text.is_empty() {
-                conditions.push("search_text @@ $text_query".to_string());
-                binds.push(("text_query".into(), serde_json::json!(text)));
+                conditions.push(
+                    "string::contains(string::lowercase(<string> search_text), $text_lower)"
+                        .to_string(),
+                );
+                binds.push((
+                    "text_lower".into(),
+                    serde_json::json!(text.to_ascii_lowercase()),
+                ));
             }
         }
 
@@ -1124,7 +1126,7 @@ mod tests {
         store.insert(obs2).await.unwrap();
 
         let filter = Filter {
-            text_match: Some("TIMEOUT".to_string()),
+            text_match: Some("TIME".to_string()),
             ..Default::default()
         };
         let slice = store.query(&filter).await.unwrap();

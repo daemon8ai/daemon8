@@ -253,7 +253,7 @@ pub struct SubscribeParams {
     pub severity_min: Option<String>,
 
     #[schemars(
-        description = "Filter by origin: 'app' or 'app:name' for applications. Omit for all origins."
+        description = "Filter by origin patterns: 'app', 'app:name', 'browser', 'browser:tab_id', 'device', or 'device:serial'. Omit for all origins."
     )]
     pub origins: Option<Vec<String>>,
 

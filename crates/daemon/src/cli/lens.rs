@@ -15,7 +15,7 @@ pub struct LensSetArgs {
     pub severity_min: Option<String>,
     #[arg(long)]
     pub origin: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Search across materialized observation text")]
     pub text: Option<String>,
     #[arg(long)]
     pub correlation_id: Option<String>,

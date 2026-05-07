@@ -723,6 +723,48 @@ async fn stream_filters_by_severity() {
 }
 
 #[tokio::test]
+async fn stream_filters_by_materialized_text() {
+    let store: Arc<dyn StateModel> = Arc::new(SurrealStore::memory().await.unwrap());
+    let (base, _tx, _handle) = start_server(store).await;
+
+    let (mut rx, task) = collect_sse(base.clone(), "?text_match=domain:device", None).await;
+
+    let client = reqwest::Client::new();
+    client
+        .post(format!("{base}/ingest"))
+        .json(&json!({
+            "kind": "log",
+            "data": {"msg": "plain payload"},
+            "severity": "info",
+            "tags": ["domain:device"],
+        }))
+        .send()
+        .await
+        .unwrap();
+    client
+        .post(format!("{base}/ingest"))
+        .json(&json!({
+            "kind": "log",
+            "data": {"msg": "plain payload"},
+            "severity": "info",
+            "tags": ["domain:browser"],
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    let events = drain_for(&mut rx, Duration::from_millis(800)).await;
+    task.abort();
+
+    assert_eq!(
+        events.len(),
+        1,
+        "expected materialized text match, got {events:?}"
+    );
+    assert_eq!(events[0].1["tags"][0], "domain:device");
+}
+
+#[tokio::test]
 async fn stream_no_filter_is_firehose() {
     let store: Arc<dyn StateModel> = Arc::new(SurrealStore::memory().await.unwrap());
     let (base, _tx, _handle) = start_server(store).await;
@@ -1051,9 +1093,20 @@ async fn text_search_filter() {
         .await
         .unwrap();
 
+    client
+        .post(format!("{base}/ingest"))
+        .json(&json!({
+            "kind": "log",
+            "data": {"msg": "plain payload"},
+            "tags": ["domain:device"],
+        }))
+        .send()
+        .await
+        .unwrap();
+
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    let resp: Value = reqwest::get(format!("{base}/api/observe?text_match=refused"))
+    let resp: Value = reqwest::get(format!("{base}/api/observe?text_match=fused"))
         .await
         .unwrap()
         .json()
@@ -1062,6 +1115,17 @@ async fn text_search_filter() {
 
     let obs = resp["observations"].as_array().unwrap();
     assert_eq!(obs.len(), 1);
+
+    let resp: Value = reqwest::get(format!("{base}/api/observe?text_match=domain:device"))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let obs = resp["observations"].as_array().unwrap();
+    assert_eq!(obs.len(), 1);
+    assert_eq!(obs[0]["tags"][0], "domain:device");
 }
 
 // -----------------------------------------------------------------------

@@ -1185,6 +1185,13 @@ mod tests {
         assert!(tag_filter.matches(&matching));
         assert!(!tag_filter.matches(&other));
 
+        let partial_filter = Filter {
+            text_match: Some("dev".into()),
+            ..Filter::default()
+        };
+        assert!(partial_filter.matches(&matching));
+        assert!(!partial_filter.matches(&other));
+
         let origin_filter = Filter {
             text_match: Some("app:daemon8-test".into()),
             ..Filter::default()
