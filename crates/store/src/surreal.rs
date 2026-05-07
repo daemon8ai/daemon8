@@ -12,7 +12,8 @@ use surrealdb::engine::local::Db;
 
 use daemon8_types::{
     Checkpoint, ConnectionInfo, Filter, HealthStatus, Observation, Origin, OriginPattern,
-    RuntimeSummary, Severity, SliceSummary, StateSlice,
+    RuntimeSummary, Severity, SliceSummary, StateSlice, observation_origin_fields,
+    observation_search_text,
 };
 
 use crate::{
@@ -24,6 +25,7 @@ use crate::{
 
 const NAMESPACE: &str = "daemon8";
 const DATABASE: &str = "observations";
+const BACKFILL_PAGE_SIZE: u64 = 500;
 
 #[derive(Serialize, Deserialize)]
 struct ObsRecord {
@@ -31,6 +33,12 @@ struct ObsRecord {
     timestamp_ns: u64,
     severity: String,
     kind_tag: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    origin_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    origin_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    search_text: Option<String>,
     origin: serde_json::Value,
     kind: serde_json::Value,
     data: serde_json::Value,
@@ -52,11 +60,15 @@ struct ObsRecord {
 
 impl ObsRecord {
     fn from_observation(obs: &Observation, seq: u64) -> Result<Self, StoreError> {
+        let (origin_type, origin_key) = observation_origin_fields(&obs.origin);
         Ok(Self {
             seq,
             timestamp_ns: obs.timestamp_ns,
             severity: obs.severity.to_string(),
             kind_tag: obs.kind.tag().to_string(),
+            origin_type: Some(origin_type.to_string()),
+            origin_key: Some(origin_key),
+            search_text: Some(observation_search_text(obs)),
             origin: serde_json::to_value(&obs.origin)?,
             kind: serde_json::to_value(&obs.kind)?,
             data: obs.data.clone(),
@@ -204,11 +216,17 @@ impl SurrealStore {
         self.db
             .query(
                 "DEFINE TABLE IF NOT EXISTS observation SCHEMAFULL;
+                 DEFINE ANALYZER IF NOT EXISTS obs_search
+                   TOKENIZERS blank,class
+                   FILTERS lowercase,ascii;
 
                  DEFINE FIELD IF NOT EXISTS seq            ON observation TYPE int;
                  DEFINE FIELD IF NOT EXISTS timestamp_ns   ON observation TYPE int;
                  DEFINE FIELD IF NOT EXISTS severity       ON observation TYPE string;
                  DEFINE FIELD IF NOT EXISTS kind_tag       ON observation TYPE string;
+                 DEFINE FIELD IF NOT EXISTS origin_type    ON observation TYPE option<string>;
+                 DEFINE FIELD IF NOT EXISTS origin_key     ON observation TYPE option<string>;
+                 DEFINE FIELD IF NOT EXISTS search_text    ON observation TYPE option<string>;
                  DEFINE FIELD IF NOT EXISTS origin         ON observation TYPE object FLEXIBLE;
                  DEFINE FIELD IF NOT EXISTS kind           ON observation TYPE object FLEXIBLE;
                  DEFINE FIELD IF NOT EXISTS data           ON observation TYPE object FLEXIBLE;
@@ -225,12 +243,27 @@ impl SurrealStore {
                  DEFINE INDEX IF NOT EXISTS idx_severity    ON observation FIELDS severity;
                  DEFINE INDEX IF NOT EXISTS idx_kind        ON observation FIELDS kind_tag;
                  DEFINE INDEX IF NOT EXISTS idx_correlation ON observation FIELDS correlation_id;
-                 DEFINE INDEX IF NOT EXISTS idx_session     ON observation FIELDS session_id;",
+                 DEFINE INDEX IF NOT EXISTS idx_session     ON observation FIELDS session_id;
+                 DEFINE INDEX IF NOT EXISTS idx_obs_severity_seq
+                   ON observation FIELDS severity, seq CONCURRENTLY;
+                 DEFINE INDEX IF NOT EXISTS idx_obs_kind_seq
+                   ON observation FIELDS kind_tag, seq CONCURRENTLY;
+                 DEFINE INDEX IF NOT EXISTS idx_obs_origin_type_seq
+                   ON observation FIELDS origin_type, seq CONCURRENTLY;
+                 DEFINE INDEX IF NOT EXISTS idx_obs_origin_key_seq
+                   ON observation FIELDS origin_key, seq CONCURRENTLY;
+                 DEFINE INDEX IF NOT EXISTS idx_obs_tags
+                   ON observation FIELDS tags CONCURRENTLY;
+                 DEFINE INDEX IF NOT EXISTS idx_obs_search
+                   ON observation FIELDS search_text
+                   FULLTEXT ANALYZER obs_search BM25 CONCURRENTLY;",
             )
             .await
             .map_err(|e| StoreError::Db(format!("schema init: {e}")))?
             .check()
             .map_err(|e| StoreError::Db(format!("schema init check: {e}")))?;
+
+        self.backfill_observation_query_fields().await?;
 
         self.db
             .query(crate::envelope::ENVELOPE_DDL)
@@ -273,6 +306,65 @@ impl SurrealStore {
             .map_err(|e| StoreError::Db(format!("embedding_profile schema init: {e}")))?
             .check()
             .map_err(|e| StoreError::Db(format!("embedding_profile schema init check: {e}")))?;
+
+        Ok(())
+    }
+
+    async fn backfill_observation_query_fields(&self) -> Result<(), StoreError> {
+        loop {
+            let mut result = self
+                .db
+                .query(
+                    "SELECT * FROM observation
+                     WHERE origin_type IS NONE
+                        OR origin_key IS NONE
+                        OR search_text IS NONE
+                     ORDER BY seq
+                     LIMIT $limit",
+                )
+                .bind(("limit", serde_json::json!(BACKFILL_PAGE_SIZE)))
+                .await
+                .map_err(|e| StoreError::Db(format!("observation query field backfill: {e}")))?;
+
+            let rows: Vec<serde_json::Value> = result.take(0).map_err(|e| {
+                StoreError::Db(format!(
+                    "reading observation query field backfill page: {e}"
+                ))
+            })?;
+
+            if rows.is_empty() {
+                break;
+            }
+
+            for row in rows {
+                let record: ObsRecord = serde_json::from_value(row)?;
+                let seq = record.seq;
+                let observation = record.into_observation()?;
+                let (origin_type, origin_key) = observation_origin_fields(&observation.origin);
+
+                self.db
+                    .query(
+                        "UPDATE observation
+                         SET origin_type = $origin_type,
+                             origin_key = $origin_key,
+                             search_text = $search_text
+                         WHERE seq = $seq",
+                    )
+                    .bind(("seq", serde_json::json!(seq)))
+                    .bind(("origin_type", serde_json::json!(origin_type)))
+                    .bind(("origin_key", serde_json::json!(origin_key)))
+                    .bind((
+                        "search_text",
+                        serde_json::json!(observation_search_text(&observation)),
+                    ))
+                    .await
+                    .map_err(|e| StoreError::Db(format!("updating observation query fields: {e}")))?
+                    .check()
+                    .map_err(|e| {
+                        StoreError::Db(format!("checking observation query field update: {e}"))
+                    })?;
+            }
+        }
 
         Ok(())
     }
@@ -358,13 +450,11 @@ impl SurrealStore {
         }
 
         if let Some(ref text) = filter.text_match {
-            conditions.push(
-                "string::contains(string::lowercase(<string> data), $text_lower)".to_string(),
-            );
-            binds.push((
-                "text_lower".into(),
-                serde_json::json!(text.to_ascii_lowercase()),
-            ));
+            let text = text.trim();
+            if !text.is_empty() {
+                conditions.push("search_text @@ $text_query".to_string());
+                binds.push(("text_query".into(), serde_json::json!(text)));
+            }
         }
 
         let where_clause = if conditions.is_empty() {
@@ -390,23 +480,29 @@ impl SurrealStore {
         binds: &mut Vec<(String, serde_json::Value)>,
     ) -> String {
         match pat {
-            OriginPattern::AnyApplication => "origin.type = 'application'".to_string(),
+            OriginPattern::AnyApplication => "origin_type = 'application'".to_string(),
             OriginPattern::ApplicationNamed(name) => {
                 let bind_name = format!("origin_name_{idx}");
-                binds.push((bind_name.clone(), serde_json::json!(name)));
-                format!("(origin.type = 'application' AND origin.name = ${bind_name})")
+                binds.push((bind_name.clone(), serde_json::json!(format!("app:{name}"))));
+                format!("origin_key = ${bind_name}")
             }
-            OriginPattern::AnyBrowser => "origin.type = 'browser'".to_string(),
+            OriginPattern::AnyBrowser => "origin_type = 'browser'".to_string(),
             OriginPattern::BrowserTab(tab_id) => {
                 let bind_name = format!("origin_tab_{idx}");
-                binds.push((bind_name.clone(), serde_json::json!(tab_id)));
-                format!("(origin.type = 'browser' AND origin.tab_id = ${bind_name})")
+                binds.push((
+                    bind_name.clone(),
+                    serde_json::json!(format!("browser:{tab_id}")),
+                ));
+                format!("origin_key = ${bind_name}")
             }
-            OriginPattern::AnyDevice => "origin.type = 'device'".to_string(),
+            OriginPattern::AnyDevice => "origin_type = 'device'".to_string(),
             OriginPattern::DeviceSerial(serial) => {
                 let bind_name = format!("origin_serial_{idx}");
-                binds.push((bind_name.clone(), serde_json::json!(serial)));
-                format!("(origin.type = 'device' AND origin.serial = ${bind_name})")
+                binds.push((
+                    bind_name.clone(),
+                    serde_json::json!(format!("device:{serial}")),
+                ));
+                format!("origin_key = ${bind_name}")
             }
         }
     }
@@ -722,6 +818,28 @@ mod tests {
         }
     }
 
+    #[test]
+    fn observation_record_materializes_query_fields() {
+        let mut obs = make_obs(Severity::Warn, 1_000);
+        obs.origin = Origin::Device {
+            serial: "ABC123".into(),
+            platform: daemon8_types::DevicePlatform::Vega,
+        };
+        obs.data = serde_json::json!({"message": "Connection timeout on HDMI overlay"});
+        obs.tags = Some(vec!["project:daemon8".into(), "domain:device".into()]);
+        obs.correlation_id = Some("corr-1".into());
+
+        let record = ObsRecord::from_observation(&obs, 42).unwrap();
+
+        assert_eq!(record.origin_type.as_deref(), Some("device"));
+        assert_eq!(record.origin_key.as_deref(), Some("device:ABC123"));
+        let search_text = record.search_text.as_deref().unwrap();
+        assert!(search_text.contains("Connection timeout"));
+        assert!(search_text.contains("project:daemon8"));
+        assert!(search_text.contains("device:ABC123"));
+        assert!(search_text.len() <= daemon8_types::OBSERVATION_SEARCH_TEXT_LIMIT_BYTES);
+    }
+
     #[tokio::test]
     async fn insert_and_query_round_trip() {
         let store = SurrealStore::memory().await.unwrap();
@@ -1012,6 +1130,111 @@ mod tests {
         let slice = store.query(&filter).await.unwrap();
         assert_eq!(slice.observations.len(), 1);
         assert!(slice.observations[0].data.to_string().contains("timeout"));
+    }
+
+    #[tokio::test]
+    async fn text_match_searches_materialized_metadata() {
+        let store = SurrealStore::memory().await.unwrap();
+
+        let mut obs = make_obs(Severity::Warn, 1_000);
+        obs.origin = Origin::Device {
+            serial: "ABC123".into(),
+            platform: daemon8_types::DevicePlatform::Vega,
+        };
+        obs.data = serde_json::json!({"msg": "plain payload"});
+        obs.source_location = Some(daemon8_types::SourceLocation {
+            file: "src/device.rs".into(),
+            line: 77,
+            function: Some("render_overlay".into()),
+        });
+        obs.tags = Some(vec!["project:daemon8".into(), "domain:device".into()]);
+        obs.correlation_id = Some("corr-1".into());
+        obs.session_id = Some("session-1".into());
+        obs.node_id = Some("node-1".into());
+        store.insert(obs).await.unwrap();
+
+        for text in [
+            "device:ABC123",
+            "project:daemon8",
+            "corr-1",
+            "session-1",
+            "node-1",
+            "src/device.rs",
+        ] {
+            let filter = Filter {
+                text_match: Some(text.to_string()),
+                ..Default::default()
+            };
+            let slice = store.query(&filter).await.unwrap();
+            assert_eq!(slice.observations.len(), 1, "text_match={text}");
+        }
+    }
+
+    #[tokio::test]
+    async fn blank_text_match_is_ignored() {
+        let store = SurrealStore::memory().await.unwrap();
+
+        store.insert(make_obs(Severity::Info, 1_000)).await.unwrap();
+
+        let filter = Filter {
+            text_match: Some("   ".to_string()),
+            ..Default::default()
+        };
+        let slice = store.query(&filter).await.unwrap();
+        assert_eq!(slice.observations.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn query_field_backfill_preserves_legacy_observation_filters() {
+        let store = SurrealStore::memory().await.unwrap();
+        let legacy = make_obs(Severity::Warn, 1_000);
+        let record = ObsRecord {
+            seq: 99,
+            timestamp_ns: legacy.timestamp_ns,
+            severity: legacy.severity.to_string(),
+            kind_tag: legacy.kind.tag().to_string(),
+            origin_type: None,
+            origin_key: None,
+            search_text: None,
+            origin: serde_json::to_value(&legacy.origin).unwrap(),
+            kind: serde_json::to_value(&legacy.kind).unwrap(),
+            data: serde_json::json!({"msg": "legacy timeout marker"}),
+            source_file: None,
+            source_line: None,
+            correlation_id: Some("legacy-corr".into()),
+            parent_id: None,
+            tags: Some(vec!["domain:legacy".into()]),
+            session_id: None,
+            node_id: None,
+        };
+
+        store
+            .db
+            .query("CREATE type::record('observation', $seq) CONTENT $content")
+            .bind(("seq", serde_json::json!(record.seq)))
+            .bind(("content", serde_json::to_value(record).unwrap()))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+
+        store.backfill_observation_query_fields().await.unwrap();
+
+        let origin_filter = Filter {
+            origins: Some(vec![OriginPattern::ApplicationNamed("test-app".into())]),
+            ..Default::default()
+        };
+        let slice = store.query(&origin_filter).await.unwrap();
+        assert_eq!(slice.observations.len(), 1);
+
+        for text in ["legacy", "legacy-corr", "domain:legacy"] {
+            let filter = Filter {
+                text_match: Some(text.to_string()),
+                ..Default::default()
+            };
+            let slice = store.query(&filter).await.unwrap();
+            assert_eq!(slice.observations.len(), 1, "text_match={text}");
+        }
     }
 
     #[tokio::test]

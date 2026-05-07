@@ -178,6 +178,26 @@ mod tests {
     }
 
     #[test]
+    fn active_lens_text_match_uses_materialized_metadata() {
+        let filter = Filter {
+            text_match: Some("domain:device".into()),
+            ..Default::default()
+        };
+        let mut lens = ActiveLens::new(filter, 10);
+
+        let mut matching = make_obs(1, Severity::Info, "domain:device");
+        matching.data = serde_json::json!({"msg": "plain payload"});
+        let mut other = make_obs(2, Severity::Info, "domain:browser");
+        other.data = serde_json::json!({"msg": "plain payload"});
+
+        lens.push(matching);
+        lens.push(other);
+
+        assert_eq!(lens.buffer.len(), 1);
+        assert_eq!(lens.buffer[0].id, 1);
+    }
+
+    #[test]
     fn ring_buffer_evicts_oldest() {
         let filter = Filter::default();
         let mut lens = ActiveLens::new(filter, 3);

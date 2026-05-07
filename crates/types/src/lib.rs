@@ -13,6 +13,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 pub const SYSTEM_TAG: &str = "_system";
+pub const OBSERVATION_SEARCH_TEXT_LIMIT_BYTES: usize = 16 * 1024;
 
 pub mod envelope;
 pub use envelope::{EnvelopeKind, EnvelopePriority, EnvelopeRecord, EnvelopeStatus};
@@ -380,6 +381,89 @@ impl Observation {
     }
 }
 
+pub fn observation_origin_fields(origin: &Origin) -> (&'static str, String) {
+    match origin {
+        Origin::Application { name } => ("application", format!("app:{name}")),
+        Origin::Browser { tab_id, .. } => ("browser", format!("browser:{tab_id}")),
+        Origin::Device { serial, .. } => ("device", format!("device:{serial}")),
+    }
+}
+
+pub fn observation_search_text(obs: &Observation) -> String {
+    let (_, origin_key) = observation_origin_fields(&obs.origin);
+    let mut text = String::new();
+
+    push_search_part(&mut text, obs.severity.to_string());
+    push_search_part(&mut text, obs.kind.tag().to_string());
+    push_search_part(&mut text, origin_key);
+    push_search_part(&mut text, origin_search_text(&obs.origin));
+    if let Ok(kind) = serde_json::to_string(&obs.kind) {
+        push_search_part(&mut text, kind);
+    }
+
+    if let Some(ref tags) = obs.tags {
+        for tag in tags {
+            push_search_part(&mut text, tag);
+        }
+    }
+
+    if let Some(ref location) = obs.source_location {
+        push_search_part(&mut text, &location.file);
+        push_search_part(&mut text, location.line.to_string());
+        if let Some(ref function) = location.function {
+            push_search_part(&mut text, function);
+        }
+    }
+
+    if let Some(ref correlation_id) = obs.correlation_id {
+        push_search_part(&mut text, correlation_id);
+    }
+    if let Some(parent_id) = obs.parent_id {
+        push_search_part(&mut text, parent_id.to_string());
+    }
+    if let Some(ref session_id) = obs.session_id {
+        push_search_part(&mut text, session_id);
+    }
+    if let Some(ref node_id) = obs.node_id {
+        push_search_part(&mut text, node_id);
+    }
+
+    push_search_part(&mut text, obs.data.to_string());
+    truncate_observation_search_text(text)
+}
+
+fn origin_search_text(origin: &Origin) -> String {
+    match origin {
+        Origin::Application { name } => format!("application {name}"),
+        Origin::Browser { tab_id, url } => format!("browser {tab_id} {url}"),
+        Origin::Device { serial, platform } => format!("device {serial} {platform:?}"),
+    }
+}
+
+fn push_search_part(text: &mut String, part: impl AsRef<str>) {
+    let part = part.as_ref();
+    if part.is_empty() {
+        return;
+    }
+    if !text.is_empty() {
+        text.push(' ');
+    }
+    text.push_str(part);
+}
+
+fn truncate_observation_search_text(mut text: String) -> String {
+    if text.len() <= OBSERVATION_SEARCH_TEXT_LIMIT_BYTES {
+        return text;
+    }
+
+    let mut end = OBSERVATION_SEARCH_TEXT_LIMIT_BYTES;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text.truncate(end);
+    text
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum OriginPattern {
@@ -455,8 +539,12 @@ impl Filter {
         }
 
         if let Some(ref text) = self.text_match {
-            let haystack = obs.data.to_string().to_ascii_lowercase();
-            if !haystack.contains(&text.to_ascii_lowercase()) {
+            let text = text.trim();
+            if !text.is_empty()
+                && !observation_search_text(obs)
+                    .to_ascii_lowercase()
+                    .contains(&text.to_ascii_lowercase())
+            {
                 return false;
             }
         }
@@ -1037,6 +1125,78 @@ mod tests {
         };
         assert!(filter.matches(&matching));
         assert!(!filter.matches(&other));
+    }
+
+    #[test]
+    fn observation_search_text_includes_filter_metadata() {
+        let mut observation = obs(
+            Origin::Device {
+                serial: DeviceSerial::from("ABC123"),
+                platform: DevicePlatform::Vega,
+            },
+            ObservationKind::Exception {
+                message: "surface failed".into(),
+                trace: Some("stack".into()),
+            },
+        );
+        observation.data = json!({"message": "HDMI overlay timeout"});
+        observation.source_location = Some(SourceLocation {
+            file: "src/device.rs".into(),
+            line: 77,
+            function: Some("render_overlay".into()),
+        });
+        observation.tags = Some(vec!["project:daemon8".into(), "domain:device".into()]);
+        observation.correlation_id = Some(Arc::from("corr-1"));
+        observation.session_id = Some(Arc::from("session-1"));
+        observation.node_id = Some(Arc::from("node-1"));
+
+        let search_text = observation_search_text(&observation);
+
+        assert!(search_text.contains("device:ABC123"));
+        assert!(search_text.contains("project:daemon8"));
+        assert!(search_text.contains("corr-1"));
+        assert!(search_text.contains("src/device.rs"));
+        assert!(search_text.contains("surface failed"));
+        assert!(search_text.len() <= OBSERVATION_SEARCH_TEXT_LIMIT_BYTES);
+    }
+
+    #[test]
+    fn filter_text_match_searches_materialized_metadata() {
+        let mut matching = obs(
+            Origin::Application {
+                name: AppName::from("daemon8-test"),
+            },
+            ObservationKind::Log,
+        );
+        matching.tags = Some(vec!["domain:device".into()]);
+        matching.correlation_id = Some(Arc::from("corr-1"));
+
+        let other = obs(
+            Origin::Application {
+                name: AppName::from("daemon8-test"),
+            },
+            ObservationKind::Log,
+        );
+
+        let tag_filter = Filter {
+            text_match: Some("domain:device".into()),
+            ..Filter::default()
+        };
+        assert!(tag_filter.matches(&matching));
+        assert!(!tag_filter.matches(&other));
+
+        let origin_filter = Filter {
+            text_match: Some("app:daemon8-test".into()),
+            ..Filter::default()
+        };
+        assert!(origin_filter.matches(&matching));
+        assert!(origin_filter.matches(&other));
+
+        let blank_filter = Filter {
+            text_match: Some("   ".into()),
+            ..Filter::default()
+        };
+        assert!(blank_filter.matches(&other));
     }
 
     #[test]

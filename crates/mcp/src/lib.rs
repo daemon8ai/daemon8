@@ -67,7 +67,7 @@ pub struct ObserveParams {
     )]
     pub origins: Option<Vec<String>>,
 
-    #[schemars(description = "Substring search across observation data")]
+    #[schemars(description = "Search across materialized observation text")]
     pub text_match: Option<String>,
 
     #[schemars(description = "Return only observations after this checkpoint id")]
@@ -257,7 +257,9 @@ pub struct SubscribeParams {
     )]
     pub origins: Option<Vec<String>>,
 
-    #[schemars(description = "Substring match in observation data. Omit for no text filtering.")]
+    #[schemars(
+        description = "Search across materialized observation text. Omit for no text filtering."
+    )]
     pub text_match: Option<String>,
 
     #[schemars(description = "Filter by correlation ID (exact match)")]
@@ -285,7 +287,7 @@ pub struct LensParams {
     #[schemars(description = "Filter by origin pattern: 'app:name', 'browser', 'device:serial'")]
     pub origins: Option<Vec<String>>,
 
-    #[schemars(description = "Substring search across observation data")]
+    #[schemars(description = "Search across materialized observation text")]
     pub text_match: Option<String>,
 
     #[schemars(description = "Filter by correlation ID (exact match)")]
@@ -2224,10 +2226,7 @@ pub async fn save_memory_inner(
 
 /// Pure handler for `query_memory`. Extracted so tests can drive it
 /// against an in-memory `MemoryStore` without spinning up DaemonMcp.
-pub async fn query_memory_inner(
-    mem_store: &dyn MemoryStore,
-    params: QueryMemoryParams,
-) -> String {
+pub async fn query_memory_inner(mem_store: &dyn MemoryStore, params: QueryMemoryParams) -> String {
     let kinds = params.kinds.map(|v| {
         v.into_iter()
             .filter_map(|s| s.parse::<daemon8_types::MemoryKind>().ok())

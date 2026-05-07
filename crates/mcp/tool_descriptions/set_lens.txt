@@ -11,7 +11,7 @@ Parameters:
 - kinds: optional list of strings. Filter by kind (log, query, http_exchange, exception, js_exception, lifecycle, state_snapshot, metric, custom).
 - severity_min: optional string. Minimum severity threshold (trace, debug, info, warn, error).
 - origins: optional list of strings. Origin patterns ("app", "app:name", "browser", "browser:tab_id", "device", "device:serial").
-- text_match: optional string. Substring search across observation data.
+- text_match: optional string. Search across materialized observation text.
 - correlation_id: optional string. Exact-match filter on correlation id.
 - tags: optional list of strings. All listed tags must be present.
 - capacity: optional integer. Ring buffer capacity. Default 200, hard cap 1000.

@@ -6,7 +6,7 @@ Parameters:
 - kinds: optional list of strings. Filter by kind: log, query, http_exchange, exception, js_exception, lifecycle, state_snapshot, metric, custom.
 - severity_min: optional string. Minimum severity threshold: trace, debug, info, warn, error.
 - origins: optional list of strings. Origin patterns: "app", "app:name", "browser", "browser:tab_id", "device", "device:serial". Omit to see all origins.
-- text_match: optional string. Substring search across observation data.
+- text_match: optional string. Search across materialized observation text.
 - since_checkpoint: optional integer. Return only observations recorded after this checkpoint id (from `create_checkpoint`).
 - limit: optional integer. Maximum results. Default 50.
 - correlation_id: optional string. Exact-match filter on correlation id.
