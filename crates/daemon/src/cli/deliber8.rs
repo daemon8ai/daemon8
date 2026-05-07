@@ -203,12 +203,7 @@ async fn cmd_spawn(config_override: Option<String>, args: SpawnArgs) -> Result<(
         updated_at: now,
     };
 
-    match reqwest::Client::new()
-        .post(&url)
-        .json(&card)
-        .send()
-        .await
-    {
+    match reqwest::Client::new().post(&url).json(&card).send().await {
         Ok(resp) => {
             check_response(resp).await?;
             println!(
@@ -327,7 +322,7 @@ async fn cmd_list(config_override: Option<String>, args: ListArgs) -> Result<()>
 async fn cmd_inspect(config_override: Option<String>, args: InspectArgs) -> Result<()> {
     let port = args.client.resolved_port();
     let url = format!("{}/api/deliber8/roster", base_url(port));
-    
+
     match reqwest::get(&url).await {
         Ok(resp) => {
             let resp = check_response(resp).await?;
@@ -337,12 +332,12 @@ async fn cmd_inspect(config_override: Option<String>, args: InspectArgs) -> Resu
             }
             let data: RosterResponse = resp.json().await?;
             let card = data.agents.iter().find(|c| c.slug == args.slug).cloned();
-            
+
             if let Some(card) = card {
                 let inbox_url = format!("{}/api/deliber8/inbox/{}", base_url(port), card.address);
                 let inbox_resp = reqwest::get(&inbox_url).await?;
                 let inbox_resp = check_response(inbox_resp).await?;
-                
+
                 #[derive(serde::Deserialize)]
                 struct InboxResponse {
                     queued: usize,
@@ -359,12 +354,15 @@ async fn cmd_inspect(config_override: Option<String>, args: InspectArgs) -> Resu
                     failed: counts.failed,
                     cancelled: counts.cancelled,
                 };
-                
+
                 if args.client.json {
-                    println!("{}", serde_json::to_string_pretty(&serde_json::json!({
-                        "card": card,
-                        "inbox": counts
-                    }))?);
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&serde_json::json!({
+                            "card": card,
+                            "inbox": counts
+                        }))?
+                    );
                 } else {
                     print_inspect_report(&card, &counts);
                 }
@@ -386,10 +384,13 @@ async fn cmd_inspect(config_override: Option<String>, args: InspectArgs) -> Resu
             let counts = inbox_counts(&envelope_store, &card.address).await?;
 
             if args.client.json {
-                println!("{}", serde_json::to_string_pretty(&serde_json::json!({
-                    "card": card,
-                    "inbox": counts
-                }))?);
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "card": card,
+                        "inbox": counts
+                    }))?
+                );
             } else {
                 print_inspect_report(&card, &counts);
             }
@@ -483,7 +484,10 @@ async fn stop_inner(
                             agents: Vec<AgentCard>,
                         }
                         if let Ok(data) = resp.json::<RosterResponse>().await {
-                            data.agents.iter().find(|c| c.slug == slug).map(|c| c.status)
+                            data.agents
+                                .iter()
+                                .find(|c| c.slug == slug)
+                                .map(|c| c.status)
                         } else {
                             None
                         }

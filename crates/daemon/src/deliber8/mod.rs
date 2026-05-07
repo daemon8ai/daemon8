@@ -563,3 +563,174 @@ mod tests {
         assert_eq!(response.project_refs, vec!["proj:p1".to_string()]);
     }
 }
+
+// ============================================================================
+// Steward runtime (Phase 0.1)
+// ============================================================================
+
+/// Configuration for a Steward run.
+/// The Steward is the central orchestrator: it receives high-level tasks,
+/// performs decision-making (model selection per role is exposed for testing),
+/// and routes work to appropriate Specialists via envelope enqueue.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct StewardConfig {
+    pub slug: String,
+    pub inbox_address: String,
+    pub heartbeat_interval_ms: u64,
+    /// Optional model identifier for decision-making (e.g. "ollama:llama3.2", "openai:gpt-4o-mini").
+    /// Used by the UI to test which models perform best for routing vs. summarization roles.
+    pub decision_model: Option<String>,
+}
+
+#[allow(dead_code)]
+impl StewardConfig {
+    pub fn new(slug: impl Into<String>, inbox_address: impl Into<String>) -> Self {
+        Self {
+            slug: slug.into(),
+            inbox_address: inbox_address.into(),
+            heartbeat_interval_ms: DEFAULT_HEARTBEAT_MS,
+            decision_model: None,
+        }
+    }
+
+    pub fn decision_model(mut self, model: impl Into<String>) -> Self {
+        self.decision_model = Some(model.into());
+        self
+    }
+}
+
+/// Run the Steward loop. Currently implements a minimal rule-based router
+/// that forwards incoming Request envelopes to the first available Specialist.
+/// Real LLM-backed decision making (model-per-role) is prepared via `decision_model`
+/// and will be wired in the next iteration.
+#[allow(dead_code)]
+pub async fn run_steward(
+    store: Arc<SurrealStore>,
+    cfg: StewardConfig,
+    cancel: CancellationToken,
+) -> Result<SpecialistOutcome> {
+    let envelope_store = store.envelope_store();
+    let card_store = store.card_store();
+
+    let card = card_store
+        .get_agent_by_slug(&cfg.slug)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("steward '{}' not found", cfg.slug))?;
+    let agent_id = card.id.clone();
+
+    card_store
+        .update_agent_status(&agent_id, AgentStatus::Alive, now_ns())
+        .await?;
+
+    if let Err(e) = card_store.record_agent_heartbeat(&agent_id, now_ns()).await {
+        tracing::warn!(error = %e, slug = %cfg.slug, "initial steward heartbeat failed");
+    }
+
+    let mut outcome = SpecialistOutcome::default();
+    let poll_interval = Duration::from_millis(cfg.heartbeat_interval_ms / 2);
+
+    loop {
+        let pending = envelope_store
+            .list_pending(&cfg.inbox_address, Some(now_ns()), Some(POLL_BATCH))
+            .await?;
+
+        for env in pending {
+            outcome.processed += 1;
+
+            if env.kind == EnvelopeKind::Control && is_stop_envelope(&env) {
+                handle_stop(&envelope_store, &card_store, &agent_id, &env).await?;
+                outcome.stopped_by_control = true;
+                return Ok(outcome);
+            }
+
+            if let Err(e) = envelope_store.mark_delivered(&env.id, now_ns()).await {
+                tracing::warn!(error = %e, env_id = %env.id, "steward mark_delivered failed");
+                continue;
+            }
+
+            if env.kind == EnvelopeKind::Request {
+                // Minimal decision-making skeleton: route to first alive specialist.
+                // TODO(Phase 0.1 follow-up): replace with real LLM call using cfg.decision_model
+                // when we introduce the LlmClient trait.
+                if let Some(target) = find_first_available_specialist(&card_store).await? {
+                    let routed = build_routed_envelope(&cfg, &env, &target);
+                    if let Err(e) = envelope_store.enqueue_envelope(routed).await {
+                        tracing::warn!(error = %e, "steward failed to route to {}", target);
+                    } else {
+                        outcome.responded += 1;
+                        tracing::info!(
+                            steward = %cfg.slug,
+                            model = ?cfg.decision_model,
+                            routed_to = %target,
+                            "Steward routed task"
+                        );
+                    }
+                }
+            }
+
+            if let Err(e) = envelope_store.mark_read(&env.id, now_ns()).await {
+                tracing::warn!(error = %e, env_id = %env.id, "steward mark_read failed");
+            }
+        }
+
+        if let Err(e) = card_store.record_agent_heartbeat(&agent_id, now_ns()).await {
+            tracing::warn!(error = %e, slug = %cfg.slug, "steward heartbeat failed");
+        } else {
+            outcome.heartbeats += 1;
+        }
+
+        select! {
+            _ = cancel.cancelled() => {
+                outcome.cancelled = true;
+                return Ok(outcome);
+            }
+            _ = sleep(poll_interval) => {}
+        }
+    }
+}
+
+#[allow(dead_code)]
+async fn find_first_available_specialist(_card_store: &SurrealCardStore) -> Result<Option<String>> {
+    // Placeholder until we wire real specialist discovery via card_store.
+    // The UI (Phase 2.1) will drive live roster queries.
+    Ok(Some("agent:alpha".to_string()))
+}
+
+#[allow(dead_code)]
+fn build_routed_envelope(
+    steward: &StewardConfig,
+    original: &EnvelopeRecord,
+    target_inbox: &str,
+) -> EnvelopeRecord {
+    let now = now_ns();
+    EnvelopeRecord {
+        id: String::new(),
+        kind: EnvelopeKind::Request,
+        status: EnvelopeStatus::Queued,
+        priority: original.priority,
+        from_address: steward.inbox_address.clone(),
+        to_address: target_inbox.to_string(),
+        inbox_address: target_inbox.to_string(),
+        subject: original.subject.clone(),
+        body: original.body.clone(),
+        payload: original.payload.clone(),
+        correlation_id: original.correlation_id.clone(),
+        thread_id: original
+            .thread_id
+            .clone()
+            .or_else(|| Some(original.id.clone())),
+        reply_to: Some(original.id.clone()),
+        created_at: now,
+        updated_at: now,
+        deliver_after: None,
+        delivered_at: None,
+        read_at: None,
+        expires_at: None,
+        failed_at: None,
+        failure_reason: None,
+        tags: vec!["deliber8.steward.routed".into()],
+        project_refs: original.project_refs.clone(),
+        team_refs: original.team_refs.clone(),
+    }
+}

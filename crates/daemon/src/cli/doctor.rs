@@ -9,8 +9,8 @@ use daemon8_embed::EmbedProvider;
 use daemon8_store::{CardStore, EnvelopeStore, StateModel};
 use daemon8_types::{AgentCard, EnvelopeRecord};
 
-use crate::config::{self, SourceConfig};
 use super::observe::{base_url, check_response};
+use crate::config::{self, SourceConfig};
 
 struct Check {
     name: &'static str,
@@ -453,11 +453,18 @@ async fn check_stuck_agents(cfg: &config::Config, port: u16) -> Check {
                 }
                 match resp.json::<RosterResponse>().await {
                     Ok(data) => {
-                        let stuck = crate::deliber8::classify_stuck(&data.agents, crate::deliber8::now_ns(), 3);
+                        let stuck = crate::deliber8::classify_stuck(
+                            &data.agents,
+                            crate::deliber8::now_ns(),
+                            3,
+                        );
                         if stuck.is_empty() {
                             return Check {
                                 name: NAME,
-                                result: CheckResult::OkHint(format!("{} alive agent(s)", data.agents.len())),
+                                result: CheckResult::OkHint(format!(
+                                    "{} alive agent(s)",
+                                    data.agents.len()
+                                )),
                             };
                         }
                         return Check {
@@ -557,21 +564,26 @@ async fn check_inbox_backlog(cfg: &config::Config, port: u16) -> Check {
                     Ok(data) => {
                         let mut paired = Vec::with_capacity(data.agents.len());
                         for card in &data.agents {
-                            let inbox_url = format!("{}/api/deliber8/inbox/{}?statuses=queued&limit=200", base_url(port), card.address);
+                            let inbox_url = format!(
+                                "{}/api/deliber8/inbox/{}?statuses=queued&limit=200",
+                                base_url(port),
+                                card.address
+                            );
                             if let Ok(inbox_resp) = reqwest::get(&inbox_url).await
                                 && let Ok(inbox_resp) = check_response(inbox_resp).await
                             {
-                                 #[derive(serde::Deserialize)]
-                                 struct InboxResponse {
-                                     envelopes: Vec<EnvelopeRecord>,
-                                 }
-                                 if let Ok(inbox_data) = inbox_resp.json::<InboxResponse>().await {
-                                     let oldest = inbox_data.envelopes.iter().map(|env| env.created_at).min();
-                                     paired.push((card.clone(), oldest));
-                                 }
+                                #[derive(serde::Deserialize)]
+                                struct InboxResponse {
+                                    envelopes: Vec<EnvelopeRecord>,
+                                }
+                                if let Ok(inbox_data) = inbox_resp.json::<InboxResponse>().await {
+                                    let oldest =
+                                        inbox_data.envelopes.iter().map(|env| env.created_at).min();
+                                    paired.push((card.clone(), oldest));
+                                }
                             }
                         }
-                        
+
                         let backlog = crate::deliber8::classify_inbox_backlog(
                             &paired,
                             crate::deliber8::now_ns(),
