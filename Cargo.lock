@@ -1518,6 +1518,7 @@ dependencies = [
  "daemon8-adb",
  "daemon8-api",
  "daemon8-chrome",
+ "daemon8-deliber8-llm",
  "daemon8-embed",
  "daemon8-ingest",
  "daemon8-mcp",

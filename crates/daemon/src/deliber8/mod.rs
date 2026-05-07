@@ -19,6 +19,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
+use daemon8_deliber8_llm::{CallOpts, LlmClient, Message};
 use daemon8_store::{
     CardStore, EnvelopeFilter, EnvelopeStore, StoreError, SurrealCardStore, SurrealEnvelopeStore,
     SurrealStore,
@@ -33,24 +34,63 @@ pub const STOP_BODY: &str = "stop";
 const POLL_BATCH: usize = 32;
 
 /// Configuration for a specialist run.
-#[derive(Debug, Clone)]
+///
+/// `llm` is the live boundary to whichever provider this agent's `model`
+/// resolves to (typically an `OpenAiCompatClient` driving OpenRouter, OpenAI,
+/// or Ollama). `persona_prompt` is the system prompt prepended to every
+/// chat completion; it is sourced from `AgentCard.persona.identity_prompt`.
+#[derive(Clone)]
 pub struct SpecialistConfig {
     pub slug: String,
     pub inbox_address: String,
     pub heartbeat_interval_ms: u64,
+    pub llm: Arc<dyn LlmClient>,
+    pub persona_prompt: String,
+    pub call_opts: CallOpts,
+}
+
+impl std::fmt::Debug for SpecialistConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SpecialistConfig")
+            .field("slug", &self.slug)
+            .field("inbox_address", &self.inbox_address)
+            .field("heartbeat_interval_ms", &self.heartbeat_interval_ms)
+            .field("provider", &self.llm.provider_label())
+            .field("model", &self.llm.model_name())
+            .field("persona_prompt_chars", &self.persona_prompt.len())
+            .field("call_opts", &self.call_opts)
+            .finish()
+    }
 }
 
 impl SpecialistConfig {
-    pub fn new(slug: impl Into<String>, inbox_address: impl Into<String>) -> Self {
+    pub fn new(
+        slug: impl Into<String>,
+        inbox_address: impl Into<String>,
+        llm: Arc<dyn LlmClient>,
+    ) -> Self {
         Self {
             slug: slug.into(),
             inbox_address: inbox_address.into(),
             heartbeat_interval_ms: DEFAULT_HEARTBEAT_MS,
+            llm,
+            persona_prompt: String::new(),
+            call_opts: CallOpts::default(),
         }
     }
 
     pub fn heartbeat_interval(mut self, ms: u64) -> Self {
         self.heartbeat_interval_ms = ms.max(100);
+        self
+    }
+
+    pub fn persona_prompt(mut self, prompt: impl Into<String>) -> Self {
+        self.persona_prompt = prompt.into();
+        self
+    }
+
+    pub fn call_opts(mut self, opts: CallOpts) -> Self {
+        self.call_opts = opts;
         self
     }
 }
@@ -125,20 +165,40 @@ pub async fn run_specialist(
             }
 
             if env.kind == EnvelopeKind::Request {
-                let response = build_stub_response(&cfg, &env);
-                match envelope_store.enqueue_envelope(response).await {
-                    Ok(_) => outcome.responded += 1,
+                match build_llm_response(&cfg, &env).await {
+                    Ok(response) => match envelope_store.enqueue_envelope(response).await {
+                        Ok(_) => outcome.responded += 1,
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e, request_id = %env.id,
+                                "response enqueue failed"
+                            );
+                            if let Err(fe) = envelope_store
+                                .mark_failed(
+                                    &env.id,
+                                    &format!("response enqueue failed: {e}"),
+                                    now_ns(),
+                                )
+                                .await
+                            {
+                                tracing::warn!(
+                                    error = %fe, env_id = %env.id,
+                                    "mark_failed after enqueue failure also failed"
+                                );
+                            }
+                            continue;
+                        }
+                    },
                     Err(e) => {
-                        tracing::warn!(error = %e, request_id = %env.id, "response enqueue failed");
+                        tracing::warn!(error = %e, request_id = %env.id, "llm error");
                         if let Err(fe) = envelope_store
-                            .mark_failed(
-                                &env.id,
-                                &format!("response enqueue failed: {e}"),
-                                now_ns(),
-                            )
+                            .mark_failed(&env.id, &format!("llm error: {e}"), now_ns())
                             .await
                         {
-                            tracing::warn!(error = %fe, env_id = %env.id, "mark_failed after enqueue failure also failed");
+                            tracing::warn!(
+                                error = %fe, env_id = %env.id,
+                                "mark_failed after llm error also failed"
+                            );
                         }
                         continue;
                     }
@@ -184,14 +244,27 @@ async fn handle_stop(
     Ok(())
 }
 
-fn build_stub_response(cfg: &SpecialistConfig, request: &EnvelopeRecord) -> EnvelopeRecord {
+/// Build a Response envelope by calling the configured LLM with the agent's
+/// persona prompt as system context and the incoming request body as a single
+/// user turn. Multi-turn thread context is intentionally out of scope for v1.
+async fn build_llm_response(
+    cfg: &SpecialistConfig,
+    request: &EnvelopeRecord,
+) -> Result<EnvelopeRecord, daemon8_deliber8_llm::LlmError> {
+    let user_text = request.body.clone().unwrap_or_default();
+    let messages = [Message::user(user_text)];
+    let completion = cfg
+        .llm
+        .complete(&cfg.persona_prompt, &messages, &cfg.call_opts)
+        .await?;
+
     let now = now_ns();
     let reply_inbox = if request.from_address.is_empty() {
         format!("agent:{}-replies", cfg.slug)
     } else {
         request.from_address.clone()
     };
-    EnvelopeRecord {
+    Ok(EnvelopeRecord {
         id: String::new(),
         kind: EnvelopeKind::Response,
         status: EnvelopeStatus::Queued,
@@ -204,10 +277,7 @@ fn build_stub_response(cfg: &SpecialistConfig, request: &EnvelopeRecord) -> Enve
             .as_ref()
             .map(|s| format!("re: {s}"))
             .or_else(|| Some(format!("re: {}", request.id))),
-        body: Some(format!(
-            "stub response from {} for request {} at {} ns",
-            cfg.slug, request.id, now
-        )),
+        body: Some(completion.content),
         payload: None,
         correlation_id: request.correlation_id.clone(),
         thread_id: request
@@ -223,10 +293,14 @@ fn build_stub_response(cfg: &SpecialistConfig, request: &EnvelopeRecord) -> Enve
         expires_at: None,
         failed_at: None,
         failure_reason: None,
-        tags: vec!["deliber8.stub".into()],
+        tags: vec![
+            "deliber8.llm".into(),
+            format!("provider:{}", cfg.llm.provider_label()),
+            format!("model:{}", cfg.llm.model_name()),
+        ],
         project_refs: request.project_refs.clone(),
         team_refs: request.team_refs.clone(),
-    }
+    })
 }
 
 pub fn now_ns() -> u64 {
@@ -522,9 +596,12 @@ mod tests {
         assert!(is_stop_envelope(&env));
     }
 
-    #[test]
-    fn build_stub_response_carries_correlation_and_reply_to() {
-        let cfg = SpecialistConfig::new("specialist-a", "agent:specialist-a");
+    #[tokio::test]
+    async fn build_llm_response_carries_correlation_and_reply_to() {
+        use daemon8_deliber8_llm::MockLlmClient;
+        let llm = Arc::new(MockLlmClient::new("mock", "mock-1").with_prefix("echo: "));
+        let cfg = SpecialistConfig::new("specialist-a", "agent:specialist-a", llm)
+            .persona_prompt("you are terse");
         let request = EnvelopeRecord {
             id: "env_request_1".into(),
             kind: EnvelopeKind::Request,
@@ -551,7 +628,7 @@ mod tests {
             project_refs: vec!["proj:p1".into()],
             team_refs: vec![],
         };
-        let response = build_stub_response(&cfg, &request);
+        let response = build_llm_response(&cfg, &request).await.unwrap();
         assert_eq!(response.kind, EnvelopeKind::Response);
         assert_eq!(response.from_address, "agent:specialist-a");
         assert_eq!(response.to_address, "agent:supervisor");
@@ -561,6 +638,9 @@ mod tests {
         assert_eq!(response.thread_id.as_deref(), Some("env_request_1"));
         assert_eq!(response.subject.as_deref(), Some("re: inspect"));
         assert_eq!(response.project_refs, vec!["proj:p1".to_string()]);
+        assert_eq!(response.body.as_deref(), Some("echo: walk repo"));
+        assert!(response.tags.iter().any(|t| t == "deliber8.llm"));
+        assert!(response.tags.iter().any(|t| t == "model:mock-1"));
     }
 }
 

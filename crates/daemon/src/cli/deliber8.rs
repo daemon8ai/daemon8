@@ -16,6 +16,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use clap::Subcommand;
+use daemon8_deliber8_llm::{OpenAiCompatClient, parse_from_card};
 use daemon8_store::{AgentCardFilter, CardStore, EnvelopeStore, SurrealStore};
 use daemon8_types::{AgentCard, AgentKind, AgentStatus};
 use tokio::time::sleep;
@@ -591,7 +592,30 @@ async fn cmd_run(store: Arc<SurrealStore>, args: RunArgs) -> Result<()> {
         })?;
     let inbox = args.inbox.clone().unwrap_or_else(|| card.address.clone());
 
-    let cfg = SpecialistConfig::new(args.slug.clone(), inbox).heartbeat_interval(args.heartbeat_ms);
+    let provider_cfg = parse_from_card(&card.model).with_context(|| {
+        format!(
+            "agent '{}' has no usable model configuration; set agent.model.{{provider,model}}",
+            args.slug
+        )
+    })?;
+    let llm = OpenAiCompatClient::from_config(&provider_cfg)
+        .map(Arc::new)
+        .with_context(|| format!("building LLM client for agent '{}'", args.slug))?;
+
+    let persona_prompt = card
+        .persona
+        .get("identity_prompt")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let cfg = SpecialistConfig::new(args.slug.clone(), inbox, llm)
+        .heartbeat_interval(args.heartbeat_ms)
+        .persona_prompt(persona_prompt)
+        .call_opts(daemon8_deliber8_llm::CallOpts {
+            temperature: provider_cfg.temperature,
+            max_tokens: provider_cfg.max_tokens,
+        });
 
     let cancel = CancellationToken::new();
     let signal_cancel = cancel.clone();
