@@ -23,6 +23,7 @@ Tool selection:
 
 Memory:
 - Persist a long-lived insight: `save_memory`. Search later with `query_memory`. Delete with `forget_memory` (requires `confirm: true`).
+- Save only verified lessons — root causes, fixes that worked, recurring error signatures, project quirks. Do not save raw logs or guesses.
 
 Setup:
 - `setup_status` reports current setup. `setup_plan` previews changes. `setup_apply` writes them (requires `yes: true`).

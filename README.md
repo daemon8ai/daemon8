@@ -184,6 +184,7 @@ A UDP listener accepts the same JSON shapes on port 8889 for fire-and-forget tel
 | `daemon8 connections` | List active data source connections. |
 | `daemon8 browser` | Browser DevTools commands. |
 | `daemon8 lens` | Manage per-session observation lens. |
+| `daemon8 memory` | Export memory query results to per-row Markdown files. |
 | `daemon8 logs` | Show log file location or tail logs (`--follow`). |
 | `daemon8 config` | Show or modify configuration. |
 | `daemon8 completions` | Generate shell completions. |

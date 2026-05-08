@@ -6,6 +6,8 @@ Use this to:
 - Save a session summary at the end of a meaningful working session.
 - Flag user-stated preferences or invariants for future reference.
 
+Memory rule: only save stable, reusable, verified conclusions. Do not save raw logs, transcripts, every tool call, temporary guesses, unverified hypotheses, or large documentation chunks.
+
 Parameters:
 - content: string. Required. The memory body. Plain text — no formatting requirements.
 - kind: optional string. One of: pattern, decision, error_signature, session_summary, user_flagged. Defaults to user_flagged.
