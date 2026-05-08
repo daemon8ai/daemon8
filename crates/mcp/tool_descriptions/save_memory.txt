@@ -17,4 +17,4 @@ Parameters:
 
 Returns: { id: <string>, ... full memory record }. Persist the returned id if you anticipate later updates or deletion.
 
-Memories are also embedded when an embedding provider is configured. They are stored in the legacy `memory` table; for the new tier surface (working memory, references, distilled long-term knowledge), see the `query_memory_tier` and bookkeeper tools.
+Memories are also embedded when an embedding provider is configured. They are stored in the legacy `memory` table.
