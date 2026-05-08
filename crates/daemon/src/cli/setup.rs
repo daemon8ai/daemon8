@@ -566,10 +566,10 @@ fn resolve_apply_providers(args: &SetupApplyArgs) -> Result<Vec<crate::providers
         .map(Option::unwrap_or_default)
 }
 
-fn hook_policy(args: &SetupApplyArgs) -> String {
+fn hook_policy(args: &SetupApplyArgs) -> config::HookPolicy {
     match args.install_hooks.as_ref() {
-        Some(_) => "install".into(),
-        None => "manual".into(),
+        Some(_) => config::HookPolicy::Install,
+        None => config::HookPolicy::Manual,
     }
 }
 

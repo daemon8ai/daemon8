@@ -538,7 +538,7 @@ mod tests {
             config_path: cfg_path.display().to_string(),
             applied_at_ns: 0,
             desired_scope: Vec::new(),
-            hook_policy: "manual".into(),
+            hook_policy: config::HookPolicy::Manual,
             sources: Vec::new(),
             source_audit: Vec::new(),
         }

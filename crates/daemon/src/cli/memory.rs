@@ -80,8 +80,8 @@ async fn cmd_memory_export(args: MemoryExportArgs) -> Result<()> {
 }
 
 fn validate_export_args(args: &MemoryExportArgs) -> Result<()> {
-    if let Err(message) = daemon8_api::validate_memory_export_query(&args.query) {
-        bail!(message);
+    if let Err(err) = daemon8_api::validate_memory_export_query(&args.query) {
+        bail!("{err}");
     }
     if !(1..=daemon8_api::MEMORY_EXPORT_MAX_PAGE_SIZE).contains(&args.page_size) {
         bail!(

@@ -199,11 +199,24 @@ pub struct ProjectSetupState {
     pub applied_at_ns: u64,
     #[serde(default)]
     pub desired_scope: Vec<String>,
-    pub hook_policy: String,
+    pub hook_policy: HookPolicy,
     #[serde(default)]
     pub sources: Vec<String>,
     #[serde(default)]
     pub source_audit: Vec<String>,
+}
+
+/// Records whether hook installation was performed during `setup apply` or
+/// left to the operator. Stored verbatim in setup state TOML; existing
+/// `"install"` / `"manual"` strings continue to round-trip via
+/// `rename_all = "snake_case"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HookPolicy {
+    /// Setup applied hook installation for one or more providers.
+    Install,
+    /// Setup deferred hook installation; the operator wires hooks themselves.
+    Manual,
 }
 
 fn default_line_parser() -> String {
@@ -566,6 +579,59 @@ role_default = "debugger"
     fn config_env_filter_ignores_hook_diagnostic_env() {
         assert!(!is_config_env_key("hook_verbose"));
         assert!(is_config_env_key("server.port"));
+    }
+
+    #[test]
+    fn invalid_hook_policy_value_is_rejected() {
+        let result: Result<Config, _> = toml::from_str(
+            r#"
+[setup.projects.daemon8]
+slug = "daemon8"
+root_path = "/tmp/daemon8"
+config_path = "/tmp/daemon8/.daemon8.toml"
+applied_at_ns = 0
+hook_policy = "banana"
+"#,
+        );
+        assert!(
+            result.is_err(),
+            "unknown hook_policy value must be rejected, got Ok: {result:?}"
+        );
+    }
+
+    #[test]
+    fn hook_policy_round_trips_via_snake_case() {
+        let cfg: Config = toml::from_str(
+            r#"
+[setup.projects.daemon8]
+slug = "daemon8"
+root_path = "/tmp/daemon8"
+config_path = "/tmp/daemon8/.daemon8.toml"
+applied_at_ns = 0
+hook_policy = "install"
+"#,
+        )
+        .expect("install policy should parse");
+        assert_eq!(
+            cfg.setup.projects["daemon8"].hook_policy,
+            HookPolicy::Install
+        );
+
+        let cfg: Config = toml::from_str(
+            r#"
+[setup.projects.daemon8]
+slug = "daemon8"
+root_path = "/tmp/daemon8"
+config_path = "/tmp/daemon8/.daemon8.toml"
+applied_at_ns = 0
+hook_policy = "manual"
+"#,
+        )
+        .expect("manual policy should parse");
+        assert_eq!(
+            cfg.setup.projects["daemon8"].hook_policy,
+            HookPolicy::Manual
+        );
     }
 
     #[test]

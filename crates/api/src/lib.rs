@@ -994,7 +994,7 @@ async fn handle_memory_export(
 ) -> Response {
     let query = match validated_memory_export_query(body.query.trim()) {
         Ok(query) => query,
-        Err(message) => return error_json(StatusCode::BAD_REQUEST, message),
+        Err(err) => return error_json(StatusCode::BAD_REQUEST, err.to_string()),
     };
 
     let page_size = body.page_size.unwrap_or(MEMORY_EXPORT_DEFAULT_PAGE_SIZE);
@@ -1070,53 +1070,82 @@ fn encode_ndjson_row(row: serde_json::Value) -> Result<Bytes, io::Error> {
     Ok(Bytes::from(bytes))
 }
 
-pub fn validate_memory_export_query(query: &str) -> Result<(), String> {
+/// Errors produced when validating a SurrealQL query for memory export.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum MemoryExportError {
+    #[error("query cannot be empty")]
+    Empty,
+    #[error("query contains an unterminated string literal")]
+    UnterminatedLiteral,
+    #[error("query must be one single SELECT statement without semicolons")]
+    Semicolon,
+    #[error("query comments are not allowed in memory export")]
+    Comments,
+    #[error("query must start with SELECT")]
+    NotSelect,
+    #[error("memory export cannot include removed embedding data")]
+    EmbeddingNotAllowed,
+    #[error("query must include FROM with an allowed memory table")]
+    MissingFrom,
+    #[error("query may only export the legacy memory table")]
+    DisallowedTable,
+    #[error("query must include ORDER BY so paged export is deterministic")]
+    MissingOrderBy,
+    #[error("ORDER BY must appear after FROM")]
+    OrderByBeforeFrom,
+    #[error(
+        "query contains forbidden keyword '{0}' (memory export accepts one paged read-only SELECT)"
+    )]
+    ForbiddenKeyword(String),
+}
+
+pub fn validate_memory_export_query(query: &str) -> Result<(), MemoryExportError> {
     validated_memory_export_query(query).map(|_| ())
 }
 
-fn validated_memory_export_query(query: &str) -> Result<String, String> {
+fn validated_memory_export_query(query: &str) -> Result<String, MemoryExportError> {
     let trimmed = query.trim();
     if trimmed.is_empty() {
-        return Err("query cannot be empty".into());
+        return Err(MemoryExportError::Empty);
     }
 
     let query_without_literals = query_without_string_literals(trimmed)?;
     if query_without_literals.contains(';') {
-        return Err("query must be one single SELECT statement without semicolons".into());
+        return Err(MemoryExportError::Semicolon);
     }
     if query_without_literals.contains("--")
         || query_without_literals.contains("/*")
         || query_without_literals.contains("*/")
     {
-        return Err("query comments are not allowed in memory export".into());
+        return Err(MemoryExportError::Comments);
     }
 
     let tokens = tokenize_query(&query_without_literals);
     if !matches!(tokens.first().map(String::as_str), Some("select")) {
-        return Err("query must start with SELECT".into());
+        return Err(MemoryExportError::NotSelect);
     }
     if tokens.iter().any(|token| token == "embedding") {
-        return Err("memory export cannot include removed embedding data".into());
+        return Err(MemoryExportError::EmbeddingNotAllowed);
     }
 
     let Some(from_index) = tokens.iter().position(|token| token == "from") else {
-        return Err("query must include FROM with an allowed memory table".into());
+        return Err(MemoryExportError::MissingFrom);
     };
     let Some(table) = tokens.get(from_index + 1) else {
-        return Err("query must include FROM with an allowed memory table".into());
+        return Err(MemoryExportError::MissingFrom);
     };
     if !is_allowed_memory_export_table(table) {
-        return Err("query may only export the legacy memory table".into());
+        return Err(MemoryExportError::DisallowedTable);
     }
 
     let Some(order_index) = tokens
         .windows(2)
         .position(|window| window[0] == "order" && window[1] == "by")
     else {
-        return Err("query must include ORDER BY so paged export is deterministic".into());
+        return Err(MemoryExportError::MissingOrderBy);
     };
     if order_index < from_index {
-        return Err("ORDER BY must appear after FROM".into());
+        return Err(MemoryExportError::OrderByBeforeFrom);
     }
 
     let forbidden = [
@@ -1125,9 +1154,7 @@ fn validated_memory_export_query(query: &str) -> Result<String, String> {
     ];
     let words: HashSet<&str> = tokens.iter().map(String::as_str).collect();
     if let Some(keyword) = forbidden.iter().find(|keyword| words.contains(**keyword)) {
-        return Err(format!(
-            "query contains forbidden keyword '{keyword}' (memory export accepts one paged read-only SELECT)"
-        ));
+        return Err(MemoryExportError::ForbiddenKeyword((*keyword).to_string()));
     }
 
     if tokens[(order_index + 2)..]
@@ -1144,7 +1171,7 @@ fn is_allowed_memory_export_table(table: &str) -> bool {
     table == "memory"
 }
 
-fn query_without_string_literals(query: &str) -> Result<String, String> {
+fn query_without_string_literals(query: &str) -> Result<String, MemoryExportError> {
     let mut out = String::with_capacity(query.len());
     let mut chars = query.chars();
     let mut quote = None;
@@ -1174,7 +1201,7 @@ fn query_without_string_literals(query: &str) -> Result<String, String> {
     }
 
     if quote.is_some() {
-        return Err("query contains an unterminated string literal".into());
+        return Err(MemoryExportError::UnterminatedLiteral);
     }
 
     Ok(out)
@@ -1212,7 +1239,7 @@ mod tests {
     #[test]
     fn validate_memory_export_query_rejects_empty_query() {
         let err = validate_memory_export_query(" ").expect_err("empty query should fail");
-        assert!(err.contains("cannot be empty"));
+        assert!(err.to_string().contains("cannot be empty"));
     }
 
     #[test]
@@ -1221,32 +1248,32 @@ mod tests {
             "SELECT * FROM memory ORDER BY created_at DESC; DELETE memory",
         )
         .expect_err("semicolon should fail");
-        assert!(err.contains("single SELECT"));
+        assert!(err.to_string().contains("single SELECT"));
     }
 
     #[test]
     fn validate_memory_export_query_rejects_comments_that_can_hide_paging() {
         let err = validate_memory_export_query("SELECT * FROM memory ORDER BY created_at DESC --")
             .expect_err("line comments should fail");
-        assert!(err.contains("comments"));
+        assert!(err.to_string().contains("comments"));
 
         let err = validate_memory_export_query("SELECT * FROM memory ORDER BY created_at DESC /*")
             .expect_err("block comments should fail");
-        assert!(err.contains("comments"));
+        assert!(err.to_string().contains("comments"));
     }
 
     #[test]
     fn validate_memory_export_query_rejects_non_select() {
         let err = validate_memory_export_query("DELETE FROM memory ORDER BY created_at DESC")
             .expect_err("mutating query should fail");
-        assert!(err.contains("must start with SELECT"));
+        assert!(err.to_string().contains("must start with SELECT"));
     }
 
     #[test]
     fn validate_memory_export_query_rejects_non_memory_table() {
         let err = validate_memory_export_query("SELECT * FROM observation ORDER BY seq DESC")
             .expect_err("non-memory table should fail");
-        assert!(err.contains("legacy memory table"));
+        assert!(err.to_string().contains("legacy memory table"));
     }
 
     #[test]
@@ -1259,7 +1286,7 @@ mod tests {
             let err =
                 validate_memory_export_query(query).expect_err("embedding projection should fail");
             assert!(
-                err.contains("embedding"),
+                err.to_string().contains("embedding"),
                 "error should mention embedding data: {err}"
             );
         }
@@ -1269,14 +1296,14 @@ mod tests {
     fn validate_memory_export_query_rejects_missing_from() {
         let err = validate_memory_export_query("SELECT 1 ORDER BY id ASC")
             .expect_err("missing FROM should fail");
-        assert!(err.contains("FROM"));
+        assert!(err.to_string().contains("FROM"));
     }
 
     #[test]
     fn validate_memory_export_query_ignores_string_literal_tokens() {
         let err = validate_memory_export_query("SELECT * FROM memory WHERE content = 'order by'")
             .expect_err("literal order by should not count as clause");
-        assert!(err.contains("ORDER BY"));
+        assert!(err.to_string().contains("ORDER BY"));
 
         validate_memory_export_query(
             "SELECT * FROM memory WHERE content = 'delete limit start' ORDER BY created_at DESC",
@@ -1295,14 +1322,14 @@ mod tests {
             "SELECT * FROM memory WHERE content = 'x' ORDER BY created_at DESC UPDATE memory",
         )
         .expect_err("mutating keyword should fail");
-        assert!(err.contains("forbidden keyword"));
+        assert!(err.to_string().contains("forbidden keyword"));
     }
 
     #[test]
     fn validate_memory_export_query_rejects_unstable_paging() {
         let err = validate_memory_export_query("SELECT * FROM memory")
             .expect_err("missing order by should fail");
-        assert!(err.contains("ORDER BY"));
+        assert!(err.to_string().contains("ORDER BY"));
     }
 
     #[test]
@@ -1310,7 +1337,7 @@ mod tests {
         let err =
             validate_memory_export_query("SELECT * FROM memory ORDER BY created_at DESC LIMIT 10")
                 .expect_err("caller limit should fail");
-        assert!(err.contains("forbidden keyword 'limit'"));
+        assert!(err.to_string().contains("forbidden keyword 'limit'"));
     }
 
     #[test]
