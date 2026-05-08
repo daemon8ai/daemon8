@@ -23,12 +23,6 @@ Tool selection:
 
 Memory:
 - Persist a long-lived insight: `save_memory`. Search later with `query_memory`. Delete with `forget_memory` (requires `confirm: true`).
-- Memory tiers: `query_memory_tier` reads from short (TTL working memory), reference (external sources), or long (distilled durable knowledge). The bookkeeper tools (`memory_sweep_short`, `memory_dedupe_long`) reap expired rows and collapse exact-content duplicates respectively; both default to dry-run.
-- Embedding profiles: `list_embedding_profiles` and `register_embedding_profile` declare which generator produced which vector — required so semantic queries do not silently mix models.
-
-Deliber8 (background agent registry):
-- `deliber8_roster` lists registered agent cards with status/kind/team/project filters.
-- `deliber8_inbox` reads envelopes for one address with status filters and counts.
 
 Setup:
 - `setup_status` reports current setup. `setup_plan` previews changes. `setup_apply` writes them (requires `yes: true`).

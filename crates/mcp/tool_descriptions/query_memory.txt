@@ -14,4 +14,4 @@ Parameters:
 
 Returns: { total: <int>, memories: [ { id, content, kind, tags, project_slug, created_at, ... } ] }. Empty result list (`memories: []`) is the canonical response when nothing matches — not an error.
 
-Read-only. Searches the legacy `memory` table; for tier-aware queries see `query_memory_tier`.
+Read-only. Searches the legacy `memory` table.

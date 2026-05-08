@@ -7,21 +7,17 @@ use std::io;
 use std::sync::Arc;
 use std::time::Duration;
 
-use async_trait::async_trait;
 use axum::Router;
 use axum::body::{Body, Bytes};
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Json, Response};
-use axum::routing::{get, patch, post};
+use axum::routing::{get, post};
 use daemon8_chrome::BrowserAction;
 use daemon8_mcp::ChromeCommand;
-use daemon8_store::{
-    BookkeeperStore, CardStore, EmbeddingProfileStore, EnvelopeStore, LensManager, MemoryLongStore,
-    MemoryReferenceStore, MemoryShortStore, MemoryStore, StateModel,
-};
+use daemon8_store::{LensManager, MemoryStore, StateModel};
 use daemon8_types::{Checkpoint, Filter, Observation};
 use futures::stream;
 use serde::Deserialize;
@@ -31,47 +27,6 @@ use tracing::warn;
 
 pub const MEMORY_EXPORT_DEFAULT_PAGE_SIZE: u64 = 100;
 pub const MEMORY_EXPORT_MAX_PAGE_SIZE: u64 = 1_000;
-
-/// Specialist lifecycle controller plumbed into HTTP handlers. The concrete
-/// implementation lives in the `daemon` crate (`SpecialistRegistry`); we
-/// invert the dependency here so the `api` crate doesn't pull in the runtime.
-#[async_trait]
-pub trait SpecialistController: Send + Sync {
-    async fn start(&self, slug: &str) -> Result<(), SpecialistControlError>;
-    async fn stop(&self, slug: &str) -> Result<(), SpecialistControlError>;
-    async fn restart(&self, slug: &str) -> Result<(), SpecialistControlError>;
-    async fn patch(
-        &self,
-        slug: &str,
-        persona: Option<serde_json::Value>,
-        model: Option<serde_json::Value>,
-    ) -> Result<bool, SpecialistControlError>;
-}
-
-#[derive(Debug)]
-pub enum SpecialistControlError {
-    NotFound { slug: String },
-    NotASpecialist { slug: String },
-    BadConfig { slug: String, reason: String },
-    MissingApiKey { var: String },
-    AlreadyRunning { slug: String },
-    NotRunning { slug: String },
-    Internal(String),
-}
-
-impl std::fmt::Display for SpecialistControlError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::NotFound { slug } => write!(f, "agent '{slug}' not found"),
-            Self::NotASpecialist { slug } => write!(f, "agent '{slug}' is not a Specialist"),
-            Self::BadConfig { slug, reason } => write!(f, "agent '{slug}' bad config: {reason}"),
-            Self::MissingApiKey { var } => write!(f, "missing API key for env var {var}"),
-            Self::AlreadyRunning { slug } => write!(f, "agent '{slug}' is already running"),
-            Self::NotRunning { slug } => write!(f, "agent '{slug}' is not running"),
-            Self::Internal(s) => write!(f, "internal error: {s}"),
-        }
-    }
-}
 
 #[derive(Clone)]
 pub struct ApiState {
@@ -83,14 +38,6 @@ pub struct ApiState {
     pub lens: Arc<LensManager>,
     pub embedder: Option<Arc<dyn daemon8_embed::Embedder>>,
     pub memory_store: Option<Arc<dyn MemoryStore>>,
-    pub card_store: Option<Arc<dyn CardStore>>,
-    pub envelope_store: Option<Arc<dyn EnvelopeStore>>,
-    pub memory_short_store: Option<Arc<dyn MemoryShortStore>>,
-    pub memory_reference_store: Option<Arc<dyn MemoryReferenceStore>>,
-    pub memory_long_store: Option<Arc<dyn MemoryLongStore>>,
-    pub bookkeeper_store: Option<Arc<dyn BookkeeperStore>>,
-    pub embedding_profile_store: Option<Arc<dyn EmbeddingProfileStore>>,
-    pub specialist_controller: Option<Arc<dyn SpecialistController>>,
 }
 
 pub fn api_router(state: ApiState) -> Router {
@@ -109,41 +56,10 @@ pub fn api_router(state: ApiState) -> Router {
         )
         .route("/api/browser/act", post(handle_chrome_act))
         .route(
-            "/api/deliber8/roster",
-            get(handle_deliber8_roster).post(handle_deliber8_spawn),
-        )
-        .route("/api/deliber8/inbox/{address}", get(handle_deliber8_inbox))
-        .route("/api/deliber8/enqueue", post(handle_deliber8_enqueue))
-        .route(
-            "/api/deliber8/agents/{slug}/start",
-            post(handle_specialist_start),
-        )
-        .route(
-            "/api/deliber8/agents/{slug}/stop",
-            post(handle_specialist_stop),
-        )
-        .route(
-            "/api/deliber8/agents/{slug}/restart",
-            post(handle_specialist_restart),
-        )
-        .route(
-            "/api/deliber8/roster/{slug}",
-            patch(handle_specialist_patch),
-        )
-        .route(
             "/api/memory",
             get(handle_memory_query).post(handle_memory_save),
         )
         .route("/api/memory/export", post(handle_memory_export))
-        .route("/api/memory/short", get(handle_memory_short))
-        .route("/api/memory/reference", get(handle_memory_reference))
-        .route("/api/memory/long", get(handle_memory_long))
-        .route("/api/bookkeeper/sweep", post(handle_bookkeeper_sweep))
-        .route("/api/bookkeeper/dedupe", post(handle_bookkeeper_dedupe))
-        .route(
-            "/api/embedding/profiles",
-            get(handle_embedding_profiles_list).post(handle_embedding_profiles_register),
-        )
         .with_state(state)
 }
 
@@ -967,25 +883,8 @@ async fn handle_chrome_act(
 }
 
 // ---------------------------------------------------------------------------
-// Memory tier + bookkeeper + embedding profile routes
-//
-// These routes mirror the corresponding MCP tools for non-MCP clients (web UI,
-// scripts, observability tools). The HTTP layer hands control to the same
-// pure handler functions that back the tools, then re-parses the resulting
-// JSON for axum response shaping. This keeps the surface symmetrical with one
-// authoritative implementation per operation.
+// Legacy memory routes
 // ---------------------------------------------------------------------------
-
-#[derive(Debug, Deserialize)]
-pub struct MemoryTierQuery {
-    pub agent_id: Option<String>,
-    pub scope: Option<String>,
-    pub tags_any: Option<String>,
-    pub embedding_profile_id: Option<String>,
-    pub include_expired: Option<bool>,
-    pub include_revoked: Option<bool>,
-    pub limit: Option<usize>,
-}
 
 fn split_tags(raw: Option<String>) -> Option<Vec<String>> {
     raw.map(|s| {
@@ -1009,244 +908,6 @@ fn relay_inner(json: String, missing_status: StatusCode) -> Response {
             format!("inner returned non-JSON: {e}"),
         ),
     }
-}
-
-fn build_tier_params(tier: &str, q: MemoryTierQuery) -> daemon8_mcp::QueryMemoryTierParams {
-    daemon8_mcp::QueryMemoryTierParams {
-        tier: tier.into(),
-        agent_id: q.agent_id,
-        scope: q.scope,
-        tags_any: split_tags(q.tags_any),
-        embedding_profile_id: q.embedding_profile_id,
-        include_expired: q.include_expired.unwrap_or(false),
-        include_revoked: q.include_revoked.unwrap_or(false),
-        limit: q.limit,
-    }
-}
-
-async fn handle_memory_short(
-    State(state): State<ApiState>,
-    Query(q): Query<MemoryTierQuery>,
-) -> Response {
-    let params = build_tier_params("short", q);
-    let json = daemon8_mcp::query_memory_tier_inner(
-        state.memory_short_store.as_deref(),
-        state.memory_reference_store.as_deref(),
-        state.memory_long_store.as_deref(),
-        params,
-    )
-    .await;
-    relay_inner(json, StatusCode::SERVICE_UNAVAILABLE)
-}
-
-async fn handle_memory_reference(
-    State(state): State<ApiState>,
-    Query(q): Query<MemoryTierQuery>,
-) -> Response {
-    let params = build_tier_params("reference", q);
-    let json = daemon8_mcp::query_memory_tier_inner(
-        state.memory_short_store.as_deref(),
-        state.memory_reference_store.as_deref(),
-        state.memory_long_store.as_deref(),
-        params,
-    )
-    .await;
-    relay_inner(json, StatusCode::SERVICE_UNAVAILABLE)
-}
-
-async fn handle_memory_long(
-    State(state): State<ApiState>,
-    Query(q): Query<MemoryTierQuery>,
-) -> Response {
-    let params = build_tier_params("long", q);
-    let json = daemon8_mcp::query_memory_tier_inner(
-        state.memory_short_store.as_deref(),
-        state.memory_reference_store.as_deref(),
-        state.memory_long_store.as_deref(),
-        params,
-    )
-    .await;
-    relay_inner(json, StatusCode::SERVICE_UNAVAILABLE)
-}
-
-#[derive(Debug, Deserialize)]
-pub struct SweepBody {
-    #[serde(default)]
-    pub agent_id: Option<String>,
-    #[serde(default)]
-    pub apply: bool,
-}
-
-async fn handle_bookkeeper_sweep(
-    State(state): State<ApiState>,
-    Json(body): Json<SweepBody>,
-) -> Response {
-    let Some(bookkeeper) = state.bookkeeper_store.as_ref() else {
-        return error_json(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "bookkeeper store not configured",
-        );
-    };
-    let params = daemon8_mcp::MemorySweepShortParams {
-        agent_id: body.agent_id,
-        apply: body.apply,
-    };
-    let json = daemon8_mcp::memory_sweep_short_inner(bookkeeper.as_ref(), params).await;
-    relay_inner(json, StatusCode::INTERNAL_SERVER_ERROR)
-}
-
-#[derive(Debug, Deserialize)]
-pub struct DedupeBody {
-    #[serde(default)]
-    pub scope: Option<String>,
-    #[serde(default)]
-    pub apply: bool,
-}
-
-async fn handle_bookkeeper_dedupe(
-    State(state): State<ApiState>,
-    Json(body): Json<DedupeBody>,
-) -> Response {
-    let Some(bookkeeper) = state.bookkeeper_store.as_ref() else {
-        return error_json(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "bookkeeper store not configured",
-        );
-    };
-    let params = daemon8_mcp::MemoryDedupeLongParams {
-        scope: body.scope,
-        apply: body.apply,
-    };
-    let json = daemon8_mcp::memory_dedupe_long_inner(bookkeeper.as_ref(), params).await;
-    relay_inner(json, StatusCode::BAD_REQUEST)
-}
-
-async fn handle_embedding_profiles_list(State(state): State<ApiState>) -> Response {
-    let Some(store) = state.embedding_profile_store.as_ref() else {
-        return error_json(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "embedding profile store not configured",
-        );
-    };
-    let json = daemon8_mcp::list_embedding_profiles_inner(store.as_ref()).await;
-    relay_inner(json, StatusCode::INTERNAL_SERVER_ERROR)
-}
-
-#[derive(Debug, Deserialize)]
-pub struct EmbeddingProfileRegisterBody {
-    pub provider: String,
-    pub model: String,
-    pub dimensions: u32,
-    #[serde(default)]
-    pub id: Option<String>,
-}
-
-async fn handle_embedding_profiles_register(
-    State(state): State<ApiState>,
-    Json(body): Json<EmbeddingProfileRegisterBody>,
-) -> Response {
-    let Some(store) = state.embedding_profile_store.as_ref() else {
-        return error_json(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "embedding profile store not configured",
-        );
-    };
-    let params = daemon8_mcp::RegisterEmbeddingProfileParams {
-        provider: body.provider,
-        model: body.model,
-        dimensions: body.dimensions,
-        id: body.id,
-    };
-    let json = daemon8_mcp::register_embedding_profile_inner(store.as_ref(), params).await;
-    relay_inner(json, StatusCode::BAD_REQUEST)
-}
-
-#[derive(Debug, Deserialize)]
-pub struct Deliber8RosterQuery {
-    pub kinds: Option<String>,
-    pub statuses: Option<String>,
-    pub project_ref: Option<String>,
-    pub team_ref: Option<String>,
-    pub limit: Option<usize>,
-}
-
-async fn handle_deliber8_roster(
-    State(state): State<ApiState>,
-    Query(q): Query<Deliber8RosterQuery>,
-) -> Response {
-    let Some(store) = state.card_store.as_ref() else {
-        return error_json(StatusCode::SERVICE_UNAVAILABLE, "card store not configured");
-    };
-    let params = daemon8_mcp::Deliber8RosterParams {
-        kinds: split_tags(q.kinds),
-        statuses: split_tags(q.statuses),
-        project_ref: q.project_ref,
-        team_ref: q.team_ref,
-        limit: q.limit,
-    };
-    let json = daemon8_mcp::deliber8_roster_inner(store.as_ref(), params).await;
-    relay_inner(json, StatusCode::INTERNAL_SERVER_ERROR)
-}
-
-async fn handle_deliber8_spawn(
-    State(state): State<ApiState>,
-    Json(card): Json<daemon8_types::AgentCard>,
-) -> Response {
-    let Some(store) = state.card_store.as_ref() else {
-        return error_json(StatusCode::SERVICE_UNAVAILABLE, "card store not configured");
-    };
-    match store.upsert_agent(card).await {
-        Ok(()) => (StatusCode::CREATED, Json(serde_json::json!({ "ok": true }))).into_response(),
-        Err(e) => error_json(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("upsert_agent failed: {e}"),
-        ),
-    }
-}
-
-async fn handle_deliber8_enqueue(
-    State(state): State<ApiState>,
-    Json(envelope): Json<daemon8_types::EnvelopeRecord>,
-) -> Response {
-    let Some(store) = state.envelope_store.as_ref() else {
-        return error_json(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "envelope store not configured",
-        );
-    };
-    match store.enqueue_envelope(envelope).await {
-        Ok(id) => (StatusCode::CREATED, Json(serde_json::json!({ "id": id }))).into_response(),
-        Err(e) => error_json(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("enqueue_envelope failed: {e}"),
-        ),
-    }
-}
-
-#[derive(Debug, Deserialize)]
-pub struct Deliber8InboxQuery {
-    pub statuses: Option<String>,
-    pub limit: Option<usize>,
-}
-
-async fn handle_deliber8_inbox(
-    State(state): State<ApiState>,
-    axum::extract::Path(address): axum::extract::Path<String>,
-    Query(q): Query<Deliber8InboxQuery>,
-) -> Response {
-    let Some(store) = state.envelope_store.as_ref() else {
-        return error_json(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "envelope store not configured",
-        );
-    };
-    let params = daemon8_mcp::Deliber8InboxParams {
-        address,
-        statuses: split_tags(q.statuses),
-        limit: q.limit,
-    };
-    let json = daemon8_mcp::deliber8_inbox_inner(store.as_ref(), params).await;
-    relay_inner(json, StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 #[derive(Debug, Deserialize)]
@@ -1448,10 +1109,7 @@ fn validated_memory_export_query(query: &str) -> Result<String, String> {
         return Err("query must include FROM with an allowed memory table".into());
     };
     if !is_allowed_memory_export_table(table) {
-        return Err(
-            "query may only export memory tables: memory, memory_short, memory_reference, memory_long"
-                .into(),
-        );
+        return Err("query may only export the legacy memory table".into());
     }
 
     let Some(order_index) = tokens
@@ -1486,10 +1144,7 @@ fn validated_memory_export_query(query: &str) -> Result<String, String> {
 }
 
 fn is_allowed_memory_export_table(table: &str) -> bool {
-    matches!(
-        table,
-        "memory" | "memory_short" | "memory_reference" | "memory_long"
-    )
+    table == "memory"
 }
 
 fn query_without_string_literals(query: &str) -> Result<String, String> {
@@ -1535,108 +1190,6 @@ fn tokenize_query(query: &str) -> Vec<String> {
         .filter(|token| !token.is_empty())
         .map(str::to_string)
         .collect()
-}
-
-fn map_specialist_error(e: SpecialistControlError) -> Response {
-    use SpecialistControlError as E;
-    let (status, msg) = match &e {
-        E::NotFound { .. } => (StatusCode::NOT_FOUND, e.to_string()),
-        E::NotASpecialist { .. } => (StatusCode::BAD_REQUEST, e.to_string()),
-        E::BadConfig { .. } => (StatusCode::BAD_REQUEST, e.to_string()),
-        E::MissingApiKey { .. } => (StatusCode::FAILED_DEPENDENCY, e.to_string()),
-        E::AlreadyRunning { .. } | E::NotRunning { .. } => (StatusCode::CONFLICT, e.to_string()),
-        E::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-    };
-    error_json(status, msg)
-}
-
-async fn handle_specialist_start(
-    State(state): State<ApiState>,
-    Path(slug): Path<String>,
-) -> Response {
-    let Some(controller) = state.specialist_controller.as_ref() else {
-        return error_json(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "specialist controller not configured",
-        );
-    };
-    match controller.start(&slug).await {
-        Ok(()) => Json(serde_json::json!({
-            "ok": true, "slug": slug, "status": "running"
-        }))
-        .into_response(),
-        Err(e) => map_specialist_error(e),
-    }
-}
-
-async fn handle_specialist_stop(
-    State(state): State<ApiState>,
-    Path(slug): Path<String>,
-) -> Response {
-    let Some(controller) = state.specialist_controller.as_ref() else {
-        return error_json(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "specialist controller not configured",
-        );
-    };
-    match controller.stop(&slug).await {
-        Ok(()) => Json(serde_json::json!({
-            "ok": true, "slug": slug, "status": "stopped"
-        }))
-        .into_response(),
-        Err(e) => map_specialist_error(e),
-    }
-}
-
-async fn handle_specialist_restart(
-    State(state): State<ApiState>,
-    Path(slug): Path<String>,
-) -> Response {
-    let Some(controller) = state.specialist_controller.as_ref() else {
-        return error_json(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "specialist controller not configured",
-        );
-    };
-    match controller.restart(&slug).await {
-        Ok(()) => Json(serde_json::json!({
-            "ok": true, "slug": slug, "status": "running"
-        }))
-        .into_response(),
-        Err(e) => map_specialist_error(e),
-    }
-}
-
-#[derive(Debug, Deserialize)]
-pub struct SpecialistPatchBody {
-    pub persona: Option<serde_json::Value>,
-    pub model: Option<serde_json::Value>,
-}
-
-async fn handle_specialist_patch(
-    State(state): State<ApiState>,
-    Path(slug): Path<String>,
-    Json(body): Json<SpecialistPatchBody>,
-) -> Response {
-    let Some(controller) = state.specialist_controller.as_ref() else {
-        return error_json(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "specialist controller not configured",
-        );
-    };
-    if body.persona.is_none() && body.model.is_none() {
-        return error_json(
-            StatusCode::BAD_REQUEST,
-            "patch body must include at least one of: persona, model",
-        );
-    }
-    match controller.patch(&slug, body.persona, body.model).await {
-        Ok(restarted) => Json(serde_json::json!({
-            "ok": true, "slug": slug, "restarted": restarted
-        }))
-        .into_response(),
-        Err(e) => map_specialist_error(e),
-    }
 }
 
 #[cfg(test)]
