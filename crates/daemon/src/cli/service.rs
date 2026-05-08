@@ -212,9 +212,8 @@ pub fn cmd_uninstall() -> Result<()> {
     }
 
     // 4. Project-local .daemon8.toml
-    let cwd_config = std::env::current_dir()
-        .unwrap_or_default()
-        .join(crate::cli_config::PROJECT_CONFIG_FILENAME);
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let cwd_config = cwd.join(crate::cli_config::PROJECT_CONFIG_FILENAME);
     if cwd_config.exists() {
         remove_path(&cwd_config, "project config");
     }
@@ -227,8 +226,8 @@ pub fn cmd_uninstall() -> Result<()> {
     remove_provider_entry(Provider::Gemini, &home);
     remove_provider_entry(Provider::Codex, &home);
 
-    // 6. Remove hook entries from Claude settings
-    remove_claude_hooks(&home);
+    // 6. Remove hook entries from provider hook config files
+    remove_cli_hooks(&home, &cwd);
 
     println!();
     println!("Daemon8 fully uninstalled.");
@@ -325,10 +324,13 @@ fn remove_provider_entry(provider: Provider, home: &std::path::Path) {
     }
 }
 
-fn remove_claude_hooks(home: &std::path::Path) {
+fn remove_cli_hooks(home: &std::path::Path, cwd: &std::path::Path) {
     for settings_path in [
         home.join(".claude/settings.json"),
         home.join(".claude/settings.local.json"),
+        home.join(".codex/hooks.json"),
+        cwd.join(".claude/settings.json"),
+        cwd.join(".claude/settings.local.json"),
     ] {
         if !settings_path.exists() {
             continue;
@@ -346,10 +348,7 @@ fn remove_claude_hooks(home: &std::path::Path) {
             for (_event, matchers) in hooks.iter_mut() {
                 if let Some(arr) = matchers.as_array_mut() {
                     let before = arr.len();
-                    arr.retain(|entry| {
-                        let cmd = entry["command"].as_str().unwrap_or("");
-                        !cmd.contains("daemon8")
-                    });
+                    arr.retain(|entry| !hook_group_contains_daemon8(entry));
                     if arr.len() < before {
                         modified = true;
                     }
@@ -364,6 +363,23 @@ fn remove_claude_hooks(home: &std::path::Path) {
             );
         }
     }
+}
+
+fn hook_group_contains_daemon8(entry: &serde_json::Value) -> bool {
+    entry
+        .get("command")
+        .and_then(|command| command.as_str())
+        .is_some_and(|command| command.contains("daemon8"))
+        || entry
+            .get("hooks")
+            .and_then(|hooks| hooks.as_array())
+            .is_some_and(|hooks| {
+                hooks.iter().any(|hook| {
+                    hook.get("command")
+                        .and_then(|command| command.as_str())
+                        .is_some_and(|command| command.contains("daemon8"))
+                })
+            })
 }
 
 // ---------------------------------------------------------------------------
@@ -785,4 +801,71 @@ fn uninstall_schtasks() -> Result<()> {
         anyhow::bail!("schtasks /Delete failed: {stderr}");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn read_json(path: &std::path::Path) -> serde_json::Value {
+        let text = std::fs::read_to_string(path).expect("read hook config");
+        serde_json::from_str(&text).expect("parse hook config")
+    }
+
+    #[test]
+    fn remove_cli_hooks_removes_nested_daemon8_groups_and_preserves_user_hooks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let claude_dir = home.join(".claude");
+        let codex_dir = home.join(".codex");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        std::fs::create_dir_all(&codex_dir).unwrap();
+
+        let hook_config = serde_json::json!({
+            "hooks": {
+                "PreToolUse": [
+                    {
+                        "matcher": "Bash",
+                        "hooks": [{ "type": "command", "command": "user-hook" }]
+                    },
+                    {
+                        "matcher": "Bash",
+                        "hooks": [{ "type": "command", "command": "/bin/daemon8 cli-hook" }]
+                    }
+                ]
+            }
+        });
+        std::fs::write(
+            claude_dir.join("settings.local.json"),
+            serde_json::to_string_pretty(&hook_config).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            codex_dir.join("hooks.json"),
+            serde_json::to_string_pretty(&hook_config).unwrap(),
+        )
+        .unwrap();
+
+        let project = tmp.path().join("project");
+        let project_claude_dir = project.join(".claude");
+        std::fs::create_dir_all(&project_claude_dir).unwrap();
+        std::fs::write(
+            project_claude_dir.join("settings.local.json"),
+            serde_json::to_string_pretty(&hook_config).unwrap(),
+        )
+        .unwrap();
+
+        remove_cli_hooks(home, &project);
+
+        for path in [
+            claude_dir.join("settings.local.json"),
+            codex_dir.join("hooks.json"),
+            project_claude_dir.join("settings.local.json"),
+        ] {
+            let parsed = read_json(&path);
+            let groups = parsed["hooks"]["PreToolUse"].as_array().unwrap();
+            assert_eq!(groups.len(), 1, "{path:?}");
+            assert_eq!(groups[0]["hooks"][0]["command"].as_str(), Some("user-hook"));
+        }
+    }
 }

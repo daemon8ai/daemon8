@@ -8,7 +8,7 @@ Use this to:
 Parameters:
 - yes: boolean. Required. Must be `true` to confirm the mutation. The MCP gate refuses any other value.
 - cwd: optional string. Project working directory. Defaults to the daemon's current directory.
-- providers: optional string. Comma-separated providers to configure (e.g. "claude,cursor,windsurf"). Omit to use the project's declared providers.
+- providers: optional string. Comma-separated providers to configure (e.g. "claude,cursor,windsurf"). Omit to skip provider config writes.
 - install_hooks: optional string. Hook install scope: "local", "shared", or "global".
 - force_hooks: optional boolean. Replace stale daemon8 hook entries that point at older versions.
 

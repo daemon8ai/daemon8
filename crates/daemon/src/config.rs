@@ -36,6 +36,7 @@ pub struct Config {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ServerConfig {
     #[serde(default = "default_port")]
     pub port: u16,
@@ -44,6 +45,7 @@ pub struct ServerConfig {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StorageConfig {
     #[serde(default, deserialize_with = "deser_optional_path")]
     pub path: Option<PathBuf>,
@@ -52,6 +54,7 @@ pub struct StorageConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ChromeConfig {
     #[serde(default)]
     pub auto_connect: bool,
@@ -73,6 +76,7 @@ pub struct McpConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct IngestionConfig {
     #[serde(default)]
     pub udp: UdpConfig,
@@ -81,6 +85,7 @@ pub struct IngestionConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UdpConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -91,6 +96,7 @@ pub struct UdpConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct UnixConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -99,6 +105,7 @@ pub struct UnixConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AdbConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -109,6 +116,7 @@ pub struct AdbConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LoggingConfig {
     #[serde(default)]
     pub level: LogLevel,
@@ -166,6 +174,7 @@ pub enum SourceConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FileSourceConfig {
     pub path: String,
     #[serde(default = "default_line_parser")]
@@ -175,12 +184,14 @@ pub struct FileSourceConfig {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SetupConfig {
     #[serde(default)]
     pub projects: BTreeMap<String, ProjectSetupState>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProjectSetupState {
     pub slug: String,
     pub root_path: String,
@@ -341,7 +352,11 @@ pub fn load(config_path: Option<&str>) -> Result<Config, figment::Error> {
 
     // Environment variables use double-underscore for nesting:
     // DAEMON8_SERVER__PORT=9090, DAEMON8_CHROME__AUTO_CONNECT=true
-    figment = figment.merge(Env::prefixed("DAEMON8_").split("__"));
+    figment = figment.merge(
+        Env::prefixed("DAEMON8_")
+            .split("__")
+            .filter(|key| is_config_env_key(key.as_str())),
+    );
 
     let mut cfg: Config = figment.extract()?;
 
@@ -355,6 +370,23 @@ pub fn load(config_path: Option<&str>) -> Result<Config, figment::Error> {
     };
 
     Ok(cfg)
+}
+
+fn is_config_env_key(key: &str) -> bool {
+    let root = key.split('.').next().unwrap_or(key);
+    matches!(
+        root,
+        "version"
+            | "server"
+            | "storage"
+            | "browser"
+            | "mcp"
+            | "adb"
+            | "ingestion"
+            | "logging"
+            | "sources"
+            | "setup"
+    )
 }
 
 /// Returns the platform `ProjectDirs` instance for daemon8, keyed on build profile.
@@ -498,6 +530,42 @@ http = false
             result.is_err(),
             "removed mcp.http config must not be silently accepted"
         );
+    }
+
+    #[test]
+    fn removed_nested_runtime_config_keys_are_rejected() {
+        for toml_text in [
+            r#"
+[storage]
+embedding_path = "vectors.db"
+"#,
+            r#"
+[browser]
+role_default = "debugger"
+"#,
+            r#"
+[ingestion.udp]
+legacy_port = 8099
+"#,
+            r#"
+[sources.app]
+type = "file"
+path = "app.log"
+role_default = "debugger"
+"#,
+        ] {
+            let result: Result<Config, _> = toml::from_str(toml_text);
+            assert!(
+                result.is_err(),
+                "removed nested runtime config key must not be accepted: {toml_text}"
+            );
+        }
+    }
+
+    #[test]
+    fn config_env_filter_ignores_hook_diagnostic_env() {
+        assert!(!is_config_env_key("hook_verbose"));
+        assert!(is_config_env_key("server.port"));
     }
 
     #[test]

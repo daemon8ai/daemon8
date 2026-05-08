@@ -41,7 +41,7 @@ pub struct CliHookArgs {
     #[arg(long)]
     pub daemon_url: Option<String>,
 
-    /// Emit JSON diagnostic to stderr even when enrollment is disabled.
+    /// Emit stderr diagnostics for soft-fail and skip paths.
     #[arg(long)]
     pub verbose: bool,
 }
@@ -297,11 +297,20 @@ fn run(args: CliHookArgs) -> Result<()> {
     }
 
     if cli_cfg.project_config_path.is_none() {
+        if verbose {
+            eprintln!(
+                "[daemon8 cli-hook] skipped: no project .daemon8.toml found from {}",
+                cwd.display()
+            );
+        }
         return Ok(());
     }
 
     let tool = detect_tool(args.tool.as_deref());
     if !cli_cfg.enrollment_enabled_for(&tool) {
+        if verbose {
+            eprintln!("[daemon8 cli-hook] skipped: enrollment disabled for {tool}");
+        }
         return Ok(());
     }
 

@@ -1095,6 +1095,9 @@ fn validated_memory_export_query(query: &str) -> Result<String, String> {
     if !matches!(tokens.first().map(String::as_str), Some("select")) {
         return Err("query must start with SELECT".into());
     }
+    if tokens.iter().any(|token| token == "embedding") {
+        return Err("memory export cannot include removed embedding data".into());
+    }
 
     let Some(from_index) = tokens.iter().position(|token| token == "from") else {
         return Err("query must include FROM with an allowed memory table".into());
@@ -1244,6 +1247,22 @@ mod tests {
         let err = validate_memory_export_query("SELECT * FROM observation ORDER BY seq DESC")
             .expect_err("non-memory table should fail");
         assert!(err.contains("legacy memory table"));
+    }
+
+    #[test]
+    fn validate_memory_export_query_rejects_embedding_projection() {
+        for query in [
+            "SELECT embedding AS vector FROM memory ORDER BY created_at DESC",
+            "SELECT VALUE embedding FROM memory ORDER BY created_at DESC",
+            "SELECT { vector: embedding } FROM memory ORDER BY created_at DESC",
+        ] {
+            let err =
+                validate_memory_export_query(query).expect_err("embedding projection should fail");
+            assert!(
+                err.contains("embedding"),
+                "error should mention embedding data: {err}"
+            );
+        }
     }
 
     #[test]

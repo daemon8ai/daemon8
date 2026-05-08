@@ -76,7 +76,7 @@ pub fn install_codex_hooks(home: &Path, force: bool) -> Result<PathBuf> {
         &[
             HookSpec {
                 event: "SessionStart",
-                matcher: Some("startup|resume"),
+                matcher: Some("startup|resume|clear"),
                 status_message: Some("daemon8 session telemetry"),
             },
             HookSpec {

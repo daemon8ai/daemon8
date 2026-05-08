@@ -68,11 +68,12 @@ Register as a system service and configure your AI clients:
 
 ```bash
 daemon8 install
+daemon8 init
 daemon8 setup plan
 daemon8 setup apply --yes
 ```
 
-`daemon8 install` registers a user-level service. `daemon8 setup plan` previews configuration changes. `daemon8 setup apply --yes` registers runtime sources and configures supported AI clients.
+`daemon8 install` registers a user-level service. `daemon8 init` creates the project `.daemon8.toml`. `daemon8 setup plan` previews configuration changes. `daemon8 setup apply --yes` registers runtime sources and configures supported AI clients.
 
 > [!WARNING]
 > **macOS:** first launch triggers an "unidentified developer" Gatekeeper prompt and may request Background Items and App Management permissions. Both are expected until signed release binaries ship.
@@ -147,7 +148,7 @@ There are 17 MCP tools grouped by capability. Every tool returns JSON. Mutating 
 
 ## HTTP API
 
-Same data surface as MCP, accessible to non-MCP clients. All routes return JSON.
+Observation, browser, lens, and memory routes for non-MCP clients. Most routes return JSON; `/api/stream` is SSE and `/health` returns plain text.
 
 | Method | Path | Purpose |
 |--------|------|---------|

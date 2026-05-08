@@ -7,6 +7,7 @@
 //! `.daemon8.toml` generation, and hook registration into
 //! `.claude/settings.{local.,}json` / `~/.claude/settings.json` (via fake HOME).
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -56,6 +57,33 @@ fn run_daemon8(args: &[&str]) -> std::process::Output {
         .stdin(Stdio::null())
         .output()
         .expect("spawn daemon8")
+}
+
+fn run_cli_hook_with_stdin(
+    dir: &Path,
+    fake_home: &Path,
+    args: &[&str],
+    stdin: &str,
+) -> std::process::Output {
+    let mut child = Command::new(binary())
+        .arg("cli-hook")
+        .args(args)
+        .current_dir(dir)
+        .env("HOME", fake_home)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn daemon8 cli-hook");
+
+    child
+        .stdin
+        .as_mut()
+        .expect("cli-hook stdin")
+        .write_all(stdin.as_bytes())
+        .expect("write cli-hook stdin");
+
+    child.wait_with_output().expect("wait daemon8 cli-hook")
 }
 
 fn run_setup(
@@ -281,7 +309,7 @@ fn cli_yes_with_codex_provider_writes_codex_config_and_hooks() {
     let session = &hooks_for(&parsed, "SessionStart")[0];
     assert_eq!(
         session.get("matcher").and_then(Value::as_str),
-        Some("startup|resume")
+        Some("startup|resume|clear")
     );
     for event in ["PreToolUse", "PermissionRequest", "PostToolUse"] {
         let tool_group = hooks_for(&parsed, event)
@@ -327,6 +355,70 @@ codex_hooks = true
     assert!(
         parsed["features"].get("hooks").is_none(),
         "daemon8 must not write unsupported codex hooks feature flag"
+    );
+}
+
+#[test]
+fn cli_hook_verbose_reports_missing_project_config_and_exits_zero() {
+    let (_tmp, work, home) = setup_dirs();
+    let input = serde_json::json!({
+        "hook_event_name": "SessionStart",
+        "session_id": "test-session",
+        "cwd": work,
+    })
+    .to_string();
+
+    let out = run_cli_hook_with_stdin(&work, &home, &["--verbose"], &input);
+
+    assert!(out.status.success());
+    assert!(out.stdout.is_empty(), "stdout must stay machine-safe");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("no project .daemon8.toml"),
+        "stderr should explain skipped hook: {stderr}"
+    );
+}
+
+#[test]
+fn cli_hook_verbose_reports_disabled_enrollment_and_exits_zero() {
+    let (_tmp, work, home) = setup_dirs();
+    std::fs::write(
+        work.join(".daemon8.toml"),
+        r#"
+[project]
+slug = "daemon8-test"
+"#,
+    )
+    .unwrap();
+    let input = serde_json::json!({
+        "hook_event_name": "SessionStart",
+        "session_id": "test-session",
+        "cwd": work,
+    })
+    .to_string();
+
+    let out = run_cli_hook_with_stdin(&work, &home, &["--verbose"], &input);
+
+    assert!(out.status.success());
+    assert!(out.stdout.is_empty(), "stdout must stay machine-safe");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("enrollment disabled"),
+        "stderr should explain skipped hook: {stderr}"
+    );
+}
+
+#[test]
+fn cli_hook_verbose_soft_fails_malformed_stdin_with_zero_exit() {
+    let (_tmp, work, home) = setup_dirs();
+    let out = run_cli_hook_with_stdin(&work, &home, &["--verbose"], "not json");
+
+    assert!(out.status.success());
+    assert!(out.stdout.is_empty(), "stdout must stay machine-safe");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("soft-failed"),
+        "stderr should explain soft failure: {stderr}"
     );
 }
 

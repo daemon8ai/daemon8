@@ -55,12 +55,14 @@ struct CliConfigLayer {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProjectSection {
     #[serde(default)]
     pub slug: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EnrollmentSection {
     #[serde(default)]
     pub enabled: bool,
@@ -71,6 +73,7 @@ pub struct EnrollmentSection {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProviderEntry {
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -345,6 +348,33 @@ track_file_writes = true
             result.is_err(),
             "removed hook/memory planning sections must not be silently accepted"
         );
+    }
+
+    #[test]
+    fn removed_nested_project_keys_are_rejected() {
+        for toml_text in [
+            r#"
+[project]
+slug = "daemonai"
+role_default = "debugger"
+"#,
+            r#"
+[enrollment]
+enabled = true
+mode = "automatic"
+"#,
+            r#"
+[providers.codex-cli]
+enabled = true
+hook_style = "legacy"
+"#,
+        ] {
+            let result: Result<CliConfigLayer, _> = toml::from_str(toml_text);
+            assert!(
+                result.is_err(),
+                "removed nested project config key must not be accepted: {toml_text}"
+            );
+        }
     }
 
     #[test]
