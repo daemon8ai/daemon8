@@ -30,15 +30,12 @@ clap.workspace = true
 figment.workspace = true
 directories.workspace = true
 anyhow.workspace = true
-async-trait.workspace = true
 thiserror.workspace = true
 axum.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 rmcp.workspace = true
 daemon8-api.workspace = true
-daemon8-embed = { workspace = true, features = ["fastembed", "ollama", "openai"] }
-daemon8-deliber8-llm.workspace = true
 daemon8-parse.workspace = true
 reqwest.workspace = true
 reqwest-eventsource.workspace = true

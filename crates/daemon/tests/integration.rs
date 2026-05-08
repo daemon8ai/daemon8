@@ -189,16 +189,7 @@ async fn start_server(
         chrome_state: chrome_state_rx,
         chrome_endpoint: std::sync::Arc::new(std::sync::Mutex::new(None)),
         lens: std::sync::Arc::new(daemon8_store::LensManager::new(broadcast_tx.subscribe())),
-        embedder: None,
         memory_store: None,
-        card_store: None,
-        envelope_store: None,
-        memory_short_store: None,
-        memory_reference_store: None,
-        memory_long_store: None,
-        bookkeeper_store: None,
-        embedding_profile_store: None,
-        specialist_controller: None,
     };
 
     let app =
@@ -444,7 +435,6 @@ async fn memory_export_endpoint_streams_paged_ndjson_for_memory_rows() {
                 updated_at: (idx + 1) as u64,
                 kind: MemoryKind::Pattern,
                 content: (*content).into(),
-                embedding: None,
                 source_observations: Vec::new(),
                 tags: vec!["project:daemon8".into()],
                 project_slug: "daemon8".into(),
@@ -1157,16 +1147,7 @@ async fn start_act_server() -> (
         chrome_state: chrome_state_rx,
         chrome_endpoint: std::sync::Arc::new(std::sync::Mutex::new(None)),
         lens: std::sync::Arc::new(daemon8_store::LensManager::new(stream_tx.subscribe())),
-        embedder: None,
         memory_store: None,
-        card_store: None,
-        envelope_store: None,
-        memory_short_store: None,
-        memory_reference_store: None,
-        memory_long_store: None,
-        bookkeeper_store: None,
-        embedding_profile_store: None,
-        specialist_controller: None,
     };
     let app = daemon8_api::api_router(api_state);
 

@@ -4,10 +4,10 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use toml::Table;
 
-use super::{current_exe_string, shim_command, Provider};
+use super::{Provider, current_exe_string, shim_command};
 
 pub fn write_provider_config(
     provider: Provider,

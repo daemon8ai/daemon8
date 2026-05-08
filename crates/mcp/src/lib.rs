@@ -411,7 +411,6 @@ pub struct DaemonMcp {
     subscription_tx: Arc<tokio::sync::watch::Sender<Option<Filter>>>,
     broadcast_tx: broadcast::Sender<(Arc<Observation>, Arc<str>)>,
     lens: Arc<LensManager>,
-    embedder: Option<Arc<dyn daemon8_embed::Embedder>>,
     setup_tool_fn: Option<SetupToolFn>,
     tool_router: ToolRouter<Self>,
 }
@@ -428,7 +427,6 @@ pub struct DaemonMcpConfig {
     pub subscription_tx: Arc<tokio::sync::watch::Sender<Option<Filter>>>,
     pub broadcast_tx: broadcast::Sender<(Arc<Observation>, Arc<str>)>,
     pub lens: Arc<LensManager>,
-    pub embedder: Option<Arc<dyn daemon8_embed::Embedder>>,
     pub setup_tool_fn: Option<SetupToolFn>,
 }
 
@@ -457,7 +455,6 @@ impl DaemonMcp {
             subscription_tx: cfg.subscription_tx,
             broadcast_tx: cfg.broadcast_tx,
             lens: cfg.lens,
-            embedder: cfg.embedder,
             setup_tool_fn: cfg.setup_tool_fn,
             tool_router: router,
         }
@@ -790,7 +787,7 @@ impl DaemonMcp {
             Some(s) => s,
             None => return error_json("memory store not available"),
         };
-        save_memory_inner(mem_store.as_ref(), self.embedder.as_deref(), params).await
+        save_memory_inner(mem_store.as_ref(), params).await
     }
 
     #[doc = include_str!("../tool_descriptions/query_memory.txt")]
@@ -1557,11 +1554,7 @@ impl ServerHandler for DaemonMcp {
 
 /// Pure handler for `save_memory`. Extracted so tests can drive it
 /// against an in-memory `MemoryStore` without spinning up DaemonMcp.
-pub async fn save_memory_inner(
-    mem_store: &dyn MemoryStore,
-    embedder: Option<&dyn daemon8_embed::Embedder>,
-    params: SaveMemoryParams,
-) -> String {
+pub async fn save_memory_inner(mem_store: &dyn MemoryStore, params: SaveMemoryParams) -> String {
     let kind = params
         .kind
         .as_deref()
@@ -1573,25 +1566,12 @@ pub async fn save_memory_inner(
         .unwrap_or_default()
         .as_nanos() as u64;
 
-    let embedding = match embedder {
-        Some(embedder) => match embedder.embed(&params.content).await {
-            Ok(v) if v.is_empty() => None,
-            Ok(v) => Some(v),
-            Err(e) => {
-                tracing::warn!(error = %e, "embedding failed, saving without");
-                None
-            }
-        },
-        None => None,
-    };
-
     let memory = daemon8_store::Memory {
         id: None,
         created_at: now,
         updated_at: now,
         kind,
         content: params.content,
-        embedding,
         source_observations: params.source_observations.unwrap_or_default(),
         tags: params.tags.unwrap_or_default(),
         project_slug: params.project_slug.unwrap_or_default(),

@@ -5,7 +5,6 @@ use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
-use daemon8_embed::EmbedProvider;
 use daemon8_store::StateModel;
 
 use super::observe::{base_url, check_response};
@@ -61,7 +60,6 @@ pub async fn cmd_doctor(config_path: Option<String>, fix: bool) -> Result<()> {
         check_network(),
         check_setup_state(&cfg),
         check_sources(&cfg),
-        check_embeddings(&cfg),
         check_store(&cfg, port).await,
     ];
 
@@ -373,69 +371,6 @@ fn check_sources(cfg: &config::Config) -> Check {
     }
 }
 
-fn check_embeddings(cfg: &config::Config) -> Check {
-    match cfg.embeddings.provider {
-        EmbedProvider::None => Check {
-            name: "embeddings",
-            result: CheckResult::OkHint("disabled".into()),
-        },
-        EmbedProvider::Fastembed => Check {
-            name: "embeddings",
-            result: CheckResult::OkHint(format!("fastembed, model={}", cfg.embeddings.model)),
-        },
-        EmbedProvider::Ollama => {
-            let endpoint = cfg
-                .embeddings
-                .endpoint
-                .as_deref()
-                .unwrap_or("http://localhost:11434");
-
-            let reachable = parse_host_port(endpoint).is_some_and(|addr| {
-                std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(2))
-                    .is_ok()
-            });
-
-            if reachable {
-                Check {
-                    name: "embeddings",
-                    result: CheckResult::OkHint(format!(
-                        "ollama reachable, model={}",
-                        cfg.embeddings.model
-                    )),
-                }
-            } else {
-                Check {
-                    name: "embeddings",
-                    result: CheckResult::Warn(format!(
-                        "ollama unreachable at {endpoint} — is it running?"
-                    )),
-                }
-            }
-        }
-        EmbedProvider::Openai => {
-            let has_key = cfg
-                .embeddings
-                .api_key
-                .as_ref()
-                .is_some_and(|k| !k.is_empty());
-
-            if has_key {
-                Check {
-                    name: "embeddings",
-                    result: CheckResult::OkHint(format!("openai, model={}", cfg.embeddings.model)),
-                }
-            } else {
-                Check {
-                    name: "embeddings",
-                    result: CheckResult::Warn(
-                        "openai provider configured but api_key is missing".into(),
-                    ),
-                }
-            }
-        }
-    }
-}
-
 async fn check_store(cfg: &config::Config, port: u16) -> Check {
     const NAME: &str = "store";
 
@@ -567,18 +502,6 @@ fn check_macos_launchd_state() -> Check {
             )),
         },
     }
-}
-
-fn parse_host_port(url: &str) -> Option<std::net::SocketAddr> {
-    use std::net::ToSocketAddrs;
-
-    let stripped = url
-        .strip_prefix("http://")
-        .or_else(|| url.strip_prefix("https://"))
-        .unwrap_or(url);
-
-    let authority = stripped.split('/').next().unwrap_or(stripped);
-    authority.to_socket_addrs().ok()?.next()
 }
 
 fn is_writable(dir: &std::path::Path) -> bool {

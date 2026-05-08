@@ -50,49 +50,7 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
     );
 
     let memory_store: Arc<dyn daemon8_store::MemoryStore> = Arc::new(surreal_store.memory_store());
-
-    let envelope_store: Arc<dyn daemon8_store::EnvelopeStore> =
-        Arc::new(surreal_store.envelope_store());
-    let card_store: Arc<dyn daemon8_store::CardStore> = Arc::new(surreal_store.card_store());
-
-    let memory_short_store: Arc<dyn daemon8_store::MemoryShortStore> =
-        Arc::new(surreal_store.memory_short_store());
-
-    let memory_reference_store: Arc<dyn daemon8_store::MemoryReferenceStore> =
-        Arc::new(surreal_store.memory_reference_store());
-
-    let memory_long_store: Arc<dyn daemon8_store::MemoryLongStore> =
-        Arc::new(surreal_store.memory_long_store());
-
-    let bookkeeper_store: Arc<dyn daemon8_store::BookkeeperStore> =
-        Arc::new(surreal_store.bookkeeper_store());
-
-    let embedding_profile_store: Arc<dyn daemon8_store::EmbeddingProfileStore> =
-        Arc::new(surreal_store.embedding_profile_store());
-
     let store: Arc<dyn StateModel> = surreal_store.clone();
-
-    let embedder: Option<Arc<dyn daemon8_embed::Embedder>> = if cfg.embeddings.provider
-        != daemon8_embed::EmbedProvider::None
-    {
-        match daemon8_embed::create_embedder(&cfg.embeddings) {
-            Ok(e) => {
-                tracing::info!(
-                    provider = %cfg.embeddings.provider,
-                    model = %e.model_name(),
-                    dimensions = e.dimensions(),
-                    "embedder initialized"
-                );
-                Some(e)
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "embedder init failed, memories will lack embeddings");
-                None
-            }
-        }
-    } else {
-        None
-    };
 
     // Unbounded channel — deliberate policy.  The daemon captures observations
     // best-effort and losslessly: callers POST and return immediately; the store
@@ -233,13 +191,6 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
         let mcp = daemon8_mcp::DaemonMcp::new(daemon8_mcp::DaemonMcpConfig {
             store: store.clone(),
             memory_store: Some(memory_store.clone()),
-            envelope_store: Some(envelope_store.clone()),
-            card_store: Some(card_store.clone()),
-            memory_short_store: Some(memory_short_store.clone()),
-            memory_reference_store: Some(memory_reference_store.clone()),
-            memory_long_store: Some(memory_long_store.clone()),
-            bookkeeper_store: Some(bookkeeper_store.clone()),
-            embedding_profile_store: Some(embedding_profile_store.clone()),
             obs_tx: obs_tx.clone(),
             chrome_tx: chrome_cmd_tx.clone(),
             chrome_state: chrome_state_rx.clone(),
@@ -249,7 +200,6 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
             subscription_tx: sub_tx.clone(),
             broadcast_tx: broadcast_tx.clone(),
             lens,
-            embedder: embedder.clone(),
             setup_tool_fn: Some(setup_tool_fn.clone()),
         });
         let cancel_on_eof = cancel.clone();
@@ -274,13 +224,6 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
 
     let mcp_store = store.clone();
     let mcp_memory_store = memory_store.clone();
-    let mcp_envelope_store = envelope_store.clone();
-    let mcp_card_store = card_store.clone();
-    let mcp_memory_short = memory_short_store.clone();
-    let mcp_memory_reference = memory_reference_store.clone();
-    let mcp_memory_long = memory_long_store.clone();
-    let mcp_bookkeeper = bookkeeper_store.clone();
-    let mcp_embedding_profile = embedding_profile_store.clone();
     let mcp_obs_tx = obs_tx.clone();
     let mcp_chrome_tx = chrome_cmd_tx.clone();
     let mcp_state_rx = chrome_state_rx.clone();
@@ -288,7 +231,6 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
     let mcp_screenshot_fn = device_screenshot_fn.clone();
     let mcp_screenshot_dir = screenshot_dir.clone();
     let mcp_broadcast_tx = broadcast_tx.clone();
-    let mcp_embedder = embedder.clone();
     let mcp_cancel = cancel.child_token();
 
     let mcp_http = rmcp::transport::streamable_http_server::StreamableHttpService::new(
@@ -296,13 +238,6 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
             Ok(daemon8_mcp::DaemonMcp::new(daemon8_mcp::DaemonMcpConfig {
                 store: mcp_store.clone(),
                 memory_store: Some(mcp_memory_store.clone()),
-                envelope_store: Some(mcp_envelope_store.clone()),
-                card_store: Some(mcp_card_store.clone()),
-                memory_short_store: Some(mcp_memory_short.clone()),
-                memory_reference_store: Some(mcp_memory_reference.clone()),
-                memory_long_store: Some(mcp_memory_long.clone()),
-                bookkeeper_store: Some(mcp_bookkeeper.clone()),
-                embedding_profile_store: Some(mcp_embedding_profile.clone()),
                 obs_tx: mcp_obs_tx.clone(),
                 chrome_tx: mcp_chrome_tx.clone(),
                 chrome_state: mcp_state_rx.clone(),
@@ -314,7 +249,6 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
                 lens: Arc::new(daemon8_store::LensManager::new(
                     mcp_broadcast_tx.subscribe(),
                 )),
-                embedder: mcp_embedder.clone(),
                 setup_tool_fn: Some(setup_tool_fn.clone()),
             }))
         },
@@ -336,16 +270,7 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
         chrome_state: chrome_state_rx.clone(),
         chrome_endpoint: chrome_endpoint.clone(),
         lens: api_lens,
-        embedder: embedder.clone(),
         memory_store: Some(memory_store.clone()),
-        card_store: Some(card_store.clone()),
-        envelope_store: Some(envelope_store.clone()),
-        memory_short_store: Some(memory_short_store.clone()),
-        memory_reference_store: Some(memory_reference_store.clone()),
-        memory_long_store: Some(memory_long_store.clone()),
-        bookkeeper_store: Some(bookkeeper_store.clone()),
-        embedding_profile_store: Some(embedding_profile_store.clone()),
-        specialist_controller: None,
     };
     let port = cfg.server.port;
     let app = daemon8_ingest::ingest_router(obs_tx.clone())

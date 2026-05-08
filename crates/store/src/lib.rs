@@ -52,8 +52,6 @@ pub struct Memory {
     pub updated_at: u64,
     pub kind: MemoryKind,
     pub content: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub embedding: Option<Vec<f32>>,
     pub source_observations: Vec<u64>,
     pub tags: Vec<String>,
     pub project_slug: String,

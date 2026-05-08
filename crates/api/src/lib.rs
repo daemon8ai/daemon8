@@ -36,7 +36,6 @@ pub struct ApiState {
     pub chrome_state: tokio::sync::watch::Receiver<daemon8_chrome::ConnectionState>,
     pub chrome_endpoint: Arc<std::sync::Mutex<Option<Arc<str>>>>,
     pub lens: Arc<LensManager>,
-    pub embedder: Option<Arc<dyn daemon8_embed::Embedder>>,
     pub memory_store: Option<Arc<dyn MemoryStore>>,
 }
 
@@ -970,12 +969,7 @@ async fn handle_memory_save(
         session_id: body.session_id,
         confidence: body.confidence,
     };
-    let json = daemon8_mcp::save_memory_inner(
-        store.as_ref(),
-        state.embedder.as_ref().map(|a| a.as_ref()),
-        params,
-    )
-    .await;
+    let json = daemon8_mcp::save_memory_inner(store.as_ref(), params).await;
     relay_inner(json, StatusCode::INTERNAL_SERVER_ERROR)
 }
 
@@ -1249,7 +1243,7 @@ mod tests {
     fn validate_memory_export_query_rejects_non_memory_table() {
         let err = validate_memory_export_query("SELECT * FROM observation ORDER BY seq DESC")
             .expect_err("non-memory table should fail");
-        assert!(err.contains("memory tables"));
+        assert!(err.contains("legacy memory table"));
     }
 
     #[test]

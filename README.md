@@ -24,24 +24,6 @@ Picture application logs, browser console output, network failures, traces, and 
 
 > Note: daemon8 is in active development right now. Show support by starring, trying it out, and/or submitting issues - it's greatly appreciated!
 
-### When Context Converges
-
-Daemon8 takes this further. The simple idea of context convergence unlocks practical coordination patterns:
-
-**Multi-agent communication** - Agents can publish messages to the stream with addresses/tags so specific specialists can pick up specific tasks.
-
-**Agentic ears** - With an inbox, an agent can listen for messages sent directly to it. Under the hood, inbox messages are stored in SurrealDB and can be queried directly. For example:
-
-```sql
-SELECT * FROM envelope
-WHERE inbox_address = "agent:frontend-specialist"
-  AND read_at IS NONE
-ORDER BY created_at ASC
-LIMIT 20;
-```
-
-**Background specialists** - Long-running specialists can keep working in the background while your main coding session continues. Their updates can be routed back into the same stream.
-
 ### Daily Workflow Scenarios
 
 **Working in Chrome / frontend**
@@ -51,41 +33,23 @@ LIMIT 20;
 
 **Working in backend / API debugging**
 
-- App logs and ingestion events land in the same stream as browser signals, so the agent can trace cause and effect across frontend and backend in one query path.
+- App logs and ingestion events land in the same stream as browser signals, so the agent can inspect frontend and backend state in one query path.
 - `create_checkpoint` and `query_observations` make before/after verification explicit after each change.
 
 **Working with multiple agents**
 
-- Agents can emit coordination messages with `ingest_observation` and read directed inbox work from the same data layer.
-- This keeps handoffs visible and auditable in one place instead of scattered across tool-specific side channels.
+- Agents can emit observations with `ingest_observation` so handoffs, findings, and status notes stay in the same stream as runtime facts.
+- Other sessions can filter by origin, tag, correlation id, or checkpoint without depending on a separate coordination system.
 
-Daemon8 runs locally and provides one stream for context, one coordination channel for agent-to-agent messages, and one MCP surface to query, act, and broadcast. Runtime data and memory stay on your machine.
-
-Before we get into the feature list, two subsystem names will appear throughout this README:
-
-<details>
-<summary><strong>Deliber8 (expand)</strong></summary>
-
-Deliber8 is the agent coordination subsystem for long-running background agents and active session agents (addresses, inboxes, specialist runtime).
-</details>
-
-<details>
-<summary><strong>Uplink8 (expand)</strong></summary>
-
-Uplink8 is the planned plug-and-play, open-source system of pre-embedded memory banks that agents can download, mount, and use for recall. Think headjack simplicity: "I know kung fu."
-</details>
-
-Both are explained below in the Subsystems section.
+Daemon8 runs locally and provides one stream for runtime awareness plus one MCP surface to query, act, and record useful findings. Runtime data and curated memory stay on your machine.
 
 ## Features
 
 - **Observation bus** — one stream for browser console, network, JS exceptions, lifecycle events, device logs, and app telemetry.
-- **Memory tiers** — durable `short`, `reference`, and `long` memory tables with sweep and dedupe tools.
-- **Embedding profiles** — provider/model metadata so vectors can be filtered safely by profile.
 - **Lens** — per-session filter with buffered matches for quick follow-up queries.
 - **Browser actions** — eval JS, screenshot, inject CSS, navigate, set viewport, throttle network, inspect/set storage, and tab controls via Chrome DevTools Protocol.
-- **Deliber8 tools** — roster and inbox operations for background agent coordination.
-- **Doctor** — checks config, storage, embedding provider setup, and stuck-agent backlog; `--fix` repairs what it can.
+- **Curated memory** — save and query verified lessons, decisions, and error signatures through one local memory table.
+- **Doctor** — checks config, storage, setup state, sources, and service health; `--fix` repairs what it can.
 - **System service** — `daemon8 install` registers launchd (macOS), systemd user service (Linux), or Task Scheduler (Windows).
 
 ## Install
@@ -134,23 +98,9 @@ Sources push observations into the daemon loop. Agents then query, subscribe, an
 
 _some sources are configured by you, some are integrated directly into the daemon_
 
-## Subsystems
-
-### Deliber8
-
-Deliber8 is daemon8's coordination subsystem for long-lived agent work. It uses addressed envelopes, inboxes, and role-aware runtime behavior so specialists, stewards, and bookkeepers can coordinate without leaving the daemon8 loop.
-
-In practical terms, Deliber8 is where roster, inbox, and specialist-runtime behavior lives. You will see those surfaces in CLI and MCP tools below.
-
-### Uplink8
-
-Uplink8 is daemon8's reference-knowledge supply line. It is designed to provide mounted documentation context to agents through daemon8 rather than having each agent scrape and embed docs independently.
-
-In the current MVP sequence, Uplink8 bridge work is staged with memory/context engine milestones. Treat it as a first-class subsystem and contract direction, with rollout details continuing through the memory and MCP surfaces.
-
 ## MCP tools
 
-There are 24 MCP tools grouped by capability. Every tool returns JSON. Mutating operations require explicit confirmation flags.
+There are 17 MCP tools grouped by capability. Every tool returns JSON. Mutating operations require explicit confirmation flags.
 
 ### Observation
 
@@ -178,28 +128,13 @@ There are 24 MCP tools grouped by capability. Every tool returns JSON. Mutating 
 | `lens_status` | Inspect the active lens filter and buffer depth. |
 | `clear_lens` | Remove the active lens. |
 
-### Memory (legacy table)
+### Memory
 
 | Tool | Purpose |
 |------|---------|
-| `save_memory` | Store a `pattern`, `insight`, `decision`, or other typed memory. |
+| `save_memory` | Store a `pattern`, `decision`, `error_signature`, `session_summary`, or `user_flagged` memory. |
 | `query_memory` | Search by kind, tags, project, or text. |
 | `forget_memory` | Delete by id; requires `confirm=true`. |
-
-### Memory tiers
-
-| Tool | Purpose |
-|------|---------|
-| `query_memory_tier` | Read rows from `short`, `reference`, or `long` with scope/agent/tag/profile filters. |
-| `memory_sweep_short` | Reap expired rows from the short tier. Defaults to dry-run (`apply=false`). |
-| `memory_dedupe_long` | Collapse exact `content_hash` collisions on the long tier, keeping the highest-confidence row. Defaults to dry-run. |
-
-### Embedding profiles
-
-| Tool | Purpose |
-|------|---------|
-| `list_embedding_profiles` | List registered embedding profiles (provider/model/dimensions). |
-| `register_embedding_profile` | Register a profile. Idempotent on `(provider, model)`. |
 
 ### Setup
 
@@ -208,13 +143,6 @@ There are 24 MCP tools grouped by capability. Every tool returns JSON. Mutating 
 | `setup_status` | Report current setup state for the project at `cwd`. |
 | `setup_plan` | Compute the action plan that `setup_apply` would run. |
 | `setup_apply` | Apply the plan to the project; requires `yes=true`. |
-
-### Deliber8
-
-| Tool | Purpose |
-|------|---------|
-| `deliber8_roster` | List registered agent cards (specialist/steward/bookkeeper) with status/kind/team/project filters. |
-| `deliber8_inbox` | Read envelopes for one address (`agent:slug`) by status, with counts per status. |
 
 ## HTTP API
 
@@ -230,13 +158,8 @@ Same data surface as MCP, accessible to non-MCP clients. All routes return JSON.
 | GET | `/api/stream` | Server-Sent Events stream with `Last-Event-ID` replay. |
 | GET&nbsp;/&nbsp;PUT&nbsp;/&nbsp;DELETE | `/api/lens` | Inspect, set, or clear the active lens. |
 | POST | `/api/browser/act` | Same action surface as `issue_command`. |
-| GET | `/api/memory/short` | Read short-tier rows. |
-| GET | `/api/memory/reference` | Read reference-tier rows. |
-| GET | `/api/memory/long` | Read long-tier rows. |
-| POST | `/api/bookkeeper/sweep` | Sweep expired short-tier rows. Body: `{ agent_id?, apply? }`. |
-| POST | `/api/bookkeeper/dedupe` | Dedupe long-tier rows. Body: `{ scope?, apply? }`. |
-| GET | `/api/embedding/profiles` | List embedding profiles. |
-| POST | `/api/embedding/profiles` | Register a profile. Body: `{ provider, model, dimensions, id? }`. |
+| GET&nbsp;/&nbsp;POST | `/api/memory` | Query or save curated memory rows. |
+| POST | `/api/memory/export` | Stream ordered memory export rows as NDJSON. |
 
 Ingestion endpoints live alongside the API on the same port:
 
@@ -266,7 +189,6 @@ A UDP listener accepts the same JSON shapes on port 8889 for fire-and-forget tel
 | `daemon8 uninstall` | Remove the system service. |
 | `daemon8 setup` | Inspect, plan, or apply guided setup. |
 | `daemon8 channel` | Real-time alert relay for MCP clients (experimental). |
-| `daemon8 deliber8` | Manage deliber8 background agents and inboxes. |
 | `daemon8 doctor` | Diagnose configuration and environment (`--fix` to auto-repair). |
 | `daemon8 init` | Scaffold a `.daemon8.toml` in the current project. |
 
@@ -280,19 +202,18 @@ Batch endpoint: `POST /ingest/batch` with a JSON array. UDP fire-and-forget on p
 
 ## Architecture
 
-Ten crates in a Cargo workspace:
+Core crates in the Cargo workspace:
 
 | Crate | Purpose |
 |-------|---------|
 | `daemon` | CLI binary, command dispatch, runtime wiring. |
-| `types` | Shared types: `Observation`, `Filter`, memory tier records, agent cards, envelopes, embedding profile. |
-| `store` | SurrealDB backend, tier stores, bookkeeper, embedding profile registry, `LensManager` ring buffer. |
-| `api` | Axum HTTP routes: observe, stream, lens, memory, bookkeeper, embedding, browser. |
-| `mcp` | MCP server: 24 tools across observe, action, lens, memory, tier, embedding, setup, and deliber8 routers. |
+| `types` | Shared types: `Observation`, `Filter`, severity, origin, and memory kind records. |
+| `store` | SurrealDB backend for observations, curated memory, and the `LensManager` ring buffer. |
+| `api` | Axum HTTP routes: observe, stream, lens, memory, and browser actions. |
+| `mcp` | MCP server: 17 tools across observe, action, lens, memory, and setup routers. |
 | `ingest` | HTTP, UDP, and Unix socket ingest endpoints. |
 | `chrome` | Chrome DevTools Protocol bridge over raw WebSocket. |
 | `adb` | Android Debug Bridge transport for device logcat. |
-| `embed` | Embedding provider abstraction (fastembed, ollama, openai). |
 | `parse` | Observation parsing and extraction for log sources. |
 
 ## Contributing

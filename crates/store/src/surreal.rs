@@ -761,7 +761,6 @@ mod tests {
                     updated_at: created_at,
                     kind: MemoryKind::Pattern,
                     content: content.into(),
-                    embedding: None,
                     source_observations: Vec::new(),
                     tags: vec!["project:daemon8".into()],
                     project_slug: "daemon8".into(),

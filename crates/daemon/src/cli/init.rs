@@ -266,17 +266,6 @@ slug = "{slug}"
 [enrollment]
 enabled = true
 scope = []
-
-[features]
-state_tracking = true
-compaction_recovery = true
-heartbeat_interval = "30s"
-
-[distillation]
-track_todowrite = true
-track_git_commits = true
-track_file_writes = true
-coarsen_file_writes_below_threshold = 5
 {sources}"##
     )
 }

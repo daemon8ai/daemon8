@@ -58,7 +58,6 @@ async fn make_mcp() -> DaemonMcp {
         subscription_tx: sub_tx,
         broadcast_tx,
         lens,
-        embedder: None,
         setup_tool_fn: Some(Arc::new(|action| {
             Box::pin(async move {
                 serde_json::to_string(&serde_json::json!({

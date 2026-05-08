@@ -33,7 +33,6 @@ impl SurrealMemoryStore {
                  DEFINE FIELD IF NOT EXISTS updated_at          ON memory TYPE int;
                  DEFINE FIELD IF NOT EXISTS kind                ON memory TYPE string;
                  DEFINE FIELD IF NOT EXISTS content             ON memory TYPE string;
-                 DEFINE FIELD IF NOT EXISTS embedding           ON memory TYPE option<array<float>>;
                  DEFINE FIELD IF NOT EXISTS source_observations ON memory TYPE array<int>;
                  DEFINE FIELD IF NOT EXISTS tags                ON memory TYPE array<string>;
                  DEFINE FIELD IF NOT EXISTS project_slug        ON memory TYPE string;
@@ -279,7 +278,6 @@ mod tests {
             updated_at: now,
             kind,
             content: content.to_string(),
-            embedding: None,
             source_observations: vec![],
             tags: vec![],
             project_slug: project.to_string(),
