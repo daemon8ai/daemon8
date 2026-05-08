@@ -32,7 +32,9 @@ const EXPECTED_TOOLS: [&str; 17] = [
 /// Tool names that must never appear in the live MCP surface. Includes both
 /// removed tools (the deliber8/memory-tier/embedding-profile cluster cut by
 /// the lean MVP cull) and preemptively reserved names that should not be
-/// re-introduced if revisited under different semantics.
+/// re-introduced if revisited under different semantics. See ADR-004
+/// (`50-projects/daemon8/decisions/004-lean-mvp-situational-awareness.md`)
+/// for the cull rationale.
 const RESERVED_TOOL_NAMES: [&str; 9] = [
     "query_memory_tier",
     "memory_sweep_short",

@@ -6,6 +6,22 @@ For full commit-by-commit detail, use `git log` and
 
 ## Unreleased
 
+### Upgrading from v0.2.x
+
+The lean MVP cull tightened TOML config parsing to reject unknown keys via `deny_unknown_fields`. Existing global and project configs that contain removed sections will fail to parse and the daemon will refuse to start until the stale keys are removed.
+
+If `daemon8 doctor` (or `daemon8 serve`) reports `[ERR] config load (unknown field: found '<X>')` after upgrade, edit the offending file and remove the listed key. Affected sections to delete from any existing `config.toml` or `.daemon8.toml`:
+
+- `[embeddings]` (entire section — embedding runtime is gone)
+- `[mcp]` `http = ...` field (HTTP MCP key removed; HTTP transport is now controlled at the server layer)
+- `[storage]` `embedding_path = ...` field
+- Any `role_default = ...` field on `[browser]` or `[sources.*]` (legacy agent-role concept)
+- `desired_scope` entries beyond `["file-sources"]` (now the only valid scope)
+- `hook_policy` values other than `"install"` or `"manual"`
+- Any deliber8/inbox/envelope/specialist/bookkeeper/agent keys
+
+Memory data: rows in the `memory` SurrealDB table that contain `embedding` columns are not migrated. The export pipeline strips them; live queries and saves no longer touch the column. If a fresh start is preferred, delete the local data directory before first `0.3.0` run (`daemon8 uninstall` removes it).
+
 ### Lean MVP cull
 
 - Removed experimental Deliber8 runtime, CLI, roster, inbox, and storage
