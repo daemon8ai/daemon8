@@ -14,7 +14,6 @@ use daemon8_store::{StateModel, SurrealStore};
 use daemon8_types::Observation;
 
 use crate::config;
-use crate::deliber8::host::SpecialistRegistry;
 
 pub(crate) const CHROME_CMD_CAPACITY: usize = 64;
 pub(crate) const BROWSER_ACTION_CAPACITY: usize = 64;
@@ -329,14 +328,6 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
             .with_cancellation_token(mcp_cancel),
     );
 
-    let specialist_registry = SpecialistRegistry::new(surreal_store.clone(), cancel.clone());
-    match specialist_registry.boot_from_registry().await {
-        Ok(n) => tracing::info!(spawned = n, "deliber8 specialists booted"),
-        Err(e) => tracing::warn!(error = %e, "specialist boot failed"),
-    }
-    let specialist_controller: Arc<dyn daemon8_api::SpecialistController> =
-        Arc::new(specialist_registry.clone());
-
     let api_lens = Arc::new(daemon8_store::LensManager::new(broadcast_tx.subscribe()));
     let api_state = daemon8_api::ApiState {
         store: store.clone(),
@@ -354,7 +345,7 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
         memory_long_store: Some(memory_long_store.clone()),
         bookkeeper_store: Some(bookkeeper_store.clone()),
         embedding_profile_store: Some(embedding_profile_store.clone()),
-        specialist_controller: Some(specialist_controller.clone()),
+        specialist_controller: None,
     };
     let port = cfg.server.port;
     let app = daemon8_ingest::ingest_router(obs_tx.clone())
@@ -414,7 +405,6 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
     }
 
     cancel.cancel();
-    specialist_registry.shutdown_all().await;
 
     // Give spawned tasks up to 5 seconds to finish
     let shutdown_deadline = tokio::time::timeout(Duration::from_secs(5), async {
