@@ -4,10 +4,10 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use toml::Table;
 
-use super::{Provider, current_exe_string, shim_command};
+use super::{current_exe_string, shim_command, Provider};
 
 pub fn write_provider_config(
     provider: Provider,
@@ -150,6 +150,10 @@ fn write_codex_config(config_path: &Path, mcp_url: &str, project_dir: Option<&Pa
         .context("mcp_servers.daemon8 must be a table")?;
     daemon8_table.insert("name".to_string(), toml::Value::String("Daemon8".into()));
     daemon8_table.insert("url".to_string(), toml::Value::String(mcp_url.to_string()));
+
+    let features = get_or_insert_table(root_table, "features")?;
+    features.remove("codex_hooks");
+    features.insert("hooks".to_string(), toml::Value::Boolean(true));
 
     if let Some(project_dir) = project_dir {
         let projects = get_or_insert_table(root_table, "projects")?;

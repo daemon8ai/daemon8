@@ -271,6 +271,14 @@ fn cli_yes_with_codex_provider_writes_codex_config_and_hooks() {
     assert!(config.exists(), "codex config missing");
     assert!(hooks.exists(), "codex hooks missing");
 
+    let config_toml = std::fs::read_to_string(&config).unwrap();
+    let config_parsed: toml::Value = toml::from_str(&config_toml).unwrap();
+    assert_eq!(config_parsed["features"]["hooks"].as_bool(), Some(true));
+    assert!(
+        config_parsed["features"].get("codex_hooks").is_none(),
+        "deprecated codex_hooks flag must not be written"
+    );
+
     let parsed = read_json(&hooks);
     let events = parsed
         .get("hooks")
@@ -290,6 +298,36 @@ fn cli_yes_with_codex_provider_writes_codex_config_and_hooks() {
     assert_eq!(
         session.get("matcher").and_then(Value::as_str),
         Some("startup|resume")
+    );
+}
+
+#[test]
+fn cli_yes_with_codex_provider_migrates_deprecated_hook_feature() {
+    let (_tmp, work, home) = setup_dirs();
+    let config = codex_config_path(&home);
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    std::fs::write(
+        &config,
+        r#"
+[features]
+codex_hooks = true
+"#,
+    )
+    .unwrap();
+
+    let out = run_init(&work, &home, &["--yes", "--providers", "codex-cli"]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let config_toml = std::fs::read_to_string(&config).unwrap();
+    let parsed: toml::Value = toml::from_str(&config_toml).unwrap();
+    assert_eq!(parsed["features"]["hooks"].as_bool(), Some(true));
+    assert!(
+        parsed["features"].get("codex_hooks").is_none(),
+        "deprecated codex_hooks flag must be removed"
     );
 }
 

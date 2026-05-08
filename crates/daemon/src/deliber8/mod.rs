@@ -690,41 +690,33 @@ mod tests {
 
 /// Configuration for a Steward run.
 /// The Steward is the central orchestrator: it receives high-level tasks,
-/// performs decision-making (model selection per role is exposed for testing),
-/// and routes work to appropriate Specialists via envelope enqueue.
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
+/// performs real LLM-backed decision-making (model selection per role is exposed
+/// for testing via the operator dashboard), and routes work to Specialists.
+#[derive(Clone)]
 pub struct StewardConfig {
     pub slug: String,
     pub inbox_address: String,
     pub heartbeat_interval_ms: u64,
-    /// Optional model identifier for decision-making (e.g. "ollama:llama3.2", "openai:gpt-4o-mini").
-    /// Used by the UI to test which models perform best for routing vs. summarization roles.
-    pub decision_model: Option<String>,
+    pub llm: Arc<dyn LlmClient>,
+    pub persona_prompt: String,
+    pub call_opts: CallOpts,
 }
 
-#[allow(dead_code)]
-impl StewardConfig {
-    pub fn new(slug: impl Into<String>, inbox_address: impl Into<String>) -> Self {
-        Self {
-            slug: slug.into(),
-            inbox_address: inbox_address.into(),
-            heartbeat_interval_ms: DEFAULT_HEARTBEAT_MS,
-            decision_model: None,
-        }
-    }
-
-    pub fn decision_model(mut self, model: impl Into<String>) -> Self {
-        self.decision_model = Some(model.into());
-        self
+impl std::fmt::Debug for StewardConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StewardConfig")
+            .field("slug", &self.slug)
+            .field("inbox_address", &self.inbox_address)
+            .field("heartbeat_interval_ms", &self.heartbeat_interval_ms)
+            .field("provider", &self.llm.provider_label())
+            .field("model", &self.llm.model_name())
+            .finish()
     }
 }
 
-/// Run the Steward loop. Currently implements a minimal rule-based router
-/// that forwards incoming Request envelopes to the first available Specialist.
-/// Real LLM-backed decision making (model-per-role) is prepared via `decision_model`
-/// and will be wired in the next iteration.
-#[allow(dead_code)]
+/// Run the Steward loop with real LLM-backed decision making.
+/// The Steward receives high-level tasks, asks its configured LLM (Ollama, OpenAI, etc.)
+/// to choose the best specialist, then routes a new Request envelope to that specialist's inbox.
 pub async fn run_steward(
     store: Arc<SurrealStore>,
     cfg: StewardConfig,
@@ -746,6 +738,121 @@ pub async fn run_steward(
     if let Err(e) = card_store.record_agent_heartbeat(&agent_id, now_ns()).await {
         tracing::warn!(error = %e, slug = %cfg.slug, "initial steward heartbeat failed");
     }
+
+    let mut outcome = SpecialistOutcome::default();
+    let poll_interval = Duration::from_millis(cfg.heartbeat_interval_ms / 2);
+
+    loop {
+        let pending = envelope_store
+            .list_pending(&cfg.inbox_address, Some(now_ns()), Some(POLL_BATCH))
+            .await?;
+
+        for env in pending {
+            outcome.processed += 1;
+
+            if env.kind == EnvelopeKind::Control && is_stop_envelope(&env) {
+                handle_stop(&envelope_store, &card_store, &agent_id, &env).await?;
+                outcome.stopped_by_control = true;
+                return Ok(outcome);
+            }
+
+            if let Err(e) = envelope_store.mark_delivered(&env.id, now_ns()).await {
+                tracing::warn!(error = %e, env_id = %env.id, "steward mark_delivered failed");
+                continue;
+            }
+
+            if env.kind == EnvelopeKind::Request {
+                // Real LLM decision making for routing
+                let task_description = env.body.clone().unwrap_or_default();
+                let system = if cfg.persona_prompt.is_empty() {
+                    "You are an expert task router for a multi-agent system. Given a task description, return ONLY the inbox address (e.g. 'agent:alpha') of the single best specialist to handle it. Do not add any other text.".to_string()
+                } else {
+                    cfg.persona_prompt.clone()
+                };
+
+                let messages = vec![Message {
+                    role: daemon8_deliber8_llm::Role::User,
+                    content: task_description.clone(),
+                }];
+
+                match cfg.llm.complete(&system, &messages, &cfg.call_opts).await {
+                    Ok(completion) => {
+                        let target = completion.text.trim().to_string();
+                        if !target.is_empty() {
+                            let routed = build_routed_envelope(&cfg, &env, &target);
+                            if let Err(e) = envelope_store.enqueue_envelope(routed).await {
+                                tracing::warn!(error = %e, "steward failed to route to {}", target);
+                            } else {
+                                outcome.responded += 1;
+                                tracing::info!(
+                                    steward = %cfg.slug,
+                                    model = %cfg.llm.model_name(),
+                                    routed_to = %target,
+                                    "Steward routed task via LLM"
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, "Steward LLM call failed");
+                    }
+                }
+            }
+
+            if let Err(e) = envelope_store.mark_read(&env.id, now_ns()).await {
+                tracing::warn!(error = %e, env_id = %env.id, "steward mark_read failed");
+            }
+        }
+
+        if let Err(e) = card_store.record_agent_heartbeat(&agent_id, now_ns()).await {
+            tracing::warn!(error = %e, slug = %cfg.slug, "steward heartbeat failed");
+        } else {
+            outcome.heartbeats += 1;
+        }
+
+        select! {
+            _ = cancel.cancelled() => {
+                outcome.cancelled = true;
+                return Ok(outcome);
+            }
+            _ = sleep(poll_interval) => {}
+        }
+    }
+}
+
+fn build_routed_envelope(
+    steward: &StewardConfig,
+    original: &EnvelopeRecord,
+    target_inbox: &str,
+) -> EnvelopeRecord {
+    let now = now_ns();
+    EnvelopeRecord {
+        id: String::new(),
+        kind: EnvelopeKind::Request,
+        status: EnvelopeStatus::Queued,
+        priority: original.priority,
+        from_address: steward.inbox_address.clone(),
+        to_address: target_inbox.to_string(),
+        inbox_address: target_inbox.to_string(),
+        subject: original.subject.clone(),
+        body: original.body.clone(),
+        payload: original.payload.clone(),
+        correlation_id: original.correlation_id.clone(),
+        thread_id: original.thread_id.clone().or_else(|| Some(original.id.clone())),
+        reply_to: Some(original.id.clone()),
+        created_at: now,
+        updated_at: now,
+        deliver_after: None,
+        delivered_at: None,
+        read_at: None,
+        expires_at: None,
+        failed_at: None,
+        failure_reason: None,
+        tags: vec!["deliber8.steward.routed".into()],
+        project_refs: original.project_refs.clone(),
+        team_refs: original.team_refs.clone(),
+    }
+}
 
     let mut outcome = SpecialistOutcome::default();
     let poll_interval = Duration::from_millis(cfg.heartbeat_interval_ms / 2);
