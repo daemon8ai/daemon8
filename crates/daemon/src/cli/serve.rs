@@ -168,8 +168,6 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
         );
     }
 
-    let (sub_tx, _sub_rx) = tokio::sync::watch::channel::<Option<daemon8_types::Filter>>(None);
-    let sub_tx = Arc::new(sub_tx);
     let setup_tool_fn: daemon8_mcp::SetupToolFn = Arc::new(move |action| {
         let setup_config_path = setup_config_path.clone();
         Box::pin(async move {
@@ -197,10 +195,10 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
             chrome_endpoint: chrome_endpoint.clone(),
             device_screenshot_fn: device_screenshot_fn.clone(),
             screenshot_dir: screenshot_dir.clone(),
-            subscription_tx: sub_tx.clone(),
             broadcast_tx: broadcast_tx.clone(),
             lens,
             setup_tool_fn: Some(setup_tool_fn.clone()),
+            cancel: cancel.clone(),
         });
         let cancel_on_eof = cancel.clone();
         tasks.spawn(async move {
@@ -232,6 +230,7 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
     let mcp_screenshot_dir = screenshot_dir.clone();
     let mcp_broadcast_tx = broadcast_tx.clone();
     let mcp_cancel = cancel.child_token();
+    let mcp_session_cancel = cancel.clone();
 
     let mcp_http = rmcp::transport::streamable_http_server::StreamableHttpService::new(
         move || {
@@ -244,12 +243,12 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
                 chrome_endpoint: mcp_ep.clone(),
                 device_screenshot_fn: mcp_screenshot_fn.clone(),
                 screenshot_dir: mcp_screenshot_dir.clone(),
-                subscription_tx: sub_tx.clone(),
                 broadcast_tx: mcp_broadcast_tx.clone(),
                 lens: Arc::new(daemon8_store::LensManager::new(
                     mcp_broadcast_tx.subscribe(),
                 )),
                 setup_tool_fn: Some(setup_tool_fn.clone()),
+                cancel: mcp_session_cancel.clone(),
             }))
         },
         Arc::new({

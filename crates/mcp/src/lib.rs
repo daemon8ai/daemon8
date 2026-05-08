@@ -408,10 +408,16 @@ pub struct DaemonMcp {
     last_checkpoint: Mutex<Checkpoint>,
     device_screenshot_fn: Option<DeviceScreenshotFn>,
     screenshot_dir: std::path::PathBuf,
-    subscription_tx: Arc<tokio::sync::watch::Sender<Option<Filter>>>,
+    /// Per-session subscription filter. Each `DaemonMcp` instance owns its own
+    /// channel so concurrent MCP sessions do not overwrite each other's
+    /// `subscribe_observations` filter.
+    subscription_tx: tokio::sync::watch::Sender<Option<Filter>>,
     broadcast_tx: broadcast::Sender<(Arc<Observation>, Arc<str>)>,
     lens: Arc<LensManager>,
     setup_tool_fn: Option<SetupToolFn>,
+    /// Parent cancellation token. The push task spawned in `on_initialized`
+    /// uses a child token so daemon shutdown propagates cleanly.
+    cancel: tokio_util::sync::CancellationToken,
     tool_router: ToolRouter<Self>,
 }
 
@@ -424,10 +430,12 @@ pub struct DaemonMcpConfig {
     pub chrome_endpoint: Arc<Mutex<Option<Arc<str>>>>,
     pub device_screenshot_fn: Option<DeviceScreenshotFn>,
     pub screenshot_dir: std::path::PathBuf,
-    pub subscription_tx: Arc<tokio::sync::watch::Sender<Option<Filter>>>,
     pub broadcast_tx: broadcast::Sender<(Arc<Observation>, Arc<str>)>,
     pub lens: Arc<LensManager>,
     pub setup_tool_fn: Option<SetupToolFn>,
+    /// Parent cancellation token. Use the daemon-wide token; the MCP push task
+    /// derives a child from it so daemon shutdown stops per-session work.
+    pub cancel: tokio_util::sync::CancellationToken,
 }
 
 #[tool_router(vis = "pub")]
@@ -442,6 +450,7 @@ impl DaemonMcp {
         if cfg.setup_tool_fn.is_some() {
             router += Self::setup_tool_router();
         }
+        let (subscription_tx, _) = tokio::sync::watch::channel::<Option<Filter>>(None);
         Self {
             store: cfg.store,
             memory_store: cfg.memory_store,
@@ -452,16 +461,26 @@ impl DaemonMcp {
             last_checkpoint: Mutex::new(Checkpoint(0)),
             device_screenshot_fn: cfg.device_screenshot_fn,
             screenshot_dir: cfg.screenshot_dir,
-            subscription_tx: cfg.subscription_tx,
+            subscription_tx,
             broadcast_tx: cfg.broadcast_tx,
             lens: cfg.lens,
             setup_tool_fn: cfg.setup_tool_fn,
+            cancel: cfg.cancel,
             tool_router: router,
         }
     }
 
     pub fn subscription_rx(&self) -> tokio::sync::watch::Receiver<Option<Filter>> {
         self.subscription_tx.subscribe()
+    }
+
+    /// Set this session's subscription filter directly. Equivalent to invoking
+    /// the `subscribe_observations` tool — exposed for integration tests that
+    /// need to verify per-session subscription scoping without driving the
+    /// rmcp tool router.
+    #[doc(hidden)]
+    pub fn set_subscription(&self, filter: Option<Filter>) {
+        self.subscription_tx.send_replace(filter);
     }
 
     /// Ensure Chrome is connected, waiting up to `timeout` for the connection.
@@ -1437,21 +1456,29 @@ impl ServerHandler for DaemonMcp {
         let peer = context.peer;
         let mut rx = self.broadcast_tx.subscribe();
         let sub_rx = self.subscription_tx.subscribe();
+        let session_cancel = self.cancel.child_token();
         let span = tracing::info_span!("mcp_session", session_id = %session_id);
 
         tokio::spawn(async move {
             let mut last_push = std::time::Instant::now() - Duration::from_secs(2);
             loop {
-                let (arc_obs, _json) = match rx.recv().await {
-                    Ok(payload) => payload,
-                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                        tracing::warn!(skipped, "MCP observation push receiver lagged; continuing with newest observations");
-                        continue;
-                    }
-                    Err(broadcast::error::RecvError::Closed) => {
-                        tracing::debug!("MCP observation push broadcast closed");
+                let (arc_obs, _json) = tokio::select! {
+                    biased;
+                    _ = session_cancel.cancelled() => {
+                        tracing::debug!("MCP observation push cancelled");
                         break;
                     }
+                    recv = rx.recv() => match recv {
+                        Ok(payload) => payload,
+                        Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                            tracing::warn!(skipped, "MCP observation push receiver lagged; continuing with newest observations");
+                            continue;
+                        }
+                        Err(broadcast::error::RecvError::Closed) => {
+                            tracing::debug!("MCP observation push broadcast closed");
+                            break;
+                        }
+                    },
                 };
 
                 let obs: &Observation = &arc_obs;

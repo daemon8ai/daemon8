@@ -1423,6 +1423,7 @@ dependencies = [
  "futures",
  "serde",
  "serde_json",
+ "thiserror 2.0.18",
  "tokio",
  "tokio-stream",
  "tracing",
@@ -1476,6 +1477,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tokio-util",
  "tracing",
 ]
 
