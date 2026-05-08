@@ -142,14 +142,10 @@ fn write_codex_config(config_path: &Path, mcp_url: &str, project_dir: Option<&Pa
         .context("codex config root must be a table")?;
 
     let mcp_servers = get_or_insert_table(root_table, "mcp_servers")?;
-    let daemon8 = mcp_servers
-        .entry("daemon8".to_string())
-        .or_insert_with(|| toml::Value::Table(Table::new()));
-    let daemon8_table = daemon8
-        .as_table_mut()
-        .context("mcp_servers.daemon8 must be a table")?;
+    let mut daemon8_table = Table::new();
     daemon8_table.insert("name".to_string(), toml::Value::String("Daemon8".into()));
     daemon8_table.insert("url".to_string(), toml::Value::String(mcp_url.to_string()));
+    mcp_servers.insert("daemon8".to_string(), toml::Value::Table(daemon8_table));
 
     let features = get_or_insert_table(root_table, "features")?;
     features.insert("codex_hooks".to_string(), toml::Value::Boolean(true));

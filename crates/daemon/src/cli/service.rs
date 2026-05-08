@@ -295,7 +295,10 @@ fn remove_cli_hooks(home: &std::path::Path, cwd: &std::path::Path) {
             for (_event, matchers) in hooks.iter_mut() {
                 if let Some(arr) = matchers.as_array_mut() {
                     let before = arr.len();
-                    arr.retain(|entry| !hook_group_contains_daemon8(entry));
+                    for entry in arr.iter_mut() {
+                        modified |= remove_daemon8_cli_hooks(entry);
+                    }
+                    arr.retain(|entry| !hook_group_is_empty(entry));
                     if arr.len() < before {
                         modified = true;
                     }
@@ -312,21 +315,43 @@ fn remove_cli_hooks(home: &std::path::Path, cwd: &std::path::Path) {
     }
 }
 
-fn hook_group_contains_daemon8(entry: &serde_json::Value) -> bool {
-    entry
+fn remove_daemon8_cli_hooks(entry: &mut serde_json::Value) -> bool {
+    if entry
         .get("command")
         .and_then(|command| command.as_str())
-        .is_some_and(|command| command.contains("daemon8"))
+        .is_some_and(is_daemon8_cli_hook_command)
+    {
+        *entry = serde_json::Value::Null;
+        return true;
+    }
+
+    if let Some(hooks) = entry
+        .get_mut("hooks")
+        .and_then(|hooks| hooks.as_array_mut())
+    {
+        let before = hooks.len();
+        hooks.retain(|hook| {
+            !hook
+                .get("command")
+                .and_then(|command| command.as_str())
+                .is_some_and(is_daemon8_cli_hook_command)
+        });
+        return hooks.len() < before;
+    }
+
+    false
+}
+
+fn hook_group_is_empty(entry: &serde_json::Value) -> bool {
+    entry.is_null()
         || entry
             .get("hooks")
             .and_then(|hooks| hooks.as_array())
-            .is_some_and(|hooks| {
-                hooks.iter().any(|hook| {
-                    hook.get("command")
-                        .and_then(|command| command.as_str())
-                        .is_some_and(|command| command.contains("daemon8"))
-                })
-            })
+            .is_some_and(Vec::is_empty)
+}
+
+fn is_daemon8_cli_hook_command(command: &str) -> bool {
+    command.contains("daemon8") && command.contains("cli-hook")
 }
 
 // ---------------------------------------------------------------------------
@@ -777,6 +802,17 @@ mod tests {
                     },
                     {
                         "matcher": "Bash",
+                        "hooks": [{ "type": "command", "command": "daemon8 status" }]
+                    },
+                    {
+                        "matcher": "Bash",
+                        "hooks": [
+                            { "type": "command", "command": "/bin/daemon8 cli-hook" },
+                            { "type": "command", "command": "mixed-user-hook" }
+                        ]
+                    },
+                    {
+                        "matcher": "Bash",
                         "hooks": [{ "type": "command", "command": "/bin/daemon8 cli-hook" }]
                     }
                 ]
@@ -811,8 +847,18 @@ mod tests {
         ] {
             let parsed = read_json(&path);
             let groups = parsed["hooks"]["PreToolUse"].as_array().unwrap();
-            assert_eq!(groups.len(), 1, "{path:?}");
+            assert_eq!(groups.len(), 3, "{path:?}");
             assert_eq!(groups[0]["hooks"][0]["command"].as_str(), Some("user-hook"));
+            assert_eq!(
+                groups[1]["hooks"][0]["command"].as_str(),
+                Some("daemon8 status"),
+                "unmanaged daemon8 commands must be preserved"
+            );
+            assert_eq!(
+                groups[2]["hooks"][0]["command"].as_str(),
+                Some("mixed-user-hook"),
+                "user hooks sharing a group with daemon8 cli-hook must be preserved"
+            );
         }
     }
 }

@@ -1089,6 +1089,8 @@ pub enum MemoryExportError {
     MissingFrom,
     #[error("query may only export the legacy memory table")]
     DisallowedTable,
+    #[error("memory export FROM clause must target only the memory table")]
+    MultiTableFrom,
     #[error("query must include ORDER BY so paged export is deterministic")]
     MissingOrderBy,
     #[error("ORDER BY must appear after FROM")]
@@ -1147,6 +1149,9 @@ fn validated_memory_export_query(query: &str) -> Result<String, MemoryExportErro
     if order_index < from_index {
         return Err(MemoryExportError::OrderByBeforeFrom);
     }
+    if !from_clause_targets_memory_only(&tokens, from_index, order_index) {
+        return Err(MemoryExportError::MultiTableFrom);
+    }
 
     let forbidden = [
         "create", "update", "delete", "insert", "upsert", "relate", "remove", "define", "begin",
@@ -1169,6 +1174,21 @@ fn validated_memory_export_query(query: &str) -> Result<String, MemoryExportErro
 
 fn is_allowed_memory_export_table(table: &str) -> bool {
     table == "memory"
+}
+
+fn from_clause_targets_memory_only(
+    tokens: &[String],
+    from_index: usize,
+    order_index: usize,
+) -> bool {
+    match tokens.get(from_index + 2).map(String::as_str) {
+        None => true,
+        Some("order") => true,
+        Some("where") => !tokens[(from_index + 2)..order_index]
+            .iter()
+            .any(|token| token == "from"),
+        Some(_) => false,
+    }
 }
 
 fn query_without_string_literals(query: &str) -> Result<String, MemoryExportError> {
@@ -1274,6 +1294,15 @@ mod tests {
         let err = validate_memory_export_query("SELECT * FROM observation ORDER BY seq DESC")
             .expect_err("non-memory table should fail");
         assert_eq!(err, MemoryExportError::DisallowedTable);
+    }
+
+    #[test]
+    fn validate_memory_export_query_rejects_multi_table_from() {
+        let err = validate_memory_export_query(
+            "SELECT * FROM memory, observation ORDER BY created_at DESC",
+        )
+        .expect_err("multi-table export should fail");
+        assert_eq!(err, MemoryExportError::MultiTableFrom);
     }
 
     #[test]

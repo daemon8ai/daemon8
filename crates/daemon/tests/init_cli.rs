@@ -59,6 +59,28 @@ fn run_daemon8(args: &[&str]) -> std::process::Output {
         .expect("spawn daemon8")
 }
 
+fn run_daemon8_with_env(
+    dir: &Path,
+    fake_home: &Path,
+    extra_env: &[(&str, &str)],
+    args: &[&str],
+) -> std::process::Output {
+    let mut cmd = Command::new(binary());
+    cmd.args(args)
+        .current_dir(dir)
+        .env("HOME", fake_home)
+        .stdin(Stdio::null());
+    for (key, _) in std::env::vars() {
+        if key.starts_with("DAEMON8_") {
+            cmd.env_remove(key);
+        }
+    }
+    for (key, value) in extra_env {
+        cmd.env(key, value);
+    }
+    cmd.output().expect("spawn daemon8")
+}
+
 fn run_cli_hook_with_stdin(
     dir: &Path,
     fake_home: &Path,
@@ -177,6 +199,33 @@ fn cli_yes_writes_toml_only() {
 }
 
 #[test]
+fn config_env_nested_override_applies() {
+    let (_tmp, work, home) = setup_dirs();
+    let missing_config = work.join("missing-config.toml");
+    let out = run_daemon8_with_env(
+        &work,
+        &home,
+        &[("DAEMON8_SERVER__PORT", "9999")],
+        &[
+            "--config",
+            missing_config.to_str().unwrap(),
+            "config",
+            "show",
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("9999"),
+        "nested env override must affect config show output: {stdout}"
+    );
+}
+
+#[test]
 fn cli_yes_with_install_hooks_local_writes_both() {
     let (_tmp, work, home) = setup_dirs();
     let out = run_init(&work, &home, &["--yes", "--install-hooks", "local"]);
@@ -201,6 +250,7 @@ fn cli_yes_with_install_hooks_local_writes_both() {
         "SessionEnd",
         "UserPromptSubmit",
         "PreToolUse",
+        "PermissionRequest",
         "PostToolUse",
         "PreCompact",
         "Stop",
@@ -208,13 +258,15 @@ fn cli_yes_with_install_hooks_local_writes_both() {
         assert!(events.contains_key(expected), "missing event {expected}");
     }
 
-    // Command is absolute and ends with ` cli-hook`.
+    // Command is absolute, quoted for paths with spaces, and ends with ` cli-hook`.
     let cmds = commands_under(&parsed, "SessionStart");
     assert_eq!(cmds.len(), 1);
     let cmd = &cmds[0];
+    assert!(cmd.starts_with('"'), "expected quoted binary path: {cmd}");
     assert!(cmd.ends_with(" cli-hook"), "actual: {cmd}");
+    let binary = cmd.split(' ').next().unwrap().trim_matches('"');
     assert!(
-        Path::new(cmd.split(' ').next().unwrap()).is_absolute(),
+        Path::new(binary).is_absolute(),
         "expected absolute binary path, got {cmd}"
     );
 }
@@ -338,6 +390,10 @@ fn cli_yes_with_codex_provider_preserves_codex_hook_feature() {
         r#"
 [features]
 codex_hooks = true
+
+[mcp_servers.daemon8]
+command = "/old/daemon8"
+args = ["mcp"]
 "#,
     )
     .unwrap();
@@ -355,6 +411,18 @@ codex_hooks = true
     assert!(
         parsed["features"].get("hooks").is_none(),
         "daemon8 must not write unsupported codex hooks feature flag"
+    );
+    assert_eq!(
+        parsed["mcp_servers"]["daemon8"]["name"].as_str(),
+        Some("Daemon8")
+    );
+    assert!(
+        parsed["mcp_servers"]["daemon8"].get("command").is_none(),
+        "stale stdio command must be removed when rewriting codex MCP config"
+    );
+    assert!(
+        parsed["mcp_servers"]["daemon8"].get("args").is_none(),
+        "stale stdio args must be removed when rewriting codex MCP config"
     );
 }
 
@@ -681,7 +749,9 @@ fn cli_rerun_with_force_hooks_replaces_stale_entry() {
     let existing = serde_json::json!({
         "hooks": {
             "SessionStart": [
-                { "hooks": [{ "type": "command", "command": "/old/daemon8 cli-hook" }] }
+                { "hooks": [{ "type": "command", "command": "user-hook" }] },
+                { "hooks": [{ "type": "command", "command": "/old/daemon8 cli-hook" }] },
+                { "hooks": [{ "type": "command", "command": "/older/daemon8 cli-hook" }] }
             ]
         }
     });
@@ -706,14 +776,22 @@ fn cli_rerun_with_force_hooks_replaces_stale_entry() {
     let cmds = commands_under(&parsed, "SessionStart");
     assert_eq!(
         cmds.len(),
-        1,
-        "expected exactly one entry after replacement"
+        2,
+        "expected user hook plus one replacement entry"
     );
     assert!(
-        !cmds[0].starts_with("/old/daemon8"),
-        "stale entry must be replaced; got: {cmds:?}"
+        cmds.iter()
+            .all(|command| !command.starts_with("/old/daemon8")
+                && !command.starts_with("/older/daemon8")),
+        "stale entries must be replaced; got: {cmds:?}"
     );
-    assert!(cmds[0].contains("cli-hook"));
+    assert!(cmds.contains(&"user-hook".to_string()));
+    assert_eq!(
+        cmds.iter()
+            .filter(|command| command.contains("cli-hook"))
+            .count(),
+        1
+    );
 }
 
 #[test]
@@ -767,8 +845,16 @@ fn cli_rerun_with_force_hooks_replaces_stale_codex_entry() {
         "hooks": {
             "SessionStart": [
                 {
+                    "matcher": "startup",
+                    "hooks": [{ "type": "command", "command": "user-codex-hook" }]
+                },
+                {
                     "matcher": "startup|resume",
                     "hooks": [{ "type": "command", "command": "/old/daemon8 cli-hook --tool codex-cli" }]
+                },
+                {
+                    "matcher": "startup|resume",
+                    "hooks": [{ "type": "command", "command": "/older/daemon8 cli-hook --tool codex-cli" }]
                 }
             ]
         }
@@ -792,10 +878,18 @@ fn cli_rerun_with_force_hooks_replaces_stale_codex_entry() {
 
     let parsed = read_json(&codex_dir.join("hooks.json"));
     let cmds = commands_under(&parsed, "SessionStart");
-    assert_eq!(cmds.len(), 1, "expected exactly one replacement entry");
+    assert_eq!(cmds.len(), 2, "expected user hook plus one replacement");
     assert!(
-        !cmds[0].starts_with("/old/daemon8"),
-        "stale codex entry must be replaced; got: {cmds:?}"
+        cmds.iter()
+            .all(|command| !command.starts_with("/old/daemon8")
+                && !command.starts_with("/older/daemon8")),
+        "stale codex entries must be replaced; got: {cmds:?}"
     );
-    assert!(cmds[0].contains("cli-hook --tool codex-cli"));
+    assert!(cmds.contains(&"user-codex-hook".to_string()));
+    assert_eq!(
+        cmds.iter()
+            .filter(|command| command.contains("cli-hook --tool codex-cli"))
+            .count(),
+        1
+    );
 }

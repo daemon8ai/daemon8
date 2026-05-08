@@ -386,9 +386,15 @@ pub fn load(config_path: Option<&str>) -> Result<Config, figment::Error> {
 }
 
 fn is_config_env_key(key: &str) -> bool {
-    let root = key.split('.').next().unwrap_or(key);
+    let root = key
+        .split_once("__")
+        .map(|(root, _)| root)
+        .unwrap_or(key)
+        .split('.')
+        .next()
+        .unwrap_or(key);
     matches!(
-        root,
+        root.to_ascii_lowercase().as_str(),
         "version"
             | "server"
             | "storage"
@@ -579,6 +585,7 @@ role_default = "debugger"
     fn config_env_filter_ignores_hook_diagnostic_env() {
         assert!(!is_config_env_key("hook_verbose"));
         assert!(is_config_env_key("server.port"));
+        assert!(is_config_env_key("server__port"));
     }
 
     #[test]

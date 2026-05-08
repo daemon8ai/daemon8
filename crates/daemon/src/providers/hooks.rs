@@ -22,7 +22,7 @@ pub fn install_claude_hooks(
     force: bool,
 ) -> Result<PathBuf> {
     let settings_path = scope.settings_path(cwd, home);
-    let command = format!("{} cli-hook", current_exe_string());
+    let command = format!("{} cli-hook", quote_command_path(&current_exe_string()));
     install_json_hooks(
         &settings_path,
         &command,
@@ -48,6 +48,11 @@ pub fn install_claude_hooks(
                 status_message: None,
             },
             HookSpec {
+                event: "PermissionRequest",
+                matcher: None,
+                status_message: None,
+            },
+            HookSpec {
                 event: "PostToolUse",
                 matcher: None,
                 status_message: None,
@@ -69,7 +74,10 @@ pub fn install_claude_hooks(
 
 pub fn install_codex_hooks(home: &Path, force: bool) -> Result<PathBuf> {
     let settings_path = home.join(".codex/hooks.json");
-    let command = format!("{} cli-hook --tool codex-cli", current_exe_string());
+    let command = format!(
+        "{} cli-hook --tool codex-cli",
+        quote_command_path(&current_exe_string())
+    );
     install_json_hooks(
         &settings_path,
         &command,
@@ -146,13 +154,13 @@ fn install_json_hooks(
             .as_array_mut()
             .context("hook event entry must be an array")?;
 
-        let daemon_index = groups.iter().position(group_contains_daemon_hook);
         let daemon_group = build_hook_group(command, *spec);
 
-        match daemon_index {
-            Some(index) if force => groups[index] = daemon_group,
-            Some(_) => {}
-            None => groups.push(daemon_group),
+        if force {
+            groups.retain(|group| !group_contains_daemon_hook(group));
+            groups.push(daemon_group);
+        } else if !groups.iter().any(group_contains_daemon_hook) {
+            groups.push(daemon_group);
         }
     }
 
@@ -201,4 +209,8 @@ fn group_contains_daemon_hook(group: &Value) -> bool {
 
 fn is_daemon_hook_command(command: &str) -> bool {
     command.contains("daemon8") && command.contains("cli-hook")
+}
+
+fn quote_command_path(path: &str) -> String {
+    format!("\"{}\"", path.replace('"', "\\\""))
 }
