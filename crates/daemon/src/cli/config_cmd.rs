@@ -247,8 +247,7 @@ fn validate_config_key_value(key: &str, value: &str) -> Result<()> {
         | "ingestion.udp.enabled"
         | "ingestion.unix.enabled"
         | "logging.stderr"
-        | "mcp.stdio"
-        | "mcp.http" => {
+        | "mcp.stdio" => {
             if value != "true" && value != "false" {
                 anyhow::bail!("{key} must be 'true' or 'false', got: '{value}'");
             }
@@ -310,4 +309,21 @@ fn validate_host_port(key: &str, value: &str) -> Result<()> {
         anyhow::bail!("{key} port must be 1-65535, got: 0");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_config_key_value_accepts_stdio_bool() {
+        validate_config_key_value("mcp.stdio", "true").unwrap();
+        validate_config_key_value("mcp.stdio", "false").unwrap();
+    }
+
+    #[test]
+    fn validate_config_key_value_rejects_removed_http_toggle() {
+        let err = validate_config_key_value("mcp.http", "true").unwrap_err();
+        assert!(err.to_string().contains("unknown config key"));
+    }
 }

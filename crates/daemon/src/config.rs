@@ -9,6 +9,7 @@ use std::str::FromStr;
 use serde::{Deserialize, Deserializer, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     #[serde(default = "default_version")]
     pub version: u32,
@@ -65,11 +66,10 @@ pub struct ChromeConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct McpConfig {
     #[serde(default = "default_true")]
     pub stdio: bool,
-    #[serde(default)]
-    pub http: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -317,7 +317,6 @@ impl Default for McpConfig {
     fn default() -> Self {
         Self {
             stdio: default_true(),
-            http: false,
         }
     }
 }
@@ -468,12 +467,37 @@ mod tests {
         assert_eq!(cfg.server.port, 8888);
         assert_eq!(cfg.server.host, IpAddr::from([127, 0, 0, 1]));
         assert!(cfg.mcp.stdio);
-        assert!(!cfg.mcp.http);
         assert_eq!(cfg.logging.level, LogLevel::Info);
         assert_eq!(cfg.logging.max_log_files, 5);
         assert!(cfg.storage.path.is_none());
         assert!(cfg.browser.path.is_none());
         assert!(cfg.setup.projects.is_empty());
+    }
+
+    #[test]
+    fn removed_embeddings_section_is_rejected() {
+        let result: Result<Config, _> = toml::from_str(
+            r#"[embeddings]
+provider = "none"
+"#,
+        );
+        assert!(
+            result.is_err(),
+            "removed embeddings config must not be silently accepted"
+        );
+    }
+
+    #[test]
+    fn removed_mcp_http_config_is_rejected() {
+        let result: Result<Config, _> = toml::from_str(
+            r#"[mcp]
+http = false
+"#,
+        );
+        assert!(
+            result.is_err(),
+            "removed mcp.http config must not be silently accepted"
+        );
     }
 
     #[test]

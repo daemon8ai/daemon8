@@ -86,18 +86,18 @@ pub fn install_codex_hooks(home: &Path, force: bool) -> Result<PathBuf> {
             },
             HookSpec {
                 event: "PreToolUse",
-                matcher: Some("Bash"),
-                status_message: Some("daemon8 shell command telemetry"),
+                matcher: Some("Bash|apply_patch|Edit|Write"),
+                status_message: Some("daemon8 tool telemetry"),
             },
             HookSpec {
                 event: "PermissionRequest",
-                matcher: Some("Bash"),
+                matcher: Some("Bash|apply_patch|Edit|Write"),
                 status_message: Some("daemon8 permission telemetry"),
             },
             HookSpec {
                 event: "PostToolUse",
-                matcher: Some("Bash"),
-                status_message: Some("daemon8 command result telemetry"),
+                matcher: Some("Bash|apply_patch|Edit|Write"),
+                status_message: Some("daemon8 tool result telemetry"),
             },
             HookSpec {
                 event: "Stop",

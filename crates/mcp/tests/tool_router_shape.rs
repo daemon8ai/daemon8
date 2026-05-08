@@ -27,6 +27,18 @@ const EXPECTED_TOOLS: [&str; 17] = [
     "setup_apply",
 ];
 
+const REMOVED_TOOLS: [&str; 9] = [
+    "query_memory_tier",
+    "memory_sweep_short",
+    "memory_dedupe_long",
+    "list_embedding_profiles",
+    "register_embedding_profile",
+    "deliber8_inbox",
+    "deliber8_roster",
+    "send_envelope",
+    "list_agents",
+];
+
 fn tool_names(router: &rmcp::handler::server::router::tool::ToolRouter<DaemonMcp>) -> Vec<String> {
     router
         .list_all()
@@ -93,6 +105,14 @@ fn composed_router_has_full_tool_surface() {
             names.iter().any(|n| n == expected),
             "router missing expected tool '{}'. Present: {:?}",
             expected,
+            names
+        );
+    }
+    for removed in REMOVED_TOOLS {
+        assert!(
+            !names.iter().any(|n| n == removed),
+            "router must not expose removed tool '{}'. Present: {:?}",
+            removed,
             names
         );
     }

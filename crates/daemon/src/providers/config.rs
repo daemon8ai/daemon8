@@ -152,8 +152,7 @@ fn write_codex_config(config_path: &Path, mcp_url: &str, project_dir: Option<&Pa
     daemon8_table.insert("url".to_string(), toml::Value::String(mcp_url.to_string()));
 
     let features = get_or_insert_table(root_table, "features")?;
-    features.remove("codex_hooks");
-    features.insert("hooks".to_string(), toml::Value::Boolean(true));
+    features.insert("codex_hooks".to_string(), toml::Value::Boolean(true));
 
     if let Some(project_dir) = project_dir {
         let projects = get_or_insert_table(root_table, "projects")?;

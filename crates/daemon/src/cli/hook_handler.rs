@@ -3,9 +3,8 @@
 
 //! Universal CLI hook telemetry handler.
 //!
-//! Invoked by Claude Code, Cursor CLI, Gemini CLI, GitHub Copilot CLI,
-//! OpenAI Codex CLI, and Continue.dev. Reads a stdin JSON payload, normalizes
-//! the event name across the seven case conventions, resolves project-local
+//! Invoked by source-backed CLI hook providers. Reads a stdin JSON payload,
+//! normalizes the event name across provider conventions, resolves project-local
 //! `.daemon8.toml`, and POSTs provider facts to the daemon's `/ingest`
 //! endpoint as `cli.*` observations.
 //!
@@ -273,8 +272,9 @@ fn parent_pid() -> Option<u32> {
 /// Any error is absorbed; optional stderr diagnostic when `DAEMON8_HOOK_VERBOSE`
 /// is set. Returns `Ok(())` unconditionally.
 pub fn cmd_cli_hook(args: CliHookArgs) -> Result<()> {
+    let verbose = args.verbose || env::var_os("DAEMON8_HOOK_VERBOSE").is_some();
     if let Err(e) = run(args)
-        && env::var_os("DAEMON8_HOOK_VERBOSE").is_some()
+        && verbose
     {
         eprintln!("[daemon8 cli-hook] soft-failed: {e:#}");
     }
@@ -285,18 +285,19 @@ fn run(args: CliHookArgs) -> Result<()> {
     let (input, raw_input) = read_input()?;
     let cwd = resolve_cwd(&input);
     let (cli_cfg, report) = cli_config::load(&cwd);
+    let verbose = args.verbose || env::var_os("DAEMON8_HOOK_VERBOSE").is_some();
 
-    if cli_cfg.project_config_path.is_none() {
-        return Ok(());
-    }
-
-    if report.has_errors() && args.verbose {
+    if report.has_errors() && verbose {
         if let Some(ref e) = report.user_error {
             eprintln!("[daemon8 cli-hook] user config: {e}");
         }
         if let Some(ref e) = report.project_error {
             eprintln!("[daemon8 cli-hook] project config: {e}");
         }
+    }
+
+    if cli_cfg.project_config_path.is_none() {
+        return Ok(());
     }
 
     let tool = detect_tool(args.tool.as_deref());

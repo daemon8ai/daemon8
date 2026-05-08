@@ -258,10 +258,9 @@ fn cli_yes_with_codex_provider_writes_codex_config_and_hooks() {
 
     let config_toml = std::fs::read_to_string(&config).unwrap();
     let config_parsed: toml::Value = toml::from_str(&config_toml).unwrap();
-    assert_eq!(config_parsed["features"]["hooks"].as_bool(), Some(true));
-    assert!(
-        config_parsed["features"].get("codex_hooks").is_none(),
-        "deprecated codex_hooks flag must not be written"
+    assert_eq!(
+        config_parsed["features"]["codex_hooks"].as_bool(),
+        Some(true)
     );
 
     let parsed = read_json(&hooks);
@@ -284,10 +283,25 @@ fn cli_yes_with_codex_provider_writes_codex_config_and_hooks() {
         session.get("matcher").and_then(Value::as_str),
         Some("startup|resume")
     );
+    for event in ["PreToolUse", "PermissionRequest", "PostToolUse"] {
+        let tool_group = hooks_for(&parsed, event)
+            .iter()
+            .find(|group| {
+                group
+                    .get("matcher")
+                    .and_then(Value::as_str)
+                    .is_some_and(|matcher| matcher.contains("apply_patch"))
+            })
+            .unwrap_or_else(|| panic!("{event} must capture file edit tools"));
+        assert_eq!(
+            tool_group.get("matcher").and_then(Value::as_str),
+            Some("Bash|apply_patch|Edit|Write")
+        );
+    }
 }
 
 #[test]
-fn cli_yes_with_codex_provider_migrates_deprecated_hook_feature() {
+fn cli_yes_with_codex_provider_preserves_codex_hook_feature() {
     let (_tmp, work, home) = setup_dirs();
     let config = codex_config_path(&home);
     std::fs::create_dir_all(config.parent().unwrap()).unwrap();
@@ -309,10 +323,10 @@ codex_hooks = true
 
     let config_toml = std::fs::read_to_string(&config).unwrap();
     let parsed: toml::Value = toml::from_str(&config_toml).unwrap();
-    assert_eq!(parsed["features"]["hooks"].as_bool(), Some(true));
+    assert_eq!(parsed["features"]["codex_hooks"].as_bool(), Some(true));
     assert!(
-        parsed["features"].get("codex_hooks").is_none(),
-        "deprecated codex_hooks flag must be removed"
+        parsed["features"].get("hooks").is_none(),
+        "daemon8 must not write unsupported codex hooks feature flag"
     );
 }
 

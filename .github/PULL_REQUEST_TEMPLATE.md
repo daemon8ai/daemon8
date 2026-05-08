@@ -19,10 +19,10 @@ Thanks for sending a PR. A few things before you hit submit:
 - [ ] Daemon core (`crates/`)
 - [ ] MCP tools (`crates/mcp/`)
 - [ ] HTTP API (`crates/api/`)
-- [ ] Store / memory / embeddings (`crates/store/`, `crates/embed/`)
+- [ ] Store / memory (`crates/store/`)
 - [ ] Browser / ADB bridges (`crates/chrome/`, `crates/adb/`)
 - [ ] CLI (`crates/daemon/`)
-- [ ] Setup / doctor / deliber8
+- [ ] Setup / doctor / hooks
 - [ ] Docs / meta (root files, .github/, etc.)
 
 ## Tests

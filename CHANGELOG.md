@@ -6,26 +6,21 @@ For full commit-by-commit detail, use `git log` and
 
 ## Unreleased
 
-### Runtime, memory, and embeddings
+### Lean MVP cull
 
-- Added tiered memory tables (`short`, `reference`, `long`) with
-  bookkeeper sweep and dedupe operations.
-- Added embedding profile registry and wired embeddings through memory-save
-  paths.
-- Added tier query, sweep, dedupe, and embedding-profile MCP tools plus
-  matching HTTP routes.
-
-### Deliber8 and operations
-
-- Replaced the legacy agent namespace with deliber8 CLI/runtime surfaces.
-- Added deliber8 roster and inbox MCP tools and doctor backlog checks.
-- Hardened envelope/card storage behavior and router gating behavior.
+- Removed experimental Deliber8 runtime, CLI, roster, inbox, and storage
+  surfaces from the shipped workspace.
+- Removed memory tiers, bookkeeper operations, embedding profiles, and
+  embedding runtime/config/dependencies.
+- Kept daemon8 focused on runtime observations, checkpoints, lenses, browser
+  and device actions, hooks as telemetry, setup, and curated non-embedded
+  memory.
 
 ### Setup, diagnostics, and reliability
 
 - Added guided setup flows (`setup status`, `setup plan`, `setup apply`) with
   post-apply status reporting.
-- Expanded `daemon8 doctor` checks and improved `--config` handling.
+- Improved `--config` handling.
 - Improved shutdown/browser lifecycle and tightened logging tests and
   operational logging.
 

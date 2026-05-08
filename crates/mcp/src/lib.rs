@@ -1696,6 +1696,41 @@ mod logging_tests {
         assert_eq!(p.confirm, Some(false));
     }
 
+    #[tokio::test]
+    async fn save_memory_inner_persists_curated_memory() {
+        let store = daemon8_store::SurrealStore::memory().await.unwrap();
+        let mem_store = store.memory_store();
+        mem_store.init_schema().await.unwrap();
+
+        let result = save_memory_inner(
+            &mem_store,
+            SaveMemoryParams {
+                content: "Prefer checkpoints before runtime checks.".into(),
+                kind: Some("decision".into()),
+                tags: Some(vec!["project:daemon8".into(), "kind:test".into()]),
+                source_observations: Some(vec![42]),
+                project_slug: Some("daemon8".into()),
+                session_id: Some("test-session".into()),
+                confidence: Some(0.9),
+            },
+        )
+        .await;
+
+        let value: serde_json::Value = serde_json::from_str(&result).unwrap();
+        let id = value["id"]
+            .as_str()
+            .expect("save_memory should return an id");
+        let saved = mem_store.get_memory(id).await.unwrap().unwrap();
+
+        assert_eq!(saved.kind, daemon8_types::MemoryKind::Decision);
+        assert_eq!(saved.content, "Prefer checkpoints before runtime checks.");
+        assert_eq!(saved.source_observations, vec![42]);
+        assert_eq!(saved.tags, vec!["project:daemon8", "kind:test"]);
+        assert_eq!(saved.project_slug, "daemon8");
+        assert_eq!(saved.session_id.as_deref(), Some("test-session"));
+        assert_eq!(saved.confidence, 0.9);
+    }
+
     #[test]
     fn logging_notification_includes_operational_fields() {
         let mut obs = Observation::new(

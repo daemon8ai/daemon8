@@ -68,10 +68,11 @@ Register as a system service and configure your AI clients:
 
 ```bash
 daemon8 install
-daemon8 setup
+daemon8 setup plan
+daemon8 setup apply --yes
 ```
 
-`daemon8 install` registers a user-level service. `daemon8 setup` detects your browser and auto-configures Claude Code, Cursor, Windsurf, Gemini CLI, and Codex.
+`daemon8 install` registers a user-level service. `daemon8 setup plan` previews configuration changes. `daemon8 setup apply --yes` registers runtime sources and configures supported AI clients.
 
 > [!WARNING]
 > **macOS:** first launch triggers an "unidentified developer" Gatekeeper prompt and may request Background Items and App Management permissions. Both are expected until signed release binaries ship.

@@ -4,8 +4,8 @@
 //! Project-local CLI hook configuration.
 //!
 //! `.daemon8.toml` lives at the project root (next to `.editorconfig` /
-//! `.gitignore`). It abstracts per-CLI enrollment behavior so the same config
-//! drives Claude Code, Cursor, Gemini, Codex, Copilot, Continue, and opencode.
+//! `.gitignore`). It abstracts per-CLI enrollment behavior for source-backed
+//! hook providers such as Claude Code and Codex.
 //!
 //! Resolution order (merged last-wins):
 //!  1. System defaults
@@ -24,6 +24,7 @@ pub const PROJECT_CONFIG_FILENAME: &str = ".daemon8.toml";
 pub const USER_CONFIG_FILENAME: &str = "cli.toml";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CliConfig {
     #[serde(default)]
     pub project: ProjectSection,
@@ -38,6 +39,19 @@ pub struct CliConfig {
     /// provided the merge, or `None` if none was found.
     #[serde(skip)]
     pub project_config_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CliConfigLayer {
+    #[serde(default)]
+    project: Option<ProjectSection>,
+    #[serde(default)]
+    enrollment: Option<EnrollmentSection>,
+    #[serde(default)]
+    providers: BTreeMap<String, ProviderEntry>,
+    #[serde(default)]
+    sources: BTreeMap<String, crate::config::SourceConfig>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -169,19 +183,23 @@ impl LoadReport {
     }
 }
 
-fn load_toml(path: &Path) -> Result<CliConfig, String> {
+fn load_toml(path: &Path) -> Result<CliConfigLayer, String> {
     let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
-    toml::from_str::<CliConfig>(&text).map_err(|e| e.to_string())
+    toml::from_str::<CliConfigLayer>(&text).map_err(|e| e.to_string())
 }
 
 /// Merge `src` into `dst` with last-wins semantics at the section level.
 /// Maps (providers, sources) merge key-by-key.
-fn merge_into(dst: &mut CliConfig, src: CliConfig) {
-    if src.project.slug.is_some() {
-        dst.project.slug = src.project.slug;
+fn merge_into(dst: &mut CliConfig, src: CliConfigLayer) {
+    if let Some(project) = src.project
+        && project.slug.is_some()
+    {
+        dst.project.slug = project.slug;
     }
 
-    dst.enrollment = src.enrollment;
+    if let Some(enrollment) = src.enrollment {
+        dst.enrollment = enrollment;
+    }
 
     for (k, v) in src.providers {
         dst.providers.insert(k, v);
@@ -304,6 +322,53 @@ enabled = true
         assert_eq!(cfg.project.slug.as_deref(), Some("daemonai"));
         assert_eq!(cfg.enrollment.scope, vec!["crates/mcp/**"]);
         assert!(cfg.providers.contains_key("claude-code"));
+    }
+
+    #[test]
+    fn removed_project_feature_sections_are_rejected() {
+        let toml_text = r#"
+[project]
+slug = "daemonai"
+
+[features]
+state_tracking = true
+
+[intents.auto_declare]
+expertise = ["rust"]
+
+[distillation]
+track_file_writes = true
+"#;
+
+        let result: Result<CliConfig, _> = toml::from_str(toml_text);
+        assert!(
+            result.is_err(),
+            "removed hook/memory planning sections must not be silently accepted"
+        );
+    }
+
+    #[test]
+    fn project_without_enrollment_does_not_disable_user_enrollment() {
+        let mut merged = CliConfig::default();
+        merged.enrollment.enabled = true;
+        merged.enrollment.scope = vec!["src/**".into()];
+
+        let project_layer: CliConfigLayer = toml::from_str(
+            r#"
+[project]
+slug = "daemonai"
+
+[providers.codex-cli]
+enabled = true
+"#,
+        )
+        .unwrap();
+
+        merge_into(&mut merged, project_layer);
+
+        assert!(merged.enrollment.enabled);
+        assert_eq!(merged.enrollment.scope, vec!["src/**"]);
+        assert_eq!(merged.project.slug.as_deref(), Some("daemonai"));
     }
 
     #[test]

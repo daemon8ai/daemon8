@@ -639,9 +639,17 @@ impl StateModel for SurrealStore {
             .await
             .map_err(|e| StoreError::Db(format!("memory export select page: {e}")))?;
 
-        result
+        let mut rows: Vec<serde_json::Value> = result
             .take(0)
-            .map_err(|e| StoreError::Db(format!("memory export select page read: {e}")))
+            .map_err(|e| StoreError::Db(format!("memory export select page read: {e}")))?;
+
+        for row in &mut rows {
+            if let serde_json::Value::Object(object) = row {
+                object.remove("embedding");
+            }
+        }
+
+        Ok(rows)
     }
 }
 
@@ -785,6 +793,44 @@ mod tests {
             .unwrap();
         assert_eq!(second_page.len(), 1);
         assert_eq!(second_page[0]["content"], "three");
+    }
+
+    #[tokio::test]
+    async fn memory_export_strips_legacy_embedding_field() {
+        let store = SurrealStore::memory().await.unwrap();
+        store
+            .db
+            .query(
+                "DEFINE FIELD IF NOT EXISTS embedding ON memory TYPE option<array<float>>;
+                 CREATE memory CONTENT {
+                    created_at: 1,
+                    updated_at: 1,
+                    kind: 'pattern',
+                    content: 'legacy vector row',
+                    embedding: [0.1, 0.2],
+                    source_observations: [],
+                    tags: [],
+                    project_slug: 'daemon8',
+                    session_id: NONE,
+                    confidence: 1.0
+                 };",
+            )
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+
+        let rows = store
+            .memory_export_select_page("SELECT * FROM memory ORDER BY created_at ASC", 10, 0)
+            .await
+            .unwrap();
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["content"], "legacy vector row");
+        assert!(
+            rows[0].get("embedding").is_none(),
+            "memory export must not expose removed embedding data"
+        );
     }
 
     #[tokio::test]
