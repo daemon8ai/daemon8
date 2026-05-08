@@ -190,23 +190,6 @@ fn cli_yes_with_install_hooks_local_writes_both() {
 }
 
 #[test]
-fn cli_deliber8_help_is_available() {
-    let out = run_daemon8(&["deliber8", "--help"]);
-    assert!(
-        out.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("spawn"));
-    assert!(stdout.contains("list"));
-    assert!(stdout.contains("inspect"));
-    assert!(stdout.contains("stop"));
-    assert!(stdout.contains("restart"));
-}
-
-#[test]
 fn cli_agent_command_is_removed() {
     let out = run_daemon8(&["agent", "--help"]);
     assert!(!out.status.success());

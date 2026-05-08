@@ -5,7 +5,6 @@ mod cleanup;
 mod cli;
 mod cli_config;
 mod config;
-mod deliber8;
 mod providers;
 mod screenshot;
 mod sources;
@@ -75,9 +74,6 @@ enum Commands {
     Setup(cli::setup::SetupArgs),
     /// Real-time alert relay for MCP clients (experimental)
     Channel,
-    /// Manage deliber8 background agents and inboxes
-    #[command(subcommand)]
-    Deliber8(cli::deliber8::Deliber8Subcommand),
     /// Diagnose common configuration and environment issues
     Doctor {
         /// Attempt to fix issues that can be repaired automatically
@@ -132,7 +128,6 @@ async fn main() -> Result<()> {
         Commands::Uninstall => cli::service::cmd_uninstall(),
         Commands::Setup(args) => cli::setup::cmd_setup(cli.config, args).await,
         Commands::Channel => cli::channel::cmd_channel().await,
-        Commands::Deliber8(sub) => cli::deliber8::cmd_deliber8(cli.config, sub).await,
         Commands::Doctor { fix } => cli::doctor::cmd_doctor(cli.config, fix).await,
         Commands::CliHook(args) => cli::hook_handler::cmd_cli_hook(args),
         Commands::Init(args) => cli::init::cmd_init(args),
