@@ -16,12 +16,7 @@ use daemon8_types::{
     observation_search_text,
 };
 
-use crate::{
-    StateModel, StoreError, bookkeeper::SurrealBookkeeperStore, card::SurrealCardStore,
-    embedding_profile::SurrealEmbeddingProfileStore, envelope::SurrealEnvelopeStore,
-    memory::SurrealMemoryStore, memory_long::SurrealMemoryLongStore,
-    memory_reference::SurrealMemoryReferenceStore, memory_short::SurrealMemoryShortStore,
-};
+use crate::{StateModel, StoreError, memory::SurrealMemoryStore};
 
 const NAMESPACE: &str = "daemon8";
 const DATABASE: &str = "observations";
@@ -166,46 +161,6 @@ impl SurrealStore {
         SurrealMemoryStore::new(self.db.clone())
     }
 
-    /// Create a `SurrealCardStore` sharing this database handle.
-    /// `Surreal<Db>` is internally Arc'd, so cloning is cheap.
-    pub fn card_store(&self) -> SurrealCardStore {
-        SurrealCardStore::new(self.db.clone())
-    }
-
-    /// Create a `SurrealEnvelopeStore` sharing this database handle.
-    /// `Surreal<Db>` is internally Arc'd, so cloning is cheap.
-    pub fn envelope_store(&self) -> SurrealEnvelopeStore {
-        SurrealEnvelopeStore::new(self.db.clone())
-    }
-
-    /// Create a `SurrealMemoryShortStore` sharing this database handle.
-    pub fn memory_short_store(&self) -> SurrealMemoryShortStore {
-        SurrealMemoryShortStore::new(self.db.clone())
-    }
-
-    /// Create a `SurrealMemoryReferenceStore` sharing this database handle.
-    pub fn memory_reference_store(&self) -> SurrealMemoryReferenceStore {
-        SurrealMemoryReferenceStore::new(self.db.clone())
-    }
-
-    /// Create a `SurrealMemoryLongStore` sharing this database handle.
-    pub fn memory_long_store(&self) -> SurrealMemoryLongStore {
-        SurrealMemoryLongStore::new(self.db.clone())
-    }
-
-    /// Create a `SurrealBookkeeperStore` sharing this database handle.
-    /// The bookkeeper composes the three tier stores; this accessor returns
-    /// a thin handle that runs the dedup / sweep operations directly via
-    /// SurrealQL rather than going through the per-tier stores.
-    pub fn bookkeeper_store(&self) -> SurrealBookkeeperStore {
-        SurrealBookkeeperStore::new(self.db.clone())
-    }
-
-    /// Create a `SurrealEmbeddingProfileStore` sharing this database handle.
-    pub fn embedding_profile_store(&self) -> SurrealEmbeddingProfileStore {
-        SurrealEmbeddingProfileStore::new(self.db.clone())
-    }
-
     async fn init_schema(&self) -> Result<(), StoreError> {
         self.db
             .use_ns(NAMESPACE)
@@ -260,48 +215,6 @@ impl SurrealStore {
             .map_err(|e| StoreError::Db(format!("schema init check: {e}")))?;
 
         self.backfill_observation_query_fields().await?;
-
-        self.db
-            .query(crate::envelope::ENVELOPE_DDL)
-            .await
-            .map_err(|e| StoreError::Db(format!("envelope schema init: {e}")))?
-            .check()
-            .map_err(|e| StoreError::Db(format!("envelope schema init check: {e}")))?;
-
-        self.db
-            .query(crate::card::CARD_DDL)
-            .await
-            .map_err(|e| StoreError::Db(format!("card schema init: {e}")))?
-            .check()
-            .map_err(|e| StoreError::Db(format!("card schema init check: {e}")))?;
-
-        self.db
-            .query(crate::memory_short::MEMORY_SHORT_DDL)
-            .await
-            .map_err(|e| StoreError::Db(format!("memory_short schema init: {e}")))?
-            .check()
-            .map_err(|e| StoreError::Db(format!("memory_short schema init check: {e}")))?;
-
-        self.db
-            .query(crate::memory_reference::MEMORY_REFERENCE_DDL)
-            .await
-            .map_err(|e| StoreError::Db(format!("memory_reference schema init: {e}")))?
-            .check()
-            .map_err(|e| StoreError::Db(format!("memory_reference schema init check: {e}")))?;
-
-        self.db
-            .query(crate::memory_long::MEMORY_LONG_DDL)
-            .await
-            .map_err(|e| StoreError::Db(format!("memory_long schema init: {e}")))?
-            .check()
-            .map_err(|e| StoreError::Db(format!("memory_long schema init check: {e}")))?;
-
-        self.db
-            .query(crate::embedding_profile::EMBEDDING_PROFILE_DDL)
-            .await
-            .map_err(|e| StoreError::Db(format!("embedding_profile schema init: {e}")))?
-            .check()
-            .map_err(|e| StoreError::Db(format!("embedding_profile schema init check: {e}")))?;
 
         Ok(())
     }
@@ -755,52 +668,8 @@ fn build_slice_summary(observations: &[Observation]) -> SliceSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CardStore, Memory, MemoryStore};
-    use daemon8_types::{AgentCard, AgentKind, AgentStatus, MemoryKind, ObservationKind};
-
-    fn make_agent(id: &str, slug: &str) -> AgentCard {
-        AgentCard {
-            id: id.into(),
-            actor_ref: format!("agent.{slug}"),
-            address: format!("agent.{slug}"),
-            slug: slug.into(),
-            display_name: Some(slug.into()),
-            agent_kind: AgentKind::Specialist,
-            status: AgentStatus::Alive,
-            persona: serde_json::json!({}),
-            model: serde_json::json!({}),
-            capabilities: Vec::new(),
-            subjects_handled: Vec::new(),
-            project_refs: vec!["project:daemon8".into()],
-            team_refs: vec!["team:core".into()],
-            primary_team_ref: Some("team:core".into()),
-            spawned_by_actor_ref: None,
-            spawned_from_cwd: None,
-            spawned_from_project_ref: None,
-            host_id: None,
-            pid: None,
-            parent_pid: None,
-            process_group_id: None,
-            executable_path: None,
-            argv_hash: None,
-            runtime_kind: Some("daemon8.deliber8".into()),
-            runtime_version: None,
-            launch_nonce: None,
-            started_at: None,
-            last_seen_at: None,
-            heartbeat_interval_ms: None,
-            stop_state: serde_json::json!({}),
-            last_stop_request_at: None,
-            last_exit_code: None,
-            last_signal: None,
-            cost_window_usd: 0.0,
-            cost_total_usd: 0.0,
-            budget_daily_usd: None,
-            failure_reason: None,
-            created_at: 1,
-            updated_at: 1,
-        }
-    }
+    use crate::{Memory, MemoryStore};
+    use daemon8_types::{MemoryKind, ObservationKind};
 
     fn make_obs(severity: Severity, ts: u64) -> Observation {
         Observation {
@@ -854,36 +723,6 @@ mod tests {
         assert_eq!(slice.observations.len(), 1);
         assert_eq!(slice.observations[0].id, id);
         assert_eq!(slice.observations[0].severity, Severity::Info);
-    }
-
-    #[tokio::test]
-    async fn global_schema_bootstrap_creates_deliber8_card_tables() {
-        let store = SurrealStore::memory().await.unwrap();
-        let schema_probe = store
-            .db
-            .query(
-                "CREATE type::record('agent_card', 'schema-probe') CONTENT {
-                    slug: 'schema-probe',
-                    unexpected_schema_probe_field: true
-                }",
-            )
-            .await
-            .unwrap()
-            .check();
-        assert!(
-            schema_probe.is_err(),
-            "agent_card must be SCHEMAFULL from global SurrealStore bootstrap"
-        );
-
-        let cards = store.card_store();
-
-        cards
-            .upsert_agent(make_agent("agent-bootstrap", "bootstrap"))
-            .await
-            .unwrap();
-
-        let agent = cards.get_agent_by_slug("bootstrap").await.unwrap().unwrap();
-        assert_eq!(agent.id, "agent-bootstrap");
     }
 
     #[tokio::test]
