@@ -52,7 +52,12 @@ async fn handle_ingest(
         "ingested observation"
     );
 
-    let _ = state.tx.send(obs);
+    if state.tx.send(obs).is_err() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(json!({"ok": false, "error": "ingest channel closed"})),
+        );
+    }
 
     (StatusCode::ACCEPTED, axum::Json(json!({"ok": true})))
 }
@@ -62,13 +67,28 @@ async fn handle_batch(
     axum::Json(items): axum::Json<Vec<Value>>,
 ) -> (StatusCode, axum::Json<Value>) {
     let count = items.len();
+    let mut dropped = 0usize;
 
     for item in items {
         let obs = normalize::normalize(item);
-        let _ = state.tx.send(obs);
+        if state.tx.send(obs).is_err() {
+            dropped += 1;
+        }
     }
 
-    tracing::debug!(count, "ingested batch");
+    tracing::debug!(count, dropped, "ingested batch");
+
+    if dropped > 0 {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(json!({
+                "ok": false,
+                "error": "ingest channel closed",
+                "count": count,
+                "dropped": dropped,
+            })),
+        );
+    }
 
     (
         StatusCode::ACCEPTED,
@@ -203,6 +223,63 @@ mod tests {
             Severity::Debug
         ));
         assert!(matches!(normalize::parse_severity(None), Severity::Debug));
+    }
+
+    #[tokio::test]
+    async fn ingest_returns_503_when_channel_closed() {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Observation>();
+        let app = ingest_router(tx);
+        drop(rx);
+
+        let payload = json!({
+            "kind": "log",
+            "data": { "msg": "shutdown probe" },
+            "app": "test-app",
+        });
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/ingest")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&payload).unwrap()))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        let body: Value =
+            serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        assert_eq!(body["ok"], false);
+        assert_eq!(body["error"], "ingest channel closed");
+    }
+
+    #[tokio::test]
+    async fn batch_returns_503_when_channel_closed() {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Observation>();
+        let app = ingest_router(tx);
+        drop(rx);
+
+        let payload = json!([
+            {"kind": "log", "data": {"msg": "one"}, "app": "test"},
+            {"kind": "log", "data": {"msg": "two"}, "app": "test"},
+        ]);
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/ingest/batch")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&payload).unwrap()))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        let body: Value =
+            serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        assert_eq!(body["ok"], false);
+        assert_eq!(body["error"], "ingest channel closed");
+        assert_eq!(body["count"], 2);
+        assert_eq!(body["dropped"], 2);
     }
 
     #[tokio::test]
