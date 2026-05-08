@@ -4,7 +4,7 @@ This changelog summarizes major repository changes by release phase.
 For full commit-by-commit detail, use `git log` and
 [daemon8ai/daemon8/releases](https://github.com/daemon8ai/daemon8/releases).
 
-## Unreleased
+## v0.3.0 - 2026-05-08
 
 ### Upgrading from v0.2.x
 
