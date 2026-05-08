@@ -73,7 +73,7 @@ daemon8 setup plan
 daemon8 setup apply --yes
 ```
 
-`daemon8 install` registers a user-level service. `daemon8 init` creates the project `.daemon8.toml`. `daemon8 setup plan` previews configuration changes. `daemon8 setup apply --yes` registers runtime sources and configures supported AI clients.
+`daemon8 install` registers a user-level service. `daemon8 init` creates the project `.daemon8.toml`. `daemon8 setup plan` previews configuration changes. `daemon8 setup apply --yes` registers runtime sources. Add `--providers codex-cli` for Codex MCP/hooks, and `--install-hooks <local|shared|global>` for Claude Code hooks.
 
 > [!WARNING]
 > **macOS:** first launch triggers an "unidentified developer" Gatekeeper prompt and may request Background Items and App Management permissions. Both are expected until signed release binaries ship.
@@ -102,7 +102,7 @@ _some sources are configured by you, some are integrated directly into the daemo
 
 ## MCP tools
 
-There are 17 MCP tools grouped by capability. Every tool returns JSON. Mutating operations require explicit confirmation flags.
+There are 17 MCP tools grouped by capability. Every tool returns JSON. Destructive and apply-style operations require explicit confirmation flags.
 
 ### Observation
 

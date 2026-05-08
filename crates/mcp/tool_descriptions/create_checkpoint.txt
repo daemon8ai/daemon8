@@ -6,6 +6,6 @@ Use this to:
 
 Parameters: none.
 
-Returns: { id: <int>, created_at_ns: <int> }. The id is monotonic and stable across the daemon's lifetime.
+Returns: { "checkpoint": <int> }. The checkpoint is monotonic and stable across the daemon's lifetime.
 
 Read-only with respect to data — observations are not affected. The checkpoint is a label, not a snapshot.

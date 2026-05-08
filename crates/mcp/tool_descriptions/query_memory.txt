@@ -12,6 +12,6 @@ Parameters:
 - project_slug: optional string. Scope to one project.
 - limit: optional integer. Maximum number of results. Default 20.
 
-Returns: { total: <int>, memories: [ { id, content, kind, tags, project_slug, created_at, ... } ] }. Empty result list (`memories: []`) is the canonical response when nothing matches — not an error.
+Returns: [ { id, content, kind, tags, project_slug, created_at, ... } ]. Empty result list (`[]`) is the canonical response when nothing matches — not an error.
 
 Read-only. Searches the `memory` table.

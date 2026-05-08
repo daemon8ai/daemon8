@@ -17,4 +17,4 @@ Parameters:
 - session_id: optional string. The session that produced this memory.
 - confidence: optional number, 0.0 to 1.0. Defaults to 1.0.
 
-Returns: { id: <string>, ... full memory record }. Persist the returned id if you anticipate later updates or deletion.
+Returns: { "id": <string> }. Persist the returned id if you anticipate later deletion.

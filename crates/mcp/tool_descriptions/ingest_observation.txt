@@ -15,6 +15,6 @@ Parameters:
 - tags: optional list of strings. Free-form retrieval tags.
 - correlation_id: optional string. Tie multiple observations to the same logical operation.
 
-Returns: { id: <int>, kind, severity, ... full observation echo }. The id is monotonic and references the new row.
+Returns: { "ok": true } after the observation is accepted into the daemon channel. Returns an error object if the daemon is shutting down.
 
 Mutating. Observations are append-only; once written, they remain in the store until cleanup runs against retention.
