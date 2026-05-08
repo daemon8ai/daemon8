@@ -230,7 +230,11 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
     let mcp_screenshot_dir = screenshot_dir.clone();
     let mcp_broadcast_tx = broadcast_tx.clone();
     let mcp_cancel = cancel.child_token();
-    let mcp_session_cancel = cancel.clone();
+    // Daemon-wide cancel cloned into the per-session factory closure. Each
+    // `DaemonMcp` then derives its own child token for the push task in
+    // `on_initialized`, so daemon shutdown propagates while a single session
+    // ending does not affect siblings.
+    let mcp_root_cancel = cancel.clone();
 
     let mcp_http = rmcp::transport::streamable_http_server::StreamableHttpService::new(
         move || {
@@ -248,7 +252,7 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
                     mcp_broadcast_tx.subscribe(),
                 )),
                 setup_tool_fn: Some(setup_tool_fn.clone()),
-                cancel: mcp_session_cancel.clone(),
+                cancel: mcp_root_cancel.clone(),
             }))
         },
         Arc::new({

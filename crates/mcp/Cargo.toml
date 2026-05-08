@@ -18,3 +18,12 @@ tracing.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
+
+[features]
+# Surface test-only helpers (e.g. `DaemonMcp::set_subscription`) for
+# integration tests that cannot use `#[cfg(test)]` items from this crate.
+# Not enabled in release builds.
+test-util = []
+
+[dev-dependencies]
+daemon8-mcp = { path = ".", features = ["test-util"] }

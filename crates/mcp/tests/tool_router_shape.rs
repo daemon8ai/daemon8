@@ -7,6 +7,7 @@ use daemon8_chrome::ConnectionState;
 use daemon8_mcp::{DaemonMcp, DaemonMcpConfig};
 use daemon8_store::SurrealStore;
 use daemon8_types::Filter;
+use tokio_util::sync::CancellationToken;
 
 const EXPECTED_TOOLS: [&str; 17] = [
     "query_observations",
@@ -53,6 +54,10 @@ fn tool_names(router: &rmcp::handler::server::router::tool::ToolRouter<DaemonMcp
 }
 
 async fn make_mcp() -> DaemonMcp {
+    make_mcp_with_cancel(CancellationToken::new()).await
+}
+
+async fn make_mcp_with_cancel(cancel: CancellationToken) -> DaemonMcp {
     let store = Arc::new(SurrealStore::memory().await.unwrap());
     let memory_store = store.memory_store();
     memory_store.init_schema().await.unwrap();
@@ -81,7 +86,7 @@ async fn make_mcp() -> DaemonMcp {
                 .unwrap()
             })
         })),
-        cancel: tokio_util::sync::CancellationToken::new(),
+        cancel,
     })
 }
 
@@ -191,6 +196,28 @@ async fn server_instructions_mention_action_surface() {
 }
 
 #[tokio::test]
+async fn parent_cancel_propagates_to_session_child_token() {
+    // Locks the daemon-shutdown contract: cancelling the daemon-wide token
+    // (passed via `DaemonMcpConfig.cancel`) must cancel any per-session
+    // child tokens derived from it. The push task in `on_initialized` uses
+    // exactly this child-of-stored-parent pattern to break out of its
+    // select! loop on shutdown.
+    let parent = CancellationToken::new();
+    let mcp = make_mcp_with_cancel(parent.clone()).await;
+    let session = mcp.child_cancel_token();
+
+    assert!(
+        !session.is_cancelled(),
+        "child token must start uncancelled"
+    );
+    parent.cancel();
+    assert!(
+        session.is_cancelled(),
+        "parent cancellation must propagate to session-derived child"
+    );
+}
+
+#[tokio::test]
 async fn list_connections_browser_key_visible() {
     let mcp = make_mcp().await;
     let raw = mcp.connections_json().await;
@@ -212,6 +239,11 @@ async fn subscription_filters_are_per_session() {
     let mut rx_a = mcp_a.subscription_rx();
     let mut rx_b = mcp_b.subscription_rx();
 
+    // Both sessions start with the default `None` filter; mark each receiver
+    // as seen so subsequent `has_changed` calls only fire on real writes.
+    let _ = rx_a.borrow_and_update();
+    let _ = rx_b.borrow_and_update();
+
     let filter_a = Filter {
         severity_min: Some(Severity::Warn),
         ..Filter::default()
@@ -221,9 +253,21 @@ async fn subscription_filters_are_per_session() {
         ..Filter::default()
     };
 
-    mcp_a.set_subscription(Some(filter_a));
-    mcp_b.set_subscription(Some(filter_b));
+    // Write only to session A first; session B's receiver must not observe
+    // a change. This is the load-bearing isolation invariant — earlier the
+    // sessions shared one channel, so mcp_a writes would tickle rx_b.
+    mcp_a.set_subscription(Some(filter_a.clone()));
+    assert!(
+        rx_a.has_changed().expect("rx_a still alive"),
+        "session A receiver should observe its own write"
+    );
+    assert!(
+        !rx_b.has_changed().expect("rx_b still alive"),
+        "session A write must not perturb session B"
+    );
 
+    // Now session B writes; session A should not see B's filter.
+    mcp_b.set_subscription(Some(filter_b));
     let a = rx_a.borrow_and_update().clone().expect("session A filter");
     let b = rx_b.borrow_and_update().clone().expect("session B filter");
 

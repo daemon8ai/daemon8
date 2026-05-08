@@ -477,10 +477,20 @@ impl DaemonMcp {
     /// Set this session's subscription filter directly. Equivalent to invoking
     /// the `subscribe_observations` tool — exposed for integration tests that
     /// need to verify per-session subscription scoping without driving the
-    /// rmcp tool router.
-    #[doc(hidden)]
+    /// rmcp tool router. Gated behind the `test-util` feature so it does not
+    /// appear in the public API of release builds.
+    #[cfg(feature = "test-util")]
     pub fn set_subscription(&self, filter: Option<Filter>) {
         self.subscription_tx.send_replace(filter);
+    }
+
+    /// Derive a child cancellation token from this session's stored parent
+    /// token. Mirrors what `on_initialized` does for the per-session push
+    /// task; exposed so integration tests can prove daemon-shutdown
+    /// propagates into per-session work.
+    #[cfg(feature = "test-util")]
+    pub fn child_cancel_token(&self) -> tokio_util::sync::CancellationToken {
+        self.cancel.child_token()
     }
 
     /// Ensure Chrome is connected, waiting up to `timeout` for the connection.

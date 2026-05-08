@@ -1239,7 +1239,7 @@ mod tests {
     #[test]
     fn validate_memory_export_query_rejects_empty_query() {
         let err = validate_memory_export_query(" ").expect_err("empty query should fail");
-        assert!(err.to_string().contains("cannot be empty"));
+        assert_eq!(err, MemoryExportError::Empty);
     }
 
     #[test]
@@ -1248,32 +1248,32 @@ mod tests {
             "SELECT * FROM memory ORDER BY created_at DESC; DELETE memory",
         )
         .expect_err("semicolon should fail");
-        assert!(err.to_string().contains("single SELECT"));
+        assert_eq!(err, MemoryExportError::Semicolon);
     }
 
     #[test]
     fn validate_memory_export_query_rejects_comments_that_can_hide_paging() {
         let err = validate_memory_export_query("SELECT * FROM memory ORDER BY created_at DESC --")
             .expect_err("line comments should fail");
-        assert!(err.to_string().contains("comments"));
+        assert_eq!(err, MemoryExportError::Comments);
 
         let err = validate_memory_export_query("SELECT * FROM memory ORDER BY created_at DESC /*")
             .expect_err("block comments should fail");
-        assert!(err.to_string().contains("comments"));
+        assert_eq!(err, MemoryExportError::Comments);
     }
 
     #[test]
     fn validate_memory_export_query_rejects_non_select() {
         let err = validate_memory_export_query("DELETE FROM memory ORDER BY created_at DESC")
             .expect_err("mutating query should fail");
-        assert!(err.to_string().contains("must start with SELECT"));
+        assert_eq!(err, MemoryExportError::NotSelect);
     }
 
     #[test]
     fn validate_memory_export_query_rejects_non_memory_table() {
         let err = validate_memory_export_query("SELECT * FROM observation ORDER BY seq DESC")
             .expect_err("non-memory table should fail");
-        assert!(err.to_string().contains("legacy memory table"));
+        assert_eq!(err, MemoryExportError::DisallowedTable);
     }
 
     #[test]
@@ -1285,9 +1285,10 @@ mod tests {
         ] {
             let err =
                 validate_memory_export_query(query).expect_err("embedding projection should fail");
-            assert!(
-                err.to_string().contains("embedding"),
-                "error should mention embedding data: {err}"
+            assert_eq!(
+                err,
+                MemoryExportError::EmbeddingNotAllowed,
+                "{query:?} should reject embedding projection"
             );
         }
     }
@@ -1296,14 +1297,14 @@ mod tests {
     fn validate_memory_export_query_rejects_missing_from() {
         let err = validate_memory_export_query("SELECT 1 ORDER BY id ASC")
             .expect_err("missing FROM should fail");
-        assert!(err.to_string().contains("FROM"));
+        assert_eq!(err, MemoryExportError::MissingFrom);
     }
 
     #[test]
     fn validate_memory_export_query_ignores_string_literal_tokens() {
         let err = validate_memory_export_query("SELECT * FROM memory WHERE content = 'order by'")
             .expect_err("literal order by should not count as clause");
-        assert!(err.to_string().contains("ORDER BY"));
+        assert_eq!(err, MemoryExportError::MissingOrderBy);
 
         validate_memory_export_query(
             "SELECT * FROM memory WHERE content = 'delete limit start' ORDER BY created_at DESC",
@@ -1322,14 +1323,17 @@ mod tests {
             "SELECT * FROM memory WHERE content = 'x' ORDER BY created_at DESC UPDATE memory",
         )
         .expect_err("mutating keyword should fail");
-        assert!(err.to_string().contains("forbidden keyword"));
+        assert!(
+            matches!(err, MemoryExportError::ForbiddenKeyword(ref k) if k == "update"),
+            "expected ForbiddenKeyword(\"update\"), got {err:?}"
+        );
     }
 
     #[test]
     fn validate_memory_export_query_rejects_unstable_paging() {
         let err = validate_memory_export_query("SELECT * FROM memory")
             .expect_err("missing order by should fail");
-        assert!(err.to_string().contains("ORDER BY"));
+        assert_eq!(err, MemoryExportError::MissingOrderBy);
     }
 
     #[test]
@@ -1337,7 +1341,10 @@ mod tests {
         let err =
             validate_memory_export_query("SELECT * FROM memory ORDER BY created_at DESC LIMIT 10")
                 .expect_err("caller limit should fail");
-        assert!(err.to_string().contains("forbidden keyword 'limit'"));
+        assert!(
+            matches!(err, MemoryExportError::ForbiddenKeyword(ref k) if k == "limit"),
+            "expected ForbiddenKeyword(\"limit\"), got {err:?}"
+        );
     }
 
     #[test]
