@@ -257,7 +257,7 @@ fn sources_example(project_type: ProjectType) -> &'static str {
 fn render_template(slug: &str, project_type: ProjectType) -> String {
     let sources = sources_example(project_type);
     format!(
-        r##"# Daemon8 CLI hook configuration.
+        r##"# Daemon8 CLI telemetry configuration.
 # Schema reference: https://daemon8.ai/docs/cli-hook-config
 
 [project]
@@ -268,14 +268,9 @@ enabled = true
 scope = []
 
 [features]
-intents = true
-inbox = true
 state_tracking = true
 compaction_recovery = true
 heartbeat_interval = "30s"
-
-[intents.auto_declare]
-expertise = []
 
 [distillation]
 track_todowrite = true

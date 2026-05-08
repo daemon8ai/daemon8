@@ -77,32 +77,32 @@ pub fn install_codex_hooks(home: &Path, force: bool) -> Result<PathBuf> {
             HookSpec {
                 event: "SessionStart",
                 matcher: Some("startup|resume"),
-                status_message: Some("daemon8 session hook"),
+                status_message: Some("daemon8 session telemetry"),
             },
             HookSpec {
                 event: "UserPromptSubmit",
                 matcher: None,
-                status_message: Some("daemon8 prompt hook"),
+                status_message: Some("daemon8 turn telemetry"),
             },
             HookSpec {
                 event: "PreToolUse",
                 matcher: Some("Bash"),
-                status_message: Some("daemon8 pre-tool hook"),
+                status_message: Some("daemon8 shell command telemetry"),
             },
             HookSpec {
                 event: "PermissionRequest",
                 matcher: Some("Bash"),
-                status_message: Some("daemon8 permission hook"),
+                status_message: Some("daemon8 permission telemetry"),
             },
             HookSpec {
                 event: "PostToolUse",
                 matcher: Some("Bash"),
-                status_message: Some("daemon8 post-tool hook"),
+                status_message: Some("daemon8 command result telemetry"),
             },
             HookSpec {
                 event: "Stop",
                 matcher: None,
-                status_message: Some("daemon8 stop hook"),
+                status_message: Some("daemon8 lifecycle telemetry"),
             },
         ],
         force,

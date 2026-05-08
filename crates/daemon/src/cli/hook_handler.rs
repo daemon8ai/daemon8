@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: LicenseRef-FCL-1.0-ALv2
 // Copyright (c) 2026 Havy.tech, LLC
 
-//! Universal CLI hook handler.
+//! Universal CLI hook telemetry handler.
 //!
 //! Invoked by Claude Code, Cursor CLI, Gemini CLI, GitHub Copilot CLI,
 //! OpenAI Codex CLI, and Continue.dev. Reads a stdin JSON payload, normalizes
 //! the event name across the seven case conventions, resolves project-local
-//! `.daemon8.toml`, and POSTs the corresponding `cli.*` observation to
-//! the daemon's `/ingest` endpoint.
+//! `.daemon8.toml`, and POSTs provider facts to the daemon's `/ingest`
+//! endpoint as `cli.*` observations.
 //!
 //! Performance budget: <20ms per invocation. Uses blocking `ureq` rather than
 //! async, since a hook fires once per event and pays a runtime startup cost
@@ -98,6 +98,8 @@ struct HookToolInput {
     command: Option<String>,
     #[serde(default)]
     description: Option<String>,
+    #[serde(default, alias = "filePath", alias = "file_path", alias = "path")]
+    file_path: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -121,11 +123,10 @@ enum CliHookEvent {
 // Hook policy
 // ---------------------------------------------------------------------------
 //
-// Per MVP-07: hooks are async publishers, not prompt injectors. The policy
-// layer normalizes provider events and decides whether each event should
-// surface as an observation (and at what severity) or be dropped. The envelope
-// arm of the policy is deliberately deferred to a later MVP slice; the
-// receiver shape depends on the deliber8 runtime that lands in MVP-06.
+// Hooks are investigation telemetry. They record session, turn, tool, shell
+// command, file edit, permission, error, compaction, and lifecycle facts when
+// the provider includes them. They do not derive cause/effect, inject prompts,
+// or route agent work.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HookPolicy {
@@ -636,7 +637,10 @@ fn build_tool_event(
             "tool_name": input.tool_name,
             "tool_use_id": input.tool_use_id,
             "command": input.tool_input.command,
+            "file_path": input.tool_input.file_path,
             "description": input.tool_input.description,
+            "tool_status": tool_response_status(input.tool_response.as_ref()),
+            "tool_error": tool_response_error(input.tool_response.as_ref()),
             "tool_response": input.tool_response,
             "raw": raw_input,
         }
@@ -670,10 +674,34 @@ fn build_permission_requested(
             "turn_id": input.turn_id,
             "tool_name": input.tool_name,
             "command": input.tool_input.command,
+            "file_path": input.tool_input.file_path,
             "description": input.tool_input.description,
             "raw": raw_input,
         }
     })
+}
+
+fn tool_response_status(response: Option<&Value>) -> Option<String> {
+    let response = response?;
+    for key in ["status", "exit_code", "exitCode"] {
+        if let Some(value) = response.get(key) {
+            if let Some(text) = value.as_str() {
+                return Some(text.to_string());
+            }
+            if let Some(number) = value.as_i64() {
+                return Some(number.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn tool_response_error(response: Option<&Value>) -> Option<bool> {
+    let response = response?;
+    if let Some(value) = response.get("is_error").or_else(|| response.get("isError")) {
+        return value.as_bool();
+    }
+    Some(response.get("error").is_some())
 }
 
 fn extract_prompt(input: &HookInput, raw: &Value) -> Option<String> {
@@ -779,7 +807,7 @@ mod tests {
     }
 
     #[test]
-    fn normalize_opencode_events() {
+    fn normalize_future_adapter_compaction_aliases() {
         assert_eq!(
             normalize_event("session.compacting"),
             CliHookEvent::PreCompact
@@ -846,6 +874,7 @@ mod tests {
             tool_input: HookToolInput {
                 command: Some("cargo test".into()),
                 description: Some("Escalated command".into()),
+                file_path: None,
             },
             ..HookInput::default()
         };
@@ -891,8 +920,10 @@ mod tests {
             tool_use_id: Some("tool-123".into()),
             tool_input: HookToolInput {
                 command: Some("git status".into()),
+                file_path: Some("src/main.rs".into()),
                 description: None,
             },
+            tool_response: Some(serde_json::json!({"status": "ok", "is_error": false})),
             ..HookInput::default()
         };
         let raw = serde_json::json!({
@@ -925,6 +956,9 @@ mod tests {
         assert!(observations[0]["data"].get("role").is_none());
         assert_eq!(observations[0]["data"]["tool_use_id"], "tool-123");
         assert_eq!(observations[0]["data"]["command"], "git status");
+        assert_eq!(observations[0]["data"]["file_path"], "src/main.rs");
+        assert_eq!(observations[0]["data"]["tool_status"], "ok");
+        assert_eq!(observations[0]["data"]["tool_error"], false);
     }
 
     #[test]
@@ -936,6 +970,7 @@ mod tests {
             tool_name: Some("Bash".into()),
             tool_input: HookToolInput {
                 command: Some("ls".into()),
+                file_path: None,
                 description: None,
             },
             ..HookInput::default()

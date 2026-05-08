@@ -407,8 +407,10 @@ fn planned_actions(
                 },
                 target: source.runtime_name.clone(),
                 detail: format!(
-                    "file source {} using parser {}",
-                    source.resolved_path, source.parser
+                    "daemon8 sees file source {} using parser {}; setup apply will {} the runtime source",
+                    source.resolved_path,
+                    source.parser,
+                    if registered { "refresh" } else { "register" }
                 ),
                 mutating: true,
             });
@@ -421,7 +423,7 @@ fn planned_actions(
                 .join(PROJECT_CONFIG_FILENAME)
                 .display()
                 .to_string(),
-            detail: "run daemon8 init before setup apply can register project sources".into(),
+            detail: format!("missing {PROJECT_CONFIG_FILENAME}; next run daemon8 init so setup can inspect source intents"),
             mutating: false,
         });
     }
@@ -440,7 +442,7 @@ fn planned_actions(
             actions.push(SetupAction {
                 kind: "hook-install".into(),
                 target: format!("{scope:?}"),
-                detail: "install daemon8 CLI hook entries".into(),
+                detail: "install daemon8 CLI telemetry hooks".into(),
                 mutating: true,
             });
         }
@@ -450,7 +452,7 @@ fn planned_actions(
         actions.push(SetupAction {
             kind: "setup-state".into(),
             target: status.project.slug.clone(),
-            detail: "persist setup state in global config".into(),
+            detail: "record what daemon8 can see and which source intents were applied".into(),
             mutating: true,
         });
     }
@@ -632,16 +634,37 @@ fn json_pretty<T: Serialize>(value: T) -> Result<String> {
 
 fn print_status(status: &SetupStatus) {
     println!("setup status");
-    println!("project: {}", status.project.slug);
+    println!("daemon8 sees:");
+    println!("  project: {}", status.project.slug);
+    println!("  cwd: {}", status.project.cwd);
+    println!("  global config: {}", status.global_config_path);
+    println!("  setup applied: {}", status.global_setup_applied);
+    println!("  source intents: {}", status.project.source_intents.len());
+    for source in &status.project.source_intents {
+        println!(
+            "  source {}: {} via {}",
+            source.runtime_name, source.resolved_path, source.parser
+        );
+    }
     println!(
-        "project config: {}",
-        status.project.config_path.as_deref().unwrap_or("missing")
+        "missing: {}",
+        if status.issues.is_empty() {
+            "none"
+        } else {
+            "see warnings below"
+        }
     );
-    println!("global config: {}", status.global_config_path);
-    println!("setup applied: {}", status.global_setup_applied);
-    println!("sources: {}", status.project.source_intents.len());
     for issue in &status.issues {
         println!("warning: {issue}");
+    }
+    if !status.project.config_present {
+        println!("next: run daemon8 init, then daemon8 setup plan");
+    } else if status.issues.is_empty() && !status.global_setup_applied {
+        println!("next: run daemon8 setup plan, then daemon8 setup apply --yes");
+    } else if status.issues.is_empty() {
+        println!("next: setup is applied; rerun daemon8 setup plan after source changes");
+    } else {
+        println!("next: fix warnings, then rerun daemon8 setup status");
     }
 }
 
