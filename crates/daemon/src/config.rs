@@ -29,8 +29,6 @@ pub struct Config {
     #[serde(default)]
     pub sources: BTreeMap<String, SourceConfig>,
     #[serde(default)]
-    pub embeddings: daemon8_embed::EmbedConfig,
-    #[serde(default)]
     pub setup: SetupConfig,
     #[serde(skip)]
     pub config_dir: PathBuf,
@@ -255,7 +253,6 @@ impl Default for Config {
             ingestion: IngestionConfig::default(),
             logging: LoggingConfig::default(),
             sources: BTreeMap::new(),
-            embeddings: daemon8_embed::EmbedConfig::default(),
             setup: SetupConfig::default(),
             config_dir: project_dirs()
                 .map(|d| d.config_dir().to_path_buf())
