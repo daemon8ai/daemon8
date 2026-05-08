@@ -15,6 +15,31 @@ For full commit-by-commit detail, use `git log` and
 - Kept daemon8 focused on runtime observations, checkpoints, lenses, browser
   and device actions, hooks as telemetry, setup, and curated non-embedded
   memory.
+- Memory export retains a sanctioned 2-layer defense against legacy embedding
+  data: validate-time rejection of `embedding` projections plus result-time
+  stripping of `embedding` fields from result rows. This is the one ADR-004
+  backward-compatibility exception, kept because no migration command ships
+  and operators should not see stale embedding bytes leak into curated memory
+  exports.
+
+### Audit closeout
+
+- HTTP `/ingest` and `/ingest/batch` now return `503 Service Unavailable`
+  when the broadcast channel has shut down, matching the MCP
+  `ingest_observation` tool contract instead of silently returning
+  `202 Accepted`.
+- MCP subscription filters are now per-session: concurrent agents calling
+  `subscribe_observations` no longer overwrite each other. The push task
+  observes the daemon-wide cancellation token so shutdown propagates
+  cleanly.
+- `validated_memory_export_query` now returns a typed `MemoryExportError`
+  enum instead of stringly-typed errors.
+- `ProjectSetupState.hook_policy` is now a typed `HookPolicy` enum
+  (`install` / `manual`); arbitrary strings are rejected by the parser.
+- Dead `restart_service` removed.
+- Memory tool descriptions enforce the curated-lessons rule: only stable,
+  reusable, verified conclusions — no raw logs, transcripts, or guesses.
+- README CLI table now lists `daemon8 memory`.
 
 ### Setup, diagnostics, and reliability
 

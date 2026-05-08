@@ -6,6 +6,7 @@ use std::sync::Arc;
 use daemon8_chrome::ConnectionState;
 use daemon8_mcp::{DaemonMcp, DaemonMcpConfig};
 use daemon8_store::SurrealStore;
+use daemon8_types::Filter;
 
 const EXPECTED_TOOLS: [&str; 17] = [
     "query_observations",
@@ -27,7 +28,11 @@ const EXPECTED_TOOLS: [&str; 17] = [
     "setup_apply",
 ];
 
-const REMOVED_TOOLS: [&str; 9] = [
+/// Tool names that must never appear in the live MCP surface. Includes both
+/// removed tools (the deliber8/memory-tier/embedding-profile cluster cut by
+/// the lean MVP cull) and preemptively reserved names that should not be
+/// re-introduced if revisited under different semantics.
+const RESERVED_TOOL_NAMES: [&str; 9] = [
     "query_memory_tier",
     "memory_sweep_short",
     "memory_dedupe_long",
@@ -54,8 +59,6 @@ async fn make_mcp() -> DaemonMcp {
     let (obs_tx, _) = tokio::sync::mpsc::unbounded_channel();
     let (chrome_tx, _) = tokio::sync::mpsc::channel(16);
     let (_, chrome_state_rx) = tokio::sync::watch::channel(ConnectionState::Disconnected);
-    let (sub_tx, _) = tokio::sync::watch::channel(None);
-    let sub_tx = Arc::new(sub_tx);
     let (broadcast_tx, _) = tokio::sync::broadcast::channel(16);
     let lens = Arc::new(daemon8_store::LensManager::new(broadcast_tx.subscribe()));
     DaemonMcp::new(DaemonMcpConfig {
@@ -67,7 +70,6 @@ async fn make_mcp() -> DaemonMcp {
         chrome_endpoint: Arc::new(std::sync::Mutex::new(None)),
         device_screenshot_fn: None,
         screenshot_dir: std::env::temp_dir().join("daemon8-test-screenshots"),
-        subscription_tx: sub_tx,
         broadcast_tx,
         lens,
         setup_tool_fn: Some(Arc::new(|action| {
@@ -79,6 +81,7 @@ async fn make_mcp() -> DaemonMcp {
                 .unwrap()
             })
         })),
+        cancel: tokio_util::sync::CancellationToken::new(),
     })
 }
 
@@ -108,11 +111,11 @@ fn composed_router_has_full_tool_surface() {
             names
         );
     }
-    for removed in REMOVED_TOOLS {
+    for reserved in RESERVED_TOOL_NAMES {
         assert!(
-            !names.iter().any(|n| n == removed),
-            "router must not expose removed tool '{}'. Present: {:?}",
-            removed,
+            !names.iter().any(|n| n == reserved),
+            "router must not expose reserved tool name '{}'. Present: {:?}",
+            reserved,
             names
         );
     }
@@ -197,4 +200,33 @@ async fn list_connections_browser_key_visible() {
         val.get("browser").is_some(),
         "connections_json must contain 'browser' key. Got: {val}"
     );
+}
+
+#[tokio::test]
+async fn subscription_filters_are_per_session() {
+    use daemon8_types::Severity;
+
+    let mcp_a = make_mcp().await;
+    let mcp_b = make_mcp().await;
+
+    let mut rx_a = mcp_a.subscription_rx();
+    let mut rx_b = mcp_b.subscription_rx();
+
+    let filter_a = Filter {
+        severity_min: Some(Severity::Warn),
+        ..Filter::default()
+    };
+    let filter_b = Filter {
+        severity_min: Some(Severity::Error),
+        ..Filter::default()
+    };
+
+    mcp_a.set_subscription(Some(filter_a));
+    mcp_b.set_subscription(Some(filter_b));
+
+    let a = rx_a.borrow_and_update().clone().expect("session A filter");
+    let b = rx_b.borrow_and_update().clone().expect("session B filter");
+
+    assert_eq!(a.severity_min, Some(Severity::Warn));
+    assert_eq!(b.severity_min, Some(Severity::Error));
 }
