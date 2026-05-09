@@ -102,7 +102,7 @@ _some sources are configured by you, some are integrated directly into the daemo
 
 ## MCP tools
 
-There are 17 MCP tools grouped by capability. Every tool returns JSON. Destructive and apply-style operations require explicit confirmation flags.
+26 MCP tools grouped by capability. Every tool returns the standard envelope (`{result, daemon8, error}`) — see `daemon8_help(topic="envelope")`. Destructive and apply-style operations require explicit confirmation flags.
 
 ### Observation
 
@@ -110,10 +110,19 @@ There are 17 MCP tools grouped by capability. Every tool returns JSON. Destructi
 |------|---------|
 | `query_observations` | Filter the observation stream by kind, severity, origin, text, tags, correlation id, or checkpoint. |
 | `status` | Health snapshot: error rate, source counts, observation count, version. |
-| `create_checkpoint` | Mark a stream position; subsequent queries can resume from it. |
 | `list_connections` | Active sources plus browser connection state. |
-| `subscribe_observations` | Register a real-time alert filter. Matching observations are buffered into the next `query_observations` response. |
+| `subscribe_observations` | Register a real-time alert filter. Matching observations push as MCP notifications. |
 | `ingest_observation` | Record an observation from inside an agent loop. |
+
+### Debug session
+
+| Tool | Purpose |
+|------|---------|
+| `start_debug_session` | Open an investigation. Required prereq for checkpoints and resolution. |
+| `create_checkpoint` | Bookmark the stream inside an active session; pair with `since_checkpoint`. |
+| `resolve_debug_session` | Close on success with a rich SessionSummary memory (root_cause, fix_diff, commands, related errors). |
+| `end_debug_session` | Close without a fix; writes a thin SessionSummary so the row never silently disappears. |
+| `list_debug_sessions` | Enumerate sessions, optionally filtered by status. |
 
 ### Action
 
@@ -135,7 +144,7 @@ There are 17 MCP tools grouped by capability. Every tool returns JSON. Destructi
 | Tool | Purpose |
 |------|---------|
 | `save_memory` | Store a `pattern`, `decision`, `error_signature`, `session_summary`, or `user_flagged` memory. |
-| `query_memory` | Search by kind, tags, project, or text. |
+| `query_memory` | Search by kind, tags, project, or text. Tag `hash:<x>` joins error signatures with their fix summaries. |
 | `forget_memory` | Delete by id; requires `confirm=true`. |
 
 ### Setup
@@ -145,6 +154,21 @@ There are 17 MCP tools grouped by capability. Every tool returns JSON. Destructi
 | `setup_status` | Report current setup state for the project at `cwd`. |
 | `setup_plan` | Compute the action plan that `setup_apply` would run. |
 | `setup_apply` | Apply the plan to the project; requires `yes=true`. |
+
+### Hooks
+
+| Tool | Purpose |
+|------|---------|
+| `hooks_list` | Enumerate installed daemon8 CLI hooks across providers and scopes. |
+| `hooks_remove` | Uninstall daemon8 hook entries from a provider/scope. |
+| `hooks_update` | Reinstall (force) — fixes drift after binary moves or spec changes. |
+| `hooks_repair` | Detect drift across all providers and reinstall only what's stale. |
+
+### Help
+
+| Tool | Purpose |
+|------|---------|
+| `daemon8_help` | Narrative protocol docs by topic (debug_session, checkpoint, setup, hooks, lens, memory, observations, envelope). |
 
 ## HTTP API
 
@@ -194,6 +218,7 @@ A UDP listener accepts the same JSON shapes on port 8889 for fire-and-forget tel
 | `daemon8 channel` | Real-time alert relay for MCP clients (experimental). |
 | `daemon8 doctor` | Diagnose configuration and environment (`--fix` to auto-repair). |
 | `daemon8 init` | Scaffold a `.daemon8.toml` in the current project. |
+| `daemon8 hooks` | Manage daemon8 CLI hooks across providers (`list \| remove \| update \| repair`). |
 
 ## Ingestion examples
 
@@ -213,7 +238,7 @@ Core crates in the Cargo workspace:
 | `types` | Shared types: `Observation`, `Filter`, severity, origin, and memory kind records. |
 | `store` | SurrealDB backend for observations, curated memory, and the `LensManager` ring buffer. |
 | `api` | Axum HTTP routes: observe, stream, lens, memory, and browser actions. |
-| `mcp` | MCP server: 17 tools across observe, action, lens, memory, and setup routers. |
+| `mcp` | MCP server: 26 tools across observe, debug-session, action, lens, memory, setup, hooks, help routers — all returning the standard `{result, daemon8, error}` envelope. |
 | `ingest` | HTTP, UDP, and Unix socket ingest endpoints. |
 | `chrome` | Chrome DevTools Protocol bridge over raw WebSocket. |
 | `adb` | Android Debug Bridge transport for device logcat. |
