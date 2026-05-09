@@ -1,11 +1,20 @@
-Mark the current position in the observation stream. Returns a checkpoint id that can be passed as `since_checkpoint` to `query_observations` so subsequent queries return only observations recorded after this call.
+Purpose: Bookmark a moment in the observation stream. Used to ask "what happened since this point" — typically right before applying a change you might want to roll back through, or before a verification step.
 
-Use this to:
-- Bookmark "now" before making a change: create_checkpoint → run the change → query_observations with `since_checkpoint`.
-- Tighten subsequent queries to a known window without juggling timestamps.
+When: Inside an active debug session, immediately before any action whose effects you'll want to compare against ("before applying patch X", "before re-running test"). Pair with query_observations(since_checkpoint=...) afterward to see only what changed.
 
-Parameters: none.
+Prereq: An active debug session (call start_debug_session first). Checkpoints cannot exist outside a session.
 
-Returns: { "checkpoint": <int> }. The checkpoint is monotonic and stable across the daemon's lifetime.
+Args:
+  - description: optional one-line note. Recommended — future you will want to know why this checkpoint mattered.
 
-Read-only with respect to data — observations are not affected. The checkpoint is a label, not a snapshot.
+Returns:
+  result.checkpoint_id: opaque id; pass to query_observations(since_checkpoint=...).
+  result.debug_session_id: parent session id.
+  result.seq_at_creation: integer observation seq at the moment of creation.
+  result.created_at: integer ns since epoch.
+
+Errors:
+  - no_active_debug_session: no session is open. hint: call start_debug_session first; fix.tool: start_debug_session.
+  - create_checkpoint failed: db write failed. hint: check daemon logs.
+
+Next: do the thing you were about to do (apply patch, run test, etc.), then query_observations(since_checkpoint=<this id>) to see only what came after.

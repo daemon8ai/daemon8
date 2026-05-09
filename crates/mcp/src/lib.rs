@@ -354,6 +354,14 @@ pub struct ForgetMemoryParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct CreateCheckpointParams {
+    #[schemars(
+        description = "Optional human-readable note about why this checkpoint exists (e.g. \"before applying retry patch\")."
+    )]
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct StartDebugSessionParams {
     #[schemars(description = "Project slug to scope the session to (e.g. \"daemon8\").")]
     pub project: Option<String>,
@@ -680,14 +688,54 @@ impl DaemonMcp {
 
     #[doc = include_str!("../tool_descriptions/create_checkpoint.txt")]
     #[tool(name = "create_checkpoint")]
-    async fn create_checkpoint(&self) -> String {
-        let current = self.store.checkpoint().await;
+    async fn create_checkpoint(
+        &self,
+        Parameters(params): Parameters<CreateCheckpointParams>,
+    ) -> String {
+        let active = match self.active_state.current_session() {
+            Some(s) => s,
+            None => {
+                return serde_json::to_string_pretty(&serde_json::json!({
+                    "error": "no_active_debug_session",
+                    "message": "create_checkpoint requires an active debug session",
+                    "hint": "call start_debug_session first",
+                    "fix": {"tool": "start_debug_session"}
+                }))
+                .unwrap_or_default();
+            }
+        };
+        let ds_store = match &self.debug_session_store {
+            Some(s) => s,
+            None => return error_json("debug_session store not available"),
+        };
+
+        let seq = self.store.checkpoint().await;
+        let now = current_ns();
+        let cp = daemon8_store::DebugCheckpoint {
+            id: None,
+            debug_session_id: active.id.to_string(),
+            description: params.description,
+            created_at: now,
+            seq_at_creation: seq.0,
+        };
+        let cp_id = match ds_store.create_checkpoint(cp).await {
+            Ok(id) => id,
+            Err(e) => return error_json(&format!("create_checkpoint failed: {e}")),
+        };
+        self.active_state
+            .set_checkpoint(Some(Arc::from(cp_id.as_str())));
+        active.touch(now);
         *self
             .last_checkpoint
             .lock()
-            .expect("last_checkpoint mutex poisoned") = current;
-        serde_json::to_string_pretty(&serde_json::json!({ "checkpoint": current.0 }))
-            .unwrap_or_else(|e| error_json(&format!("serialization failed: {e}")))
+            .expect("last_checkpoint mutex poisoned") = seq;
+        serde_json::to_string_pretty(&serde_json::json!({
+            "checkpoint_id": cp_id,
+            "debug_session_id": active.id.as_ref(),
+            "seq_at_creation": seq.0,
+            "created_at": now
+        }))
+        .unwrap_or_else(|e| error_json(&format!("serialization failed: {e}")))
     }
 
     #[doc = include_str!("../tool_descriptions/list_connections.txt")]
@@ -2151,6 +2199,45 @@ mod logging_tests {
             second.contains("already_active_debug_session"),
             "second start must be rejected: {second}"
         );
+    }
+
+    #[tokio::test]
+    async fn create_checkpoint_without_active_session_returns_structured_error() {
+        let mcp = build_mcp_with_debug_session().await;
+        let res = mcp
+            .create_checkpoint(Parameters(CreateCheckpointParams { description: None }))
+            .await;
+        let parsed: serde_json::Value = serde_json::from_str(&res).unwrap();
+        assert_eq!(parsed["error"], "no_active_debug_session");
+        assert_eq!(parsed["fix"]["tool"], "start_debug_session");
+    }
+
+    #[tokio::test]
+    async fn create_checkpoint_inside_active_session_writes_row_and_updates_active_state() {
+        let mcp = build_mcp_with_debug_session().await;
+        let _ = mcp
+            .start_debug_session(Parameters(StartDebugSessionParams {
+                project: Some("daemon8".into()),
+                description: None,
+            }))
+            .await;
+        let res = mcp
+            .create_checkpoint(Parameters(CreateCheckpointParams {
+                description: Some("before fix".into()),
+            }))
+            .await;
+        let parsed: serde_json::Value = serde_json::from_str(&res).unwrap();
+        let cp_id = parsed["checkpoint_id"].as_str().unwrap();
+        assert!(parsed["seq_at_creation"].is_number());
+
+        // active_state.checkpoint should now match
+        let active_cp = mcp.active_state.current_checkpoint().unwrap();
+        assert_eq!(active_cp.as_ref(), cp_id);
+
+        // Row exists in store with our description
+        let ds_store = mcp.debug_session_store.clone().unwrap();
+        let cp = ds_store.get_checkpoint(cp_id).await.unwrap().unwrap();
+        assert_eq!(cp.description.as_deref(), Some("before fix"));
     }
 
     #[tokio::test]
