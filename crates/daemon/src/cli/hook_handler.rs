@@ -480,8 +480,8 @@ fn build_observations_inner(ctx: ObservationContext<'_>) -> Vec<Value> {
             ));
         }
         CliHookEvent::ToolPreUse => {
-            observations.push(build_tool_event(
-                "cli.tool_pre_use",
+            observations.push(build_tool_call_observation(
+                ToolCallPhase::Pre,
                 ctx.tool,
                 ctx.session_ref,
                 ctx.session_id,
@@ -492,8 +492,8 @@ fn build_observations_inner(ctx: ObservationContext<'_>) -> Vec<Value> {
             ));
         }
         CliHookEvent::ToolPostUse => {
-            observations.push(build_tool_event(
-                "cli.tool_post_use",
+            observations.push(build_tool_call_observation(
+                ToolCallPhase::Post,
                 ctx.tool,
                 ctx.session_ref,
                 ctx.session_id,
@@ -618,9 +618,18 @@ fn build_prompt_submitted(
     })
 }
 
+#[derive(Copy, Clone)]
+enum ToolCallPhase {
+    Pre,
+    Post,
+}
+
+/// Build a structured `tool_call`-kind observation from a Pre/PostToolUse
+/// hook event. `correlation_id` is set to the hook's `tool_use_id` so a
+/// PostToolUse can join its PreToolUse downstream.
 #[allow(clippy::too_many_arguments)]
-fn build_tool_event(
-    event: &str,
+fn build_tool_call_observation(
+    phase: ToolCallPhase,
     tool: &str,
     session_ref: &str,
     session_id: &str,
@@ -629,32 +638,69 @@ fn build_tool_event(
     input: &HookInput,
     raw_input: &Value,
 ) -> Value {
-    json!({
+    let phase_str = match phase {
+        ToolCallPhase::Pre => "pre",
+        ToolCallPhase::Post => "post",
+    };
+    // Compact tool input: prefer the canonical fields the hook captured;
+    // fall back to the raw blob otherwise.
+    let mut input_obj = serde_json::Map::new();
+    if let Some(cmd) = &input.tool_input.command {
+        input_obj.insert("command".into(), json!(cmd));
+    }
+    if let Some(file) = &input.tool_input.file_path {
+        input_obj.insert("file_path".into(), json!(file));
+    }
+    if let Some(desc) = &input.tool_input.description {
+        input_obj.insert("description".into(), json!(desc));
+    }
+    let input_json = if input_obj.is_empty() {
+        Value::Null
+    } else {
+        Value::Object(input_obj)
+    };
+
+    let output = match phase {
+        ToolCallPhase::Post => input.tool_response.clone(),
+        ToolCallPhase::Pre => None,
+    };
+    let exit_code = match phase {
+        ToolCallPhase::Post => extract_exit_code(input.tool_response.as_ref()),
+        ToolCallPhase::Pre => None,
+    };
+
+    let mut payload = json!({
         "app": "daemon8-cli-hook",
-        "kind": "custom",
-        "channel": "cli-hook",
-        "severity": "info",
+        "kind": "tool_call",
+        "severity": "debug",
         "tags": [SYSTEM_TAG],
         "data": {
-            "event": event,
+            "phase": phase_str,
+            "tool": input.tool_name.as_deref().unwrap_or(tool),
+            "input": input_json,
+            "output": output,
+            "exit_code": exit_code,
             "session_ref": session_ref,
-            "tool": tool,
-            "model": input.model,
-            "cwd": cwd.display().to_string(),
             "session_id": session_id,
             "project_slug": slug,
+            "tool_host": tool,
+            "model": input.model,
+            "cwd": cwd.display().to_string(),
             "turn_id": input.turn_id,
-            "tool_name": input.tool_name,
-            "tool_use_id": input.tool_use_id,
-            "command": input.tool_input.command,
-            "file_path": input.tool_input.file_path,
-            "description": input.tool_input.description,
-            "tool_status": tool_response_status(input.tool_response.as_ref()),
-            "tool_error": tool_response_error(input.tool_response.as_ref()),
-            "tool_response": input.tool_response,
             "raw": raw_input,
         }
-    })
+    });
+    if let Some(use_id) = &input.tool_use_id {
+        payload["correlation_id"] = json!(use_id);
+    }
+    payload
+}
+
+fn extract_exit_code(tool_response: Option<&Value>) -> Option<i64> {
+    tool_response?
+        .get("exit_code")
+        .and_then(Value::as_i64)
+        .or_else(|| tool_response?.get("exitCode").and_then(Value::as_i64))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -689,29 +735,6 @@ fn build_permission_requested(
             "raw": raw_input,
         }
     })
-}
-
-fn tool_response_status(response: Option<&Value>) -> Option<String> {
-    let response = response?;
-    for key in ["status", "exit_code", "exitCode"] {
-        if let Some(value) = response.get(key) {
-            if let Some(text) = value.as_str() {
-                return Some(text.to_string());
-            }
-            if let Some(number) = value.as_i64() {
-                return Some(number.to_string());
-            }
-        }
-    }
-    None
-}
-
-fn tool_response_error(response: Option<&Value>) -> Option<bool> {
-    let response = response?;
-    if let Some(value) = response.get("is_error").or_else(|| response.get("isError")) {
-        return value.as_bool();
-    }
-    Some(response.get("error").is_some())
 }
 
 fn extract_prompt(input: &HookInput, raw: &Value) -> Option<String> {
@@ -956,19 +979,23 @@ mod tests {
         });
 
         assert_eq!(observations.len(), 1);
-        assert_eq!(observations[0]["channel"], "cli-hook");
-        assert_eq!(observations[0]["data"]["event"], "cli.tool_pre_use");
+        assert_eq!(observations[0]["kind"], "tool_call");
         assert_eq!(observations[0]["severity"], "debug");
+        assert_eq!(observations[0]["correlation_id"], "tool-123");
+        assert_eq!(observations[0]["data"]["phase"], "pre");
+        assert_eq!(observations[0]["data"]["tool"], "Bash");
         assert_eq!(
             observations[0]["data"]["session_ref"],
             "host:codex-cli:session-1"
         );
-        assert!(observations[0]["data"].get("role").is_none());
-        assert_eq!(observations[0]["data"]["tool_use_id"], "tool-123");
-        assert_eq!(observations[0]["data"]["command"], "git status");
-        assert_eq!(observations[0]["data"]["file_path"], "src/main.rs");
-        assert_eq!(observations[0]["data"]["tool_status"], "ok");
-        assert_eq!(observations[0]["data"]["tool_error"], false);
+        assert_eq!(observations[0]["data"]["input"]["command"], "git status");
+        assert_eq!(observations[0]["data"]["input"]["file_path"], "src/main.rs");
+        // Pre phase has no output / exit_code yet.
+        assert_eq!(observations[0]["data"]["output"], serde_json::Value::Null);
+        assert_eq!(
+            observations[0]["data"]["exit_code"],
+            serde_json::Value::Null
+        );
     }
 
     #[test]
@@ -1110,5 +1137,97 @@ mod tests {
         for obs in &observations {
             assert_eq!(obs["severity"], "warn", "observation: {obs}");
         }
+    }
+
+    #[test]
+    fn pre_and_post_tool_use_share_correlation_id() {
+        let cfg = CliConfig::default();
+        let input = HookInput {
+            tool_name: Some("Bash".into()),
+            tool_input: HookToolInput {
+                command: Some("ls -la".into()),
+                file_path: None,
+                description: Some("list files".into()),
+            },
+            tool_use_id: Some("use-42".into()),
+            tool_response: Some(serde_json::json!({"exit_code": 0, "stdout": "Cargo.toml"})),
+            ..HookInput::default()
+        };
+        let raw = serde_json::json!({});
+
+        let pre = build_observations(ObservationContext {
+            event: CliHookEvent::ToolPreUse,
+            severity: Severity::Debug,
+            cli_cfg: &cfg,
+            tool: "claude-code",
+            session_ref: "host:claude-code:s",
+            host: "host",
+            session_id: "s",
+            slug: "proj",
+            cwd: Path::new("/tmp"),
+            input: &input,
+            raw_input: &raw,
+        });
+        let post = build_observations(ObservationContext {
+            event: CliHookEvent::ToolPostUse,
+            severity: Severity::Debug,
+            cli_cfg: &cfg,
+            tool: "claude-code",
+            session_ref: "host:claude-code:s",
+            host: "host",
+            session_id: "s",
+            slug: "proj",
+            cwd: Path::new("/tmp"),
+            input: &input,
+            raw_input: &raw,
+        });
+
+        assert_eq!(pre[0]["correlation_id"], "use-42");
+        assert_eq!(post[0]["correlation_id"], "use-42");
+        assert_eq!(pre[0]["data"]["phase"], "pre");
+        assert_eq!(post[0]["data"]["phase"], "post");
+        // Post phase carries the full tool_response and exit_code.
+        assert_eq!(post[0]["data"]["exit_code"], 0);
+        assert_eq!(post[0]["data"]["output"]["stdout"], "Cargo.toml");
+    }
+
+    #[test]
+    fn tool_call_payload_round_trips_through_normalize() {
+        // Build a Pre observation, run it through ingest::normalize as the
+        // daemon would, and assert the resulting ObservationKind is ToolCall.
+        let cfg = CliConfig::default();
+        let input = HookInput {
+            tool_name: Some("Edit".into()),
+            tool_input: HookToolInput {
+                command: None,
+                file_path: Some("src/foo.rs".into()),
+                description: Some("rename helper".into()),
+            },
+            tool_use_id: Some("use-77".into()),
+            ..HookInput::default()
+        };
+        let raw = serde_json::json!({});
+        let obs = build_observations(ObservationContext {
+            event: CliHookEvent::ToolPreUse,
+            severity: Severity::Debug,
+            cli_cfg: &cfg,
+            tool: "claude-code",
+            session_ref: "host:claude-code:s",
+            host: "host",
+            session_id: "s",
+            slug: "proj",
+            cwd: Path::new("/tmp"),
+            input: &input,
+            raw_input: &raw,
+        });
+        let normalized = daemon8_ingest::normalize::normalize(obs[0].clone());
+        match normalized.kind {
+            daemon8_types::ObservationKind::ToolCall { tool, input, .. } => {
+                assert_eq!(tool, "Edit");
+                assert_eq!(input["file_path"], "src/foo.rs");
+            }
+            other => panic!("expected ToolCall, got {other:?}"),
+        }
+        assert_eq!(normalized.correlation_id.as_deref(), Some("use-77"));
     }
 }

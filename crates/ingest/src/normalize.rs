@@ -167,6 +167,7 @@ fn resolve_kind(kind_str: Option<&str>, channel: Option<String>, data: &Value) -
             "exception" => try_exception(data),
             "metric" => try_metric(data),
             "state_snapshot" => try_state_snapshot(data),
+            "tool_call" => try_tool_call(data),
             "custom" => ObservationKind::Custom {
                 channel: channel.unwrap_or_else(|| "custom".into()),
             },
@@ -221,6 +222,28 @@ fn try_exception(data: &Value) -> ObservationKind {
         None => ObservationKind::Custom {
             channel: "exception".into(),
         },
+    }
+}
+
+fn try_tool_call(data: &Value) -> ObservationKind {
+    let tool = data
+        .get("tool")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown")
+        .to_string();
+    let input = data.get("input").cloned().unwrap_or(Value::Null);
+    let output = data.get("output").cloned();
+    let exit_code = data
+        .get("exit_code")
+        .and_then(Value::as_i64)
+        .map(|n| n as i32);
+    let duration_ms = data.get("duration_ms").and_then(Value::as_f64);
+    ObservationKind::ToolCall {
+        tool,
+        input,
+        output,
+        exit_code,
+        duration_ms,
     }
 }
 
