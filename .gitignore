@@ -19,6 +19,8 @@ target/
 !/.gitignore
 !/.github/
 !/.github/**
+!/crates/mcp/tool_descriptions/
+!/crates/mcp/tool_descriptions/**
 !/README.md
 !/DEPLOY.md
 !/LICENSE
