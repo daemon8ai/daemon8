@@ -16,7 +16,9 @@ use daemon8_types::{
     observation_search_text,
 };
 
-use crate::{StateModel, StoreError, memory::SurrealMemoryStore};
+use crate::{
+    StateModel, StoreError, debug_session::SurrealDebugSessionStore, memory::SurrealMemoryStore,
+};
 
 const NAMESPACE: &str = "daemon8";
 const DATABASE: &str = "observations";
@@ -51,6 +53,12 @@ struct ObsRecord {
     session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     node_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    debug_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    checkpoint_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    error_hash: Option<String>,
 }
 
 impl ObsRecord {
@@ -74,6 +82,9 @@ impl ObsRecord {
             tags: obs.tags.clone(),
             session_id: obs.session_id.as_deref().map(String::from),
             node_id: obs.node_id.as_deref().map(String::from),
+            debug_session_id: obs.debug_session_id.as_deref().map(String::from),
+            checkpoint_id: obs.checkpoint_id.as_deref().map(String::from),
+            error_hash: obs.error_hash.as_deref().map(String::from),
         })
     }
 
@@ -106,9 +117,9 @@ impl ObsRecord {
             tags: self.tags,
             session_id: self.session_id.map(Into::into),
             node_id: self.node_id.map(Into::into),
-            debug_session_id: None,
-            checkpoint_id: None,
-            error_hash: None,
+            debug_session_id: self.debug_session_id.map(Into::into),
+            checkpoint_id: self.checkpoint_id.map(Into::into),
+            error_hash: self.error_hash.map(Into::into),
         })
     }
 }
@@ -138,6 +149,8 @@ impl SurrealStore {
             connections: Mutex::new(Vec::new()),
         };
         store.init_schema().await?;
+        store.memory_store().init_schema().await?;
+        store.debug_session_store().init_schema().await?;
         store.recover_seq().await?;
         Ok(store)
     }
@@ -155,6 +168,8 @@ impl SurrealStore {
             connections: Mutex::new(Vec::new()),
         };
         store.init_schema().await?;
+        store.memory_store().init_schema().await?;
+        store.debug_session_store().init_schema().await?;
         Ok(store)
     }
 
@@ -162,6 +177,11 @@ impl SurrealStore {
     /// `Surreal<Db>` is internally Arc'd, so cloning is cheap.
     pub fn memory_store(&self) -> SurrealMemoryStore {
         SurrealMemoryStore::new(self.db.clone())
+    }
+
+    /// Create a `SurrealDebugSessionStore` sharing this database handle.
+    pub fn debug_session_store(&self) -> SurrealDebugSessionStore {
+        SurrealDebugSessionStore::new(self.db.clone())
     }
 
     async fn init_schema(&self) -> Result<(), StoreError> {
@@ -194,6 +214,9 @@ impl SurrealStore {
                  DEFINE FIELD IF NOT EXISTS tags           ON observation TYPE option<array>;
                  DEFINE FIELD IF NOT EXISTS session_id     ON observation TYPE option<string>;
                  DEFINE FIELD IF NOT EXISTS node_id        ON observation TYPE option<string>;
+                 DEFINE FIELD IF NOT EXISTS debug_session_id ON observation TYPE option<string>;
+                 DEFINE FIELD IF NOT EXISTS checkpoint_id    ON observation TYPE option<string>;
+                 DEFINE FIELD IF NOT EXISTS error_hash       ON observation TYPE option<string>;
 
                  DEFINE INDEX IF NOT EXISTS idx_seq         ON observation FIELDS seq;
                  DEFINE INDEX IF NOT EXISTS idx_timestamp   ON observation FIELDS timestamp_ns;
@@ -210,7 +233,13 @@ impl SurrealStore {
                  DEFINE INDEX IF NOT EXISTS idx_obs_origin_key_seq
                    ON observation FIELDS origin_key, seq CONCURRENTLY;
                  DEFINE INDEX IF NOT EXISTS idx_obs_tags
-                   ON observation FIELDS tags CONCURRENTLY;",
+                   ON observation FIELDS tags CONCURRENTLY;
+                 DEFINE INDEX IF NOT EXISTS idx_obs_debug_session
+                   ON observation FIELDS debug_session_id CONCURRENTLY;
+                 DEFINE INDEX IF NOT EXISTS idx_obs_checkpoint
+                   ON observation FIELDS checkpoint_id CONCURRENTLY;
+                 DEFINE INDEX IF NOT EXISTS idx_obs_error_hash
+                   ON observation FIELDS error_hash CONCURRENTLY;",
             )
             .await
             .map_err(|e| StoreError::Db(format!("schema init: {e}")))?
@@ -1099,6 +1128,9 @@ mod tests {
             tags: Some(vec!["domain:legacy".into()]),
             session_id: None,
             node_id: None,
+            debug_session_id: None,
+            checkpoint_id: None,
+            error_hash: None,
         };
 
         store
