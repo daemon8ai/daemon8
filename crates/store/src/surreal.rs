@@ -106,6 +106,9 @@ impl ObsRecord {
             tags: self.tags,
             session_id: self.session_id.map(Into::into),
             node_id: self.node_id.map(Into::into),
+            debug_session_id: None,
+            checkpoint_id: None,
+            error_hash: None,
         })
     }
 }
@@ -695,6 +698,9 @@ mod tests {
             tags: None,
             session_id: None,
             node_id: None,
+            debug_session_id: None,
+            checkpoint_id: None,
+            error_hash: None,
         }
     }
 

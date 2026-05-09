@@ -64,6 +64,9 @@ pub fn normalize(mut raw: Value) -> Observation {
         tags: meta.tags,
         session_id: meta.session_id.map(Arc::from),
         node_id: meta.node_id.map(Arc::from),
+        debug_session_id: None,
+        checkpoint_id: None,
+        error_hash: None,
     }
 }
 

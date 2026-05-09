@@ -110,6 +110,9 @@ mod tests {
             tags: None,
             session_id: None,
             node_id: None,
+            debug_session_id: None,
+            checkpoint_id: None,
+            error_hash: None,
         }
     }
 

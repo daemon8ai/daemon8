@@ -209,6 +209,7 @@ pub enum ObservationKindTag {
     Custom,
     JsException,
     Lifecycle,
+    ToolCall,
 }
 
 impl fmt::Display for ObservationKindTag {
@@ -223,6 +224,7 @@ impl fmt::Display for ObservationKindTag {
             Self::Custom => "custom",
             Self::JsException => "js_exception",
             Self::Lifecycle => "lifecycle",
+            Self::ToolCall => "tool_call",
         };
         f.write_str(s)
     }
@@ -242,6 +244,7 @@ impl std::str::FromStr for ObservationKindTag {
             "custom" => Ok(Self::Custom),
             "js_exception" => Ok(Self::JsException),
             "lifecycle" => Ok(Self::Lifecycle),
+            "tool_call" => Ok(Self::ToolCall),
             other => Err(format!("unknown observation kind: {other}")),
         }
     }
@@ -284,6 +287,17 @@ pub enum ObservationKind {
         event_name: String,
         frame_id: String,
     },
+    ToolCall {
+        tool: String,
+        #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+        input: serde_json::Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        output: Option<serde_json::Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        exit_code: Option<i32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        duration_ms: Option<f64>,
+    },
 }
 
 impl ObservationKind {
@@ -298,6 +312,7 @@ impl ObservationKind {
             Self::Custom { .. } => ObservationKindTag::Custom,
             Self::JsException { .. } => ObservationKindTag::JsException,
             Self::Lifecycle { .. } => ObservationKindTag::Lifecycle,
+            Self::ToolCall { .. } => ObservationKindTag::ToolCall,
         }
     }
 }
@@ -334,6 +349,12 @@ pub struct Observation {
     pub session_id: Option<Arc<str>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_id: Option<Arc<str>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub debug_session_id: Option<Arc<str>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint_id: Option<Arc<str>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_hash: Option<Arc<str>>,
 }
 
 impl Observation {
@@ -365,6 +386,9 @@ impl Observation {
             tags: None,
             session_id: None,
             node_id: None,
+            debug_session_id: None,
+            checkpoint_id: None,
+            error_hash: None,
         }
     }
 }
@@ -414,6 +438,15 @@ pub fn observation_search_text(obs: &Observation) -> String {
     }
     if let Some(ref node_id) = obs.node_id {
         push_search_part(&mut text, node_id);
+    }
+    if let Some(ref debug_session_id) = obs.debug_session_id {
+        push_search_part(&mut text, debug_session_id);
+    }
+    if let Some(ref checkpoint_id) = obs.checkpoint_id {
+        push_search_part(&mut text, checkpoint_id);
+    }
+    if let Some(ref error_hash) = obs.error_hash {
+        push_search_part(&mut text, error_hash);
     }
 
     push_search_part(&mut text, obs.data.to_string());
@@ -648,6 +681,70 @@ impl std::str::FromStr for MemoryKind {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DebugSessionStatus {
+    Active,
+    Completed,
+    Abandoned,
+}
+
+impl fmt::Display for DebugSessionStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            Self::Active => "active",
+            Self::Completed => "completed",
+            Self::Abandoned => "abandoned",
+        };
+        f.write_str(s)
+    }
+}
+
+impl std::str::FromStr for DebugSessionStatus {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "active" => Ok(Self::Active),
+            "completed" => Ok(Self::Completed),
+            "abandoned" => Ok(Self::Abandoned),
+            other => Err(format!("unknown debug session status: {other}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DebugSessionOutcome {
+    Resolved,
+    Abandoned,
+    InProgress,
+}
+
+impl fmt::Display for DebugSessionOutcome {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            Self::Resolved => "resolved",
+            Self::Abandoned => "abandoned",
+            Self::InProgress => "in_progress",
+        };
+        f.write_str(s)
+    }
+}
+
+impl std::str::FromStr for DebugSessionOutcome {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "resolved" => Ok(Self::Resolved),
+            "abandoned" => Ok(Self::Abandoned),
+            "in_progress" => Ok(Self::InProgress),
+            other => Err(format!("unknown debug session outcome: {other}")),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SliceSummary {
     pub total: usize,
@@ -714,6 +811,9 @@ mod tests {
             tags: None,
             session_id: None,
             node_id: None,
+            debug_session_id: None,
+            checkpoint_id: None,
+            error_hash: None,
         }
     }
 
@@ -795,6 +895,13 @@ mod tests {
             ObservationKind::Lifecycle {
                 event_name: "ready".into(),
                 frame_id: "frame-1".into(),
+            },
+            ObservationKind::ToolCall {
+                tool: "Bash".into(),
+                input: json!({"command": "ls"}),
+                output: Some(json!({"stdout": "Cargo.toml\n"})),
+                exit_code: Some(0),
+                duration_ms: Some(12.5),
             },
         ];
 
