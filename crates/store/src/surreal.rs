@@ -809,6 +809,7 @@ mod tests {
                     project_slug: "daemon8".into(),
                     session_id: None,
                     confidence: 1.0,
+                    data: None,
                 })
                 .await
                 .unwrap();

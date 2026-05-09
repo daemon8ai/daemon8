@@ -1,0 +1,17 @@
+Purpose: Enumerate debug sessions, optionally filtered by status. Used to resume an abandoned session, audit recent investigations, or find a session whose summary you want to read.
+
+When: Looking for "what was I working on yesterday", "which sessions are still open", or "show me recent resolved fixes for project X".
+
+Prereq: None.
+
+Args:
+  - status: optional string. One of "active", "completed", "abandoned". Omit for all statuses.
+
+Returns:
+  result.sessions: array of {id, project_slug, description, status, outcome, started_at, ended_at, last_activity, summary_memory_id}, ordered most-recent-first.
+  result.count: integer.
+
+Errors:
+  - debug_session_unavailable: see start_debug_session.
+
+Next: get_memory(id=<summary_memory_id>) to read the rich SessionSummary for any completed/abandoned session.

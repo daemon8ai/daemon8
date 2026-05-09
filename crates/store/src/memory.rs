@@ -38,6 +38,7 @@ impl SurrealMemoryStore {
                  DEFINE FIELD IF NOT EXISTS project_slug        ON memory TYPE string;
                  DEFINE FIELD IF NOT EXISTS session_id          ON memory TYPE option<string>;
                  DEFINE FIELD IF NOT EXISTS confidence          ON memory TYPE float;
+                 DEFINE FIELD IF NOT EXISTS data                ON memory TYPE option<object> FLEXIBLE;
 
                  DEFINE INDEX IF NOT EXISTS idx_memory_kind    ON memory FIELDS kind;
                  DEFINE INDEX IF NOT EXISTS idx_memory_project ON memory FIELDS project_slug;
@@ -283,6 +284,7 @@ mod tests {
             project_slug: project.to_string(),
             session_id: None,
             confidence: 1.0,
+            data: None,
         }
     }
 

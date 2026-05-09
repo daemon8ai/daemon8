@@ -162,6 +162,7 @@ pub async fn promote_error_signature(
         project_slug: project_slug.to_string(),
         session_id: None,
         confidence: 1.0,
+        data: None,
     };
     memory_store.save_memory(mem).await
 }

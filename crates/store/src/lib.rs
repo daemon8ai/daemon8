@@ -66,6 +66,11 @@ pub struct Memory {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
     pub confidence: f64,
+    /// Optional structured payload. SessionSummary uses this to carry
+    /// resolve_debug_session's rich-capture fields (root_cause, fix_diff,
+    /// commands_used, related_errors). Other memory kinds may leave it empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Default)]

@@ -353,6 +353,44 @@ pub struct ForgetMemoryParams {
     pub confirm: Option<bool>,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct StartDebugSessionParams {
+    #[schemars(description = "Project slug to scope the session to (e.g. \"daemon8\").")]
+    pub project: Option<String>,
+    #[schemars(description = "One-line description of what is being investigated.")]
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct EndDebugSessionParams {
+    #[schemars(
+        description = "Outcome string. Defaults to \"abandoned\". Use resolve_debug_session for \"resolved\"."
+    )]
+    pub outcome: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ResolveDebugSessionParams {
+    #[schemars(description = "Required: human summary of what broke and what fixed it.")]
+    pub summary: String,
+    #[schemars(description = "Optional: one-sentence root cause.")]
+    pub root_cause: Option<String>,
+    #[schemars(description = "Optional: unified diff or short patch text.")]
+    pub fix_diff: Option<String>,
+    #[schemars(description = "Optional: CLI commands that mattered to the fix.")]
+    pub commands_used: Option<Vec<String>>,
+    #[schemars(description = "Optional: error_hash strings this fix resolves.")]
+    pub related_errors: Option<Vec<String>>,
+    #[schemars(description = "Optional: extra tags for retrieval.")]
+    pub tags: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ListDebugSessionsParams {
+    #[schemars(description = "Filter by status: active, completed, abandoned. Omit for all.")]
+    pub status: Option<String>,
+}
+
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct SetupToolAction {
     #[schemars(description = "Setup action: status, plan, or apply.")]
@@ -401,12 +439,7 @@ pub type SetupToolFn =
 pub struct DaemonMcp {
     store: Arc<dyn StateModel>,
     memory_store: Option<Arc<dyn MemoryStore>>,
-    // debug_session_store and active_state are populated here in Step 4 of the
-    // v0.3 build-out; they're consumed by the debug-session lifecycle tools
-    // landing in the next commit (Step 5). Allow until that lands.
-    #[allow(dead_code)]
     debug_session_store: Option<Arc<dyn DebugSessionStore>>,
-    #[allow(dead_code)]
     active_state: ActiveSessionState,
     obs_tx: tokio::sync::mpsc::UnboundedSender<Observation>,
     chrome_tx: tokio::sync::mpsc::Sender<ChromeCommand>,
@@ -455,6 +488,9 @@ impl DaemonMcp {
         router += Self::lens_tool_router();
         if cfg.memory_store.is_some() {
             router += Self::memory_tool_router();
+        }
+        if cfg.debug_session_store.is_some() && cfg.memory_store.is_some() {
+            router += Self::debug_session_tool_router();
         }
         if cfg.setup_tool_fn.is_some() {
             router += Self::setup_tool_router();
@@ -870,6 +906,267 @@ fn check_forget_memory_confirm(confirm: Option<bool>) -> Result<(), String> {
             "forget_memory requires confirm=true to delete the memory",
         )),
     }
+}
+
+#[tool_router(router = debug_session_tool_router, vis = "pub")]
+impl DaemonMcp {
+    #[doc = include_str!("../tool_descriptions/start_debug_session.txt")]
+    #[tool(name = "start_debug_session")]
+    async fn start_debug_session(
+        &self,
+        Parameters(params): Parameters<StartDebugSessionParams>,
+    ) -> String {
+        let ds_store = match &self.debug_session_store {
+            Some(s) => s,
+            None => return error_json("debug_session store not available"),
+        };
+        if let Some(existing) = self.active_state.current_session() {
+            return error_json(&format!(
+                "already_active_debug_session: {} (call end_debug_session or resolve_debug_session first)",
+                existing.id
+            ));
+        }
+        let now = current_ns();
+        let session = daemon8_store::DebugSession {
+            id: None,
+            started_at: now,
+            ended_at: None,
+            last_activity: now,
+            project_slug: params.project.unwrap_or_else(|| "unknown".into()),
+            description: params.description,
+            status: daemon8_types::DebugSessionStatus::Active,
+            outcome: None,
+            summary_memory_id: None,
+        };
+        match ds_store.start_debug_session(session.clone()).await {
+            Ok(id) => {
+                self.active_state
+                    .set_session(Some(daemon8_store::ActiveDebugSession {
+                        id: Arc::from(id.as_str()),
+                        project_slug: Arc::from(session.project_slug.as_str()),
+                        started_at_ns: now,
+                        last_activity_ns: Arc::new(AtomicU64::new(now)),
+                    }));
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "debug_session_id": id,
+                    "started_at": now,
+                }))
+                .unwrap_or_default()
+            }
+            Err(e) => error_json(&format!("start_debug_session failed: {e}")),
+        }
+    }
+
+    #[doc = include_str!("../tool_descriptions/end_debug_session.txt")]
+    #[tool(name = "end_debug_session")]
+    async fn end_debug_session(
+        &self,
+        Parameters(params): Parameters<EndDebugSessionParams>,
+    ) -> String {
+        end_or_resolve_inner(
+            self,
+            EndIntent::Abandon {
+                outcome_str: params.outcome,
+            },
+        )
+        .await
+    }
+
+    #[doc = include_str!("../tool_descriptions/resolve_debug_session.txt")]
+    #[tool(name = "resolve_debug_session")]
+    async fn resolve_debug_session(
+        &self,
+        Parameters(params): Parameters<ResolveDebugSessionParams>,
+    ) -> String {
+        end_or_resolve_inner(self, EndIntent::Resolve(params)).await
+    }
+
+    #[doc = include_str!("../tool_descriptions/list_debug_sessions.txt")]
+    #[tool(name = "list_debug_sessions")]
+    async fn list_debug_sessions(
+        &self,
+        Parameters(params): Parameters<ListDebugSessionsParams>,
+    ) -> String {
+        let ds_store = match &self.debug_session_store {
+            Some(s) => s,
+            None => return error_json("debug_session store not available"),
+        };
+        let status = match params.status.as_deref() {
+            Some(s) => match s.parse::<daemon8_types::DebugSessionStatus>() {
+                Ok(v) => Some(v),
+                Err(e) => return error_json(&format!("bad status: {e}")),
+            },
+            None => None,
+        };
+        match ds_store.list_debug_sessions(status).await {
+            Ok(sessions) => serde_json::to_string_pretty(&serde_json::json!({
+                "count": sessions.len(),
+                "sessions": sessions,
+            }))
+            .unwrap_or_default(),
+            Err(e) => error_json(&format!("list_debug_sessions failed: {e}")),
+        }
+    }
+}
+
+enum EndIntent {
+    Abandon { outcome_str: Option<String> },
+    Resolve(ResolveDebugSessionParams),
+}
+
+async fn end_or_resolve_inner(daemon: &DaemonMcp, intent: EndIntent) -> String {
+    let ds_store = match &daemon.debug_session_store {
+        Some(s) => s,
+        None => return error_json("debug_session store not available"),
+    };
+    let mem_store = match &daemon.memory_store {
+        Some(s) => s,
+        None => return error_json("memory store not available"),
+    };
+    let active = match daemon.active_state.current_session() {
+        Some(s) => s,
+        None => {
+            return error_json("no_active_debug_session: call start_debug_session first");
+        }
+    };
+    let now = current_ns();
+
+    // Gather source observations from this session's checkpoints. Falls back
+    // to the bare seq range from start..now if checkpoint listing fails.
+    let checkpoints = ds_store
+        .list_checkpoints(active.id.as_ref())
+        .await
+        .unwrap_or_default();
+    let mut source_observations: Vec<u64> =
+        checkpoints.iter().map(|cp| cp.seq_at_creation).collect();
+
+    let (outcome, summary_text, tags, data_blob) = match intent {
+        EndIntent::Abandon { outcome_str } => {
+            let outcome = outcome_str
+                .as_deref()
+                .and_then(|s| s.parse::<daemon8_types::DebugSessionOutcome>().ok())
+                .unwrap_or(daemon8_types::DebugSessionOutcome::Abandoned);
+            let summary = format!(
+                "Debug session abandoned. Project: {}, started_at_ns: {}, checkpoints: {}.",
+                active.project_slug,
+                active.started_at_ns,
+                checkpoints.len()
+            );
+            let tags = vec![
+                "kind:debug_session_summary".to_string(),
+                format!("project:{}", active.project_slug),
+                format!("outcome:{}", outcome),
+            ];
+            (outcome, summary, tags, None)
+        }
+        EndIntent::Resolve(params) => {
+            let mut tags = vec![
+                "kind:debug_session_summary".to_string(),
+                format!("project:{}", active.project_slug),
+                "outcome:resolved".to_string(),
+            ];
+            if let Some(extra) = &params.tags {
+                tags.extend(extra.iter().cloned());
+            }
+            // Add error_hash tags so query_memory(tags=["hash:abc"]) finds
+            // the resolution alongside the ErrorSignature memory.
+            if let Some(errs) = &params.related_errors {
+                tags.extend(errs.iter().map(|h| format!("hash:{h}")));
+            }
+            let mut data = serde_json::Map::new();
+            if let Some(rc) = &params.root_cause {
+                data.insert("root_cause".into(), serde_json::json!(rc));
+            }
+            if let Some(diff) = &params.fix_diff {
+                data.insert("fix_diff".into(), serde_json::json!(diff));
+            }
+            if let Some(cmds) = &params.commands_used {
+                data.insert("commands_used".into(), serde_json::json!(cmds));
+            }
+            if let Some(errs) = &params.related_errors {
+                data.insert("related_errors".into(), serde_json::json!(errs));
+            }
+            data.insert(
+                "checkpoint_count".into(),
+                serde_json::json!(checkpoints.len()),
+            );
+            data.insert(
+                "started_at_ns".into(),
+                serde_json::json!(active.started_at_ns),
+            );
+            data.insert("ended_at_ns".into(), serde_json::json!(now));
+            (
+                daemon8_types::DebugSessionOutcome::Resolved,
+                params.summary,
+                tags,
+                Some(serde_json::Value::Object(data)),
+            )
+        }
+    };
+
+    // Cap source_observations to the most recent 50 to avoid unbounded blobs.
+    if source_observations.len() > 50 {
+        let drop = source_observations.len() - 50;
+        source_observations.drain(0..drop);
+    }
+
+    let mem = daemon8_store::Memory {
+        id: None,
+        created_at: now,
+        updated_at: now,
+        kind: daemon8_types::MemoryKind::SessionSummary,
+        content: summary_text,
+        source_observations,
+        tags,
+        project_slug: active.project_slug.to_string(),
+        session_id: Some(active.id.to_string()),
+        confidence: 1.0,
+        data: data_blob,
+    };
+
+    let summary_memory_id = match mem_store.save_memory(mem).await {
+        Ok(id) => id,
+        Err(e) => return error_json(&format!("session summary save failed: {e}")),
+    };
+
+    let status = match outcome {
+        daemon8_types::DebugSessionOutcome::Resolved => {
+            daemon8_types::DebugSessionStatus::Completed
+        }
+        daemon8_types::DebugSessionOutcome::Abandoned
+        | daemon8_types::DebugSessionOutcome::InProgress => {
+            daemon8_types::DebugSessionStatus::Abandoned
+        }
+    };
+
+    if let Err(e) = ds_store
+        .end_debug_session(
+            active.id.as_ref(),
+            status,
+            Some(outcome),
+            Some(summary_memory_id.clone()),
+            now,
+        )
+        .await
+    {
+        return error_json(&format!("end_debug_session db update failed: {e}"));
+    }
+
+    daemon.active_state.clear();
+
+    serde_json::to_string_pretty(&serde_json::json!({
+        "debug_session_id": active.id.as_ref(),
+        "summary_memory_id": summary_memory_id,
+        "checkpoint_count": checkpoints.len(),
+    }))
+    .unwrap_or_default()
+}
+
+fn current_ns() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64
 }
 
 #[tool_router(router = setup_tool_router, vis = "pub")]
@@ -1625,6 +1922,7 @@ pub async fn save_memory_inner(mem_store: &dyn MemoryStore, params: SaveMemoryPa
         project_slug: params.project_slug.unwrap_or_default(),
         session_id: params.session_id,
         confidence: params.confidence.unwrap_or(1.0),
+        data: None,
     };
 
     match mem_store.save_memory(memory).await {
@@ -1742,6 +2040,169 @@ mod logging_tests {
         let p: ForgetMemoryParams =
             serde_json::from_str(r#"{"id":"abc","confirm":false}"#).unwrap();
         assert_eq!(p.confirm, Some(false));
+    }
+
+    async fn build_mcp_with_debug_session() -> DaemonMcp {
+        let store = Arc::new(daemon8_store::SurrealStore::memory().await.unwrap());
+        let memory_store: Arc<dyn MemoryStore> = Arc::new(store.memory_store());
+        let debug_session_store: Arc<dyn DebugSessionStore> = Arc::new(store.debug_session_store());
+        let active_state = ActiveSessionState::new();
+        let (obs_tx, _obs_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (chrome_tx, _chrome_rx) = tokio::sync::mpsc::channel(8);
+        let (_, chrome_state) =
+            tokio::sync::watch::channel(daemon8_chrome::ConnectionState::Disconnected);
+        let (broadcast_tx, _broadcast_rx) = broadcast::channel(8);
+        let lens = Arc::new(LensManager::new(broadcast_tx.subscribe()));
+        DaemonMcp::new(DaemonMcpConfig {
+            store: store.clone(),
+            memory_store: Some(memory_store),
+            debug_session_store: Some(debug_session_store),
+            active_state,
+            obs_tx,
+            chrome_tx,
+            chrome_state,
+            chrome_endpoint: Arc::new(Mutex::new(None)),
+            device_screenshot_fn: None,
+            screenshot_dir: std::env::temp_dir().join("daemon8-test"),
+            broadcast_tx,
+            lens,
+            setup_tool_fn: None,
+            cancel: tokio_util::sync::CancellationToken::new(),
+        })
+    }
+
+    #[tokio::test]
+    async fn debug_session_lifecycle_resolved_writes_rich_summary() {
+        let mcp = build_mcp_with_debug_session().await;
+
+        // start
+        let start_res = mcp
+            .start_debug_session(Parameters(StartDebugSessionParams {
+                project: Some("daemon8".into()),
+                description: Some("flaky login test".into()),
+            }))
+            .await;
+        let started: serde_json::Value = serde_json::from_str(&start_res).unwrap();
+        let session_id = started["debug_session_id"].as_str().unwrap().to_string();
+        assert!(mcp.active_state.current_session().is_some());
+
+        // resolve with rich fields
+        let resolve_res = mcp
+            .resolve_debug_session(Parameters(ResolveDebugSessionParams {
+                summary: "Cookie domain mismatch dropped session on subdomain switch.".into(),
+                root_cause: Some("Set-Cookie missing Domain attr".into()),
+                fix_diff: Some(
+                    "- res.cookie('s', tok)\n+ res.cookie('s', tok, {domain: '.x'})".into(),
+                ),
+                commands_used: Some(vec!["cargo test login".into()]),
+                related_errors: Some(vec!["abcd1234deadbeef".into()]),
+                tags: Some(vec!["auth".into(), "regression".into()]),
+            }))
+            .await;
+        let resolved: serde_json::Value = serde_json::from_str(&resolve_res).unwrap();
+        assert_eq!(resolved["debug_session_id"], session_id);
+        let memory_id = resolved["summary_memory_id"].as_str().unwrap();
+
+        // active state cleared
+        assert!(mcp.active_state.current_session().is_none());
+
+        // SessionSummary memory landed with rich data
+        let mem_store = mcp.memory_store.clone().unwrap();
+        let mem = mem_store.get_memory(memory_id).await.unwrap().unwrap();
+        assert_eq!(mem.kind, daemon8_types::MemoryKind::SessionSummary);
+        assert!(mem.content.contains("Cookie domain"));
+        let data = mem.data.expect("resolved session must carry rich data");
+        assert_eq!(data["root_cause"], "Set-Cookie missing Domain attr");
+        assert!(mem.tags.contains(&"outcome:resolved".to_string()));
+        assert!(mem.tags.contains(&"hash:abcd1234deadbeef".to_string()));
+        assert!(mem.tags.contains(&"auth".to_string()));
+
+        // session row updated to completed
+        let ds_store = mcp.debug_session_store.clone().unwrap();
+        let session = ds_store
+            .get_debug_session(&session_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(session.status, daemon8_types::DebugSessionStatus::Completed);
+        assert_eq!(
+            session.outcome,
+            Some(daemon8_types::DebugSessionOutcome::Resolved)
+        );
+        assert_eq!(session.summary_memory_id.as_deref(), Some(memory_id));
+    }
+
+    #[tokio::test]
+    async fn debug_session_double_start_rejected() {
+        let mcp = build_mcp_with_debug_session().await;
+        let _ = mcp
+            .start_debug_session(Parameters(StartDebugSessionParams {
+                project: None,
+                description: None,
+            }))
+            .await;
+        let second = mcp
+            .start_debug_session(Parameters(StartDebugSessionParams {
+                project: None,
+                description: None,
+            }))
+            .await;
+        assert!(
+            second.contains("already_active_debug_session"),
+            "second start must be rejected: {second}"
+        );
+    }
+
+    #[tokio::test]
+    async fn end_without_active_session_returns_error() {
+        let mcp = build_mcp_with_debug_session().await;
+        let res = mcp
+            .end_debug_session(Parameters(EndDebugSessionParams { outcome: None }))
+            .await;
+        assert!(res.contains("no_active_debug_session"));
+    }
+
+    #[tokio::test]
+    async fn list_debug_sessions_filters_by_status() {
+        let mcp = build_mcp_with_debug_session().await;
+        // start + resolve one
+        let _ = mcp
+            .start_debug_session(Parameters(StartDebugSessionParams {
+                project: Some("p".into()),
+                description: None,
+            }))
+            .await;
+        let _ = mcp
+            .resolve_debug_session(Parameters(ResolveDebugSessionParams {
+                summary: "x".into(),
+                root_cause: None,
+                fix_diff: None,
+                commands_used: None,
+                related_errors: None,
+                tags: None,
+            }))
+            .await;
+        // start a fresh one (active)
+        let _ = mcp
+            .start_debug_session(Parameters(StartDebugSessionParams {
+                project: Some("p".into()),
+                description: None,
+            }))
+            .await;
+
+        let active_only = mcp
+            .list_debug_sessions(Parameters(ListDebugSessionsParams {
+                status: Some("active".into()),
+            }))
+            .await;
+        let parsed: serde_json::Value = serde_json::from_str(&active_only).unwrap();
+        assert_eq!(parsed["count"], 1);
+
+        let all = mcp
+            .list_debug_sessions(Parameters(ListDebugSessionsParams { status: None }))
+            .await;
+        let parsed: serde_json::Value = serde_json::from_str(&all).unwrap();
+        assert_eq!(parsed["count"], 2);
     }
 
     #[tokio::test]

@@ -440,6 +440,7 @@ async fn memory_export_endpoint_streams_paged_ndjson_for_memory_rows() {
                 project_slug: "daemon8".into(),
                 session_id: None,
                 confidence: 1.0,
+                data: None,
             })
             .await
             .unwrap();
