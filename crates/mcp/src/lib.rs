@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use daemon8_store::{LensManager, MemoryStore, StateModel};
+use daemon8_store::{ActiveSessionState, DebugSessionStore, LensManager, MemoryStore, StateModel};
 use daemon8_types::{Checkpoint, DevicePlatform, Filter, Observation};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
@@ -401,6 +401,13 @@ pub type SetupToolFn =
 pub struct DaemonMcp {
     store: Arc<dyn StateModel>,
     memory_store: Option<Arc<dyn MemoryStore>>,
+    // debug_session_store and active_state are populated here in Step 4 of the
+    // v0.3 build-out; they're consumed by the debug-session lifecycle tools
+    // landing in the next commit (Step 5). Allow until that lands.
+    #[allow(dead_code)]
+    debug_session_store: Option<Arc<dyn DebugSessionStore>>,
+    #[allow(dead_code)]
+    active_state: ActiveSessionState,
     obs_tx: tokio::sync::mpsc::UnboundedSender<Observation>,
     chrome_tx: tokio::sync::mpsc::Sender<ChromeCommand>,
     chrome_state: tokio::sync::watch::Receiver<daemon8_chrome::ConnectionState>,
@@ -424,6 +431,8 @@ pub struct DaemonMcp {
 pub struct DaemonMcpConfig {
     pub store: Arc<dyn StateModel>,
     pub memory_store: Option<Arc<dyn MemoryStore>>,
+    pub debug_session_store: Option<Arc<dyn DebugSessionStore>>,
+    pub active_state: ActiveSessionState,
     pub obs_tx: tokio::sync::mpsc::UnboundedSender<Observation>,
     pub chrome_tx: tokio::sync::mpsc::Sender<ChromeCommand>,
     pub chrome_state: tokio::sync::watch::Receiver<daemon8_chrome::ConnectionState>,
@@ -454,6 +463,8 @@ impl DaemonMcp {
         Self {
             store: cfg.store,
             memory_store: cfg.memory_store,
+            debug_session_store: cfg.debug_session_store,
+            active_state: cfg.active_state,
             obs_tx: cfg.obs_tx,
             chrome_tx: cfg.chrome_tx,
             chrome_state: cfg.chrome_state,

@@ -82,7 +82,9 @@ pub fn normalize_error_text(raw: &str) -> String {
         Regex::new(r"(/[\w.\-+]+){2,}(:\d+(:\d+)?)?").expect("path regex")
     });
     let hex = HEX_RE.get_or_init(|| Regex::new(r"\b(0x)?[0-9a-fA-F]{8,}\b").expect("hex regex"));
-    let num = NUM_RE.get_or_init(|| Regex::new(r"\b\d+\b").expect("num regex"));
+    // `\d+` (no word boundaries) so digit runs adjacent to letters
+    // (e.g. "5000ms", "v12") are still normalized to <NUM>.
+    let num = NUM_RE.get_or_init(|| Regex::new(r"\d+").expect("num regex"));
     let ws = WS_RE.get_or_init(|| Regex::new(r"\s+").expect("ws regex"));
 
     let mut s = uuid.replace_all(raw, "<UUID>").into_owned();

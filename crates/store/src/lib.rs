@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: LicenseRef-FCL-1.0-ALv2
 // Copyright (c) 2026 Havy.tech, LLC
 
+pub mod active_session;
 pub mod debug_session;
 pub mod error_hash;
 mod lens;
 pub mod memory;
 mod surreal;
 
+pub use active_session::{ActiveDebugSession, ActiveSessionState};
 pub use debug_session::SurrealDebugSessionStore;
 pub use lens::{LensManager, LensStatus};
 pub use memory::SurrealMemoryStore;

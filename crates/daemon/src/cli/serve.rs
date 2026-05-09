@@ -10,7 +10,9 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
 use daemon8_mcp::ChromeCommand;
-use daemon8_store::{StateModel, SurrealStore};
+use daemon8_store::{
+    ActiveSessionState, DebugSessionStore, MemoryStore, StateModel, SurrealStore, error_hash,
+};
 use daemon8_types::Observation;
 
 use crate::config;
@@ -50,7 +52,10 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
     );
 
     let memory_store: Arc<dyn daemon8_store::MemoryStore> = Arc::new(surreal_store.memory_store());
+    let debug_session_store: Arc<dyn daemon8_store::DebugSessionStore> =
+        Arc::new(surreal_store.debug_session_store());
     let store: Arc<dyn StateModel> = surreal_store.clone();
+    let active_state = ActiveSessionState::new();
 
     // Unbounded channel — deliberate policy.  The daemon captures observations
     // best-effort and losslessly: callers POST and return immediately; the store
@@ -73,10 +78,15 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
     spawn_store_writer(
         &mut tasks,
         obs_rx,
-        store.clone(),
-        broadcast_tx.clone(),
+        StoreWriterCtx {
+            store: store.clone(),
+            memory_store: Some(memory_store.clone()),
+            debug_session_store: Some(debug_session_store.clone()),
+            active_state: active_state.clone(),
+            broadcast_tx: broadcast_tx.clone(),
+            node_id,
+        },
         cancel.clone(),
-        node_id,
     );
 
     let screenshot_dir = config::resolve_screenshot_path(&cfg);
@@ -189,6 +199,8 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
         let mcp = daemon8_mcp::DaemonMcp::new(daemon8_mcp::DaemonMcpConfig {
             store: store.clone(),
             memory_store: Some(memory_store.clone()),
+            debug_session_store: Some(debug_session_store.clone()),
+            active_state: active_state.clone(),
             obs_tx: obs_tx.clone(),
             chrome_tx: chrome_cmd_tx.clone(),
             chrome_state: chrome_state_rx.clone(),
@@ -222,6 +234,8 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
 
     let mcp_store = store.clone();
     let mcp_memory_store = memory_store.clone();
+    let mcp_debug_session_store = debug_session_store.clone();
+    let mcp_active_state = active_state.clone();
     let mcp_obs_tx = obs_tx.clone();
     let mcp_chrome_tx = chrome_cmd_tx.clone();
     let mcp_state_rx = chrome_state_rx.clone();
@@ -241,6 +255,8 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
             Ok(daemon8_mcp::DaemonMcp::new(daemon8_mcp::DaemonMcpConfig {
                 store: mcp_store.clone(),
                 memory_store: Some(mcp_memory_store.clone()),
+                debug_session_store: Some(mcp_debug_session_store.clone()),
+                active_state: mcp_active_state.clone(),
                 obs_tx: mcp_obs_tx.clone(),
                 chrome_tx: mcp_chrome_tx.clone(),
                 chrome_state: mcp_state_rx.clone(),
@@ -355,42 +371,28 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
 /// filtering and the pre-serialized JSON for zero-copy fanout. The JSON
 /// carries the real `id` assigned by `store.insert`; callers relying on
 /// `Last-Event-ID` depend on this ordering.
+pub(crate) struct StoreWriterCtx {
+    pub store: Arc<dyn StateModel>,
+    pub memory_store: Option<Arc<dyn MemoryStore>>,
+    pub debug_session_store: Option<Arc<dyn DebugSessionStore>>,
+    pub active_state: ActiveSessionState,
+    pub broadcast_tx: broadcast::Sender<(Arc<Observation>, Arc<str>)>,
+    pub node_id: Arc<str>,
+}
+
 fn spawn_store_writer(
     tasks: &mut JoinSet<()>,
     mut rx: mpsc::UnboundedReceiver<Observation>,
-    store: Arc<dyn StateModel>,
-    broadcast_tx: broadcast::Sender<(Arc<Observation>, Arc<str>)>,
+    ctx: StoreWriterCtx,
     cancel: CancellationToken,
-    node_id: Arc<str>,
 ) {
     tasks.spawn(async move {
         loop {
             tokio::select! {
                 msg = rx.recv() => {
                     match msg {
-                        Some(mut obs) => {
-                            if obs.node_id.is_none() {
-                                obs.node_id = Some(node_id.clone());
-                            }
-                            let insert_copy = obs.clone();
-                            match store.insert(insert_copy).await {
-                                Ok(id) => {
-                                    obs.id = id;
-                                    match serde_json::to_string(&obs) {
-                                        Ok(json) => {
-                                            let arc_obs = Arc::new(obs);
-                                            let arc_json: Arc<str> = Arc::from(json);
-                                            let _ = broadcast_tx.send((arc_obs, arc_json));
-                                        }
-                                        Err(e) => {
-                                            tracing::error!(id, error = %e, "observation failed to serialize; dropping from broadcast");
-                                        }
-                                    }
-                                }
-                                Err(e) => {
-                                    tracing::error!("store insert failed: {e}");
-                                }
-                            }
+                        Some(obs) => {
+                            handle_observation(obs, &ctx).await;
                         }
                         None => break, // channel closed
                     }
@@ -400,6 +402,262 @@ fn spawn_store_writer(
         }
         tracing::debug!("store writer stopped");
     });
+}
+
+async fn handle_observation(mut obs: Observation, ctx: &StoreWriterCtx) {
+    let now_ns = current_ns();
+
+    if obs.node_id.is_none() {
+        obs.node_id = Some(ctx.node_id.clone());
+    }
+
+    // Stamp active debug session and checkpoint links if present.
+    let active_session = ctx.active_state.current_session();
+    if let Some(ref session) = active_session {
+        if obs.debug_session_id.is_none() {
+            obs.debug_session_id = Some(session.id.clone());
+        }
+        session.touch(now_ns);
+    }
+    if obs.checkpoint_id.is_none()
+        && let Some(cp) = ctx.active_state.current_checkpoint()
+    {
+        obs.checkpoint_id = Some(cp);
+    }
+
+    // Compute error hash (cheap, sync) for any error-shaped observation.
+    if obs.error_hash.is_none()
+        && let Some(text) = error_hash::extract_error_text(&obs)
+    {
+        let normalized = error_hash::normalize_error_text(&text);
+        let hash = error_hash::hash_error(&normalized);
+        obs.error_hash = Some(Arc::from(hash.as_str()));
+    }
+
+    let insert_copy = obs.clone();
+    let inserted_id = match ctx.store.insert(insert_copy).await {
+        Ok(id) => id,
+        Err(e) => {
+            tracing::error!("store insert failed: {e}");
+            return;
+        }
+    };
+    obs.id = inserted_id;
+
+    // Broadcast to any subscribers (zero-copy fanout).
+    match serde_json::to_string(&obs) {
+        Ok(json) => {
+            let arc_obs = Arc::new(obs);
+            let arc_json: Arc<str> = Arc::from(json);
+            let _ = ctx.broadcast_tx.send((arc_obs.clone(), arc_json));
+
+            // Promote error signature to memory if applicable. Done after
+            // the row is on disk so source_observations references the real
+            // seq id. Fire-and-forget if memory_store isn't wired.
+            if let (Some(mem_store), Some(hash)) =
+                (ctx.memory_store.as_ref(), arc_obs.error_hash.as_ref())
+            {
+                let project_slug = active_session
+                    .as_ref()
+                    .map(|s| s.project_slug.to_string())
+                    .unwrap_or_else(|| "unknown".to_string());
+                let normalized = error_hash::extract_error_text(&arc_obs)
+                    .map(|t| error_hash::normalize_error_text(&t))
+                    .unwrap_or_default();
+                if let Err(e) = error_hash::promote_error_signature(
+                    mem_store.as_ref(),
+                    hash,
+                    &normalized,
+                    &project_slug,
+                    inserted_id,
+                    now_ns,
+                )
+                .await
+                {
+                    tracing::warn!(error = %e, "error signature promotion failed");
+                }
+            }
+        }
+        Err(e) => {
+            tracing::error!(id = inserted_id, error = %e, "observation failed to serialize; dropping from broadcast");
+        }
+    }
+
+    // touch_debug_session in DB is left to the periodic flush in the cleanup
+    // task (Step 7) — avoids one DB write per observation. Let `_` consume
+    // the unused store handle so future maintainers know it's deliberate.
+    let _ = ctx.debug_session_store.as_ref();
+}
+
+fn current_ns() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64
+}
+
+#[cfg(test)]
+mod writer_tests {
+    use super::*;
+    use daemon8_store::{ActiveDebugSession, MemoryFilter, MemoryStore};
+    use daemon8_types::{AppName, MemoryKind, ObservationKind, Origin, Severity};
+    use std::sync::atomic::AtomicU64;
+
+    fn fresh_obs(severity: Severity, kind: ObservationKind) -> Observation {
+        Observation {
+            id: 0,
+            origin: Origin::Application {
+                name: AppName::from("test-app"),
+            },
+            kind,
+            data: serde_json::json!({"msg": "x"}),
+            severity,
+            source_location: None,
+            timestamp_ns: 0,
+            correlation_id: None,
+            parent_id: None,
+            tags: None,
+            session_id: None,
+            node_id: None,
+            debug_session_id: None,
+            checkpoint_id: None,
+            error_hash: None,
+        }
+    }
+
+    async fn build_ctx_with_active(
+        session: Option<ActiveDebugSession>,
+        checkpoint: Option<&str>,
+    ) -> (StoreWriterCtx, Arc<dyn StateModel>, Arc<dyn MemoryStore>) {
+        let ss = Arc::new(SurrealStore::memory().await.unwrap());
+        let mem: Arc<dyn MemoryStore> = Arc::new(ss.memory_store());
+        let ds: Arc<dyn DebugSessionStore> = Arc::new(ss.debug_session_store());
+        let active = ActiveSessionState::new();
+        if let Some(s) = session {
+            active.set_session(Some(s));
+        }
+        if let Some(cp) = checkpoint {
+            active.set_checkpoint(Some(Arc::from(cp)));
+        }
+        let (broadcast_tx, _rx) = broadcast::channel(8);
+        let store: Arc<dyn StateModel> = ss.clone();
+        (
+            StoreWriterCtx {
+                store: store.clone(),
+                memory_store: Some(mem.clone()),
+                debug_session_store: Some(ds),
+                active_state: active,
+                broadcast_tx,
+                node_id: Arc::from("node-test"),
+            },
+            store,
+            mem,
+        )
+    }
+
+    #[tokio::test]
+    async fn stamps_active_debug_session_and_checkpoint() {
+        let session = ActiveDebugSession {
+            id: Arc::from("ds_123"),
+            project_slug: Arc::from("daemon8"),
+            started_at_ns: 1_000,
+            last_activity_ns: Arc::new(AtomicU64::new(1_000)),
+        };
+        let (ctx, store, _mem) = build_ctx_with_active(Some(session), Some("cp_42")).await;
+
+        handle_observation(fresh_obs(Severity::Info, ObservationKind::Log), &ctx).await;
+
+        let slice = store
+            .query(&daemon8_types::Filter::default())
+            .await
+            .unwrap();
+        assert_eq!(slice.observations.len(), 1);
+        let obs = &slice.observations[0];
+        assert_eq!(obs.debug_session_id.as_deref(), Some("ds_123"));
+        assert_eq!(obs.checkpoint_id.as_deref(), Some("cp_42"));
+    }
+
+    #[tokio::test]
+    async fn no_stamp_when_no_active_session() {
+        let (ctx, store, _mem) = build_ctx_with_active(None, None).await;
+
+        handle_observation(fresh_obs(Severity::Info, ObservationKind::Log), &ctx).await;
+
+        let slice = store
+            .query(&daemon8_types::Filter::default())
+            .await
+            .unwrap();
+        let obs = &slice.observations[0];
+        assert!(obs.debug_session_id.is_none());
+        assert!(obs.checkpoint_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn computes_error_hash_on_exception_and_promotes_signature() {
+        let session = ActiveDebugSession {
+            id: Arc::from("ds_x"),
+            project_slug: Arc::from("daemon8"),
+            started_at_ns: 1_000,
+            last_activity_ns: Arc::new(AtomicU64::new(1_000)),
+        };
+        let (ctx, store, mem) = build_ctx_with_active(Some(session), None).await;
+
+        let exc = ObservationKind::Exception {
+            message: "DB timeout after 5000ms on conn 7".into(),
+            trace: Some("at db::query in /Users/x/proj/src/db.rs:42".into()),
+        };
+        handle_observation(fresh_obs(Severity::Error, exc.clone()), &ctx).await;
+        // Same shape — should bump seen, not create a new memory.
+        let exc2 = ObservationKind::Exception {
+            message: "DB timeout after 9999ms on conn 12".into(),
+            trace: Some("at db::query in /Users/y/other/src/db.rs:42".into()),
+        };
+        handle_observation(fresh_obs(Severity::Error, exc2), &ctx).await;
+
+        let slice = store
+            .query(&daemon8_types::Filter::default())
+            .await
+            .unwrap();
+        assert_eq!(slice.observations.len(), 2);
+        assert!(slice.observations[0].error_hash.is_some());
+        assert_eq!(
+            slice.observations[0].error_hash, slice.observations[1].error_hash,
+            "structurally identical errors must hash to the same value"
+        );
+
+        let signatures = mem
+            .query_memory(&MemoryFilter {
+                kinds: Some(vec![MemoryKind::ErrorSignature]),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            signatures.len(),
+            1,
+            "second occurrence must reuse the same ErrorSignature"
+        );
+        assert!(signatures[0].tags.contains(&"seen:2".to_string()));
+    }
+
+    #[tokio::test]
+    async fn touch_bumps_active_session_last_activity() {
+        let last = Arc::new(AtomicU64::new(1_000));
+        let session = ActiveDebugSession {
+            id: Arc::from("ds_t"),
+            project_slug: Arc::from("p"),
+            started_at_ns: 1_000,
+            last_activity_ns: last.clone(),
+        };
+        let (ctx, _store, _mem) = build_ctx_with_active(Some(session), None).await;
+
+        handle_observation(fresh_obs(Severity::Info, ObservationKind::Log), &ctx).await;
+
+        assert!(
+            last.load(std::sync::atomic::Ordering::Relaxed) > 1_000,
+            "active session last_activity_ns must be touched on each insert"
+        );
+    }
 }
 
 /// Periodically delete observations and screenshots older than their retention windows.
