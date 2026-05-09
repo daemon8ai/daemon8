@@ -41,6 +41,13 @@ jobs:
           components: rustfmt
       - run: cargo fmt --check
 
+  tool-descriptions-lint:
+    name: Tool descriptions house style
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash tools/lint_tool_descriptions.sh
+
   check-macos:
     name: Check (macOS)
     runs-on: macos-latest

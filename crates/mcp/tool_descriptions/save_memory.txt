@@ -1,20 +1,22 @@
-Persist a long-term memory entry that survives across sessions. Memories are searchable by kind, tags, project, and text content via `query_memory`.
+Purpose: Persist a long-term memory entry that survives across sessions and observation cleanup. Searchable via `query_memory`.
 
-Use this to:
-- Record a non-obvious pattern or decision so a future session can recall it.
-- Capture a stable error signature with the fix that resolved it.
-- Save a session summary at the end of a meaningful working session.
-- Flag user-stated preferences or invariants for future reference.
+When: Recording a stable, reusable, verified conclusion — a non-obvious pattern, an architectural decision, an error signature with its fix, a session summary, a user preference. Do NOT save raw logs, transcripts, every tool call, temporary guesses, or large documentation.
 
-Memory rule: only save stable, reusable, verified conclusions. Do not save raw logs, transcripts, every tool call, temporary guesses, unverified hypotheses, or large documentation chunks.
+Prereq: None. (Note: `resolve_debug_session` writes a richer SessionSummary memory automatically; prefer it for debug-session resolutions.)
 
-Parameters:
-- content: string. Required. The memory body. Plain text — no formatting requirements.
-- kind: optional string. One of: pattern, decision, error_signature, session_summary, user_flagged. Defaults to user_flagged.
-- tags: optional list of strings. Free-form tags for retrieval (e.g. ["postgres", "migrations"]).
-- source_observations: optional list of integers. Observation ids that informed this memory.
-- project_slug: optional string. Scope to one project for retrieval.
-- session_id: optional string. The session that produced this memory.
-- confidence: optional number, 0.0 to 1.0. Defaults to 1.0.
+Args:
+  - content: required string. The memory body, plain text.
+  - kind: optional string. pattern | decision | error_signature | session_summary | user_flagged. Default user_flagged.
+  - tags: optional list. Free-form retrieval tags.
+  - source_observations: optional list of int. Observation ids that informed this memory.
+  - project_slug: optional string. Scope for retrieval.
+  - session_id: optional string. Producing session.
+  - confidence: optional float [0.0, 1.0]. Default 1.0.
 
-Returns: { "id": <string> }. Persist the returned id if you anticipate later deletion.
+Returns:
+  result: {id}.
+
+Errors:
+  - memory_store_unavailable: persistence not configured.
+
+Next: query_memory to verify retrievability; forget_memory(confirm=true) only if you need to delete.

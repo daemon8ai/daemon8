@@ -1,25 +1,25 @@
-Query runtime observations from all connected sources — browser console, network requests, JS exceptions, device telemetry, and application logs. Returns logs, HTTP exchanges, exceptions, browser console output, JS exceptions, SQL queries, and application telemetry.
+Purpose: Query runtime observations from every connected source — browser console, network, exceptions, SQL, app logs, device telemetry, agent tool calls.
 
-Observations are real-time. Re-call to get fresh data; do not assume previous results are still current.
+When: Diagnosing a runtime symptom, scanning for a specific error, monitoring a service after a change. Pair with `create_checkpoint` + `since_checkpoint` for incremental "what just changed".
 
-Parameters:
-- kinds: optional list of strings. Filter by kind: log, query, http_exchange, exception, js_exception, lifecycle, state_snapshot, metric, custom.
-- severity_min: optional string. Minimum severity threshold: trace, debug, info, warn, error.
-- origins: optional list of strings. Origin patterns: "app", "app:name", "browser", "browser:tab_id", "device", "device:serial". Omit to see all origins.
-- text_match: optional string. Search across materialized observation text.
-- since_checkpoint: optional integer. Return only observations recorded after this checkpoint id (from `create_checkpoint`).
-- limit: optional integer. Maximum results. Default 50.
-- correlation_id: optional string. Exact-match filter on correlation id.
-- tags: optional list of strings. All listed tags must be present.
-- include_system: optional boolean. Include system/infrastructure observations (tagged "_system"). Excluded by default.
+Prereq: None. Observations are live; re-call to refresh.
 
-Returns: { observations: [ ... ], total: <int>, lens: { ... lens buffer slice if active } }.
+Args:
+  - kinds: optional list. Filter by kind (log, query, http_exchange, exception, js_exception, lifecycle, state_snapshot, metric, custom, tool_call).
+  - severity_min: optional string. Minimum severity (trace, debug, info, warn, error).
+  - origins: optional list. Patterns: "app", "app:name", "browser", "browser:tab_id", "device", "device:serial".
+  - text_match: optional string. Substring across materialized search_text.
+  - since_checkpoint: optional integer. Only obs after this seq (use `create_checkpoint`).
+  - limit: optional integer. Default 50.
+  - correlation_id: optional string. Exact match (Pre/PostToolUse pair on tool_use_id).
+  - tags: optional list. All listed tags must be present.
+  - include_system: optional bool. Default excludes "_system"-tagged rows.
 
-Common patterns:
-- After running code: origins=["app"] picks up application logs, SQL queries, and exceptions.
-- Monitor a specific service: origins=["app:user-api"] with `since_checkpoint` for incremental updates.
-- Find a specific error: text_match="ConnectionRefused" or severity_min="error".
-- Read messages from another agent: origins=["app:agent-name"] with `since_checkpoint`.
-- Browser console errors: kinds=["js_exception"] or origins=["browser"] for all browser tabs.
-- Specific browser tab: origins=["browser:tab_id"] where tab_id comes from `issue_command` with action="list_tabs".
-- Device logs: origins=["device"] or origins=["device:serial"] for a specific device.
+Returns:
+  result: {observations: [...], total, lens_observations?, lens_count?, browser_state?}.
+  daemon8.active_debug_session: present if a debug session is active (and stamping new obs).
+
+Errors:
+  - query_failed: db query error. hint: check daemon logs.
+
+Next: create_checkpoint before testing a fix; query_memory(tags=["hash:<error_hash>"]) on any error obs to find prior fixes.

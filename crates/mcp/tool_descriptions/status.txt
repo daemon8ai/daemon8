@@ -1,7 +1,16 @@
-Health snapshot of the daemon: total observation count, errors observed in the last 60 seconds, connected sources, and the daemon version.
+Purpose: One-shot health snapshot of the daemon: total observation count, errors observed in the last 60 seconds, connected sources, daemon version.
 
-Call this first when starting a debugging session to confirm telemetry is flowing and to identify which sources are sending data. The list of source names tells you what to filter `query_observations` against.
+When: First tool call in a session, or any time you want to confirm the daemon is alive and how loud the stream currently is.
 
-Parameters: none.
+Prereq: None.
 
-Returns: { version: <string>, uptime_seconds: <int>, observations_total: <int>, errors_last_60s: <int>, connected_sources: [<name>...], healthy: <bool>, ... }. `healthy` is false if any source is in `disconnected` state or if error rate exceeds the configured threshold.
+Args: none.
+
+Returns:
+  result: {observation_count, error_count_last_60s, active_channels, connections, health, daemon_version}.
+  daemon8.active_debug_session: present if a debug session is active.
+
+Errors:
+  - summary_failed: db query failed. hint: check daemon logs.
+
+Next: query_observations to see the current stream; start_debug_session if you're about to investigate something specific.

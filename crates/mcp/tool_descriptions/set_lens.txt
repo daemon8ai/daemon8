@@ -1,21 +1,21 @@
-Set a persistent observation filter (lens) for this session. While the lens is active, matching observations are buffered into a ring buffer behind the scenes. Subsequent `query_observations` calls automatically include the buffered matches without re-specifying filters.
+Purpose: Install a per-session observation filter (lens) plus a ring buffer. Matching observations accumulate behind the scenes; subsequent `query_observations` calls auto-include the buffered matches.
 
-Use this to:
-- Watch for a specific kind of event over time without polling — the daemon collects matches even between your queries.
-- Focus a session on one origin or one severity band (e.g. browser warns and errors only).
-- Build up a working set of observations during a debugging run, then clear when done.
+When: Watching for a specific event over time without polling, focusing on one origin/severity band, or building a working set during a debugging run.
 
-Setting a lens replaces any existing lens. Use `clear_lens` to remove and stop buffering.
+Prereq: None. Setting a lens replaces any existing lens; `clear_lens` to remove.
 
-Parameters:
-- kinds: optional list of strings. Filter by kind (log, query, http_exchange, exception, js_exception, lifecycle, state_snapshot, metric, custom).
-- severity_min: optional string. Minimum severity threshold (trace, debug, info, warn, error).
-- origins: optional list of strings. Origin patterns ("app", "app:name", "browser", "browser:tab_id", "device", "device:serial").
-- text_match: optional string. Search across materialized observation text.
-- correlation_id: optional string. Exact-match filter on correlation id.
-- tags: optional list of strings. All listed tags must be present.
-- capacity: optional integer. Ring buffer capacity. Default 200, hard cap 1000.
+Args:
+  - kinds: optional list. (Same vocabulary as query_observations.)
+  - severity_min: optional string.
+  - origins: optional list.
+  - text_match: optional string.
+  - correlation_id: optional string.
+  - tags: optional list.
+  - capacity: optional integer. Ring buffer capacity, default 200, max 1000.
 
-Returns: { active: true, filter: { ... echo of inputs ... }, capacity: <int> }.
+Returns:
+  result: {active: true, filter, capacity, buffered, cursor}.
 
-Use `lens_status` to inspect the active lens and buffer depth; `clear_lens` to remove it.
+Errors: none expected.
+
+Next: lens_status to inspect; query_observations to drain the buffer; clear_lens when done.

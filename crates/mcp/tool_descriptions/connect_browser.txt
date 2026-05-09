@@ -1,13 +1,16 @@
-Override the Chrome DevTools Protocol endpoint the daemon connects to. The daemon auto-discovers a local browser and reconnects on its own; this tool is only for non-standard ports or remote DevTools endpoints.
+Purpose: Override the Chrome DevTools endpoint the daemon connects to. Auto-discovery handles localhost:9222 by default; this tool is for non-standard ports or remote endpoints.
 
-Use this only when:
-- The browser is running on a port other than 9222.
-- You're targeting a remote DevTools endpoint (over a tunnel, etc.).
-- You want to fail fast on a configuration mismatch rather than wait for auto-discovery.
+When: Browser is on a non-standard port, you're targeting a remote DevTools endpoint over a tunnel, or you want to fail fast on a config mismatch instead of waiting for auto-discovery. Do NOT call as a debugging shortcut — reconnection is automatic.
 
-Do NOT call this as a debugging shortcut. Reconnection is automatic — repeated calls will not "fix" a transient disconnection.
+Prereq: None.
 
-Parameters:
-- endpoint: string. Required. Full URL including scheme, e.g. "http://localhost:9222".
+Args:
+  - endpoint: required string. Full URL including scheme (e.g. "http://localhost:9222").
 
-Returns: { status: "connecting", endpoint: "<url>" }. The actual connection state lands in `list_connections` once the daemon attaches.
+Returns:
+  result: {status: "connecting", endpoint}.
+
+Errors:
+  - daemon_shutting_down: connect command channel closed.
+
+Next: list_connections to confirm the new endpoint is reachable; issue_command for any browser action.

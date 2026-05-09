@@ -1,21 +1,21 @@
-Issue a browser command (screenshot also works on ADB devices via device_serial).
+Purpose: Issue a browser DevTools command (eval_js, screenshot, inject_css, navigate, storage, viewport, network conditions, tab management). Screenshot also works on ADB devices via `device_serial`.
 
-- eval_js: Run JavaScript in a browser tab. Use to read DOM state, check variables, trigger actions, or validate fixes. Returns {result: string}. Example: expression='document.querySelector(".error")?.textContent'
-- screenshot: Capture a PNG. Returns {screenshot: path, size_bytes: N}. Use after making visual changes to verify. Optional 'selector' for element-level capture.
-- inject_css: Add styles to a page. Use to prototype visual fixes or highlight elements. Returns {injected: true, element_id: string}.
-- revert_css: Remove all injected CSS. Returns {reverted_count: N}.
-- list_tabs: Show all monitored tabs. Returns {tabs: [{id, url, title}]}. Use to find the right tab_id for targeted actions.
-- get_perf_metrics: Read performance counters. Use to diagnose slow pages.
-- get_dom: Get HTML of page or element. Use to inspect rendered markup when eval_js is overkill.
-- set_viewport: Mobile emulation. Presets: iPhone 15 (viewport_width=390 viewport_height=844 viewport_scale=3.0 viewport_mobile=true), Pixel 8 (412x915 scale=2.625), iPad (820x1180 scale=2.0), desktop (1280x800 scale=1.0 mobile=false).
-- clear_viewport: Restore desktop viewport.
-- network_conditions: Simulate network. network_preset: 'offline', 'slow-3g', 'fast-3g', 'restore'. Always restore after testing.
-- navigate: Go to URL, waits for full load. Requires 'url'. Use instead of eval_js window.location.
-- storage_clear: Clear storage for current origin. storage_types: 'all' or comma-separated: 'cookies,local_storage,session_storage,indexeddb,cache_storage,service_workers'.
-- storage_inspect: Read all localStorage, sessionStorage, and cookies. No extra params.
-- storage_set: Write storage. store_type: 'localstorage'/'sessionstorage'/'cookie'. Requires storage_key + storage_value.
-- element_at_point: What's on top at (x,y)? Requires x and y. Use when clicks aren't landing.
-- new_tab: Open a new browser tab. Optional 'url' (default: about:blank). Returns {tab_id: string}.
-- close_tab: Close a browser tab. Requires 'tab_id'. Returns {closed: true}.
+When: Reading DOM state, capturing visual proof of a fix, prototyping CSS, simulating mobile/network conditions, or driving any browser action that's not pure observation.
 
-Use tab_id to target a specific tab (get IDs from list_tabs). Omit for the default tab.
+Prereq: A connected browser. Auto-discovers localhost:9222; use `connect_browser` for non-standard endpoints.
+
+Args:
+  - action: required string. One of: eval_js, screenshot, inject_css, revert_css, list_tabs, get_perf_metrics, get_dom, set_viewport, clear_viewport, network_conditions, navigate, storage_clear, storage_inspect, storage_set, element_at_point, new_tab, close_tab.
+  - tab_id: optional string. Target a specific tab (use list_tabs to discover); omit for default tab.
+  - device_serial: optional string. Target an ADB/Vega device for screenshots.
+  - Per-action: see action-specific keys (expression, selector, url, viewport_width/height/scale/mobile, network_preset, storage_types, storage_key, storage_value, x, y, css).
+
+Returns:
+  result: action-specific shape (see issue_command help for examples).
+  Common shapes: {result: <eval value>}, {screenshot: path, size_bytes}, {tabs: [...]}.
+
+Errors:
+  - missing_param: required action-specific param absent. hint shows which one.
+  - browser_not_connected: see list_connections / connect_browser.
+
+Next: query_observations(origins=["browser"]) to see browser console activity triggered by your action.

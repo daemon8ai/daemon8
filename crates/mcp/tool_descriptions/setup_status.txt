@@ -1,11 +1,15 @@
-Report the current daemon8 setup state for one project: which sources are registered, which providers are wired up, whether daemon8 is installed as a system service, and whether the global config is healthy. Read-only — does not write config, hook files, provider files, or runtime data.
+Purpose: Read-only setup state for one project: registered sources, wired providers, hook installation per scope, service install state, global config health.
 
-Use this to:
-- Determine whether `daemon8 setup apply` has been run for the current working directory.
-- Audit which sources, providers, and hooks the daemon thinks are configured.
-- Confirm a fix landed before re-running `setup_apply`.
+When: Determining whether `setup_apply` has been run, auditing configuration, confirming a setup change landed.
 
-Parameters:
-- cwd: optional string. Project working directory. Defaults to the daemon's current directory.
+Prereq: None.
 
-Returns: { project: { slug, root, config_present, source_intents, ... }, global_setup_applied, providers, hooks, ... }. Same shape as `setup_plan` minus the `actions` list.
+Args:
+  - cwd: optional string. Project working directory. Defaults to the daemon's cwd.
+
+Returns:
+  result: {project, global_config_path, global_setup_applied, runtime_sources, providers, service_installed, issues}.
+
+Errors: none expected.
+
+Next: setup_plan to preview changes; setup_apply(yes=true) to apply.

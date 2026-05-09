@@ -1,10 +1,15 @@
-List all active data source connections feeding observations into the daemon. Includes connected applications, the browser, and any device transports.
+Purpose: List active data source connections feeding observations into the daemon: applications, the browser, devices.
 
-Use this to:
-- Confirm the daemon is receiving telemetry from the source you expect.
-- Diagnose missing observations: a source not in this list is not connected.
-- Inspect the current browser endpoint (after `connect_browser`).
+When: Confirming the daemon is receiving telemetry from the expected source; diagnosing missing observations (a source not listed is not connected).
 
-Parameters: none.
+Prereq: None.
 
-Returns: { browser: { state, endpoint, ... }, applications: [ { name, state, ... } ], devices: [ { serial, platform, state, ... } ] }. State is one of: connected, connecting, reconnecting, disconnected. Empty arrays when no sources are wired.
+Args: none.
+
+Returns:
+  result: {browser: {state, endpoint, ...}, applications: [...], devices: [...]}.
+  State values: connected | connecting | reconnecting | disconnected.
+
+Errors: none expected (read-only).
+
+Next: connect_browser if the browser endpoint shows disconnected; query_observations(origins=["app:<name>"]) once a source is confirmed.

@@ -1,13 +1,16 @@
-Compute and return the action plan that `setup_apply` would execute, without writing anything. Reports planned source registration, provider configuration, hook installation, and any setup-state diffs.
+Purpose: Compute the action plan `setup_apply` would execute, without writing anything. Reports planned source registration, provider config, hook installation, setup-state diffs.
 
-Use this to:
-- Preview a setup change before mutating any files.
-- Diff against `setup_status` to understand exactly what will change.
-- Decide whether to invoke `setup_apply` (and with which options).
+When: Previewing a setup change before mutating files; diffing against `setup_status` to understand exactly what will change.
 
-Parameters:
-- cwd: optional string. Project working directory. Defaults to the daemon's current directory.
+Prereq: None.
 
-Returns: { status: { ... same as setup_status ... }, actions: [ { kind, target, description, idempotent } ] }. The action list is empty when nothing needs to change.
+Args:
+  - cwd: optional string. Project working directory. Defaults to the daemon's cwd.
 
-Read-only. Re-running `setup_plan` produces the same plan unless the underlying state changed.
+Returns:
+  result: {status: {...same shape as setup_status.result}, actions: [{kind, target, detail, mutating}]}.
+  Empty actions array means nothing needs to change.
+
+Errors: none expected.
+
+Next: setup_apply(yes=true) to execute; setup_status to confirm post-apply.

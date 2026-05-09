@@ -1,7 +1,14 @@
-Remove the active observation lens. Stops buffering and discards any observations currently in the ring buffer. No-op if no lens is active.
+Purpose: Remove the active observation lens. Stops buffering and discards the ring buffer contents. No observations are deleted from the underlying store.
 
-Parameters: none.
+When: Done with the focused-watch session for which the lens was set, or you want to switch to a different filter.
 
-Returns: { active: false }.
+Prereq: None. No-op if no lens is active.
 
-Mutating in the sense that the buffer is dropped — but no observations are deleted from the underlying store. To create a new lens, call `set_lens` again.
+Args: none.
+
+Returns:
+  result: {cleared: true}.
+
+Errors: none expected.
+
+Next: set_lens with a new filter, or query_observations directly without the lens.

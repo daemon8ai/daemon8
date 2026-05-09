@@ -1,19 +1,21 @@
-Configure which observations trigger real-time alerts in this session. Default: severity >= warn. Subscription persists for the session; call again to change the filter.
+Purpose: Configure which observations trigger live MCP alerts (notifications/message) in this session. One filter per session.
 
-Use this to:
-- Watch only exceptions: kinds=["exception"], severity_min="error".
-- Monitor a specific app: origins=["app:user-api"].
-- Listen for messages from another agent: origins=["app:agent-b"], severity_min="info".
-- Reset to default: call with no parameters.
+When: Watching for a specific failure pattern, monitoring a particular app, listening for inter-agent messages on a known origin. Default subscribes to severity >= warn.
 
-Parameters:
-- kinds: optional list of strings. Filter by kind (log, query, http_exchange, exception, js_exception, lifecycle, state_snapshot, metric, custom).
-- severity_min: optional string. Minimum severity (trace, debug, info, warn, error).
-- origins: optional list of strings. Origin patterns ("app:name", "browser", "device:serial").
-- text_match: optional string. Search across materialized observation text.
-- correlation_id: optional string. Exact-match filter.
-- tags: optional list of strings. All listed tags must be present.
+Prereq: None.
 
-Returns: { active: true, filter: { ... echo of inputs ... } }.
+Args:
+  - kinds: optional list. (See query_observations.)
+  - severity_min: optional string.
+  - origins: optional list.
+  - text_match: optional string.
+  - correlation_id: optional string.
+  - tags: optional list.
+  - include_system: optional bool.
 
-Subscription is in addition to `set_lens`: subscriptions push live alerts; lens buffers matching rows for the next `query_observations` call.
+Returns:
+  result: {subscribed: true, filter: "default (severity >= warn)" | "custom"}.
+
+Errors: none expected.
+
+Next: subscribe is push; pair with set_lens (pull-side buffer) when you want both live alerts and a queryable backlog of matches.
