@@ -96,6 +96,9 @@ async-trait = "0.1"
 # Regex
 regex = "1"
 
+# Hashing (error fingerprints)
+sha2 = "0.10"
+
 # File watching
 notify = { version = "8", features = ["macos_fsevent"] }
 glob = "0.3"

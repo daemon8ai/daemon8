@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Havy.tech, LLC
 
 pub mod debug_session;
+pub mod error_hash;
 mod lens;
 pub mod memory;
 mod surreal;

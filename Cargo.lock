@@ -1502,8 +1502,10 @@ version = "0.3.0"
 dependencies = [
  "async-trait",
  "daemon8-types",
+ "regex",
  "serde",
  "serde_json",
+ "sha2",
  "surrealdb",
  "thiserror 2.0.18",
  "tokio",
