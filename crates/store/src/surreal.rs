@@ -618,11 +618,24 @@ impl StateModel for SurrealStore {
     }
 
     async fn cleanup_before(&self, timestamp_ns: u64) -> Result<u64, StoreError> {
+        // Skip rows whose debug_session_id points to an active debug session
+        // — losing that context mid-investigation would defeat the purpose
+        // of the situational-awareness layer. Sessions stuck in "active"
+        // beyond the inactivity threshold are auto-ended by
+        // `auto_end_stale_debug_sessions` before this cleanup runs, so any
+        // session still active here is genuinely live.
+        let safety_clause = "AND (debug_session_id IS NONE
+                 OR debug_session_id NOT IN (
+                    SELECT VALUE meta::id(id) FROM debug_session WHERE status = 'active'
+                 ))";
+
+        let count_sql = format!(
+            "SELECT count() AS total FROM observation
+             WHERE timestamp_ns < $cutoff {safety_clause} GROUP ALL"
+        );
         let mut result = self
             .db
-            .query(
-                "SELECT count() AS total FROM observation WHERE timestamp_ns < $cutoff GROUP ALL",
-            )
+            .query(&count_sql)
             .bind(("cutoff", serde_json::json!(timestamp_ns)))
             .await
             .map_err(|e| StoreError::Db(format!("cleanup count: {e}")))?;
@@ -635,8 +648,10 @@ impl StateModel for SurrealStore {
             .and_then(|v| v.get("total").and_then(|t| t.as_u64()))
             .unwrap_or(0);
 
+        let delete_sql =
+            format!("DELETE FROM observation WHERE timestamp_ns < $cutoff {safety_clause}");
         self.db
-            .query("DELETE FROM observation WHERE timestamp_ns < $cutoff")
+            .query(&delete_sql)
             .bind(("cutoff", serde_json::json!(timestamp_ns)))
             .await
             .map_err(|e| StoreError::Db(format!("cleanup delete: {e}")))?

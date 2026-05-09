@@ -8,7 +8,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
-use daemon8_store::StateModel;
+use daemon8_store::{ActiveSessionState, DebugSessionStore, MemoryStore, StateModel};
+use daemon8_types::{DebugSessionOutcome, DebugSessionStatus, MemoryKind};
 
 pub const RETENTION_SECS: u64 = 24 * 60 * 60;
 
@@ -16,14 +17,35 @@ pub const SCREENSHOT_RETENTION_SECS: u64 = 24 * 60 * 60;
 
 pub const CLEANUP_INTERVAL: Duration = Duration::from_secs(8 * 60 * 60);
 
-/// Spawn a background task that periodically deletes stale observations and screenshots.
+/// Default inactivity threshold before an active debug session is auto-ended.
+/// Belt-and-suspenders against an LLM that forgets to call end_debug_session:
+/// at 4h the session is marked abandoned, a thin SessionSummary is written so
+/// the row never silently disappears, and observations from that session
+/// become eligible for the 24h reaper.
+pub const DEFAULT_INACTIVITY_AUTO_END_SECS: u64 = 4 * 60 * 60;
+
+pub struct CleanupCtx {
+    pub store: Arc<dyn StateModel>,
+    pub debug_session_store: Option<Arc<dyn DebugSessionStore>>,
+    pub memory_store: Option<Arc<dyn MemoryStore>>,
+    pub active_state: ActiveSessionState,
+    pub inactivity_auto_end_secs: u64,
+}
+
+/// Spawn a background task that periodically:
+/// 1) flushes the in-memory active-session last_activity to the DB so
+///    `find_stale_active` sees fresh data;
+/// 2) auto-ends debug sessions whose `last_activity` is older than the
+///    configured inactivity threshold;
+/// 3) deletes stale observations (skipping rows linked to active sessions);
+/// 4) deletes stale screenshot files.
 ///
-/// The task waits one full `CLEANUP_INTERVAL` before the first sweep so a freshly
-/// started daemon doesn't immediately churn the WAL. After each sweep it sleeps
-/// for another interval. The task cancels cleanly via the `CancellationToken`.
+/// The task waits one full `CLEANUP_INTERVAL` before the first sweep so a
+/// freshly started daemon doesn't immediately churn the WAL. Cancels cleanly
+/// via the `CancellationToken`.
 pub fn spawn_cleanup_task(
     tasks: &mut JoinSet<()>,
-    store: Arc<dyn StateModel>,
+    ctx: CleanupCtx,
     screenshot_dir: PathBuf,
     cancel: CancellationToken,
 ) {
@@ -33,23 +55,115 @@ pub fn spawn_cleanup_task(
                 () = tokio::time::sleep(CLEANUP_INTERVAL) => {}
                 () = cancel.cancelled() => break,
             }
-
-            let cutoff = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .saturating_sub(Duration::from_secs(RETENTION_SECS))
-                .as_nanos() as u64;
-
-            match store.cleanup_before(cutoff).await {
-                Ok(0) => {}
-                Ok(n) => tracing::debug!(deleted = n, "observation cleanup sweep"),
-                Err(e) => tracing::error!("observation cleanup failed: {e}"),
-            }
-
-            cleanup_screenshots(&screenshot_dir);
+            run_cleanup_pass(&ctx, &screenshot_dir).await;
         }
         tracing::debug!("cleanup task stopped");
     });
+}
+
+pub(crate) async fn run_cleanup_pass(ctx: &CleanupCtx, screenshot_dir: &std::path::Path) {
+    let now_ns = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64;
+
+    flush_active_last_activity(ctx, now_ns).await;
+    auto_end_stale_debug_sessions(ctx, now_ns).await;
+
+    let cutoff = now_ns.saturating_sub(Duration::from_secs(RETENTION_SECS).as_nanos() as u64);
+    match ctx.store.cleanup_before(cutoff).await {
+        Ok(0) => {}
+        Ok(n) => tracing::debug!(deleted = n, "observation cleanup sweep"),
+        Err(e) => tracing::error!("observation cleanup failed: {e}"),
+    }
+
+    cleanup_screenshots(screenshot_dir);
+}
+
+async fn flush_active_last_activity(ctx: &CleanupCtx, _now_ns: u64) {
+    let Some(ds_store) = &ctx.debug_session_store else {
+        return;
+    };
+    let Some(active) = ctx.active_state.current_session() else {
+        return;
+    };
+    let last = active.last_activity();
+    if let Err(e) = ds_store.touch_debug_session(active.id.as_ref(), last).await {
+        tracing::warn!(error = %e, "flushing active debug session last_activity failed");
+    }
+}
+
+async fn auto_end_stale_debug_sessions(ctx: &CleanupCtx, now_ns: u64) {
+    let (Some(ds_store), Some(mem_store)) =
+        (ctx.debug_session_store.as_ref(), ctx.memory_store.as_ref())
+    else {
+        return;
+    };
+    let threshold_ns =
+        now_ns.saturating_sub(Duration::from_secs(ctx.inactivity_auto_end_secs).as_nanos() as u64);
+
+    let stale = match ds_store.find_stale_active(threshold_ns).await {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(error = %e, "find_stale_active failed");
+            return;
+        }
+    };
+    if stale.is_empty() {
+        return;
+    }
+
+    tracing::info!(count = stale.len(), "auto-ending stale debug sessions");
+
+    for session in stale {
+        let id = match &session.id {
+            Some(id) => id.clone(),
+            None => continue,
+        };
+        let summary = format!(
+            "Auto-abandoned: no activity for {} hours. Project: {}, started_at_ns: {}.",
+            ctx.inactivity_auto_end_secs / 3600,
+            session.project_slug,
+            session.started_at,
+        );
+        let mem = daemon8_store::Memory {
+            id: None,
+            created_at: now_ns,
+            updated_at: now_ns,
+            kind: MemoryKind::SessionSummary,
+            content: summary,
+            source_observations: Vec::new(),
+            tags: vec![
+                "kind:debug_session_summary".into(),
+                format!("project:{}", session.project_slug),
+                "outcome:abandoned".into(),
+                "auto_ended:true".into(),
+            ],
+            project_slug: session.project_slug.clone(),
+            session_id: Some(id.clone()),
+            confidence: 1.0,
+            data: None,
+        };
+        let summary_id = match mem_store.save_memory(mem).await {
+            Ok(id) => id,
+            Err(e) => {
+                tracing::warn!(session = %id, error = %e, "auto-end summary save failed");
+                continue;
+            }
+        };
+        if let Err(e) = ds_store
+            .end_debug_session(
+                &id,
+                DebugSessionStatus::Abandoned,
+                Some(DebugSessionOutcome::Abandoned),
+                Some(summary_id),
+                now_ns,
+            )
+            .await
+        {
+            tracing::warn!(session = %id, error = %e, "auto-end DB update failed");
+        }
+    }
 }
 
 /// Delete screenshot files older than `SCREENSHOT_RETENTION_SECS` from the configured directory.
@@ -91,10 +205,20 @@ fn cleanup_screenshots(dir: &std::path::Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use daemon8_store::SurrealStore;
+    use daemon8_store::{
+        ActiveDebugSession, ActiveSessionState, DebugSession, MemoryFilter, SurrealStore,
+    };
     use daemon8_types::{Observation, ObservationKind, Origin, Severity};
+    use std::sync::atomic::AtomicU64;
 
     fn make_observation(timestamp_ns: u64) -> Observation {
+        make_observation_for_session(timestamp_ns, None)
+    }
+
+    fn make_observation_for_session(
+        timestamp_ns: u64,
+        debug_session_id: Option<&str>,
+    ) -> Observation {
         Observation {
             id: 0,
             timestamp_ns,
@@ -110,7 +234,7 @@ mod tests {
             tags: None,
             session_id: None,
             node_id: None,
-            debug_session_id: None,
+            debug_session_id: debug_session_id.map(Arc::from),
             checkpoint_id: None,
             error_hash: None,
         }
@@ -136,6 +260,163 @@ mod tests {
             .unwrap();
         assert_eq!(slice.observations.len(), 1);
         assert_eq!(slice.observations[0].timestamp_ns, 3_000);
+    }
+
+    fn build_ctx(store: Arc<SurrealStore>, threshold_secs: u64) -> CleanupCtx {
+        CleanupCtx {
+            store: store.clone(),
+            debug_session_store: Some(Arc::new(store.debug_session_store())),
+            memory_store: Some(Arc::new(store.memory_store())),
+            active_state: ActiveSessionState::new(),
+            inactivity_auto_end_secs: threshold_secs,
+        }
+    }
+
+    fn fresh_session(project: &str, started_at: u64) -> DebugSession {
+        DebugSession {
+            id: None,
+            started_at,
+            ended_at: None,
+            last_activity: started_at,
+            project_slug: project.into(),
+            description: None,
+            status: DebugSessionStatus::Active,
+            outcome: None,
+            summary_memory_id: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn cleanup_skips_observations_linked_to_active_debug_sessions() {
+        let store = Arc::new(SurrealStore::memory().await.unwrap());
+        let ds_store = store.debug_session_store();
+        let ctx = build_ctx(store.clone(), 4 * 3600);
+
+        let session_id = ds_store
+            .start_debug_session(fresh_session("daemon8", 1_000))
+            .await
+            .unwrap();
+
+        // One observation tied to the active session, one untied — both with
+        // very old timestamps so the cutoff would normally take both.
+        store
+            .insert(make_observation_for_session(1_000, Some(&session_id)))
+            .await
+            .unwrap();
+        store.insert(make_observation(1_000)).await.unwrap();
+
+        let deleted = ctx.store.cleanup_before(u64::MAX).await.unwrap();
+        assert_eq!(
+            deleted, 1,
+            "untied observation should be reaped; tied one must survive"
+        );
+
+        let slice = store
+            .query(&daemon8_types::Filter::default())
+            .await
+            .unwrap();
+        assert_eq!(slice.observations.len(), 1);
+        assert_eq!(
+            slice.observations[0].debug_session_id.as_deref(),
+            Some(session_id.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn cleanup_reaps_observations_after_session_ends() {
+        let store = Arc::new(SurrealStore::memory().await.unwrap());
+        let ds_store = store.debug_session_store();
+        let ctx = build_ctx(store.clone(), 4 * 3600);
+
+        let session_id = ds_store
+            .start_debug_session(fresh_session("daemon8", 1_000))
+            .await
+            .unwrap();
+        store
+            .insert(make_observation_for_session(1_000, Some(&session_id)))
+            .await
+            .unwrap();
+        ds_store
+            .end_debug_session(
+                &session_id,
+                DebugSessionStatus::Completed,
+                Some(DebugSessionOutcome::Resolved),
+                None,
+                2_000,
+            )
+            .await
+            .unwrap();
+
+        let deleted = ctx.store.cleanup_before(u64::MAX).await.unwrap();
+        assert_eq!(deleted, 1, "completed session frees its observations");
+    }
+
+    #[tokio::test]
+    async fn auto_end_writes_summary_and_marks_abandoned_for_stale_sessions() {
+        let store = Arc::new(SurrealStore::memory().await.unwrap());
+        let ds_store = store.debug_session_store();
+
+        // Threshold = 1 second; session is 10s old.
+        let ctx = build_ctx(store.clone(), 1);
+
+        let now_ns = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64;
+        let stale = ds_store
+            .start_debug_session(fresh_session("daemon8", now_ns - 10_000_000_000))
+            .await
+            .unwrap();
+        ds_store
+            .touch_debug_session(&stale, now_ns - 10_000_000_000)
+            .await
+            .unwrap();
+
+        run_cleanup_pass(&ctx, std::path::Path::new("/tmp/nonexistent")).await;
+
+        let session = ds_store.get_debug_session(&stale).await.unwrap().unwrap();
+        assert_eq!(session.status, DebugSessionStatus::Abandoned);
+        assert!(session.summary_memory_id.is_some());
+
+        let mem_store = store.memory_store();
+        let summaries = mem_store
+            .query_memory(&MemoryFilter {
+                kinds: Some(vec![MemoryKind::SessionSummary]),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert!(summaries[0].tags.contains(&"auto_ended:true".to_string()));
+    }
+
+    #[tokio::test]
+    async fn flush_pushes_in_memory_last_activity_to_db() {
+        let store = Arc::new(SurrealStore::memory().await.unwrap());
+        let ds_store = store.debug_session_store();
+        let ctx = build_ctx(store.clone(), 4 * 3600);
+
+        let session_id = ds_store
+            .start_debug_session(fresh_session("p", 1_000))
+            .await
+            .unwrap();
+
+        let active = ActiveDebugSession {
+            id: Arc::from(session_id.as_str()),
+            project_slug: Arc::from("p"),
+            started_at_ns: 1_000,
+            last_activity_ns: Arc::new(AtomicU64::new(99_999)),
+        };
+        ctx.active_state.set_session(Some(active));
+
+        flush_active_last_activity(&ctx, 0).await;
+
+        let session = ds_store
+            .get_debug_session(&session_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(session.last_activity, 99_999);
     }
 
     #[test]

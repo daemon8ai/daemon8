@@ -31,8 +31,20 @@ pub struct Config {
     pub sources: BTreeMap<String, SourceConfig>,
     #[serde(default)]
     pub setup: SetupConfig,
+    #[serde(default)]
+    pub debug_session: DebugSessionConfig,
     #[serde(skip)]
     pub config_dir: PathBuf,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DebugSessionConfig {
+    /// How long an active debug session may go without activity before the
+    /// daemon auto-ends it (writes a thin SessionSummary, marks as
+    /// abandoned). None falls back to `cleanup::DEFAULT_INACTIVITY_AUTO_END_SECS`.
+    #[serde(default)]
+    pub inactivity_auto_end_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -278,6 +290,7 @@ impl Default for Config {
             logging: LoggingConfig::default(),
             sources: BTreeMap::new(),
             setup: SetupConfig::default(),
+            debug_session: DebugSessionConfig::default(),
             config_dir: project_dirs()
                 .map(|d| d.config_dir().to_path_buf())
                 .unwrap_or_else(|| PathBuf::from(".")),

@@ -92,7 +92,16 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
     let screenshot_dir = config::resolve_screenshot_path(&cfg);
     crate::cleanup::spawn_cleanup_task(
         &mut tasks,
-        store.clone(),
+        crate::cleanup::CleanupCtx {
+            store: store.clone(),
+            debug_session_store: Some(debug_session_store.clone()),
+            memory_store: Some(memory_store.clone()),
+            active_state: active_state.clone(),
+            inactivity_auto_end_secs: cfg
+                .debug_session
+                .inactivity_auto_end_secs
+                .unwrap_or(crate::cleanup::DEFAULT_INACTIVITY_AUTO_END_SECS),
+        },
         screenshot_dir.clone(),
         cancel.clone(),
     );
