@@ -9,7 +9,7 @@ use daemon8_store::SurrealStore;
 use daemon8_types::Filter;
 use tokio_util::sync::CancellationToken;
 
-const EXPECTED_TOOLS: [&str; 17] = [
+const EXPECTED_TOOLS: [&str; 18] = [
     "query_observations",
     "status",
     "create_checkpoint",
@@ -27,6 +27,7 @@ const EXPECTED_TOOLS: [&str; 17] = [
     "setup_status",
     "setup_plan",
     "setup_apply",
+    "daemon8_help",
 ];
 
 /// Tool names that must never appear in the live MCP surface. Includes both

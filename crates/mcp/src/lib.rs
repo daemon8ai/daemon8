@@ -357,6 +357,14 @@ pub struct ForgetMemoryParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct HelpParams {
+    #[schemars(
+        description = "Help topic: index, debug_session, checkpoint, setup, hooks, lens, memory, observations, envelope. Omit for index."
+    )]
+    pub topic: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct CreateCheckpointParams {
     #[schemars(
         description = "Optional human-readable note about why this checkpoint exists (e.g. \"before applying retry patch\")."
@@ -704,6 +712,46 @@ impl DaemonMcp {
             },
             Err(e) => self.err("summary_failed", &e.to_string(), None, None),
         }
+    }
+
+    #[tool(
+        name = "daemon8_help",
+        description = "Narrative documentation for daemon8 protocols. Pass topic='index' (or omit) for the topic list. Returns markdown."
+    )]
+    async fn daemon8_help(&self, Parameters(params): Parameters<HelpParams>) -> String {
+        let topic = params.topic.as_deref().unwrap_or("index");
+        let body = match topic {
+            "index" => include_str!("../tool_descriptions/help/index.md"),
+            "debug_session" => include_str!("../tool_descriptions/help/debug_session.md"),
+            "checkpoint" => include_str!("../tool_descriptions/help/checkpoint.md"),
+            "setup" => include_str!("../tool_descriptions/help/setup.md"),
+            "hooks" => include_str!("../tool_descriptions/help/hooks.md"),
+            "lens" => include_str!("../tool_descriptions/help/lens.md"),
+            "memory" => include_str!("../tool_descriptions/help/memory.md"),
+            "observations" => include_str!("../tool_descriptions/help/observations.md"),
+            "envelope" => include_str!("../tool_descriptions/help/envelope.md"),
+            _ => include_str!("../tool_descriptions/help/index.md"),
+        };
+        let topic_returned = if topic == "index"
+            || matches!(
+                topic,
+                "debug_session"
+                    | "checkpoint"
+                    | "setup"
+                    | "hooks"
+                    | "lens"
+                    | "memory"
+                    | "observations"
+                    | "envelope"
+            ) {
+            topic.to_string()
+        } else {
+            "index".to_string()
+        };
+        self.ok(serde_json::json!({
+            "topic": topic_returned,
+            "body": body,
+        }))
     }
 
     #[doc = include_str!("../tool_descriptions/create_checkpoint.txt")]
