@@ -194,6 +194,10 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
         })
     });
 
+    let hooks_tool_fn: daemon8_mcp::HooksToolFn = Arc::new(move |action| {
+        Box::pin(async move { crate::cli::hooks::cmd_hooks_mcp(action).await })
+    });
+
     // Only start MCP stdio when stdin is a real FIFO from an MCP client.
     // A plain "not a TTY" check is insufficient: launchd, nohup, and shell
     // backgrounding all attach /dev/null (a character device) to stdin.
@@ -219,6 +223,7 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
             broadcast_tx: broadcast_tx.clone(),
             lens,
             setup_tool_fn: Some(setup_tool_fn.clone()),
+            hooks_tool_fn: Some(hooks_tool_fn.clone()),
             cancel: cancel.clone(),
         });
         let cancel_on_eof = cancel.clone();
@@ -277,6 +282,7 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
                     mcp_broadcast_tx.subscribe(),
                 )),
                 setup_tool_fn: Some(setup_tool_fn.clone()),
+                hooks_tool_fn: Some(hooks_tool_fn.clone()),
                 cancel: mcp_root_cancel.clone(),
             }))
         },

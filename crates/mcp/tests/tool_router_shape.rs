@@ -90,6 +90,7 @@ async fn make_mcp_with_cancel(cancel: CancellationToken) -> DaemonMcp {
                 .unwrap()
             })
         })),
+        hooks_tool_fn: None,
         cancel,
     })
 }

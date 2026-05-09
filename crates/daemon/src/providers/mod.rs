@@ -2,10 +2,15 @@
 // Copyright (c) 2026 Havy.tech, LLC
 
 pub mod config;
+pub mod hook_management;
 pub mod hooks;
 
 pub use config::write_provider_config;
-pub use hooks::{install_claude_hooks, install_codex_hooks};
+pub use hooks::{
+    InstalledHookEntry, install_claude_hooks, install_codex_hooks, list_claude_hooks,
+    list_codex_hooks, remove_claude_hooks, remove_codex_hooks, update_claude_hooks,
+    update_codex_hooks,
+};
 
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};

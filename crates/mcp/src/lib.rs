@@ -444,6 +444,19 @@ pub struct SetupApplyParams {
 pub type SetupToolFn =
     Arc<dyn Fn(SetupToolAction) -> Pin<Box<dyn Future<Output = String> + Send>> + Send + Sync>;
 
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct HooksToolAction {
+    #[schemars(description = "Action: list, remove, update, repair.")]
+    pub action: String,
+    #[schemars(description = "Provider for remove/update: claude or codex.")]
+    pub provider: Option<String>,
+    #[schemars(description = "Scope for remove/update (claude only): local, shared, or global.")]
+    pub scope: Option<String>,
+}
+
+pub type HooksToolFn =
+    Arc<dyn Fn(HooksToolAction) -> Pin<Box<dyn Future<Output = String> + Send>> + Send + Sync>;
+
 pub struct DaemonMcp {
     store: Arc<dyn StateModel>,
     memory_store: Option<Arc<dyn MemoryStore>>,
@@ -463,6 +476,7 @@ pub struct DaemonMcp {
     broadcast_tx: broadcast::Sender<(Arc<Observation>, Arc<str>)>,
     lens: Arc<LensManager>,
     setup_tool_fn: Option<SetupToolFn>,
+    hooks_tool_fn: Option<HooksToolFn>,
     /// Parent cancellation token. The push task spawned in `on_initialized`
     /// uses a child token so daemon shutdown propagates cleanly.
     cancel: tokio_util::sync::CancellationToken,
@@ -483,6 +497,7 @@ pub struct DaemonMcpConfig {
     pub broadcast_tx: broadcast::Sender<(Arc<Observation>, Arc<str>)>,
     pub lens: Arc<LensManager>,
     pub setup_tool_fn: Option<SetupToolFn>,
+    pub hooks_tool_fn: Option<HooksToolFn>,
     /// Parent cancellation token. Use the daemon-wide token; the MCP push task
     /// derives a child from it so daemon shutdown stops per-session work.
     pub cancel: tokio_util::sync::CancellationToken,
@@ -503,6 +518,9 @@ impl DaemonMcp {
         if cfg.setup_tool_fn.is_some() {
             router += Self::setup_tool_router();
         }
+        if cfg.hooks_tool_fn.is_some() {
+            router += Self::hooks_tool_router();
+        }
         let (subscription_tx, _) = tokio::sync::watch::channel::<Option<Filter>>(None);
         Self {
             store: cfg.store,
@@ -520,6 +538,7 @@ impl DaemonMcp {
             broadcast_tx: cfg.broadcast_tx,
             lens: cfg.lens,
             setup_tool_fn: cfg.setup_tool_fn,
+            hooks_tool_fn: cfg.hooks_tool_fn,
             cancel: cfg.cancel,
             tool_router: router,
         }
@@ -1262,12 +1281,66 @@ impl DaemonMcp {
     }
 }
 
+#[tool_router(router = hooks_tool_router, vis = "pub")]
+impl DaemonMcp {
+    #[doc = include_str!("../tool_descriptions/hooks_list.txt")]
+    #[tool(name = "hooks_list")]
+    async fn hooks_list(&self) -> String {
+        self.call_hooks_tool(HooksToolAction {
+            action: "list".into(),
+            provider: None,
+            scope: None,
+        })
+        .await
+    }
+
+    #[doc = include_str!("../tool_descriptions/hooks_remove.txt")]
+    #[tool(name = "hooks_remove")]
+    async fn hooks_remove(&self, Parameters(params): Parameters<HooksToolAction>) -> String {
+        self.call_hooks_tool(HooksToolAction {
+            action: "remove".into(),
+            provider: params.provider,
+            scope: params.scope,
+        })
+        .await
+    }
+
+    #[doc = include_str!("../tool_descriptions/hooks_update.txt")]
+    #[tool(name = "hooks_update")]
+    async fn hooks_update(&self, Parameters(params): Parameters<HooksToolAction>) -> String {
+        self.call_hooks_tool(HooksToolAction {
+            action: "update".into(),
+            provider: params.provider,
+            scope: params.scope,
+        })
+        .await
+    }
+
+    #[doc = include_str!("../tool_descriptions/hooks_repair.txt")]
+    #[tool(name = "hooks_repair")]
+    async fn hooks_repair(&self) -> String {
+        self.call_hooks_tool(HooksToolAction {
+            action: "repair".into(),
+            provider: None,
+            scope: None,
+        })
+        .await
+    }
+}
+
 // Command handler implementations (inner methods, not registered with tool_router).
 impl DaemonMcp {
     async fn call_setup_tool(&self, action: SetupToolAction) -> String {
         match &self.setup_tool_fn {
             Some(f) => f(action).await,
             None => error_json("setup tools not available"),
+        }
+    }
+
+    async fn call_hooks_tool(&self, action: HooksToolAction) -> String {
+        match &self.hooks_tool_fn {
+            Some(f) => f(action).await,
+            None => error_json("hooks tools not available"),
         }
     }
 
@@ -2115,6 +2188,7 @@ mod logging_tests {
             broadcast_tx,
             lens,
             setup_tool_fn: None,
+            hooks_tool_fn: None,
             cancel: tokio_util::sync::CancellationToken::new(),
         })
     }

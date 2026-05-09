@@ -85,6 +85,9 @@ enum Commands {
     CliHook(cli::hook_handler::CliHookArgs),
     /// Initialize a `.daemon8.toml` at the current project
     Init(cli::init::InitArgs),
+    /// Manage daemon8 CLI hooks across providers (Claude Code, Codex)
+    #[command(subcommand)]
+    Hooks(cli::hooks::HooksSubcommand),
 }
 
 #[tokio::main]
@@ -131,6 +134,7 @@ async fn main() -> Result<()> {
         Commands::Doctor { fix } => cli::doctor::cmd_doctor(cli.config, fix).await,
         Commands::CliHook(args) => cli::hook_handler::cmd_cli_hook(args),
         Commands::Init(args) => cli::init::cmd_init(args),
+        Commands::Hooks(sub) => cli::hooks::cmd_hooks(sub).await,
     }
 }
 
