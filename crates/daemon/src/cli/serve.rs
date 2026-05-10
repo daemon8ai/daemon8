@@ -175,15 +175,23 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
         );
     }
 
-    if !cfg.sources.is_empty() {
-        tracing::info!(count = cfg.sources.len(), "starting file sources");
-        crate::sources::spawn_file_sources(
-            &mut tasks,
-            &cfg.sources,
-            obs_tx.clone(),
-            cancel.clone(),
-        );
-    }
+    let source_activator: Option<Arc<dyn daemon8_types::SourceActivator>> =
+        if !cfg.sources.is_empty() {
+            tracing::info!(
+                count = cfg.sources.len(),
+                "registering file sources (lazy activation)"
+            );
+            let mgr = crate::sources::SourceManager::new(
+                cfg.sources.clone(),
+                obs_tx.clone(),
+                cfg.source_config.idle_ttl_secs,
+            );
+            let activator: Arc<dyn daemon8_types::SourceActivator> = Arc::new(mgr.clone());
+            mgr.spawn_reaper_task(&mut tasks, cancel.clone());
+            Some(activator)
+        } else {
+            None
+        };
 
     let setup_tool_fn: daemon8_mcp::SetupToolFn = Arc::new(move |action| {
         let setup_config_path = setup_config_path.clone();
@@ -206,7 +214,10 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
     if stdin_is_pipe {
         use rmcp::ServiceExt;
 
-        let lens = Arc::new(daemon8_store::LensManager::new(broadcast_tx.subscribe()));
+        let lens = Arc::new(daemon8_store::LensManager::new(
+            broadcast_tx.subscribe(),
+            source_activator.clone(),
+        ));
         let mcp = daemon8_mcp::DaemonMcp::new(daemon8_mcp::DaemonMcpConfig {
             store: store.clone(),
             memory_store: Some(memory_store.clone()),
@@ -222,6 +233,7 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
             setup_tool_fn: Some(setup_tool_fn.clone()),
             hooks_tool_fn: Some(hooks_tool_fn.clone()),
             cancel: cancel.clone(),
+            source_activator: source_activator.clone(),
         });
         let cancel_on_eof = cancel.clone();
         tasks.spawn(async move {
@@ -253,6 +265,7 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
     let mcp_screenshot_fn = device_screenshot_fn.clone();
     let mcp_screenshot_dir = screenshot_dir.clone();
     let mcp_broadcast_tx = broadcast_tx.clone();
+    let mcp_source_activator = source_activator.clone();
     let mcp_cancel = cancel.child_token();
     // Daemon-wide cancel cloned into the per-session factory closure. Each
     // `DaemonMcp` then derives its own child token for the push task in
@@ -275,10 +288,12 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
                 broadcast_tx: mcp_broadcast_tx.clone(),
                 lens: Arc::new(daemon8_store::LensManager::new(
                     mcp_broadcast_tx.subscribe(),
+                    mcp_source_activator.clone(),
                 )),
                 setup_tool_fn: Some(setup_tool_fn.clone()),
                 hooks_tool_fn: Some(hooks_tool_fn.clone()),
                 cancel: mcp_root_cancel.clone(),
+                source_activator: mcp_source_activator.clone(),
             }))
         },
         Arc::new({
@@ -291,7 +306,10 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
             .with_cancellation_token(mcp_cancel),
     );
 
-    let api_lens = Arc::new(daemon8_store::LensManager::new(broadcast_tx.subscribe()));
+    let api_lens = Arc::new(daemon8_store::LensManager::new(
+        broadcast_tx.subscribe(),
+        source_activator.clone(),
+    ));
     let api_state = daemon8_api::ApiState {
         store: store.clone(),
         stream_tx: broadcast_tx.clone(),
@@ -300,6 +318,7 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
         chrome_endpoint: chrome_endpoint.clone(),
         lens: api_lens,
         memory_store: Some(memory_store.clone()),
+        source_activator: source_activator.clone(),
     };
     let port = cfg.server.port;
     let app = daemon8_ingest::ingest_router(obs_tx.clone())

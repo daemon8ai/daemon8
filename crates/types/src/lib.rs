@@ -218,6 +218,10 @@ impl ObservationKindTag {
     }
 }
 
+pub trait SourceActivator: Send + Sync {
+    fn touch_matching(&self, filter: &Filter);
+}
+
 impl fmt::Display for ObservationKindTag {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {

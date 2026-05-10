@@ -68,7 +68,10 @@ async fn make_mcp_with_cancel(cancel: CancellationToken) -> DaemonMcp {
     let (chrome_tx, _) = tokio::sync::mpsc::channel(16);
     let (_, chrome_state_rx) = tokio::sync::watch::channel(ConnectionState::Disconnected);
     let (broadcast_tx, _) = tokio::sync::broadcast::channel(16);
-    let lens = Arc::new(daemon8_store::LensManager::new(broadcast_tx.subscribe()));
+    let lens = Arc::new(daemon8_store::LensManager::new(
+        broadcast_tx.subscribe(),
+        None,
+    ));
     DaemonMcp::new(DaemonMcpConfig {
         store,
         memory_store: Some(Arc::new(memory_store)),
@@ -91,6 +94,7 @@ async fn make_mcp_with_cancel(cancel: CancellationToken) -> DaemonMcp {
             })
         })),
         hooks_tool_fn: None,
+        source_activator: None,
         cancel,
     })
 }

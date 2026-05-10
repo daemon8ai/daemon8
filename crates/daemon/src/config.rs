@@ -33,6 +33,8 @@ pub struct Config {
     pub setup: SetupConfig,
     #[serde(default)]
     pub debug_session: DebugSessionConfig,
+    #[serde(default)]
+    pub source_config: SourceManagerConfig,
     #[serde(skip)]
     pub config_dir: PathBuf,
 }
@@ -231,6 +233,25 @@ pub enum HookPolicy {
     Manual,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceManagerConfig {
+    #[serde(default = "default_idle_ttl_secs")]
+    pub idle_ttl_secs: u64,
+}
+
+impl Default for SourceManagerConfig {
+    fn default() -> Self {
+        Self {
+            idle_ttl_secs: default_idle_ttl_secs(),
+        }
+    }
+}
+
+fn default_idle_ttl_secs() -> u64 {
+    900
+}
+
 fn default_line_parser() -> String {
     "line".into()
 }
@@ -291,6 +312,7 @@ impl Default for Config {
             sources: BTreeMap::new(),
             setup: SetupConfig::default(),
             debug_session: DebugSessionConfig::default(),
+            source_config: SourceManagerConfig::default(),
             config_dir: project_dirs()
                 .map(|d| d.config_dir().to_path_buf())
                 .unwrap_or_else(|| PathBuf::from(".")),
@@ -417,6 +439,7 @@ fn is_config_env_key(key: &str) -> bool {
             | "ingestion"
             | "logging"
             | "sources"
+            | "source_config"
             | "setup"
     )
 }

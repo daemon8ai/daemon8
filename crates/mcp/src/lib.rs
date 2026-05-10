@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use daemon8_store::{ActiveSessionState, DebugSessionStore, LensManager, MemoryStore, StateModel};
-use daemon8_types::{Checkpoint, DevicePlatform, Filter, Observation};
+use daemon8_types::{Checkpoint, DevicePlatform, Filter, Observation, SourceActivator};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{Implementation, ServerCapabilities, ServerInfo, Tool};
@@ -500,6 +500,7 @@ pub struct DaemonMcp {
     lens: Arc<LensManager>,
     setup_tool_fn: Option<SetupToolFn>,
     hooks_tool_fn: Option<HooksToolFn>,
+    source_activator: Option<Arc<dyn SourceActivator>>,
     /// Parent cancellation token. The push task spawned in `on_initialized`
     /// uses a child token so daemon shutdown propagates cleanly.
     cancel: tokio_util::sync::CancellationToken,
@@ -520,6 +521,7 @@ pub struct DaemonMcpConfig {
     pub lens: Arc<LensManager>,
     pub setup_tool_fn: Option<SetupToolFn>,
     pub hooks_tool_fn: Option<HooksToolFn>,
+    pub source_activator: Option<Arc<dyn SourceActivator>>,
     /// Parent cancellation token. Use the daemon-wide token; the MCP push task
     /// derives a child from it so daemon shutdown stops per-session work.
     pub cancel: tokio_util::sync::CancellationToken,
@@ -561,6 +563,7 @@ impl DaemonMcp {
             lens: cfg.lens,
             setup_tool_fn: cfg.setup_tool_fn,
             hooks_tool_fn: cfg.hooks_tool_fn,
+            source_activator: cfg.source_activator,
             cancel: cfg.cancel,
             tool_router: router,
         }
@@ -682,6 +685,10 @@ impl DaemonMcp {
             tags: params.tags,
             include_system: params.include_system,
         };
+
+        if let Some(ref sa) = self.source_activator {
+            sa.touch_matching(&filter);
+        }
 
         match self.store.query(&filter).await {
             Ok(slice) => {
@@ -934,6 +941,10 @@ impl DaemonMcp {
             include_system: params.include_system,
         };
 
+        if let Some(ref sa) = self.source_activator {
+            sa.touch_matching(&filter);
+        }
+
         let is_default = filter.kinds.is_none()
             && filter.severity_min.is_none()
             && filter.origins.is_none()
@@ -990,6 +1001,9 @@ impl DaemonMcp {
             include_system: None,
         };
 
+        if let Some(ref sa) = self.source_activator {
+            sa.touch_matching(&filter);
+        }
         let capacity = params.capacity.unwrap_or(200).min(1000);
         self.lens.set_with_capacity(filter, capacity).await;
 
@@ -2220,6 +2234,7 @@ impl ServerHandler for DaemonMcp {
         let peer = context.peer;
         let mut rx = self.broadcast_tx.subscribe();
         let sub_rx = self.subscription_tx.subscribe();
+        let push_source_activator = self.source_activator.clone();
         let session_cancel = self.cancel.child_token();
         let span = tracing::info_span!("mcp_session", session_id = %session_id);
 
@@ -2254,6 +2269,10 @@ impl ServerHandler for DaemonMcp {
 
                 if !should_push {
                     continue;
+                }
+
+                if let (Some(f), Some(sa)) = (&filter, &push_source_activator) {
+                    sa.touch_matching(f);
                 }
 
                 if last_push.elapsed() < Duration::from_secs(1) {
@@ -2527,7 +2546,7 @@ mod logging_tests {
         let (_, chrome_state) =
             tokio::sync::watch::channel(daemon8_chrome::ConnectionState::Disconnected);
         let (broadcast_tx, _broadcast_rx) = broadcast::channel(8);
-        let lens = Arc::new(LensManager::new(broadcast_tx.subscribe()));
+        let lens = Arc::new(LensManager::new(broadcast_tx.subscribe(), None));
         DaemonMcp::new(DaemonMcpConfig {
             store: store.clone(),
             memory_store: Some(memory_store),
@@ -2542,6 +2561,7 @@ mod logging_tests {
             lens,
             setup_tool_fn: None,
             hooks_tool_fn: None,
+            source_activator: None,
             cancel: tokio_util::sync::CancellationToken::new(),
         })
     }
@@ -2826,7 +2846,7 @@ mod logging_tests {
             let (_, chrome_state) =
                 tokio::sync::watch::channel(daemon8_chrome::ConnectionState::Disconnected);
             let (broadcast_tx, _broadcast_rx) = broadcast::channel(8);
-            let lens = Arc::new(LensManager::new(broadcast_tx.subscribe()));
+            let lens = Arc::new(LensManager::new(broadcast_tx.subscribe(), None));
             DaemonMcp::new(DaemonMcpConfig {
                 store: shared_store.clone(),
                 memory_store: Some(shared_mem.clone()),
@@ -2841,6 +2861,7 @@ mod logging_tests {
                 lens,
                 setup_tool_fn: None,
                 hooks_tool_fn: None,
+                source_activator: None,
                 cancel: tokio_util::sync::CancellationToken::new(),
             })
         };
