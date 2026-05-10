@@ -378,6 +378,14 @@ pub struct StartDebugSessionParams {
     pub project: Option<String>,
     #[schemars(description = "One-line description of what is being investigated.")]
     pub description: Option<String>,
+    #[schemars(
+        description = "Required. Agent identity in format :host/tool+role> (e.g. :mbp/claude+plan-agent>). Identifies who is running this investigation."
+    )]
+    pub agent_id: String,
+    #[schemars(
+        description = "Optional. Feature being investigated (e.g. 'auth', 'search'). Used by other agents to discover overlapping work."
+    )]
+    pub feature: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -408,6 +416,10 @@ pub struct ResolveDebugSessionParams {
 pub struct ListDebugSessionsParams {
     #[schemars(description = "Filter by status: active, completed, abandoned. Omit for all.")]
     pub status: Option<String>,
+    #[schemars(
+        description = "Optional. Filter by feature name (e.g. 'auth', 'search'). Returns only sessions investigating that feature."
+    )]
+    pub feature: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -498,7 +510,6 @@ pub struct DaemonMcpConfig {
     pub store: Arc<dyn StateModel>,
     pub memory_store: Option<Arc<dyn MemoryStore>>,
     pub debug_session_store: Option<Arc<dyn DebugSessionStore>>,
-    pub active_state: ActiveSessionState,
     pub obs_tx: tokio::sync::mpsc::UnboundedSender<Observation>,
     pub chrome_tx: tokio::sync::mpsc::Sender<ChromeCommand>,
     pub chrome_state: tokio::sync::watch::Receiver<daemon8_chrome::ConnectionState>,
@@ -537,7 +548,7 @@ impl DaemonMcp {
             store: cfg.store,
             memory_store: cfg.memory_store,
             debug_session_store: cfg.debug_session_store,
-            active_state: cfg.active_state,
+            active_state: ActiveSessionState::new(),
             obs_tx: cfg.obs_tx,
             chrome_tx: cfg.chrome_tx,
             chrome_state: cfg.chrome_state,
@@ -859,7 +870,28 @@ impl DaemonMcp {
         }
         body.insert("data".into(), params.data);
 
-        let obs = daemon8_ingest::normalize::normalize(serde_json::Value::Object(body));
+        let mut obs = daemon8_ingest::normalize::normalize(serde_json::Value::Object(body));
+
+        // Stamp per-session debug-session and checkpoint links. Each DaemonMcp
+        // instance owns its own ActiveSessionState, so concurrent MCP sessions
+        // do not interfere with each other's observation stamping.
+        if let Some(ref session) = self.active_state.current_session() {
+            obs.debug_session_id = Some(session.id.clone());
+            let slug_tag = format!("project:{}", session.project_slug);
+            obs.tags = Some(match obs.tags {
+                Some(mut existing) => {
+                    if !existing.contains(&slug_tag) {
+                        existing.push(slug_tag);
+                    }
+                    existing
+                }
+                None => vec![slug_tag],
+            });
+        }
+        if let Some(cp) = self.active_state.current_checkpoint() {
+            obs.checkpoint_id = Some(cp);
+        }
+
         if let Err(e) = self.obs_tx.send(obs) {
             tracing::warn!(
                 origin = ?e.0.origin,
@@ -1087,6 +1119,36 @@ fn check_forget_memory_confirm(confirm: Option<bool>) -> Result<(), String> {
     }
 }
 
+/// Validate agent_id against the `:host/tool+role>` convention.
+/// All lowercase, bounded by `:` prefix and `>` suffix, `/` separates host from tool,
+/// `+` separates tool from role. Max 64 chars total.
+fn validate_agent_id(id: &str) -> Result<(), String> {
+    if id.len() > 64 {
+        return Err("agent_id must be at most 64 characters".into());
+    }
+    let body = id
+        .strip_prefix(':')
+        .and_then(|s| s.strip_suffix('>'))
+        .ok_or("agent_id must start with ':' and end with '>'")?;
+    let (host_rest, role) = body
+        .split_once('+')
+        .ok_or("agent_id must contain '+' separating tool from role")?;
+    let (host, tool) = host_rest
+        .split_once('/')
+        .ok_or("agent_id must contain '/' separating host from tool")?;
+    if host.is_empty() || tool.is_empty() || role.is_empty() {
+        return Err("host, tool, and role must be non-empty".into());
+    }
+    let valid_segment = |s: &str| {
+        s.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    };
+    if !valid_segment(host) || !valid_segment(tool) || !valid_segment(role) {
+        return Err("agent_id segments must be lowercase alphanumeric with hyphens only".into());
+    }
+    Ok(())
+}
+
 #[tool_router(router = debug_session_tool_router, vis = "pub")]
 impl DaemonMcp {
     #[doc = include_str!("../tool_descriptions/start_debug_session.txt")]
@@ -1116,6 +1178,14 @@ impl DaemonMcp {
                 Some("end_debug_session"),
             );
         }
+        if let Err(msg) = validate_agent_id(&params.agent_id) {
+            return self.err(
+                "invalid_agent_id",
+                &msg,
+                Some("agent_id format: :host/tool+role> (e.g. :mbp/claude+plan-agent>)"),
+                None,
+            );
+        }
         let now = current_ns();
         let session = daemon8_store::DebugSession {
             id: None,
@@ -1127,6 +1197,8 @@ impl DaemonMcp {
             status: daemon8_types::DebugSessionStatus::Active,
             outcome: None,
             summary_memory_id: None,
+            agent_id: params.agent_id.clone(),
+            feature: params.feature.clone(),
         };
         match ds_store.start_debug_session(session.clone()).await {
             Ok(id) => {
@@ -1136,6 +1208,8 @@ impl DaemonMcp {
                         project_slug: Arc::from(session.project_slug.as_str()),
                         started_at_ns: now,
                         last_activity_ns: Arc::new(AtomicU64::new(now)),
+                        agent_id: Arc::from(params.agent_id.as_str()),
+                        feature: params.feature.as_deref().map(Arc::from),
                     }));
                 self.ok_with(
                     serde_json::json!({
@@ -1199,10 +1273,15 @@ impl DaemonMcp {
             None => None,
         };
         match ds_store.list_debug_sessions(status).await {
-            Ok(sessions) => self.ok(serde_json::json!({
-                "count": sessions.len(),
-                "sessions": sessions,
-            })),
+            Ok(mut sessions) => {
+                if let Some(ref feat) = params.feature {
+                    sessions.retain(|s| s.feature.as_deref() == Some(feat.as_str()));
+                }
+                self.ok(serde_json::json!({
+                    "count": sessions.len(),
+                    "sessions": sessions,
+                }))
+            }
             Err(e) => self.err("list_debug_sessions_failed", &e.to_string(), None, None),
         }
     }
@@ -2217,6 +2296,36 @@ impl ServerHandler for DaemonMcp {
             tracing::debug!("MCP observation push task ended");
         }
         .instrument(span));
+
+        // Per-session debug session flush: periodically writes the in-memory
+        // last_activity to the DB so the cleanup task's find_stale_active
+        // sees current data. Each MCP session flushes its own active session.
+        if let Some(ds_store) = self.debug_session_store.clone() {
+            let flush_state = self.active_state.clone();
+            let flush_cancel = self.cancel.child_token();
+            tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        () = tokio::time::sleep(Duration::from_secs(60)) => {}
+                        () = flush_cancel.cancelled() => break,
+                    }
+                    if let Some(session) = flush_state.current_session() {
+                        let last = session.last_activity();
+                        if let Err(e) = ds_store
+                            .touch_debug_session(session.id.as_ref(), last)
+                            .await
+                        {
+                            tracing::warn!(
+                                session_id = %session.id,
+                                error = %e,
+                                "per-session debug session flush failed"
+                            );
+                        }
+                    }
+                }
+                tracing::debug!("per-session debug session flush task ended");
+            });
+        }
     }
 
     async fn list_tools(
@@ -2413,7 +2522,6 @@ mod logging_tests {
         let store = Arc::new(daemon8_store::SurrealStore::memory().await.unwrap());
         let memory_store: Arc<dyn MemoryStore> = Arc::new(store.memory_store());
         let debug_session_store: Arc<dyn DebugSessionStore> = Arc::new(store.debug_session_store());
-        let active_state = ActiveSessionState::new();
         let (obs_tx, _obs_rx) = tokio::sync::mpsc::unbounded_channel();
         let (chrome_tx, _chrome_rx) = tokio::sync::mpsc::channel(8);
         let (_, chrome_state) =
@@ -2424,7 +2532,6 @@ mod logging_tests {
             store: store.clone(),
             memory_store: Some(memory_store),
             debug_session_store: Some(debug_session_store),
-            active_state,
             obs_tx,
             chrome_tx,
             chrome_state,
@@ -2448,6 +2555,8 @@ mod logging_tests {
             .start_debug_session(Parameters(StartDebugSessionParams {
                 project: Some("daemon8".into()),
                 description: Some("flaky login test".into()),
+                agent_id: ":test/claude+plan-agent>".into(),
+                feature: None,
             }))
             .await;
         let started: serde_json::Value = serde_json::from_str(&start_res).unwrap();
@@ -2510,12 +2619,16 @@ mod logging_tests {
             .start_debug_session(Parameters(StartDebugSessionParams {
                 project: None,
                 description: None,
+                agent_id: ":test/claude+plan-agent>".into(),
+                feature: None,
             }))
             .await;
         let second = mcp
             .start_debug_session(Parameters(StartDebugSessionParams {
                 project: None,
                 description: None,
+                agent_id: ":test/claude+plan-agent>".into(),
+                feature: None,
             }))
             .await;
         assert!(
@@ -2543,6 +2656,8 @@ mod logging_tests {
             .start_debug_session(Parameters(StartDebugSessionParams {
                 project: Some("daemon8".into()),
                 description: None,
+                agent_id: ":test/claude+plan-agent>".into(),
+                feature: None,
             }))
             .await;
         let res = mcp
@@ -2584,6 +2699,8 @@ mod logging_tests {
             .start_debug_session(Parameters(StartDebugSessionParams {
                 project: Some("p".into()),
                 description: None,
+                agent_id: ":test/claude+plan-agent>".into(),
+                feature: None,
             }))
             .await;
         let _ = mcp
@@ -2601,19 +2718,25 @@ mod logging_tests {
             .start_debug_session(Parameters(StartDebugSessionParams {
                 project: Some("p".into()),
                 description: None,
+                agent_id: ":test/claude+plan-agent>".into(),
+                feature: None,
             }))
             .await;
 
         let active_only = mcp
             .list_debug_sessions(Parameters(ListDebugSessionsParams {
                 status: Some("active".into()),
+                feature: None,
             }))
             .await;
         let parsed: serde_json::Value = serde_json::from_str(&active_only).unwrap();
         assert_eq!(parsed["result"]["count"], 1);
 
         let all = mcp
-            .list_debug_sessions(Parameters(ListDebugSessionsParams { status: None }))
+            .list_debug_sessions(Parameters(ListDebugSessionsParams {
+                status: None,
+                feature: None,
+            }))
             .await;
         let parsed: serde_json::Value = serde_json::from_str(&all).unwrap();
         assert_eq!(parsed["result"]["count"], 2);
@@ -2673,5 +2796,389 @@ mod logging_tests {
         assert_eq!(param.data["kind"], "log");
         assert_eq!(param.data["origin"], "app:test-app");
         assert_eq!(param.data["observation_id"], 42);
+    }
+
+    // ── B4: Multi-session + agent ID tests ──────────────────────────
+
+    /// Two MCP instances from a shared SurrealDB store — each gets its own
+    /// ActiveSessionState (created internally by DaemonMcp::new), so they
+    /// do not interfere with each other's debug sessions.
+    async fn build_shared_mcps() -> (DaemonMcp, DaemonMcp) {
+        let shared_store = Arc::new(daemon8_store::SurrealStore::memory().await.unwrap());
+        let shared_mem: Arc<dyn MemoryStore> = Arc::new(shared_store.memory_store());
+        let shared_ds: Arc<dyn DebugSessionStore> = Arc::new(shared_store.debug_session_store());
+
+        // Keep receivers alive so observations sent via ingest_observation
+        // actually reach the store through the drain tasks.
+        let (shared_obs_tx, mut shared_obs_rx) = tokio::sync::mpsc::unbounded_channel();
+
+        // Drain task: reads from the shared channel and inserts into the store.
+        // Tokio drops the spawned task when the test runtime shuts down.
+        let drain_store = shared_store.clone();
+        tokio::spawn(async move {
+            while let Some(obs) = shared_obs_rx.recv().await {
+                let _ = drain_store.insert(obs).await;
+            }
+        });
+
+        let make = || {
+            let (chrome_tx, _chrome_rx) = tokio::sync::mpsc::channel(8);
+            let (_, chrome_state) =
+                tokio::sync::watch::channel(daemon8_chrome::ConnectionState::Disconnected);
+            let (broadcast_tx, _broadcast_rx) = broadcast::channel(8);
+            let lens = Arc::new(LensManager::new(broadcast_tx.subscribe()));
+            DaemonMcp::new(DaemonMcpConfig {
+                store: shared_store.clone(),
+                memory_store: Some(shared_mem.clone()),
+                debug_session_store: Some(shared_ds.clone()),
+                obs_tx: shared_obs_tx.clone(),
+                chrome_tx,
+                chrome_state,
+                chrome_endpoint: Arc::new(Mutex::new(None)),
+                device_screenshot_fn: None,
+                screenshot_dir: std::env::temp_dir().join("daemon8-test"),
+                broadcast_tx,
+                lens,
+                setup_tool_fn: None,
+                hooks_tool_fn: None,
+                cancel: tokio_util::sync::CancellationToken::new(),
+            })
+        };
+
+        (make(), make())
+    }
+
+    #[tokio::test]
+    async fn multi_session_two_agents_non_conflicting() {
+        let (a, b) = build_shared_mcps().await;
+
+        let a_start = a
+            .start_debug_session(Parameters(StartDebugSessionParams {
+                project: Some("daemon8".into()),
+                description: Some("agent A investigating auth".into()),
+                agent_id: ":test/claude+plan-agent>".into(),
+                feature: Some("auth".into()),
+            }))
+            .await;
+        let a_parsed: serde_json::Value = serde_json::from_str(&a_start).unwrap();
+        assert!(
+            a_parsed["result"]["debug_session_id"].is_string(),
+            "agent A must start successfully: {a_start}"
+        );
+
+        let b_start = b
+            .start_debug_session(Parameters(StartDebugSessionParams {
+                project: Some("daemon8".into()),
+                description: Some("agent B investigating search".into()),
+                agent_id: ":test/codex+build-agent>".into(),
+                feature: Some("search".into()),
+            }))
+            .await;
+        let b_parsed: serde_json::Value = serde_json::from_str(&b_start).unwrap();
+        assert!(
+            b_parsed["result"]["debug_session_id"].is_string(),
+            "agent B must start successfully — no global single-active: {b_start}"
+        );
+
+        // Verify B's response does NOT contain an already_active error
+        assert!(
+            !b_start.contains("already_active_debug_session"),
+            "agent B must not be blocked by agent A's active session"
+        );
+    }
+
+    #[tokio::test]
+    async fn multi_session_observations_stamped_independently() {
+        let (a, b) = build_shared_mcps().await;
+
+        // Agent A starts auth session
+        let a_start: serde_json::Value = serde_json::from_str(
+            &a.start_debug_session(Parameters(StartDebugSessionParams {
+                project: Some("p".into()),
+                description: None,
+                agent_id: ":test/claude+plan-agent>".into(),
+                feature: None,
+            }))
+            .await,
+        )
+        .unwrap();
+        let a_sid = a_start["result"]["debug_session_id"].as_str().unwrap();
+
+        // Agent B starts search session
+        let b_start: serde_json::Value = serde_json::from_str(
+            &b.start_debug_session(Parameters(StartDebugSessionParams {
+                project: Some("p".into()),
+                description: None,
+                agent_id: ":test/codex+build-agent>".into(),
+                feature: None,
+            }))
+            .await,
+        )
+        .unwrap();
+        let b_sid = b_start["result"]["debug_session_id"].as_str().unwrap();
+
+        assert_ne!(a_sid, b_sid, "each agent must get a distinct session id");
+
+        // Each ingests an observation through their own MCP instance
+        a.ingest_observation(Parameters(IngestParams {
+            kind: Some("log".into()),
+            severity: Some("info".into()),
+            app: Some("test-a".into()),
+            channel: None,
+            correlation_id: None,
+            parent_id: None,
+            node_id: None,
+            session_id: None,
+            tags: None,
+            data: serde_json::json!({"msg": "from agent A"}),
+        }))
+        .await;
+
+        b.ingest_observation(Parameters(IngestParams {
+            kind: Some("log".into()),
+            severity: Some("info".into()),
+            app: Some("test-b".into()),
+            channel: None,
+            correlation_id: None,
+            parent_id: None,
+            node_id: None,
+            session_id: None,
+            tags: None,
+            data: serde_json::json!({"msg": "from agent B"}),
+        }))
+        .await;
+
+        // Let the drain task process both observations
+        tokio::task::yield_now().await;
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+        // Query the store directly to verify each observation got the right stamp
+        let slice = a
+            .store
+            .query(&daemon8_types::Filter {
+                kinds: Some(vec![daemon8_types::ObservationKindTag::Log]),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(
+            slice.observations.len(),
+            2,
+            "both observations must be in the shared store"
+        );
+
+        let has_a = slice
+            .observations
+            .iter()
+            .any(|o| o.debug_session_id.as_deref() == Some(a_sid));
+        let has_b = slice
+            .observations
+            .iter()
+            .any(|o| o.debug_session_id.as_deref() == Some(b_sid));
+        assert!(
+            has_a,
+            "observation from agent A must be stamped with A's session"
+        );
+        assert!(
+            has_b,
+            "observation from agent B must be stamped with B's session"
+        );
+    }
+
+    #[tokio::test]
+    async fn multi_session_end_one_leaves_other_active() {
+        let (a, b) = build_shared_mcps().await;
+
+        // Both start sessions
+        let _ = a
+            .start_debug_session(Parameters(StartDebugSessionParams {
+                project: None,
+                description: None,
+                agent_id: ":test/claude+plan-agent>".into(),
+                feature: None,
+            }))
+            .await;
+        let _ = b
+            .start_debug_session(Parameters(StartDebugSessionParams {
+                project: None,
+                description: None,
+                agent_id: ":test/codex+build-agent>".into(),
+                feature: None,
+            }))
+            .await;
+
+        // A ends its session
+        let end_res: serde_json::Value = serde_json::from_str(
+            &a.end_debug_session(Parameters(EndDebugSessionParams { outcome: None }))
+                .await,
+        )
+        .unwrap();
+        assert!(
+            end_res["result"]["debug_session_id"].is_string(),
+            "end must succeed: {end_res}"
+        );
+
+        // A's active state should be clear
+        assert!(a.active_state.current_session().is_none());
+
+        // B's active state should still be present
+        assert!(
+            b.active_state.current_session().is_some(),
+            "agent B must remain active after A ends"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_debug_sessions_filters_by_feature() {
+        let (a, _b) = build_shared_mcps().await;
+
+        // Agent A creates two sessions with different features
+        let _ = a
+            .start_debug_session(Parameters(StartDebugSessionParams {
+                project: Some("p".into()),
+                description: None,
+                agent_id: ":test/claude+plan-agent>".into(),
+                feature: Some("auth".into()),
+            }))
+            .await;
+        // End first session so we can start a second (single-active per instance)
+        let _ = a
+            .end_debug_session(Parameters(EndDebugSessionParams { outcome: None }))
+            .await;
+        let _ = a
+            .start_debug_session(Parameters(StartDebugSessionParams {
+                project: Some("p".into()),
+                description: None,
+                agent_id: ":test/claude+plan-agent>".into(),
+                feature: Some("search".into()),
+            }))
+            .await;
+
+        // Filter by feature
+        let auth_only: serde_json::Value = serde_json::from_str(
+            &a.list_debug_sessions(Parameters(ListDebugSessionsParams {
+                status: None,
+                feature: Some("auth".into()),
+            }))
+            .await,
+        )
+        .unwrap();
+        assert_eq!(
+            auth_only["result"]["count"], 1,
+            "feature filter must return only the auth session"
+        );
+        assert_eq!(
+            auth_only["result"]["sessions"][0]["feature"], "auth",
+            "returned session must have the matching feature"
+        );
+
+        let search_only: serde_json::Value = serde_json::from_str(
+            &a.list_debug_sessions(Parameters(ListDebugSessionsParams {
+                status: None,
+                feature: Some("search".into()),
+            }))
+            .await,
+        )
+        .unwrap();
+        assert_eq!(
+            search_only["result"]["count"], 1,
+            "feature filter must return only the search session"
+        );
+
+        let none: serde_json::Value = serde_json::from_str(
+            &a.list_debug_sessions(Parameters(ListDebugSessionsParams {
+                status: None,
+                feature: Some("nonexistent".into()),
+            }))
+            .await,
+        )
+        .unwrap();
+        assert_eq!(
+            none["result"]["count"], 0,
+            "unknown feature must return empty"
+        );
+    }
+
+    // ── B4: Agent ID validation ──────────────────────────────────────
+
+    #[test]
+    fn agent_id_valid_formats() {
+        for id in [
+            ":mbp/claude+plan-agent>",
+            ":linux/codex+build-agent>",
+            ":mbp/gemini+researcher>",
+            ":mini/copilot+reviewer>",
+            ":box/opencode+crawler>",
+            ":test-host/my-tool+my-role>",
+        ] {
+            assert!(
+                validate_agent_id(id).is_ok(),
+                "valid agent_id must pass: {id}"
+            );
+        }
+    }
+
+    #[test]
+    fn agent_id_rejects_missing_colon() {
+        assert!(validate_agent_id("mbp/claude+agent>").is_err());
+    }
+
+    #[test]
+    fn agent_id_rejects_missing_gt() {
+        assert!(validate_agent_id(":mbp/claude+agent").is_err());
+    }
+
+    #[test]
+    fn agent_id_rejects_missing_slash() {
+        assert!(validate_agent_id(":mbp-claude+agent>").is_err());
+    }
+
+    #[test]
+    fn agent_id_rejects_missing_plus() {
+        assert!(validate_agent_id(":mbp/claude-agent>").is_err());
+    }
+
+    #[test]
+    fn agent_id_rejects_uppercase() {
+        assert!(validate_agent_id(":MBP/claude+agent>").is_err());
+    }
+
+    #[test]
+    fn agent_id_rejects_empty_host() {
+        assert!(validate_agent_id(":/tool+role>").is_err());
+    }
+
+    #[test]
+    fn agent_id_rejects_empty_tool() {
+        assert!(validate_agent_id(":host/+role>").is_err());
+    }
+
+    #[test]
+    fn agent_id_rejects_empty_role() {
+        assert!(validate_agent_id(":host/tool+>").is_err());
+    }
+
+    #[test]
+    fn agent_id_rejects_too_long() {
+        let long_id = format!(":{}", "x".repeat(65));
+        assert!(validate_agent_id(&long_id).is_err());
+    }
+
+    #[tokio::test]
+    async fn start_debug_session_rejects_invalid_agent_id() {
+        let mcp = build_mcp_with_debug_session().await;
+        let res = mcp
+            .start_debug_session(Parameters(StartDebugSessionParams {
+                project: None,
+                description: None,
+                agent_id: "bad-format".into(),
+                feature: None,
+            }))
+            .await;
+        assert!(
+            res.contains("invalid_agent_id"),
+            "bad agent_id must be rejected: {res}"
+        );
     }
 }

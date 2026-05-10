@@ -8,7 +8,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
-use daemon8_store::{ActiveSessionState, DebugSessionStore, MemoryStore, StateModel};
+use daemon8_store::{DebugSessionStore, MemoryStore, StateModel};
 use daemon8_types::{DebugSessionOutcome, DebugSessionStatus, MemoryKind};
 
 pub const RETENTION_SECS: u64 = 24 * 60 * 60;
@@ -28,17 +28,17 @@ pub struct CleanupCtx {
     pub store: Arc<dyn StateModel>,
     pub debug_session_store: Option<Arc<dyn DebugSessionStore>>,
     pub memory_store: Option<Arc<dyn MemoryStore>>,
-    pub active_state: ActiveSessionState,
     pub inactivity_auto_end_secs: u64,
 }
 
 /// Spawn a background task that periodically:
-/// 1) flushes the in-memory active-session last_activity to the DB so
-///    `find_stale_active` sees fresh data;
-/// 2) auto-ends debug sessions whose `last_activity` is older than the
+/// 1) auto-ends debug sessions whose `last_activity` is older than the
 ///    configured inactivity threshold;
-/// 3) deletes stale observations (skipping rows linked to active sessions);
-/// 4) deletes stale screenshot files.
+/// 2) deletes stale observations (skipping rows linked to active sessions);
+/// 3) deletes stale screenshot files.
+///
+/// Per-session last_activity flushing is handled by each DaemonMcp instance's
+/// background flush task (B1.6), so the cleanup task only queries the DB.
 ///
 /// The task waits one full `CLEANUP_INTERVAL` before the first sweep so a
 /// freshly started daemon doesn't immediately churn the WAL. Cancels cleanly
@@ -67,7 +67,6 @@ pub(crate) async fn run_cleanup_pass(ctx: &CleanupCtx, screenshot_dir: &std::pat
         .unwrap_or_default()
         .as_nanos() as u64;
 
-    flush_active_last_activity(ctx, now_ns).await;
     auto_end_stale_debug_sessions(ctx, now_ns).await;
 
     let cutoff = now_ns.saturating_sub(Duration::from_secs(RETENTION_SECS).as_nanos() as u64);
@@ -78,19 +77,6 @@ pub(crate) async fn run_cleanup_pass(ctx: &CleanupCtx, screenshot_dir: &std::pat
     }
 
     cleanup_screenshots(screenshot_dir);
-}
-
-async fn flush_active_last_activity(ctx: &CleanupCtx, _now_ns: u64) {
-    let Some(ds_store) = &ctx.debug_session_store else {
-        return;
-    };
-    let Some(active) = ctx.active_state.current_session() else {
-        return;
-    };
-    let last = active.last_activity();
-    if let Err(e) = ds_store.touch_debug_session(active.id.as_ref(), last).await {
-        tracing::warn!(error = %e, "flushing active debug session last_activity failed");
-    }
 }
 
 async fn auto_end_stale_debug_sessions(ctx: &CleanupCtx, now_ns: u64) {
@@ -205,11 +191,8 @@ fn cleanup_screenshots(dir: &std::path::Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use daemon8_store::{
-        ActiveDebugSession, ActiveSessionState, DebugSession, MemoryFilter, SurrealStore,
-    };
+    use daemon8_store::{DebugSession, MemoryFilter, SurrealStore};
     use daemon8_types::{Observation, ObservationKind, Origin, Severity};
-    use std::sync::atomic::AtomicU64;
 
     fn make_observation(timestamp_ns: u64) -> Observation {
         make_observation_for_session(timestamp_ns, None)
@@ -267,7 +250,6 @@ mod tests {
             store: store.clone(),
             debug_session_store: Some(Arc::new(store.debug_session_store())),
             memory_store: Some(Arc::new(store.memory_store())),
-            active_state: ActiveSessionState::new(),
             inactivity_auto_end_secs: threshold_secs,
         }
     }
@@ -278,11 +260,13 @@ mod tests {
             started_at,
             ended_at: None,
             last_activity: started_at,
-            project_slug: project.into(),
+            project_slug: project.to_string(),
             description: None,
             status: DebugSessionStatus::Active,
             outcome: None,
             summary_memory_id: None,
+            agent_id: ":test/claude+plan-agent>".into(),
+            feature: None,
         }
     }
 
@@ -390,26 +374,23 @@ mod tests {
         assert!(summaries[0].tags.contains(&"auto_ended:true".to_string()));
     }
 
+    /// Per-MCP-session flush tasks (B1.6) replaced the global flush_active_last_activity.
+    /// Verify that touch_debug_session directly updates the DB last_activity field.
     #[tokio::test]
-    async fn flush_pushes_in_memory_last_activity_to_db() {
+    async fn touch_debug_session_updates_last_activity_in_db() {
         let store = Arc::new(SurrealStore::memory().await.unwrap());
-        let ds_store = store.debug_session_store();
-        let ctx = build_ctx(store.clone(), 4 * 3600);
+        let ds_store: Arc<dyn DebugSessionStore> = Arc::new(store.debug_session_store());
 
         let session_id = ds_store
             .start_debug_session(fresh_session("p", 1_000))
             .await
             .unwrap();
 
-        let active = ActiveDebugSession {
-            id: Arc::from(session_id.as_str()),
-            project_slug: Arc::from("p"),
-            started_at_ns: 1_000,
-            last_activity_ns: Arc::new(AtomicU64::new(99_999)),
-        };
-        ctx.active_state.set_session(Some(active));
-
-        flush_active_last_activity(&ctx, 0).await;
+        // Direct DB touch — no in-memory state needed
+        ds_store
+            .touch_debug_session(&session_id, 99_999)
+            .await
+            .unwrap();
 
         let session = ds_store
             .get_debug_session(&session_id)

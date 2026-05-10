@@ -1502,6 +1502,7 @@ version = "0.3.0"
 dependencies = [
  "async-trait",
  "daemon8-types",
+ "quick_cache",
  "regex",
  "serde",
  "serde_json",

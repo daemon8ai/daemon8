@@ -99,6 +99,9 @@ regex = "1"
 # Hashing (error fingerprints)
 sha2 = "0.10"
 
+# Concurrent cache (observation dedupe)
+quick_cache = "0.6"
+
 # File watching
 notify = { version = "8", features = ["macos_fsevent"] }
 glob = "0.3"

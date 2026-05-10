@@ -73,7 +73,6 @@ async fn make_mcp_with_cancel(cancel: CancellationToken) -> DaemonMcp {
         store,
         memory_store: Some(Arc::new(memory_store)),
         debug_session_store: None,
-        active_state: daemon8_store::ActiveSessionState::new(),
         obs_tx,
         chrome_tx,
         chrome_state: chrome_state_rx,

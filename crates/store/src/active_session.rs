@@ -9,10 +9,10 @@
 //! mcp crate) need to mutate this state, so it lives in a shared crate
 //! they both depend on.
 //!
-//! The cleanup task (Step 7) periodically flushes `last_activity_ns`
-//! from the in-memory atomic into the persisted `debug_session` row so
-//! `find_stale_active` sees current data without an awaited DB write per
-//! observation.
+//! Per-MCP-session background flush tasks (B1.6) periodically write
+//! `last_activity_ns` to the DB so `find_stale_active` sees current
+//! data without an awaited DB write per observation. The global cleanup
+//! task no longer touches in-memory session state.
 
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -24,6 +24,8 @@ pub struct ActiveDebugSession {
     pub project_slug: Arc<str>,
     pub started_at_ns: u64,
     pub last_activity_ns: Arc<AtomicU64>,
+    pub agent_id: Arc<str>,
+    pub feature: Option<Arc<str>>,
 }
 
 impl ActiveDebugSession {
@@ -97,6 +99,8 @@ mod tests {
             project_slug: Arc::from(project),
             started_at_ns: ts,
             last_activity_ns: Arc::new(AtomicU64::new(ts)),
+            agent_id: Arc::from(":test/claude+plan-agent>"),
+            feature: None,
         }
     }
 

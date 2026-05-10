@@ -4,12 +4,14 @@
 pub mod active_session;
 pub mod debug_session;
 pub mod error_hash;
+pub mod hash_cache;
 mod lens;
 pub mod memory;
 mod surreal;
 
 pub use active_session::{ActiveDebugSession, ActiveSessionState};
 pub use debug_session::SurrealDebugSessionStore;
+pub use hash_cache::ObservationHashCache;
 pub use lens::{LensManager, LensStatus};
 pub use memory::SurrealMemoryStore;
 pub use surreal::SurrealStore;
@@ -110,6 +112,9 @@ pub struct DebugSession {
     pub outcome: Option<DebugSessionOutcome>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub summary_memory_id: Option<String>,
+    pub agent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feature: Option<String>,
 }
 
 /// A bookmark within a debug session — anchors a moment in the observation

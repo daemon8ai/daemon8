@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 
 use daemon8_mcp::ChromeCommand;
 use daemon8_store::{
-    ActiveSessionState, DebugSessionStore, MemoryStore, StateModel, SurrealStore, error_hash,
+    DebugSessionStore, MemoryStore, ObservationHashCache, StateModel, SurrealStore, error_hash,
 };
 use daemon8_types::Observation;
 
@@ -55,7 +55,6 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
     let debug_session_store: Arc<dyn daemon8_store::DebugSessionStore> =
         Arc::new(surreal_store.debug_session_store());
     let store: Arc<dyn StateModel> = surreal_store.clone();
-    let active_state = ActiveSessionState::new();
 
     // Unbounded channel — deliberate policy.  The daemon captures observations
     // best-effort and losslessly: callers POST and return immediately; the store
@@ -82,9 +81,9 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
             store: store.clone(),
             memory_store: Some(memory_store.clone()),
             debug_session_store: Some(debug_session_store.clone()),
-            active_state: active_state.clone(),
             broadcast_tx: broadcast_tx.clone(),
             node_id,
+            hash_cache: ObservationHashCache::new(),
         },
         cancel.clone(),
     );
@@ -96,7 +95,6 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
             store: store.clone(),
             debug_session_store: Some(debug_session_store.clone()),
             memory_store: Some(memory_store.clone()),
-            active_state: active_state.clone(),
             inactivity_auto_end_secs: cfg
                 .debug_session
                 .inactivity_auto_end_secs
@@ -213,7 +211,6 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
             store: store.clone(),
             memory_store: Some(memory_store.clone()),
             debug_session_store: Some(debug_session_store.clone()),
-            active_state: active_state.clone(),
             obs_tx: obs_tx.clone(),
             chrome_tx: chrome_cmd_tx.clone(),
             chrome_state: chrome_state_rx.clone(),
@@ -249,7 +246,6 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
     let mcp_store = store.clone();
     let mcp_memory_store = memory_store.clone();
     let mcp_debug_session_store = debug_session_store.clone();
-    let mcp_active_state = active_state.clone();
     let mcp_obs_tx = obs_tx.clone();
     let mcp_chrome_tx = chrome_cmd_tx.clone();
     let mcp_state_rx = chrome_state_rx.clone();
@@ -270,7 +266,6 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
                 store: mcp_store.clone(),
                 memory_store: Some(mcp_memory_store.clone()),
                 debug_session_store: Some(mcp_debug_session_store.clone()),
-                active_state: mcp_active_state.clone(),
                 obs_tx: mcp_obs_tx.clone(),
                 chrome_tx: mcp_chrome_tx.clone(),
                 chrome_state: mcp_state_rx.clone(),
@@ -390,9 +385,9 @@ pub(crate) struct StoreWriterCtx {
     pub store: Arc<dyn StateModel>,
     pub memory_store: Option<Arc<dyn MemoryStore>>,
     pub debug_session_store: Option<Arc<dyn DebugSessionStore>>,
-    pub active_state: ActiveSessionState,
     pub broadcast_tx: broadcast::Sender<(Arc<Observation>, Arc<str>)>,
     pub node_id: Arc<str>,
+    pub hash_cache: ObservationHashCache,
 }
 
 fn spawn_store_writer(
@@ -426,27 +421,33 @@ async fn handle_observation(mut obs: Observation, ctx: &StoreWriterCtx) {
         obs.node_id = Some(ctx.node_id.clone());
     }
 
-    // Stamp active debug session and checkpoint links if present.
-    let active_session = ctx.active_state.current_session();
-    if let Some(ref session) = active_session {
-        if obs.debug_session_id.is_none() {
-            obs.debug_session_id = Some(session.id.clone());
-        }
-        session.touch(now_ns);
-    }
-    if obs.checkpoint_id.is_none()
-        && let Some(cp) = ctx.active_state.current_checkpoint()
-    {
-        obs.checkpoint_id = Some(cp);
-    }
-
     // Compute error hash (cheap, sync) for any error-shaped observation.
+    // Must run BEFORE the hash cache check — error observations always
+    // pass through to ensure error signature promotion runs and seen_count
+    // is bumped for recurrences.
     if obs.error_hash.is_none()
         && let Some(text) = error_hash::extract_error_text(&obs)
     {
         let normalized = error_hash::normalize_error_text(&text);
         let hash = error_hash::hash_error(&normalized);
         obs.error_hash = Some(Arc::from(hash.as_str()));
+    }
+
+    // Burst dedupe: skip structurally identical non-error observations.
+    // Error-severity observations always pass through — their recurrence
+    // signal (seen_count bump in error signature memory) is valuable and
+    // must not be lost.
+    if obs.severity < daemon8_types::Severity::Error && !obs.kind.tag().is_dedup_exempt() {
+        let obs_hash = ObservationHashCache::dedup_fingerprint(&obs);
+        if ctx.hash_cache.contains_or_insert(obs_hash) {
+            tracing::trace!(
+                hash = obs_hash,
+                origin = ?obs.origin,
+                kind = %obs.kind.tag(),
+                "observation deduped by hash cache"
+            );
+            return;
+        }
     }
 
     let insert_copy = obs.clone();
@@ -472,10 +473,12 @@ async fn handle_observation(mut obs: Observation, ctx: &StoreWriterCtx) {
             if let (Some(mem_store), Some(hash)) =
                 (ctx.memory_store.as_ref(), arc_obs.error_hash.as_ref())
             {
-                let project_slug = active_session
+                let project_slug = arc_obs
+                    .tags
                     .as_ref()
-                    .map(|s| s.project_slug.to_string())
-                    .unwrap_or_else(|| "unknown".to_string());
+                    .and_then(|tags| tags.iter().find_map(|t| t.strip_prefix("project:")))
+                    .unwrap_or("unknown")
+                    .to_string();
                 let normalized = error_hash::extract_error_text(&arc_obs)
                     .map(|t| error_hash::normalize_error_text(&t))
                     .unwrap_or_default();
@@ -498,9 +501,7 @@ async fn handle_observation(mut obs: Observation, ctx: &StoreWriterCtx) {
         }
     }
 
-    // touch_debug_session in DB is left to the periodic flush in the cleanup
-    // task (Step 7) — avoids one DB write per observation. Let `_` consume
-    // the unused store handle so future maintainers know it's deliberate.
+    // touch_debug_session is handled by per-MCP-session flush tasks (B1.6).
     let _ = ctx.debug_session_store.as_ref();
 }
 
@@ -541,19 +542,12 @@ mod writer_tests {
     }
 
     async fn build_ctx_with_active(
-        session: Option<ActiveDebugSession>,
-        checkpoint: Option<&str>,
+        _session: Option<ActiveDebugSession>,
+        _checkpoint: Option<&str>,
     ) -> (StoreWriterCtx, Arc<dyn StateModel>, Arc<dyn MemoryStore>) {
         let ss = Arc::new(SurrealStore::memory().await.unwrap());
         let mem: Arc<dyn MemoryStore> = Arc::new(ss.memory_store());
         let ds: Arc<dyn DebugSessionStore> = Arc::new(ss.debug_session_store());
-        let active = ActiveSessionState::new();
-        if let Some(s) = session {
-            active.set_session(Some(s));
-        }
-        if let Some(cp) = checkpoint {
-            active.set_checkpoint(Some(Arc::from(cp)));
-        }
         let (broadcast_tx, _rx) = broadcast::channel(8);
         let store: Arc<dyn StateModel> = ss.clone();
         (
@@ -561,39 +555,44 @@ mod writer_tests {
                 store: store.clone(),
                 memory_store: Some(mem.clone()),
                 debug_session_store: Some(ds),
-                active_state: active,
                 broadcast_tx,
                 node_id: Arc::from("node-test"),
+                hash_cache: ObservationHashCache::new(),
             },
             store,
             mem,
         )
     }
 
+    /// Writer no longer stamps session/checkpoint — that responsibility moved
+    /// to each DaemonMcp instance's own ActiveSessionState (B1.4). The writer
+    /// only handles node_id, error_hash, and error signature promotion.
     #[tokio::test]
-    async fn stamps_active_debug_session_and_checkpoint() {
-        let session = ActiveDebugSession {
-            id: Arc::from("ds_123"),
-            project_slug: Arc::from("daemon8"),
-            started_at_ns: 1_000,
-            last_activity_ns: Arc::new(AtomicU64::new(1_000)),
-        };
-        let (ctx, store, _mem) = build_ctx_with_active(Some(session), Some("cp_42")).await;
+    async fn writer_does_not_stamp_debug_session_or_checkpoint() {
+        let (ctx, store, _mem) = build_ctx_with_active(None, None).await;
 
-        handle_observation(fresh_obs(Severity::Info, ObservationKind::Log), &ctx).await;
+        let mut obs = fresh_obs(Severity::Info, ObservationKind::Log);
+        // Pre-stamp the observation as the MCP tool would
+        obs.debug_session_id = Some(Arc::from("mcp-session-1"));
+        obs.checkpoint_id = Some(Arc::from("mcp-cp-1"));
+        obs.tags = Some(vec!["project:daemon8".into()]);
+        handle_observation(obs, &ctx).await;
 
         let slice = store
             .query(&daemon8_types::Filter::default())
             .await
             .unwrap();
         assert_eq!(slice.observations.len(), 1);
-        let obs = &slice.observations[0];
-        assert_eq!(obs.debug_session_id.as_deref(), Some("ds_123"));
-        assert_eq!(obs.checkpoint_id.as_deref(), Some("cp_42"));
+        let stored = &slice.observations[0];
+        // Pre-stamped values pass through to the store unchanged
+        assert_eq!(stored.debug_session_id.as_deref(), Some("mcp-session-1"));
+        assert_eq!(stored.checkpoint_id.as_deref(), Some("mcp-cp-1"));
+        // Writer still stamps node_id
+        assert_eq!(stored.node_id.as_deref(), Some("node-test"));
     }
 
     #[tokio::test]
-    async fn no_stamp_when_no_active_session() {
+    async fn writer_stamps_node_id_on_every_observation() {
         let (ctx, store, _mem) = build_ctx_with_active(None, None).await;
 
         handle_observation(fresh_obs(Severity::Info, ObservationKind::Log), &ctx).await;
@@ -603,31 +602,28 @@ mod writer_tests {
             .await
             .unwrap();
         let obs = &slice.observations[0];
-        assert!(obs.debug_session_id.is_none());
-        assert!(obs.checkpoint_id.is_none());
+        assert_eq!(obs.node_id.as_deref(), Some("node-test"));
     }
 
     #[tokio::test]
     async fn computes_error_hash_on_exception_and_promotes_signature() {
-        let session = ActiveDebugSession {
-            id: Arc::from("ds_x"),
-            project_slug: Arc::from("daemon8"),
-            started_at_ns: 1_000,
-            last_activity_ns: Arc::new(AtomicU64::new(1_000)),
-        };
-        let (ctx, store, mem) = build_ctx_with_active(Some(session), None).await;
+        let (ctx, store, mem) = build_ctx_with_active(None, None).await;
 
         let exc = ObservationKind::Exception {
             message: "DB timeout after 5000ms on conn 7".into(),
             trace: Some("at db::query in /Users/x/proj/src/db.rs:42".into()),
         };
-        handle_observation(fresh_obs(Severity::Error, exc.clone()), &ctx).await;
+        let mut obs1 = fresh_obs(Severity::Error, exc.clone());
+        obs1.tags = Some(vec!["project:daemon8".into()]);
+        handle_observation(obs1, &ctx).await;
         // Same shape — should bump seen, not create a new memory.
         let exc2 = ObservationKind::Exception {
             message: "DB timeout after 9999ms on conn 12".into(),
             trace: Some("at db::query in /Users/y/other/src/db.rs:42".into()),
         };
-        handle_observation(fresh_obs(Severity::Error, exc2), &ctx).await;
+        let mut obs2 = fresh_obs(Severity::Error, exc2);
+        obs2.tags = Some(vec!["project:daemon8".into()]);
+        handle_observation(obs2, &ctx).await;
 
         let slice = store
             .query(&daemon8_types::Filter::default())
@@ -655,6 +651,9 @@ mod writer_tests {
         assert!(signatures[0].tags.contains(&"seen:2".to_string()));
     }
 
+    /// Multi-session stamping is now handled at the MCP ingest level (B1.4).
+    /// Writer-level touch tests moved to `crates/mcp/tests/multi_session_behavior.rs`.
+    #[ignore = "touch responsibility moved to MCP ingest + per-session flush (B1.4/B1.6)"]
     #[tokio::test]
     async fn touch_bumps_active_session_last_activity() {
         let last = Arc::new(AtomicU64::new(1_000));
@@ -663,6 +662,8 @@ mod writer_tests {
             project_slug: Arc::from("p"),
             started_at_ns: 1_000,
             last_activity_ns: last.clone(),
+            agent_id: Arc::from(":test/claude+plan-agent>"),
+            feature: None,
         };
         let (ctx, _store, _mem) = build_ctx_with_active(Some(session), None).await;
 

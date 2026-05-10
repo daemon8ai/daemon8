@@ -38,8 +38,11 @@ impl SurrealDebugSessionStore {
                  DEFINE FIELD IF NOT EXISTS status            ON debug_session TYPE string;
                  DEFINE FIELD IF NOT EXISTS outcome           ON debug_session TYPE option<string>;
                  DEFINE FIELD IF NOT EXISTS summary_memory_id ON debug_session TYPE option<string>;
+                 DEFINE FIELD IF NOT EXISTS agent_id          ON debug_session TYPE string;
+                 DEFINE FIELD IF NOT EXISTS feature           ON debug_session TYPE option<string>;
                  DEFINE INDEX IF NOT EXISTS idx_ds_status  ON debug_session FIELDS status;
                  DEFINE INDEX IF NOT EXISTS idx_ds_project ON debug_session FIELDS project_slug;
+                 DEFINE INDEX IF NOT EXISTS idx_ds_agent   ON debug_session FIELDS agent_id;
 
                  DEFINE TABLE IF NOT EXISTS checkpoint SCHEMAFULL;
                  DEFINE FIELD IF NOT EXISTS debug_session_id ON checkpoint TYPE string;
@@ -336,11 +339,13 @@ mod tests {
             started_at: ts,
             ended_at: None,
             last_activity: ts,
-            project_slug: project.into(),
+            project_slug: project.to_string(),
             description: Some("fix flaky test".into()),
             status: DebugSessionStatus::Active,
             outcome: None,
             summary_memory_id: None,
+            agent_id: ":test/claude+plan-agent>".into(),
+            feature: None,
         }
     }
 

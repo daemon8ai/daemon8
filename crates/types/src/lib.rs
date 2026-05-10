@@ -212,6 +212,12 @@ pub enum ObservationKindTag {
     ToolCall,
 }
 
+impl ObservationKindTag {
+    pub fn is_dedup_exempt(self) -> bool {
+        matches!(self, Self::ToolCall | Self::Metric | Self::Lifecycle)
+    }
+}
+
 impl fmt::Display for ObservationKindTag {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
@@ -1129,5 +1135,20 @@ mod tests {
             let back: DebugAction = serde_json::from_str(&text).unwrap();
             assert_eq!(back, variant);
         }
+    }
+
+    #[test]
+    fn dedup_exempt_kinds() {
+        assert!(ObservationKindTag::ToolCall.is_dedup_exempt());
+        assert!(ObservationKindTag::Metric.is_dedup_exempt());
+        assert!(ObservationKindTag::Lifecycle.is_dedup_exempt());
+
+        assert!(!ObservationKindTag::Log.is_dedup_exempt());
+        assert!(!ObservationKindTag::Query.is_dedup_exempt());
+        assert!(!ObservationKindTag::HttpExchange.is_dedup_exempt());
+        assert!(!ObservationKindTag::Exception.is_dedup_exempt());
+        assert!(!ObservationKindTag::JsException.is_dedup_exempt());
+        assert!(!ObservationKindTag::StateSnapshot.is_dedup_exempt());
+        assert!(!ObservationKindTag::Custom.is_dedup_exempt());
     }
 }
