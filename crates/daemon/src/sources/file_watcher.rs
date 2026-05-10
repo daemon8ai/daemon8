@@ -12,6 +12,7 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
 use daemon8_parse::Parser;
+use daemon8_parse::timestamp::normalize_timestamp_ns;
 use daemon8_types::{AppName, Observation, ObservationKind, Origin, Severity};
 
 use crate::config::FileSourceConfig;
@@ -32,7 +33,10 @@ pub(crate) fn spawn_file_source(
     obs_tx: mpsc::UnboundedSender<Observation>,
     cancel: CancellationToken,
 ) {
-    let parser = match daemon8_parse::resolve_parser(&cfg.parser) {
+    let parser = match daemon8_parse::resolve_parser_with_pattern(
+        &cfg.parser,
+        cfg.parser_pattern.as_deref(),
+    ) {
         Ok(p) => Arc::from(p),
         Err(e) => {
             tracing::error!(source = %name, parser = %cfg.parser, "failed to resolve parser: {e}");
@@ -226,6 +230,12 @@ fn read_new_lines(
                 None,
             );
 
+            if let Some(ref ts) = parsed.timestamp
+                && let Some(ns) = normalize_timestamp_ns(ts)
+            {
+                obs.timestamp_ns = ns as u64;
+            }
+
             if !ctx.tags.is_empty() {
                 obs.tags = Some(ctx.tags.clone());
             }
@@ -325,6 +335,7 @@ mod tests {
             SourceConfig::File(FileSourceConfig {
                 path: log_file.to_string_lossy().to_string(),
                 parser: "line".to_string(),
+                parser_pattern: None,
                 tags: vec![],
             }),
         );
@@ -376,6 +387,7 @@ mod tests {
             SourceConfig::File(FileSourceConfig {
                 path: log_file.to_string_lossy().to_string(),
                 parser: "json".to_string(),
+                parser_pattern: None,
                 tags: vec!["app".to_string()],
             }),
         );
@@ -441,6 +453,7 @@ mod tests {
             SourceConfig::File(FileSourceConfig {
                 path: log_file.to_string_lossy().to_string(),
                 parser: "line".to_string(),
+                parser_pattern: None,
                 tags: vec![],
             }),
         );

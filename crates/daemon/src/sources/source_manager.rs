@@ -282,6 +282,7 @@ mod tests {
         FileSourceConfig {
             path: "/tmp/test.log".into(),
             parser: "line".into(),
+            parser_pattern: None,
             tags: tags.into_iter().map(String::from).collect(),
         }
     }
@@ -290,6 +291,7 @@ mod tests {
         FileSourceConfig {
             path: path.into(),
             parser: "line".into(),
+            parser_pattern: None,
             tags: tags.into_iter().map(String::from).collect(),
         }
     }

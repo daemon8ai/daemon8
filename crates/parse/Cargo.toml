@@ -14,6 +14,9 @@ regex.workspace = true
 thiserror.workspace = true
 toml.workspace = true
 dirs.workspace = true
+dateparser.workspace = true
+syslog_loose.workspace = true
+grok.workspace = true
 
 [dev-dependencies]
 tempfile = "3"

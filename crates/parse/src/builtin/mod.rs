@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: LicenseRef-FCL-1.0-ALv2
 // Copyright (c) 2026 Havy.tech, LLC
 
+pub mod auto;
 pub mod clf;
+pub mod grok_parser;
 pub mod json;
 pub mod line;
 pub mod logfmt;
@@ -18,6 +20,7 @@ pub fn get(name: &str) -> Option<Box<dyn Parser>> {
         "syslog" => Some(Box::new(syslog::SyslogParser)),
         "logfmt" => Some(Box::new(logfmt::LogfmtParser)),
         "clf" => Some(Box::new(clf::ClfParser)),
+        "auto" => Some(Box::new(auto::AutoParser::default())),
         _ => None,
     }
 }

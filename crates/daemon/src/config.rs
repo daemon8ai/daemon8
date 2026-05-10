@@ -193,6 +193,8 @@ pub struct FileSourceConfig {
     pub path: String,
     #[serde(default = "default_line_parser")]
     pub parser: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parser_pattern: Option<String>,
     #[serde(default)]
     pub tags: Vec<String>,
 }

@@ -3,6 +3,7 @@
 
 use daemon8_types::Severity;
 
+use crate::severity::sniff_severity;
 use crate::{ParsedLine, Parser};
 
 pub struct LineParser;
@@ -13,9 +14,10 @@ impl Parser for LineParser {
     }
 
     fn parse(&self, line: &str) -> Option<ParsedLine> {
+        let severity = sniff_severity(line).unwrap_or(Severity::Info);
         Some(ParsedLine {
             timestamp: None,
-            severity: Some(Severity::Info),
+            severity: Some(severity),
             channel: None,
             message: line.to_string(),
             fields: serde_json::Map::new(),
@@ -51,10 +53,34 @@ mod tests {
     }
 
     #[test]
-    fn severity_always_info() {
+    fn severity_defaults_to_info() {
         let parser = LineParser;
         let result = parser.parse("test").unwrap();
         assert_eq!(result.severity, Some(Severity::Info));
+    }
+
+    #[test]
+    fn severity_sniffed_from_text() {
+        let parser = LineParser;
+        assert_eq!(
+            parser.parse("ERROR: something broke").unwrap().severity,
+            Some(Severity::Error)
+        );
+        assert_eq!(
+            parser
+                .parse("WARNING: deprecated API endpoint called")
+                .unwrap()
+                .severity,
+            Some(Severity::Warn)
+        );
+        assert_eq!(
+            parser.parse("[DEBUG] checking cache hit").unwrap().severity,
+            Some(Severity::Debug)
+        );
+        assert_eq!(
+            parser.parse("FATAL out of memory").unwrap().severity,
+            Some(Severity::Error)
+        );
     }
 
     #[test]

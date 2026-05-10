@@ -243,6 +243,7 @@ fn apply_setup(
             SourceConfig::File(FileSourceConfig {
                 path: source.resolved_path.clone(),
                 parser: source.parser.clone(),
+                parser_pattern: None,
                 tags: source.tags.clone(),
             }),
         );

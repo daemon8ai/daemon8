@@ -96,6 +96,11 @@ async-trait = "0.1"
 # Regex
 regex = "1"
 
+# Log parsing
+dateparser = "0.3"
+syslog_loose = "0.23"
+grok = "2"
+
 # Hashing (error fingerprints)
 sha2 = "0.10"
 
