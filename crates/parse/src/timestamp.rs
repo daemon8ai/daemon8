@@ -48,7 +48,7 @@ mod tests {
     #[test]
     fn clf_timestamp() {
         let ns = normalize_timestamp_ns("10/Jan/2024:13:55:36 -0700");
-        // dateparser may not handle CLF format natively
+        // non-deterministic
         if let Some(ns) = ns {
             assert!(ns > 0);
         }
@@ -57,7 +57,7 @@ mod tests {
     #[test]
     fn syslog_bsd_timestamp() {
         let ns = normalize_timestamp_ns("Oct 11 22:14:15");
-        // BSD syslog timestamps lack year -- dateparser may handle with current year
+        // non-deterministic
         if let Some(ns) = ns {
             assert!(ns > 0);
         }

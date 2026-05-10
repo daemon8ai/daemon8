@@ -14,15 +14,15 @@
 
 # What is Daemon8?
 
-Daemon8 is a local runtime layer for AI agents.
+Daemon8 is a local runtime layer that gives AI agents situational awareness.
 
-Today, most agents can read and write code quickly, but they still do not have one reliable source of runtime truth while debugging. At its core, that is what Daemon8 provides: one place where logs and context converge.
+Agents can read and write code, but they still cannot see what happens when that code runs. Console errors, network failures, device logs, and application traces remain invisible unless the developer manually relays them. Daemon8 closes that gap: one local process where all runtime signals converge, queryable through a single MCP surface.
 
-When agents have one place to look for errors, they can move from "I changed code" to "I can see what happened" in one loop. They query observations, filter what matters, and act on the result without guessing.
+With daemon8 running, an agent can observe what happened after a change, filter the noise with lenses, checkpoint before and after each fix, and record verified findings in curated memory -- all without leaving its workflow. The result is a tighter debug loop: from "I changed the code" to "I can see what happened" in one step.
 
-Picture application logs, browser console output, network failures, traces, and device logs funneled into one stream. With lens-based filtering, the agent can ignore noise and focus directly on the signal it needs.
+Application logs, browser console output, network failures, device logs, and CLI hook telemetry all land in the same observation stream. Agents query, subscribe, and act through MCP or the parallel HTTP API. Runtime data and curated memory stay on your machine.
 
-> Note: daemon8 is in active development right now. Show support by starring, trying it out, and/or submitting issues - it's greatly appreciated!
+> daemon8 is in active development. Show support by starring, trying it out, and submitting issues.
 
 ### Daily Workflow Scenarios
 
@@ -55,16 +55,29 @@ Daemon8 runs locally and provides one stream for runtime awareness plus one MCP 
 ## Install
 
 ```bash
+curl -fsSL https://daemon8.ai/install.sh | bash
+```
+
+Windows (PowerShell):
+
+```powershell
+irm https://daemon8.ai/install.ps1 | iex
+```
+
+Or install from source:
+
+```bash
 cargo install daemon8
 ```
 
-macOS — sign the binary so Gatekeeper and launchd accept it:
+Pin a specific version with `DAEMON8_VERSION=v0.3.1` before the curl command.
 
-```bash
-codesign --force --sign - ~/.cargo/bin/daemon8
-```
+The installer downloads the binary, verifies its SHA-256 checksum, installs it, and runs `daemon8 setup` to show current state.
 
-Register as a system service and configure your AI clients:
+> [!WARNING]
+> **macOS:** first launch may trigger an "unidentified developer" Gatekeeper prompt and request Background Items and App Management permissions. Both are expected until signed release binaries ship.
+
+## Getting Started
 
 ```bash
 daemon8 install
@@ -73,10 +86,11 @@ daemon8 setup plan
 daemon8 setup apply --yes
 ```
 
-`daemon8 install` registers a user-level service. `daemon8 init` creates the project `.daemon8.toml`. `daemon8 setup plan` previews configuration changes. `daemon8 setup apply --yes` registers runtime sources. Add `--providers codex-cli` for Codex MCP/hooks, and `--install-hooks <local|shared|global>` for Claude Code hooks.
+`daemon8 install` registers a user-level system service. `daemon8 init` creates the project `.daemon8.toml`. `daemon8 setup plan` previews configuration changes. `daemon8 setup apply --yes` registers runtime sources and configures AI providers.
 
-> [!WARNING]
-> **macOS:** first launch triggers an "unidentified developer" Gatekeeper prompt and may request Background Items and App Management permissions. Both are expected until signed release binaries ship.
+Add `--providers codex-cli` for Codex MCP/hooks, and `--install-hooks <local|shared|global>` for Claude Code hooks.
+
+For best results, add daemon8 instructions to your AI context file (`~/.claude/CLAUDE.md`, `~/.gemini/GEMINI.md`, or `~/.codex/AGENTS.md`) telling the agent to use daemon8 for debugging, note-taking, and agent communication.
 
 ## Verify
 

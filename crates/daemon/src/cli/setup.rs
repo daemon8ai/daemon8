@@ -143,7 +143,11 @@ pub async fn cmd_setup(config_path: Option<String>, args: SetupArgs) -> Result<(
         }
         SetupCommand::Apply(apply_args) => {
             let plan = apply_setup(config_path.as_deref(), &cwd, &apply_args)?;
-            print_json_or_human(&plan, args.json, print_plan)
+            print_json_or_human(&plan, args.json, print_plan)?;
+            if !args.json {
+                print_post_apply_hints();
+            }
+            Ok(())
         }
     }
 }
@@ -663,7 +667,9 @@ fn print_status(status: &SetupStatus) {
     } else if status.issues.is_empty() && !status.global_setup_applied {
         println!("next: run daemon8 setup plan, then daemon8 setup apply --yes");
     } else if status.issues.is_empty() {
-        println!("next: setup is applied; rerun daemon8 setup plan after source changes");
+        println!(
+            "next: setup is applied; for best results add daemon8 instructions to your AI context file"
+        );
     } else {
         println!("next: fix warnings, then rerun daemon8 setup status");
     }
@@ -679,6 +685,21 @@ fn print_plan(plan: &SetupPlan) {
     for restart in restarts {
         println!("restart required: {restart}");
     }
+}
+
+fn print_post_apply_hints() {
+    println!();
+    println!("get the most out of daemon8:");
+    println!();
+    println!("  add daemon8 instructions to your AI context file:");
+    println!("    Claude Code  ~/.claude/CLAUDE.md or .claude/CLAUDE.md");
+    println!("    Gemini CLI   ~/.gemini/GEMINI.md or .gemini/GEMINI.md");
+    println!("    Codex        ~/.codex/AGENTS.md");
+    println!();
+    println!("  activate features per-project:");
+    println!("    daemon8 init                         scaffold .daemon8.toml");
+    println!("    daemon8 init --install-hooks local    add CLI telemetry hooks");
+    println!("    daemon8 hooks list                    inspect installed hooks");
 }
 
 #[cfg(test)]
