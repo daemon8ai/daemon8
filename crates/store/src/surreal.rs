@@ -375,7 +375,7 @@ impl SurrealStore {
         if let Some(ref required_tags) = filter.tags
             && !required_tags.is_empty()
         {
-            conditions.push("tags CONTAINSALL $required_tags".to_string());
+            conditions.push("tags CONTAINSANY $required_tags".to_string());
             binds.push(("required_tags".into(), serde_json::json!(required_tags)));
         }
 
