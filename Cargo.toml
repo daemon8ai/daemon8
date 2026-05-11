@@ -28,15 +28,15 @@ categories = ["development-tools::debugging", "command-line-utilities"]
 
 [workspace.dependencies]
 # Internal crates
-daemon8-types = { version = "0.3.0", path = "crates/types" }
-daemon8-store = { version = "0.3.0", path = "crates/store" }
-daemon8-ingest = { version = "0.3.0", path = "crates/ingest" }
-daemon8-chrome = { version = "0.3.0", path = "crates/chrome" }
-daemon8-mcp = { version = "0.3.0", path = "crates/mcp" }
-daemon8-adb = { version = "0.3.0", path = "crates/adb" }
-daemon8-api = { version = "0.3.0", path = "crates/api" }
-daemon8-parse = { version = "0.3.0", path = "crates/parse" }
-daemon8-providers = { version = "0.3.0", path = "crates/providers" }
+daemon8-types = { version = "0.3.1", path = "crates/types" }
+daemon8-store = { version = "0.3.1", path = "crates/store" }
+daemon8-ingest = { version = "0.3.1", path = "crates/ingest" }
+daemon8-chrome = { version = "0.3.1", path = "crates/chrome" }
+daemon8-mcp = { version = "0.3.1", path = "crates/mcp" }
+daemon8-adb = { version = "0.3.1", path = "crates/adb" }
+daemon8-api = { version = "0.3.1", path = "crates/api" }
+daemon8-parse = { version = "0.3.1", path = "crates/parse" }
+daemon8-providers = { version = "0.3.1", path = "crates/providers" }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }

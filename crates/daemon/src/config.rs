@@ -121,7 +121,7 @@ pub struct UnixConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AdbConfig {
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub enabled: bool,
     #[serde(default = "default_adb_server")]
     pub server_addr: SocketAddrV4,
@@ -325,7 +325,7 @@ impl Default for Config {
 impl Default for AdbConfig {
     fn default() -> Self {
         Self {
-            enabled: default_true(),
+            enabled: false,
             server_addr: default_adb_server(),
             scan_interval_secs: default_adb_scan_interval(),
         }
