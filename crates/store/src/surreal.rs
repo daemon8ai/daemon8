@@ -17,7 +17,8 @@ use daemon8_types::{
 };
 
 use crate::{
-    StateModel, StoreError, debug_session::SurrealDebugSessionStore, memory::SurrealMemoryStore,
+    StateModel, StoreError, debug_session::SurrealDebugSessionStore,
+    librarian::SurrealLibrarianStore, memory::SurrealMemoryStore,
 };
 
 const NAMESPACE: &str = "daemon8";
@@ -151,6 +152,7 @@ impl SurrealStore {
         store.init_schema().await?;
         store.memory_store().init_schema().await?;
         store.debug_session_store().init_schema().await?;
+        store.librarian_store().init_schema().await?;
         store.recover_seq().await?;
         Ok(store)
     }
@@ -170,6 +172,7 @@ impl SurrealStore {
         store.init_schema().await?;
         store.memory_store().init_schema().await?;
         store.debug_session_store().init_schema().await?;
+        store.librarian_store().init_schema().await?;
         Ok(store)
     }
 
@@ -182,6 +185,10 @@ impl SurrealStore {
     /// Create a `SurrealDebugSessionStore` sharing this database handle.
     pub fn debug_session_store(&self) -> SurrealDebugSessionStore {
         SurrealDebugSessionStore::new(self.db.clone())
+    }
+
+    pub fn librarian_store(&self) -> SurrealLibrarianStore {
+        SurrealLibrarianStore::new(self.db.clone())
     }
 
     async fn init_schema(&self) -> Result<(), StoreError> {

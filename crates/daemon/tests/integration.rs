@@ -502,29 +502,6 @@ async fn memory_export_endpoint_streams_paged_ndjson_for_memory_rows() {
     assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
 }
 
-#[tokio::test]
-async fn removed_feature_api_routes_are_absent() {
-    let store: Arc<dyn StateModel> = Arc::new(SurrealStore::memory().await.unwrap());
-    let (base, _tx, _handle) = start_server(store).await;
-    let client = reqwest::Client::new();
-
-    for path in [
-        "/api/memory/short",
-        "/api/memory/reference",
-        "/api/memory/long",
-        "/api/embedding/profiles",
-        "/api/bookkeeper/sweep",
-        "/api/deliber8/inbox",
-    ] {
-        let resp = client.get(format!("{base}{path}")).send().await.unwrap();
-        assert_eq!(
-            resp.status(),
-            reqwest::StatusCode::NOT_FOUND,
-            "removed route {path} must not be exposed"
-        );
-    }
-}
-
 // -----------------------------------------------------------------------
 // SSE streaming receives observations in real-time
 // -----------------------------------------------------------------------

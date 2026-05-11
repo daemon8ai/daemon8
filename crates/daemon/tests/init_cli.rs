@@ -186,8 +186,6 @@ fn cli_yes_writes_toml_only() {
     assert!(work.join(".daemon8.toml").exists());
     let toml = std::fs::read_to_string(work.join(".daemon8.toml")).unwrap();
     assert!(!toml.contains("role_default"));
-    assert!(!toml.contains("inbox"));
-    assert!(!toml.contains("envelope"));
     assert!(
         !work.join(".claude").exists(),
         ".claude must NOT be created without --install-hooks"

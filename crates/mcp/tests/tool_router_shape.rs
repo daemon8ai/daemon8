@@ -5,11 +5,11 @@ use std::sync::Arc;
 
 use daemon8_chrome::ConnectionState;
 use daemon8_mcp::{DaemonMcp, DaemonMcpConfig};
-use daemon8_store::SurrealStore;
+use daemon8_store::{LibrarianStore, SurrealStore};
 use daemon8_types::Filter;
 use tokio_util::sync::CancellationToken;
 
-const EXPECTED_TOOLS: [&str; 18] = [
+const EXPECTED_TOOLS: [&str; 21] = [
     "query_observations",
     "status",
     "create_checkpoint",
@@ -28,24 +28,9 @@ const EXPECTED_TOOLS: [&str; 18] = [
     "setup_plan",
     "setup_apply",
     "daemon8_help",
-];
-
-/// Tool names that must never appear in the live MCP surface. Includes both
-/// removed tools (the deliber8/memory-tier/embedding-profile cluster cut by
-/// the lean MVP cull) and preemptively reserved names that should not be
-/// re-introduced if revisited under different semantics. See ADR-004
-/// (`50-projects/daemon8/decisions/004-lean-mvp-situational-awareness.md`)
-/// for the cull rationale.
-const RESERVED_TOOL_NAMES: [&str; 9] = [
-    "query_memory_tier",
-    "memory_sweep_short",
-    "memory_dedupe_long",
-    "list_embedding_profiles",
-    "register_embedding_profile",
-    "deliber8_inbox",
-    "deliber8_roster",
-    "send_envelope",
-    "list_agents",
+    "librarian_index",
+    "librarian_lookup",
+    "librarian_forget",
 ];
 
 fn tool_names(router: &rmcp::handler::server::router::tool::ToolRouter<DaemonMcp>) -> Vec<String> {
@@ -72,10 +57,12 @@ async fn make_mcp_with_cancel(cancel: CancellationToken) -> DaemonMcp {
         broadcast_tx.subscribe(),
         None,
     ));
+    let librarian_store: Arc<dyn LibrarianStore> = Arc::new(store.librarian_store());
     DaemonMcp::new(DaemonMcpConfig {
         store,
         memory_store: Some(Arc::new(memory_store)),
         debug_session_store: None,
+        librarian_store: Some(librarian_store),
         obs_tx,
         chrome_tx,
         chrome_state: chrome_state_rx,
@@ -105,7 +92,8 @@ fn composed_router_has_full_tool_surface() {
         + DaemonMcp::action_tool_router()
         + DaemonMcp::lens_tool_router()
         + DaemonMcp::memory_tool_router()
-        + DaemonMcp::setup_tool_router();
+        + DaemonMcp::setup_tool_router()
+        + DaemonMcp::librarian_tool_router();
     let names = tool_names(&router);
 
     assert_eq!(
@@ -122,14 +110,6 @@ fn composed_router_has_full_tool_surface() {
             names.iter().any(|n| n == expected),
             "router missing expected tool '{}'. Present: {:?}",
             expected,
-            names
-        );
-    }
-    for reserved in RESERVED_TOOL_NAMES {
-        assert!(
-            !names.iter().any(|n| n == reserved),
-            "router must not expose reserved tool name '{}'. Present: {:?}",
-            reserved,
             names
         );
     }

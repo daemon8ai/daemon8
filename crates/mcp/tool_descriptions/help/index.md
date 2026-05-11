@@ -10,5 +10,6 @@ Available topics (call `daemon8_help(topic="<name>")`):
 - `memory` — persisting long-lived insights across sessions
 - `observations` — querying, filtering, subscribing to runtime telemetry
 - `envelope` — the standard `{result, daemon8, error}` response shape
+- `librarian` — graph-based reference catalog for documentation, configs, fixes
 
 Call any topic name above. Unknown topics fall back to this index.

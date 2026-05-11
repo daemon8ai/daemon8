@@ -6,6 +6,7 @@ pub mod debug_session;
 pub mod error_hash;
 pub mod hash_cache;
 mod lens;
+pub mod librarian;
 pub mod memory;
 mod surreal;
 
@@ -13,12 +14,13 @@ pub use active_session::{ActiveDebugSession, ActiveSessionState};
 pub use debug_session::SurrealDebugSessionStore;
 pub use hash_cache::ObservationHashCache;
 pub use lens::{LensManager, LensStatus};
+pub use librarian::SurrealLibrarianStore;
 pub use memory::SurrealMemoryStore;
 pub use surreal::SurrealStore;
 
 use daemon8_types::{
-    Checkpoint, DebugSessionOutcome, DebugSessionStatus, Filter, MemoryKind, Observation,
-    RuntimeSummary, StateSlice,
+    Checkpoint, DebugSessionOutcome, DebugSessionStatus, Filter, LibrarianEdgeKind,
+    LibrarianNodeKind, LocatorKind, MemoryKind, Observation, RuntimeSummary, StateSlice,
 };
 use serde::{Deserialize, Serialize};
 
@@ -155,4 +157,63 @@ pub trait DebugSessionStore: Send + Sync {
         &self,
         debug_session_id: &str,
     ) -> Result<Vec<DebugCheckpoint>, StoreError>;
+}
+
+// ── Librarian catalog ────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LibrarianNode {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub kind: LibrarianNodeKind,
+    pub label: String,
+    pub locator_kind: LocatorKind,
+    pub locator: String,
+    pub tags: Vec<String>,
+    pub project_slug: String,
+    pub version: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
+    pub created_at: u64,
+    pub updated_at: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_read_at: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deprecated_at: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LibrarianEdge {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub kind: LibrarianEdgeKind,
+    pub from_node: String,
+    pub to_node: String,
+    pub created_at: u64,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct LibrarianFilter {
+    pub kinds: Option<Vec<LibrarianNodeKind>>,
+    pub tags: Option<Vec<String>>,
+    pub project_slug: Option<String>,
+    pub text_match: Option<String>,
+    pub limit: Option<usize>,
+    pub include_deprecated: bool,
+    pub stale_before: Option<u64>,
+    pub parent_id: Option<String>,
+}
+
+#[async_trait::async_trait]
+pub trait LibrarianStore: Send + Sync {
+    async fn index_node(&self, node: LibrarianNode) -> Result<String, StoreError>;
+    async fn index_edge(&self, edge: LibrarianEdge) -> Result<String, StoreError>;
+    async fn lookup(&self, filter: &LibrarianFilter) -> Result<Vec<LibrarianNode>, StoreError>;
+    async fn get_node(&self, id: &str) -> Result<Option<LibrarianNode>, StoreError>;
+    async fn get_edges(&self, node_id: &str) -> Result<Vec<LibrarianEdge>, StoreError>;
+    async fn get_children(&self, parent_id: &str) -> Result<Vec<LibrarianNode>, StoreError>;
+    async fn touch_read(&self, id: &str) -> Result<(), StoreError>;
+    async fn deprecate_node(&self, id: &str) -> Result<bool, StoreError>;
+    async fn forget_node(&self, id: &str) -> Result<bool, StoreError>;
+    async fn forget_edge(&self, id: &str) -> Result<bool, StoreError>;
 }

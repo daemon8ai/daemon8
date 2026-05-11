@@ -7,7 +7,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use daemon8_store::{ActiveSessionState, DebugSessionStore, LensManager, MemoryStore, StateModel};
+use daemon8_store::{
+    ActiveSessionState, DebugSessionStore, LensManager, LibrarianStore, MemoryStore, StateModel,
+};
 use daemon8_types::{Checkpoint, DevicePlatform, Filter, Observation, SourceActivator};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
@@ -359,9 +361,75 @@ pub struct ForgetMemoryParams {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct HelpParams {
     #[schemars(
-        description = "Help topic: index, debug_session, checkpoint, setup, hooks, lens, memory, observations, envelope. Omit for index."
+        description = "Help topic: index, debug_session, checkpoint, setup, hooks, lens, memory, observations, envelope, librarian. Omit for index."
     )]
     pub topic: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct LibrarianIndexEdge {
+    #[schemars(
+        description = "Edge kind: has_source | documented_by | fixes | supersedes | child_of"
+    )]
+    pub kind: String,
+    #[schemars(description = "Target catalog node ID for this edge")]
+    pub target_node_id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct LibrarianIndexParams {
+    #[schemars(description = "Node kind: doc | source_template | fix | project")]
+    pub kind: String,
+    #[schemars(description = "Human-readable name for this reference")]
+    pub label: String,
+    #[schemars(description = "Locator type: file | url | vault")]
+    pub locator_kind: String,
+    #[schemars(description = "The actual pointer — a file path, URL, or vault note path")]
+    pub locator: String,
+    #[schemars(description = "Free-form retrieval tags")]
+    pub tags: Option<Vec<String>>,
+    #[schemars(description = "Project slug to scope this reference")]
+    pub project_slug: Option<String>,
+    #[schemars(description = "Place under an existing catalog node for hierarchy")]
+    pub parent_id: Option<String>,
+    #[schemars(description = "Optional edge to create at index time")]
+    pub edge: Option<LibrarianIndexEdge>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct LibrarianLookupParams {
+    #[schemars(description = "Look up a single node by ID (returns node + edges)")]
+    pub id: Option<String>,
+    #[schemars(description = "Filter by kind: doc | source_template | fix | project")]
+    pub kinds: Option<Vec<String>>,
+    #[schemars(description = "Filter by tags")]
+    pub tags: Option<Vec<String>>,
+    #[schemars(description = "Scope to a project")]
+    pub project_slug: Option<String>,
+    #[schemars(description = "Case-insensitive search across label and locator")]
+    pub text: Option<String>,
+    #[schemars(description = "Max results. Default 20, max 500.")]
+    pub limit: Option<u32>,
+    #[schemars(description = "Include superseded/deprecated entries. Default false.")]
+    pub include_deprecated: Option<bool>,
+    #[schemars(description = "Find nodes not accessed in N days")]
+    pub stale_before_days: Option<u32>,
+    #[schemars(description = "Browse children of a specific catalog node")]
+    pub parent_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct LibrarianForgetParams {
+    #[schemars(description = "Catalog node ID to remove or deprecate")]
+    pub id: String,
+    #[schemars(
+        description = "Required for hard delete (deprecate=false). Must be true to proceed."
+    )]
+    pub confirm: Option<bool>,
+    #[schemars(
+        description = "Default true. When true: soft-delete (deprecated_at set). When false and confirm=true: permanent removal."
+    )]
+    pub deprecate: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -480,6 +548,7 @@ pub struct DaemonMcp {
     store: Arc<dyn StateModel>,
     memory_store: Option<Arc<dyn MemoryStore>>,
     debug_session_store: Option<Arc<dyn DebugSessionStore>>,
+    librarian_store: Option<Arc<dyn LibrarianStore>>,
     active_state: ActiveSessionState,
     obs_tx: tokio::sync::mpsc::UnboundedSender<Observation>,
     chrome_tx: tokio::sync::mpsc::Sender<ChromeCommand>,
@@ -507,6 +576,7 @@ pub struct DaemonMcpConfig {
     pub store: Arc<dyn StateModel>,
     pub memory_store: Option<Arc<dyn MemoryStore>>,
     pub debug_session_store: Option<Arc<dyn DebugSessionStore>>,
+    pub librarian_store: Option<Arc<dyn LibrarianStore>>,
     pub obs_tx: tokio::sync::mpsc::UnboundedSender<Observation>,
     pub chrome_tx: tokio::sync::mpsc::Sender<ChromeCommand>,
     pub chrome_state: tokio::sync::watch::Receiver<daemon8_chrome::ConnectionState>,
@@ -541,11 +611,15 @@ impl DaemonMcp {
         if cfg.hooks_tool_fn.is_some() {
             router += Self::hooks_tool_router();
         }
+        if cfg.librarian_store.is_some() {
+            router += Self::librarian_tool_router();
+        }
         let (subscription_tx, _) = tokio::sync::watch::channel::<Option<Filter>>(None);
         Self {
             store: cfg.store,
             memory_store: cfg.memory_store,
             debug_session_store: cfg.debug_session_store,
+            librarian_store: cfg.librarian_store,
             active_state: ActiveSessionState::new(),
             obs_tx: cfg.obs_tx,
             chrome_tx: cfg.chrome_tx,
@@ -744,6 +818,7 @@ impl DaemonMcp {
             "memory" => include_str!("../tool_descriptions/help/memory.md"),
             "observations" => include_str!("../tool_descriptions/help/observations.md"),
             "envelope" => include_str!("../tool_descriptions/help/envelope.md"),
+            "librarian" => include_str!("../tool_descriptions/help/librarian.md"),
             _ => include_str!("../tool_descriptions/help/index.md"),
         };
         let topic_returned = if topic == "index"
@@ -757,6 +832,7 @@ impl DaemonMcp {
                     | "memory"
                     | "observations"
                     | "envelope"
+                    | "librarian"
             ) {
             topic.to_string()
         } else {
@@ -1038,8 +1114,19 @@ impl DaemonMcp {
                 );
             }
         };
+        let hint = if self.librarian_store.is_some() {
+            detect_librarian_hint(&params.content)
+        } else {
+            None
+        };
         let inner = save_memory_inner(mem_store.as_ref(), params).await;
-        wrap_inner_result(self, &inner)
+        match hint {
+            Some(h) => match serde_json::from_str::<serde_json::Value>(&inner) {
+                Ok(v) if v.get("error").is_none() => self.ok_with(v, vec![], Some(&h)),
+                _ => wrap_inner_result(self, &inner),
+            },
+            None => wrap_inner_result(self, &inner),
+        }
     }
 
     #[doc = include_str!("../tool_descriptions/query_memory.txt")]
@@ -1643,6 +1730,151 @@ impl DaemonMcp {
     }
 }
 
+#[tool_router(router = librarian_tool_router, vis = "pub")]
+impl DaemonMcp {
+    #[doc = include_str!("../tool_descriptions/librarian_index.txt")]
+    #[tool(name = "librarian_index")]
+    async fn librarian_index(
+        &self,
+        Parameters(params): Parameters<LibrarianIndexParams>,
+    ) -> String {
+        let lib_store = match &self.librarian_store {
+            Some(s) => s,
+            None => {
+                return self.err(
+                    "librarian_store_unavailable",
+                    "librarian catalog not configured",
+                    None,
+                    None,
+                );
+            }
+        };
+        let inner = librarian_index_inner(lib_store.as_ref(), params).await;
+        match serde_json::from_str::<serde_json::Value>(&inner) {
+            Ok(v) if v.get("error").is_some() => wrap_inner_result(self, &inner),
+            Ok(v) => {
+                let mut hints = Vec::new();
+                let kind = v.get("kind").and_then(|k| k.as_str()).unwrap_or("");
+                let version = v.get("version").and_then(|v| v.as_u64()).unwrap_or(1);
+                match kind {
+                    "project" => hints.push(
+                        "Next: index its documentation and source configs with edges linking back.",
+                    ),
+                    "fix" => hints.push(
+                        "Consider linking this fix to the error it resolves with edge kind 'fixes'.",
+                    ),
+                    _ => {}
+                }
+                if version > 1 {
+                    hints.push("Previous version deprecated and linked via supersedes edge.");
+                }
+                if v.get("parent_id").and_then(|p| p.as_str()).is_none() && kind != "project" {
+                    hints.push("Consider organizing under a parent node for hierarchy.");
+                }
+                let hint = if hints.is_empty() {
+                    None
+                } else {
+                    Some(hints.join(" "))
+                };
+                self.ok_with(v, vec!["librarian_lookup"], hint.as_deref())
+            }
+            Err(_) => wrap_inner_result(self, &inner),
+        }
+    }
+
+    #[doc = include_str!("../tool_descriptions/librarian_lookup.txt")]
+    #[tool(name = "librarian_lookup")]
+    async fn librarian_lookup(
+        &self,
+        Parameters(params): Parameters<LibrarianLookupParams>,
+    ) -> String {
+        let lib_store = match &self.librarian_store {
+            Some(s) => s,
+            None => {
+                return self.err(
+                    "librarian_store_unavailable",
+                    "librarian catalog not configured",
+                    None,
+                    None,
+                );
+            }
+        };
+        let inner = librarian_lookup_inner(lib_store.as_ref(), params).await;
+        match serde_json::from_str::<serde_json::Value>(&inner) {
+            Ok(v) if v.get("error").is_some() => wrap_inner_result(self, &inner),
+            Ok(v) => {
+                let mut hints = Vec::new();
+                if let Some(nodes) = v.get("nodes").and_then(|n| n.as_array()) {
+                    let thirty_days_ago_ns = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_nanos() as u64
+                        - 30 * 86_400_000_000_000;
+                    let stale_count = nodes
+                        .iter()
+                        .filter(|n| {
+                            n.get("last_read_at")
+                                .and_then(|r| r.as_u64())
+                                .is_none_or(|ts| ts < thirty_days_ago_ns)
+                        })
+                        .count();
+                    if stale_count > 0 {
+                        hints.push(
+                            "Some results haven't been accessed in over 30 days. Consider reviewing and deprecating stale entries with librarian_forget(deprecate=true).",
+                        );
+                    }
+                }
+                let hint = if hints.is_empty() {
+                    None
+                } else {
+                    Some(hints.join(" "))
+                };
+                self.ok_with(v, vec![], hint.as_deref())
+            }
+            Err(_) => wrap_inner_result(self, &inner),
+        }
+    }
+
+    #[doc = include_str!("../tool_descriptions/librarian_forget.txt")]
+    #[tool(name = "librarian_forget")]
+    async fn librarian_forget(
+        &self,
+        Parameters(params): Parameters<LibrarianForgetParams>,
+    ) -> String {
+        let lib_store = match &self.librarian_store {
+            Some(s) => s,
+            None => {
+                return self.err(
+                    "librarian_store_unavailable",
+                    "librarian catalog not configured",
+                    None,
+                    None,
+                );
+            }
+        };
+        let deprecate = params.deprecate.unwrap_or(true);
+        if deprecate {
+            match lib_store.deprecate_node(&params.id).await {
+                Ok(existed) => self.ok(serde_json::json!({ "deprecated": existed })),
+                Err(e) => self.err("librarian_forget_failed", &e.to_string(), None, None),
+            }
+        } else {
+            if params.confirm != Some(true) {
+                return self.err(
+                    "missing_confirm",
+                    "hard delete requires confirm=true",
+                    Some("pass confirm=true to permanently delete, or use deprecate=true (default) for soft-delete"),
+                    None,
+                );
+            }
+            match lib_store.forget_node(&params.id).await {
+                Ok(existed) => self.ok(serde_json::json!({ "deleted": existed })),
+                Err(e) => self.err("librarian_forget_failed", &e.to_string(), None, None),
+            }
+        }
+    }
+}
+
 // Command handler implementations (inner methods, not registered with tool_router).
 impl DaemonMcp {
     async fn call_setup_tool(&self, action: SetupToolAction) -> String {
@@ -2169,6 +2401,24 @@ fn error_json(msg: &str) -> String {
     )
 }
 
+fn detect_librarian_hint(content: &str) -> Option<String> {
+    let lower = content.to_ascii_lowercase();
+    if lower.contains("documentation")
+        || lower.contains("config template")
+        || lower.contains("source config")
+        || lower.contains("log source")
+    {
+        Some("This memory describes a reference — consider also indexing it with librarian_index(kind=\"doc\" or \"source_template\") for graph-based retrieval.".into())
+    } else if lower.contains("fix for")
+        || lower.contains("fixed by")
+        || lower.contains("workaround")
+    {
+        Some("This memory describes a fix — consider also indexing it with librarian_index(kind=\"fix\") to link it to the error it resolves.".into())
+    } else {
+        None
+    }
+}
+
 impl DaemonMcp {
     /// Returns the connection-state JSON with full state including browser.
     pub async fn connections_json(&self) -> String {
@@ -2441,6 +2691,158 @@ pub async fn query_memory_inner(mem_store: &dyn MemoryStore, params: QueryMemory
     }
 }
 
+pub async fn librarian_index_inner(
+    lib_store: &dyn LibrarianStore,
+    params: LibrarianIndexParams,
+) -> String {
+    let kind = match params.kind.parse::<daemon8_types::LibrarianNodeKind>() {
+        Ok(k) => k,
+        Err(_) => {
+            return error_json(&format!(
+                "invalid kind '{}'. Use: doc, source_template, fix, project",
+                params.kind
+            ));
+        }
+    };
+    let locator_kind = match params.locator_kind.parse::<daemon8_types::LocatorKind>() {
+        Ok(k) => k,
+        Err(_) => {
+            return error_json(&format!(
+                "invalid locator_kind '{}'. Use: file, url, vault",
+                params.locator_kind
+            ));
+        }
+    };
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64;
+
+    let node = daemon8_store::LibrarianNode {
+        id: None,
+        kind,
+        label: params.label,
+        locator_kind,
+        locator: params.locator,
+        tags: params.tags.unwrap_or_default(),
+        project_slug: params.project_slug.unwrap_or_default(),
+        version: 0,
+        parent_id: params.parent_id.clone(),
+        created_at: now,
+        updated_at: now,
+        last_read_at: None,
+        deprecated_at: None,
+    };
+
+    let id = match lib_store.index_node(node).await {
+        Ok(id) => id,
+        Err(e) => return error_json(&format!("librarian_index failed: {e}")),
+    };
+
+    let indexed_node = match lib_store.get_node(&id).await {
+        Ok(Some(n)) => n,
+        _ => {
+            return serde_json::to_string(&serde_json::json!({
+                "id": id, "version": 1, "kind": kind.to_string()
+            }))
+            .unwrap_or_default();
+        }
+    };
+
+    if let Some(ref edge) = params.edge {
+        let edge_kind = match edge.kind.parse::<daemon8_types::LibrarianEdgeKind>() {
+            Ok(k) => k,
+            Err(_) => {
+                return serde_json::to_string(&serde_json::json!({
+                    "id": id,
+                    "version": indexed_node.version,
+                    "kind": kind.to_string(),
+                    "edge_error": format!("invalid edge kind '{}'. Use: has_source, documented_by, fixes, supersedes, child_of", edge.kind)
+                }))
+                .unwrap_or_default();
+            }
+        };
+        let lib_edge = daemon8_store::LibrarianEdge {
+            id: None,
+            kind: edge_kind,
+            from_node: id.clone(),
+            to_node: edge.target_node_id.clone(),
+            created_at: now,
+        };
+        if let Err(e) = lib_store.index_edge(lib_edge).await {
+            return serde_json::to_string(&serde_json::json!({
+                "id": id,
+                "version": indexed_node.version,
+                "kind": kind.to_string(),
+                "edge_error": format!("edge creation failed: {e}")
+            }))
+            .unwrap_or_default();
+        }
+    }
+
+    serde_json::to_string(&serde_json::json!({
+        "id": id,
+        "version": indexed_node.version,
+        "kind": kind.to_string(),
+        "parent_id": params.parent_id,
+    }))
+    .unwrap_or_default()
+}
+
+pub async fn librarian_lookup_inner(
+    lib_store: &dyn LibrarianStore,
+    params: LibrarianLookupParams,
+) -> String {
+    if let Some(ref id) = params.id {
+        let node = match lib_store.get_node(id).await {
+            Ok(Some(n)) => n,
+            Ok(None) => return error_json(&format!("node '{id}' not found")),
+            Err(e) => return error_json(&format!("librarian_lookup failed: {e}")),
+        };
+        let edges = match lib_store.get_edges(id).await {
+            Ok(e) => e,
+            Err(e) => return error_json(&format!("librarian_lookup edges: {e}")),
+        };
+        return serde_json::to_string_pretty(&serde_json::json!({
+            "node": node,
+            "edges": edges,
+        }))
+        .unwrap_or_default();
+    }
+
+    let kinds = params.kinds.map(|v| {
+        v.into_iter()
+            .filter_map(|s| s.parse::<daemon8_types::LibrarianNodeKind>().ok())
+            .collect()
+    });
+
+    let stale_before = params.stale_before_days.map(|days| {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+        now.saturating_sub(u64::from(days) * 86_400_000_000_000)
+    });
+
+    let filter = daemon8_store::LibrarianFilter {
+        kinds,
+        tags: params.tags,
+        project_slug: params.project_slug,
+        text_match: params.text,
+        limit: Some(params.limit.unwrap_or(20).min(500) as usize),
+        include_deprecated: params.include_deprecated.unwrap_or(false),
+        stale_before,
+        parent_id: params.parent_id,
+    };
+
+    match lib_store.lookup(&filter).await {
+        Ok(nodes) => serde_json::to_string_pretty(&serde_json::json!({ "nodes": nodes }))
+            .unwrap_or_else(|e| error_json(&format!("serialization failed: {e}"))),
+        Err(e) => error_json(&format!("librarian_lookup failed: {e}")),
+    }
+}
+
 fn logging_notification(obs: &Observation) -> rmcp::model::LoggingMessageNotificationParam {
     let severity_str = obs.severity.to_string();
     let kind_str = obs.kind.tag().to_string();
@@ -2541,6 +2943,7 @@ mod logging_tests {
             store: store.clone(),
             memory_store: Some(memory_store),
             debug_session_store: Some(debug_session_store),
+            librarian_store: None,
             obs_tx,
             chrome_tx,
             chrome_state,
@@ -2841,6 +3244,7 @@ mod logging_tests {
                 store: shared_store.clone(),
                 memory_store: Some(shared_mem.clone()),
                 debug_session_store: Some(shared_ds.clone()),
+                librarian_store: None,
                 obs_tx: shared_obs_tx.clone(),
                 chrome_tx,
                 chrome_state,
