@@ -263,3 +263,92 @@ async fn subscription_filters_are_per_session() {
     assert_eq!(a.severity_min, Some(Severity::Warn));
     assert_eq!(b.severity_min, Some(Severity::Error));
 }
+
+async fn make_mcp_minimal() -> DaemonMcp {
+    let store = Arc::new(SurrealStore::memory().await.unwrap());
+    let (obs_tx, _) = tokio::sync::mpsc::unbounded_channel();
+    let (chrome_tx, _) = tokio::sync::mpsc::channel(16);
+    let (_, chrome_state_rx) = tokio::sync::watch::channel(ConnectionState::Disconnected);
+    let (broadcast_tx, _) = tokio::sync::broadcast::channel(16);
+    let lens = Arc::new(daemon8_store::LensManager::new(
+        broadcast_tx.subscribe(),
+        None,
+    ));
+    DaemonMcp::new(DaemonMcpConfig {
+        store,
+        memory_store: None,
+        debug_session_store: None,
+        librarian_store: None,
+        obs_tx,
+        chrome_tx,
+        chrome_state: chrome_state_rx,
+        chrome_endpoint: Arc::new(std::sync::Mutex::new(None)),
+        device_screenshot_fn: None,
+        screenshot_dir: std::env::temp_dir().join("daemon8-test-screenshots"),
+        broadcast_tx,
+        lens,
+        setup_tool_fn: None,
+        hooks_tool_fn: None,
+        source_activator: None,
+        cancel: CancellationToken::new(),
+    })
+}
+
+#[tokio::test]
+async fn help_index_omits_disabled_features() {
+    let mcp = make_mcp_minimal().await;
+    let index = mcp.help_index_body();
+    assert!(
+        !index.contains("librarian"),
+        "index must not mention librarian when disabled"
+    );
+    assert!(
+        !index.contains("memory"),
+        "index must not mention memory when disabled"
+    );
+    assert!(
+        !index.contains("hooks"),
+        "index must not mention hooks when disabled"
+    );
+    assert!(
+        index.contains("observations"),
+        "index must always contain observations"
+    );
+    assert!(
+        index.contains("envelope"),
+        "index must always contain envelope"
+    );
+}
+
+#[tokio::test]
+async fn help_index_includes_enabled_features() {
+    let mcp = make_mcp().await;
+    let index = mcp.help_index_body();
+    assert!(
+        index.contains("librarian"),
+        "index must mention librarian when enabled"
+    );
+    assert!(
+        index.contains("memory"),
+        "index must mention memory when enabled"
+    );
+    assert!(
+        index.contains("observations"),
+        "index must mention observations"
+    );
+    assert!(
+        index.contains("Knowledge graph"),
+        "index must have knowledge graph section when librarian enabled"
+    );
+}
+
+#[tokio::test]
+async fn help_unknown_topic_falls_back_to_index() {
+    let mcp = make_mcp().await;
+    let result = mcp.help_topic_body("nonexistent_topic");
+    assert!(result.0 == "index", "unknown topic must resolve to 'index'");
+    assert!(
+        result.1.contains("## Topics"),
+        "fallback body must be the index"
+    );
+}

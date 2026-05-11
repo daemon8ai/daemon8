@@ -171,7 +171,7 @@ pub struct LibrarianNode {
     pub locator: String,
     pub tags: Vec<String>,
     pub project_slug: String,
-    pub version: u32,
+    pub version: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<String>,
     pub created_at: u64,
@@ -180,6 +180,8 @@ pub struct LibrarianNode {
     pub last_read_at: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deprecated_at: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub canonicalized_at: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -21,9 +21,11 @@ use tokio::sync::broadcast;
 use tracing::Instrument;
 
 pub mod envelope;
+pub mod help;
 use envelope::{ActiveSessionEcho, DaemonMeta};
+use help::FeatureGate;
 
-const INSTRUCTIONS: &str = include_str!("../tool_descriptions/instructions.txt");
+const INSTRUCTIONS: &str = include_str!("../tool_descriptions/instructions.md");
 static MCP_SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 fn next_mcp_session_id() -> String {
@@ -394,6 +396,10 @@ pub struct LibrarianIndexParams {
     pub parent_id: Option<String>,
     #[schemars(description = "Optional edge to create at index time")]
     pub edge: Option<LibrarianIndexEdge>,
+    #[schemars(
+        description = "Mark as authoritative reference — canonicalized nodes are never flagged as stale"
+    )]
+    pub canonicalize: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -569,6 +575,7 @@ pub struct DaemonMcp {
     /// Parent cancellation token. The push task spawned in `on_initialized`
     /// uses a child token so daemon shutdown propagates cleanly.
     cancel: tokio_util::sync::CancellationToken,
+    enabled_features: Vec<FeatureGate>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -614,6 +621,22 @@ impl DaemonMcp {
         if cfg.librarian_store.is_some() {
             router += Self::librarian_tool_router();
         }
+        let mut enabled_features = Vec::new();
+        if cfg.memory_store.is_some() {
+            enabled_features.push(FeatureGate::Memory);
+        }
+        if cfg.debug_session_store.is_some() && cfg.memory_store.is_some() {
+            enabled_features.push(FeatureGate::DebugSession);
+        }
+        if cfg.setup_tool_fn.is_some() {
+            enabled_features.push(FeatureGate::Setup);
+        }
+        if cfg.hooks_tool_fn.is_some() {
+            enabled_features.push(FeatureGate::Hooks);
+        }
+        if cfg.librarian_store.is_some() {
+            enabled_features.push(FeatureGate::Librarian);
+        }
         let (subscription_tx, _) = tokio::sync::watch::channel::<Option<Filter>>(None);
         Self {
             store: cfg.store,
@@ -635,6 +658,7 @@ impl DaemonMcp {
             hooks_tool_fn: cfg.hooks_tool_fn,
             source_activator: cfg.source_activator,
             cancel: cfg.cancel,
+            enabled_features,
             tool_router: router,
         }
     }
@@ -660,6 +684,22 @@ impl DaemonMcp {
     #[cfg(feature = "test-util")]
     pub fn child_cancel_token(&self) -> tokio_util::sync::CancellationToken {
         self.cancel.child_token()
+    }
+
+    #[cfg(feature = "test-util")]
+    pub fn help_index_body(&self) -> String {
+        help::build_dynamic_index(&self.enabled_features, self.librarian_store.is_some())
+    }
+
+    #[cfg(feature = "test-util")]
+    pub fn help_topic_body(&self, topic: &str) -> (String, String) {
+        match help::find_topic(topic, &self.enabled_features) {
+            Some(t) => (t.name.to_string(), t.body.to_string()),
+            None => (
+                "index".to_string(),
+                help::build_dynamic_index(&self.enabled_features, self.librarian_store.is_some()),
+            ),
+        }
     }
 
     /// Ensure Chrome is connected, waiting up to `timeout` for the connection.
@@ -718,7 +758,7 @@ impl DaemonMcp {
         }
     }
 
-    #[doc = include_str!("../tool_descriptions/query_observations.txt")]
+    #[doc = include_str!("../tool_descriptions/query_observations.md")]
     #[tool(name = "query_observations")]
     async fn query_observations(&self, Parameters(params): Parameters<ObserveParams>) -> String {
         // If the caller wants browser observations, ensure Chrome is connected.
@@ -782,7 +822,7 @@ impl DaemonMcp {
         }
     }
 
-    #[doc = include_str!("../tool_descriptions/status.txt")]
+    #[doc = include_str!("../tool_descriptions/status.md")]
     #[tool(name = "status")]
     async fn status(&self) -> String {
         match self.store.summary().await {
@@ -808,43 +848,24 @@ impl DaemonMcp {
     )]
     async fn daemon8_help(&self, Parameters(params): Parameters<HelpParams>) -> String {
         let topic = params.topic.as_deref().unwrap_or("index");
-        let body = match topic {
-            "index" => include_str!("../tool_descriptions/help/index.md"),
-            "debug_session" => include_str!("../tool_descriptions/help/debug_session.md"),
-            "checkpoint" => include_str!("../tool_descriptions/help/checkpoint.md"),
-            "setup" => include_str!("../tool_descriptions/help/setup.md"),
-            "hooks" => include_str!("../tool_descriptions/help/hooks.md"),
-            "lens" => include_str!("../tool_descriptions/help/lens.md"),
-            "memory" => include_str!("../tool_descriptions/help/memory.md"),
-            "observations" => include_str!("../tool_descriptions/help/observations.md"),
-            "envelope" => include_str!("../tool_descriptions/help/envelope.md"),
-            "librarian" => include_str!("../tool_descriptions/help/librarian.md"),
-            _ => include_str!("../tool_descriptions/help/index.md"),
-        };
-        let topic_returned = if topic == "index"
-            || matches!(
-                topic,
-                "debug_session"
-                    | "checkpoint"
-                    | "setup"
-                    | "hooks"
-                    | "lens"
-                    | "memory"
-                    | "observations"
-                    | "envelope"
-                    | "librarian"
-            ) {
-            topic.to_string()
-        } else {
-            "index".to_string()
-        };
-        self.ok(serde_json::json!({
-            "topic": topic_returned,
-            "body": body,
-        }))
+        if topic == "index" {
+            let body =
+                help::build_dynamic_index(&self.enabled_features, self.librarian_store.is_some());
+            return self.ok(serde_json::json!({ "topic": "index", "body": body }));
+        }
+        match help::find_topic(topic, &self.enabled_features) {
+            Some(t) => self.ok(serde_json::json!({ "topic": t.name, "body": t.body })),
+            None => {
+                let body = help::build_dynamic_index(
+                    &self.enabled_features,
+                    self.librarian_store.is_some(),
+                );
+                self.ok(serde_json::json!({ "topic": "index", "body": body }))
+            }
+        }
     }
 
-    #[doc = include_str!("../tool_descriptions/create_checkpoint.txt")]
+    #[doc = include_str!("../tool_descriptions/create_checkpoint.md")]
     #[tool(name = "create_checkpoint")]
     async fn create_checkpoint(
         &self,
@@ -905,13 +926,13 @@ impl DaemonMcp {
         )
     }
 
-    #[doc = include_str!("../tool_descriptions/list_connections.txt")]
+    #[doc = include_str!("../tool_descriptions/list_connections.md")]
     #[tool(name = "list_connections")]
     async fn list_connections(&self) -> String {
         wrap_inner_result(self, &self.connections_json().await)
     }
 
-    #[doc = include_str!("../tool_descriptions/ingest_observation.txt")]
+    #[doc = include_str!("../tool_descriptions/ingest_observation.md")]
     #[tool(name = "ingest_observation")]
     async fn ingest_observation(&self, Parameters(params): Parameters<IngestParams>) -> String {
         let mut body = serde_json::Map::new();
@@ -989,7 +1010,7 @@ impl DaemonMcp {
         self.ok(serde_json::json!({"ok": true}))
     }
 
-    #[doc = include_str!("../tool_descriptions/subscribe_observations.txt")]
+    #[doc = include_str!("../tool_descriptions/subscribe_observations.md")]
     #[tool(name = "subscribe_observations")]
     async fn subscribe_observations(
         &self,
@@ -1043,13 +1064,13 @@ impl DaemonMcp {
 
 #[tool_router(router = action_tool_router, vis = "pub")]
 impl DaemonMcp {
-    #[doc = include_str!("../tool_descriptions/connect_browser.txt")]
+    #[doc = include_str!("../tool_descriptions/connect_browser.md")]
     #[tool(name = "connect_browser")]
     async fn connect_browser(&self, Parameters(params): Parameters<ConnectParams>) -> String {
         self.connect_browser_inner(params).await
     }
 
-    #[doc = include_str!("../tool_descriptions/issue_command.txt")]
+    #[doc = include_str!("../tool_descriptions/issue_command.md")]
     #[tool(name = "issue_command")]
     async fn issue_command(&self, Parameters(params): Parameters<ActParams>) -> String {
         self.issue_command_inner(params).await
@@ -1058,7 +1079,7 @@ impl DaemonMcp {
 
 #[tool_router(router = lens_tool_router, vis = "pub")]
 impl DaemonMcp {
-    #[doc = include_str!("../tool_descriptions/set_lens.txt")]
+    #[doc = include_str!("../tool_descriptions/set_lens.md")]
     #[tool(name = "set_lens")]
     async fn set_lens(&self, Parameters(params): Parameters<LensParams>) -> String {
         let filter = Filter {
@@ -1083,14 +1104,14 @@ impl DaemonMcp {
         self.ok(serde_json::to_value(&status).unwrap_or(serde_json::Value::Null))
     }
 
-    #[doc = include_str!("../tool_descriptions/clear_lens.txt")]
+    #[doc = include_str!("../tool_descriptions/clear_lens.md")]
     #[tool(name = "clear_lens")]
     async fn clear_lens(&self) -> String {
         self.lens.clear().await;
         self.ok(serde_json::json!({"cleared": true}))
     }
 
-    #[doc = include_str!("../tool_descriptions/lens_status.txt")]
+    #[doc = include_str!("../tool_descriptions/lens_status.md")]
     #[tool(name = "lens_status")]
     async fn lens_status(&self) -> String {
         let status = self.lens.status().await;
@@ -1100,7 +1121,7 @@ impl DaemonMcp {
 
 #[tool_router(router = memory_tool_router, vis = "pub")]
 impl DaemonMcp {
-    #[doc = include_str!("../tool_descriptions/save_memory.txt")]
+    #[doc = include_str!("../tool_descriptions/save_memory.md")]
     #[tool(name = "save_memory")]
     async fn save_memory(&self, Parameters(params): Parameters<SaveMemoryParams>) -> String {
         let mem_store = match &self.memory_store {
@@ -1129,7 +1150,7 @@ impl DaemonMcp {
         }
     }
 
-    #[doc = include_str!("../tool_descriptions/query_memory.txt")]
+    #[doc = include_str!("../tool_descriptions/query_memory.md")]
     #[tool(name = "query_memory")]
     async fn query_memory(&self, Parameters(params): Parameters<QueryMemoryParams>) -> String {
         let mem_store = match &self.memory_store {
@@ -1147,7 +1168,7 @@ impl DaemonMcp {
         wrap_inner_result(self, &inner)
     }
 
-    #[doc = include_str!("../tool_descriptions/forget_memory.txt")]
+    #[doc = include_str!("../tool_descriptions/forget_memory.md")]
     #[tool(name = "forget_memory")]
     async fn forget_memory(&self, Parameters(params): Parameters<ForgetMemoryParams>) -> String {
         if let Err(msg) = check_forget_memory_confirm(params.confirm) {
@@ -1248,7 +1269,7 @@ fn validate_agent_id(id: &str) -> Result<(), String> {
 
 #[tool_router(router = debug_session_tool_router, vis = "pub")]
 impl DaemonMcp {
-    #[doc = include_str!("../tool_descriptions/start_debug_session.txt")]
+    #[doc = include_str!("../tool_descriptions/start_debug_session.md")]
     #[tool(name = "start_debug_session")]
     async fn start_debug_session(
         &self,
@@ -1321,7 +1342,7 @@ impl DaemonMcp {
         }
     }
 
-    #[doc = include_str!("../tool_descriptions/end_debug_session.txt")]
+    #[doc = include_str!("../tool_descriptions/end_debug_session.md")]
     #[tool(name = "end_debug_session")]
     async fn end_debug_session(
         &self,
@@ -1336,7 +1357,7 @@ impl DaemonMcp {
         .await
     }
 
-    #[doc = include_str!("../tool_descriptions/resolve_debug_session.txt")]
+    #[doc = include_str!("../tool_descriptions/resolve_debug_session.md")]
     #[tool(name = "resolve_debug_session")]
     async fn resolve_debug_session(
         &self,
@@ -1345,7 +1366,7 @@ impl DaemonMcp {
         end_or_resolve_inner(self, EndIntent::Resolve(params)).await
     }
 
-    #[doc = include_str!("../tool_descriptions/list_debug_sessions.txt")]
+    #[doc = include_str!("../tool_descriptions/list_debug_sessions.md")]
     #[tool(name = "list_debug_sessions")]
     async fn list_debug_sessions(
         &self,
@@ -1632,7 +1653,7 @@ impl DaemonMcp {
 
 #[tool_router(router = setup_tool_router, vis = "pub")]
 impl DaemonMcp {
-    #[doc = include_str!("../tool_descriptions/setup_status.txt")]
+    #[doc = include_str!("../tool_descriptions/setup_status.md")]
     #[tool(name = "setup_status")]
     async fn setup_status(&self, Parameters(params): Parameters<SetupStatusParams>) -> String {
         let inner = self
@@ -1646,7 +1667,7 @@ impl DaemonMcp {
         wrap_inner_result(self, &inner)
     }
 
-    #[doc = include_str!("../tool_descriptions/setup_plan.txt")]
+    #[doc = include_str!("../tool_descriptions/setup_plan.md")]
     #[tool(name = "setup_plan")]
     async fn setup_plan(&self, Parameters(params): Parameters<SetupPlanParams>) -> String {
         let inner = self
@@ -1660,7 +1681,7 @@ impl DaemonMcp {
         wrap_inner_result(self, &inner)
     }
 
-    #[doc = include_str!("../tool_descriptions/setup_apply.txt")]
+    #[doc = include_str!("../tool_descriptions/setup_apply.md")]
     #[tool(name = "setup_apply")]
     async fn setup_apply(&self, Parameters(params): Parameters<SetupApplyParams>) -> String {
         let inner = self
@@ -1677,7 +1698,7 @@ impl DaemonMcp {
 
 #[tool_router(router = hooks_tool_router, vis = "pub")]
 impl DaemonMcp {
-    #[doc = include_str!("../tool_descriptions/hooks_list.txt")]
+    #[doc = include_str!("../tool_descriptions/hooks_list.md")]
     #[tool(name = "hooks_list")]
     async fn hooks_list(&self) -> String {
         let inner = self
@@ -1690,7 +1711,7 @@ impl DaemonMcp {
         wrap_inner_result(self, &inner)
     }
 
-    #[doc = include_str!("../tool_descriptions/hooks_remove.txt")]
+    #[doc = include_str!("../tool_descriptions/hooks_remove.md")]
     #[tool(name = "hooks_remove")]
     async fn hooks_remove(&self, Parameters(params): Parameters<HooksToolAction>) -> String {
         let inner = self
@@ -1703,7 +1724,7 @@ impl DaemonMcp {
         wrap_inner_result(self, &inner)
     }
 
-    #[doc = include_str!("../tool_descriptions/hooks_update.txt")]
+    #[doc = include_str!("../tool_descriptions/hooks_update.md")]
     #[tool(name = "hooks_update")]
     async fn hooks_update(&self, Parameters(params): Parameters<HooksToolAction>) -> String {
         let inner = self
@@ -1716,7 +1737,7 @@ impl DaemonMcp {
         wrap_inner_result(self, &inner)
     }
 
-    #[doc = include_str!("../tool_descriptions/hooks_repair.txt")]
+    #[doc = include_str!("../tool_descriptions/hooks_repair.md")]
     #[tool(name = "hooks_repair")]
     async fn hooks_repair(&self) -> String {
         let inner = self
@@ -1732,7 +1753,7 @@ impl DaemonMcp {
 
 #[tool_router(router = librarian_tool_router, vis = "pub")]
 impl DaemonMcp {
-    #[doc = include_str!("../tool_descriptions/librarian_index.txt")]
+    #[doc = include_str!("../tool_descriptions/librarian_index.md")]
     #[tool(name = "librarian_index")]
     async fn librarian_index(
         &self,
@@ -1755,7 +1776,7 @@ impl DaemonMcp {
             Ok(v) => {
                 let mut hints = Vec::new();
                 let kind = v.get("kind").and_then(|k| k.as_str()).unwrap_or("");
-                let version = v.get("version").and_then(|v| v.as_u64()).unwrap_or(1);
+                let version = v.get("version").and_then(|v| v.as_str()).unwrap_or("");
                 match kind {
                     "project" => hints.push(
                         "Next: index its documentation and source configs with edges linking back.",
@@ -1765,7 +1786,7 @@ impl DaemonMcp {
                     ),
                     _ => {}
                 }
-                if version > 1 {
+                if version.matches('.').count() > 2 {
                     hints.push("Previous version deprecated and linked via supersedes edge.");
                 }
                 if v.get("parent_id").and_then(|p| p.as_str()).is_none() && kind != "project" {
@@ -1782,7 +1803,7 @@ impl DaemonMcp {
         }
     }
 
-    #[doc = include_str!("../tool_descriptions/librarian_lookup.txt")]
+    #[doc = include_str!("../tool_descriptions/librarian_lookup.md")]
     #[tool(name = "librarian_lookup")]
     async fn librarian_lookup(
         &self,
@@ -1813,6 +1834,9 @@ impl DaemonMcp {
                     let stale_count = nodes
                         .iter()
                         .filter(|n| {
+                            if n.get("canonicalized_at").and_then(|c| c.as_u64()).is_some() {
+                                return false;
+                            }
                             n.get("last_read_at")
                                 .and_then(|r| r.as_u64())
                                 .is_none_or(|ts| ts < thirty_days_ago_ns)
@@ -1835,7 +1859,7 @@ impl DaemonMcp {
         }
     }
 
-    #[doc = include_str!("../tool_descriptions/librarian_forget.txt")]
+    #[doc = include_str!("../tool_descriptions/librarian_forget.md")]
     #[tool(name = "librarian_forget")]
     async fn librarian_forget(
         &self,
@@ -2727,12 +2751,17 @@ pub async fn librarian_index_inner(
         locator: params.locator,
         tags: params.tags.unwrap_or_default(),
         project_slug: params.project_slug.unwrap_or_default(),
-        version: 0,
+        version: String::new(),
         parent_id: params.parent_id.clone(),
         created_at: now,
         updated_at: now,
         last_read_at: None,
         deprecated_at: None,
+        canonicalized_at: if params.canonicalize.unwrap_or(false) {
+            Some(now)
+        } else {
+            None
+        },
     };
 
     let id = match lib_store.index_node(node).await {
@@ -2744,7 +2773,7 @@ pub async fn librarian_index_inner(
         Ok(Some(n)) => n,
         _ => {
             return serde_json::to_string(&serde_json::json!({
-                "id": id, "version": 1, "kind": kind.to_string()
+                "id": id, "version": "unknown", "kind": kind.to_string()
             }))
             .unwrap_or_default();
         }

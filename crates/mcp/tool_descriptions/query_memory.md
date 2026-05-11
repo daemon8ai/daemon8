@@ -1,0 +1,29 @@
+## Purpose
+
+Search long-term memories (pattern, decision, error_signature, session_summary, user_flagged). AND-composed filters; results ordered newest first.
+
+## When
+
+Checking whether a relevant pattern or prior fix exists before acting; retrieving a session summary by tag; auditing recent memories per project. Especially: query_memory(tags=["hash:<error_hash>"]) to find prior fixes for a recurring error.
+
+## Prereq
+
+None.
+
+## Args
+  - text: optional string. Substring across content.
+  - kinds: optional list. Filter by kind.
+  - tags: optional list. ALL listed tags must be present.
+  - project_slug: optional string. Scope.
+  - limit: optional integer. Default 20.
+
+## Returns
+  result: array of {id, content, kind, tags, project_slug, session_id?, source_observations, created_at, updated_at, confidence, data?}.
+  Empty array is the canonical "nothing matched" response (not an error).
+
+## Errors
+  - memory_store_unavailable: persistence not configured.
+
+## Next
+
+get_memory by id (use save_memory's id) for a single row; forget_memory(confirm=true) to delete.

@@ -11,8 +11,7 @@ use tokio_util::sync::CancellationToken;
 
 use daemon8_mcp::ChromeCommand;
 use daemon8_store::{
-    DebugSessionStore, LibrarianStore, MemoryStore, ObservationHashCache, StateModel, SurrealStore,
-    error_hash,
+    DebugSessionStore, MemoryStore, ObservationHashCache, StateModel, SurrealStore, error_hash,
 };
 use daemon8_types::Observation;
 

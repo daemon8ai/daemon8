@@ -34,12 +34,13 @@ impl SurrealLibrarianStore {
                  DEFINE FIELD IF NOT EXISTS locator       ON catalog_node TYPE string;
                  DEFINE FIELD IF NOT EXISTS tags          ON catalog_node TYPE array<string>;
                  DEFINE FIELD IF NOT EXISTS project_slug  ON catalog_node TYPE string;
-                 DEFINE FIELD IF NOT EXISTS version       ON catalog_node TYPE int;
+                 DEFINE FIELD IF NOT EXISTS version       ON catalog_node TYPE string;
                  DEFINE FIELD IF NOT EXISTS parent_id     ON catalog_node TYPE option<string>;
                  DEFINE FIELD IF NOT EXISTS created_at    ON catalog_node TYPE int;
                  DEFINE FIELD IF NOT EXISTS updated_at    ON catalog_node TYPE int;
                  DEFINE FIELD IF NOT EXISTS last_read_at  ON catalog_node TYPE option<int>;
-                 DEFINE FIELD IF NOT EXISTS deprecated_at ON catalog_node TYPE option<int>;
+                 DEFINE FIELD IF NOT EXISTS deprecated_at    ON catalog_node TYPE option<int>;
+                 DEFINE FIELD IF NOT EXISTS canonicalized_at ON catalog_node TYPE option<int>;
 
                  DEFINE INDEX IF NOT EXISTS idx_cn_kind       ON catalog_node FIELDS kind;
                  DEFINE INDEX IF NOT EXISTS idx_cn_project    ON catalog_node FIELDS project_slug;
@@ -103,8 +104,10 @@ impl SurrealLibrarianStore {
         }
 
         if let Some(threshold) = filter.stale_before {
-            conditions
-                .push("(last_read_at IS NONE OR last_read_at < $stale_threshold)".to_string());
+            conditions.push(
+                "(canonicalized_at IS NONE) AND (last_read_at IS NONE OR last_read_at < $stale_threshold)"
+                    .to_string(),
+            );
             binds.push(("stale_threshold".into(), serde_json::json!(threshold)));
         }
 
@@ -199,6 +202,46 @@ fn current_ns() -> u64 {
         .as_nanos() as u64
 }
 
+fn datever_today() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let days = secs / 86400;
+    let (y, m, d) = civil_from_days(days as i64);
+    format!("{y:04}.{m:02}.{d:02}")
+}
+
+fn datever_next(today: &str, existing: &str) -> String {
+    if !existing.starts_with(today) {
+        return today.to_string();
+    }
+    let suffix = &existing[today.len()..];
+    if suffix.is_empty() {
+        return format!("{today}.2");
+    }
+    if let Some(n_str) = suffix.strip_prefix('.')
+        && let Ok(n) = n_str.parse::<u32>()
+    {
+        return format!("{today}.{}", n + 1);
+    }
+    today.to_string()
+}
+
+fn civil_from_days(days: i64) -> (i32, u32, u32) {
+    let z = days + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = (z - era * 146097) as u32;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    (y as i32, m, d)
+}
+
 #[async_trait::async_trait]
 impl LibrarianStore for SurrealLibrarianStore {
     async fn index_node(&self, mut node: LibrarianNode) -> Result<String, StoreError> {
@@ -223,13 +266,18 @@ impl LibrarianStore for SurrealLibrarianStore {
                 .get("id")
                 .and_then(|v| extract_record_id(v, "catalog_node"))
         {
-            let old_version: u32 = row.get("version").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
-            node.version = old_version + 1;
+            let old_version = row
+                .get("version")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let today = datever_today();
+            node.version = datever_next(&today, &old_version);
             old_id = Some(bare);
         }
 
-        if node.version == 0 {
-            node.version = 1;
+        if node.version.is_empty() {
+            node.version = datever_today();
         }
 
         let json_content = serde_json::to_value(&node)?;
@@ -507,12 +555,13 @@ mod tests {
             locator: locator.to_string(),
             tags: vec![],
             project_slug: project.to_string(),
-            version: 0,
+            version: String::new(),
             parent_id: None,
             created_at: now,
             updated_at: now,
             last_read_at: None,
             deprecated_at: None,
+            canonicalized_at: None,
         }
     }
 
@@ -532,7 +581,11 @@ mod tests {
         let fetched = lib.get_node(&id).await.unwrap().unwrap();
         assert_eq!(fetched.label, "SurrealDB docs");
         assert_eq!(fetched.kind, LibrarianNodeKind::Doc);
-        assert_eq!(fetched.version, 1);
+        assert!(
+            fetched.version.len() >= 10 && fetched.version.matches('.').count() == 2,
+            "version must be YYYY.MM.DD format, got: {}",
+            fetched.version
+        );
     }
 
     #[tokio::test]
@@ -580,12 +633,16 @@ mod tests {
         let node1 = make_node(LibrarianNodeKind::Doc, "v1 docs", "/docs/api", "p1");
         let id1 = lib.index_node(node1).await.unwrap();
 
+        let v1 = lib.get_node(&id1).await.unwrap().unwrap();
+        let v1_version = v1.version.clone();
+
         let node2 = make_node(LibrarianNodeKind::Doc, "v2 docs", "/docs/api", "p1");
         let id2 = lib.index_node(node2).await.unwrap();
         assert_ne!(id1, id2);
 
         let v2 = lib.get_node(&id2).await.unwrap().unwrap();
-        assert_eq!(v2.version, 2);
+        let expected_v2 = format!("{v1_version}.2");
+        assert_eq!(v2.version, expected_v2);
         assert_eq!(v2.label, "v2 docs");
 
         // Old node should be deprecated
@@ -953,5 +1010,84 @@ mod tests {
             node.last_read_at.is_none(),
             "lookup must not update last_read_at"
         );
+    }
+
+    #[tokio::test]
+    async fn canonicalized_at_persists() {
+        let (_store, lib) = setup().await;
+
+        let mut node = make_node(LibrarianNodeKind::Doc, "canonical ref", "/canon", "p1");
+        let now = current_ns();
+        node.canonicalized_at = Some(now);
+        let id = lib.index_node(node).await.unwrap();
+
+        let fetched = lib.get_node(&id).await.unwrap().unwrap();
+        assert_eq!(fetched.canonicalized_at, Some(now));
+    }
+
+    #[tokio::test]
+    async fn stale_filter_excludes_canonicalized_nodes() {
+        let (_store, lib) = setup().await;
+
+        let mut canonical = make_node(LibrarianNodeKind::Doc, "canonical", "/c", "p1");
+        canonical.canonicalized_at = Some(current_ns());
+        lib.index_node(canonical).await.unwrap();
+
+        let regular = make_node(LibrarianNodeKind::Doc, "regular", "/r", "p1");
+        lib.index_node(regular).await.unwrap();
+
+        // Threshold in the future catches all nodes (both have last_read_at = None).
+        // The test asserts only the non-canonicalized node appears.
+        let future_threshold = current_ns() + 1_000_000_000;
+        let filter = LibrarianFilter {
+            stale_before: Some(future_threshold),
+            ..Default::default()
+        };
+        let results = lib.lookup(&filter).await.unwrap();
+        assert_eq!(results.len(), 1, "only non-canonicalized node is stale");
+        assert_eq!(results[0].label, "regular");
+    }
+
+    #[test]
+    fn datever_next_same_day_increments() {
+        assert_eq!(datever_next("2026.05.11", "2026.05.11"), "2026.05.11.2");
+        assert_eq!(datever_next("2026.05.11", "2026.05.11.2"), "2026.05.11.3");
+        assert_eq!(
+            datever_next("2026.05.11", "2026.05.11.99"),
+            "2026.05.11.100"
+        );
+    }
+
+    #[test]
+    fn datever_next_different_day_resets() {
+        assert_eq!(datever_next("2026.05.12", "2026.05.11"), "2026.05.12");
+        assert_eq!(datever_next("2026.05.12", "2026.05.11.3"), "2026.05.12");
+        assert_eq!(datever_next("2026.01.01", "2025.12.31.5"), "2026.01.01");
+    }
+
+    #[test]
+    fn datever_next_handles_empty_existing() {
+        assert_eq!(datever_next("2026.05.11", ""), "2026.05.11");
+    }
+
+    #[test]
+    fn civil_from_days_known_dates() {
+        assert_eq!(civil_from_days(0), (1970, 1, 1));
+        assert_eq!(civil_from_days(365), (1971, 1, 1));
+        assert_eq!(civil_from_days(10957), (2000, 1, 1));
+        assert_eq!(civil_from_days(11016), (2000, 2, 29));
+        assert_eq!(civil_from_days(20088), (2024, 12, 31));
+        assert_eq!(civil_from_days(20089), (2025, 1, 1));
+    }
+
+    #[test]
+    fn datever_today_format_is_valid() {
+        let dv = datever_today();
+        assert_eq!(dv.matches('.').count(), 2, "must have exactly 2 dots");
+        let parts: Vec<&str> = dv.split('.').collect();
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parts[0].len(), 4, "year must be 4 digits");
+        assert_eq!(parts[1].len(), 2, "month must be 2 digits");
+        assert_eq!(parts[2].len(), 2, "day must be 2 digits");
     }
 }
