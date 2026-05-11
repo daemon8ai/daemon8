@@ -16,6 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 daemon8-types.workspace = true
+daemon8-providers.workspace = true
 daemon8-store.workspace = true
 daemon8-ingest.workspace = true
 daemon8-chrome.workspace = true

@@ -31,8 +31,22 @@ pub struct Config {
     pub sources: BTreeMap<String, SourceConfig>,
     #[serde(default)]
     pub setup: SetupConfig,
+    #[serde(default)]
+    pub debug_session: DebugSessionConfig,
+    #[serde(default)]
+    pub source_config: SourceManagerConfig,
     #[serde(skip)]
     pub config_dir: PathBuf,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DebugSessionConfig {
+    /// How long an active debug session may go without activity before the
+    /// daemon auto-ends it (writes a thin SessionSummary, marks as
+    /// abandoned). None falls back to `cleanup::DEFAULT_INACTIVITY_AUTO_END_SECS`.
+    #[serde(default)]
+    pub inactivity_auto_end_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -107,7 +121,7 @@ pub struct UnixConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AdbConfig {
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub enabled: bool,
     #[serde(default = "default_adb_server")]
     pub server_addr: SocketAddrV4,
@@ -179,6 +193,8 @@ pub struct FileSourceConfig {
     pub path: String,
     #[serde(default = "default_line_parser")]
     pub parser: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parser_pattern: Option<String>,
     #[serde(default)]
     pub tags: Vec<String>,
 }
@@ -217,6 +233,25 @@ pub enum HookPolicy {
     Install,
     /// Setup deferred hook installation; the operator wires hooks themselves.
     Manual,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceManagerConfig {
+    #[serde(default = "default_idle_ttl_secs")]
+    pub idle_ttl_secs: u64,
+}
+
+impl Default for SourceManagerConfig {
+    fn default() -> Self {
+        Self {
+            idle_ttl_secs: default_idle_ttl_secs(),
+        }
+    }
+}
+
+fn default_idle_ttl_secs() -> u64 {
+    900
 }
 
 fn default_line_parser() -> String {
@@ -278,6 +313,8 @@ impl Default for Config {
             logging: LoggingConfig::default(),
             sources: BTreeMap::new(),
             setup: SetupConfig::default(),
+            debug_session: DebugSessionConfig::default(),
+            source_config: SourceManagerConfig::default(),
             config_dir: project_dirs()
                 .map(|d| d.config_dir().to_path_buf())
                 .unwrap_or_else(|| PathBuf::from(".")),
@@ -288,7 +325,7 @@ impl Default for Config {
 impl Default for AdbConfig {
     fn default() -> Self {
         Self {
-            enabled: default_true(),
+            enabled: false,
             server_addr: default_adb_server(),
             scan_interval_secs: default_adb_scan_interval(),
         }
@@ -404,6 +441,7 @@ fn is_config_env_key(key: &str) -> bool {
             | "ingestion"
             | "logging"
             | "sources"
+            | "source_config"
             | "setup"
     )
 }

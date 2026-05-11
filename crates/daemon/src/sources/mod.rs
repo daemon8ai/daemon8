@@ -2,5 +2,6 @@
 // Copyright (c) 2026 Havy.tech, LLC
 
 mod file_watcher;
+mod source_manager;
 
-pub use file_watcher::spawn_file_sources;
+pub use source_manager::SourceManager;

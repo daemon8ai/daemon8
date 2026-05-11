@@ -1,0 +1,28 @@
+## Purpose
+
+Remove or deprecate a catalog reference. Prefer soft-delete (deprecate=true) which preserves history.
+
+## When
+
+A reference is outdated, moved, or no longer relevant. Deprecation is reversible; hard delete is permanent.
+
+## Prereq
+
+None.
+
+## Args
+  - id: required string. The catalog node ID to remove.
+  - confirm: optional bool. Required for hard delete (deprecate=false). Must be true to proceed.
+  - deprecate: optional bool. Default true. When true: sets deprecated_at (soft-delete, node still visible with include_deprecated=true). When false and confirm=true: permanent removal of node and all its edges.
+
+## Returns
+  result: {deleted: bool} for hard delete, {deprecated: bool} for soft delete.
+
+## Errors
+  - librarian_store_unavailable: catalog not configured.
+  - missing_confirm: hard delete requested without confirm=true.
+  - not_found: no node with that ID exists.
+
+## Next
+
+librarian_lookup to verify removal.

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LicenseRef-FCL-1.0-ALv2
 // Copyright (c) 2026 Havy.tech, LLC
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -12,9 +12,10 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
 use daemon8_parse::Parser;
+use daemon8_parse::timestamp::normalize_timestamp_ns;
 use daemon8_types::{AppName, Observation, ObservationKind, Origin, Severity};
 
-use crate::config::{FileSourceConfig, SourceConfig};
+use crate::config::FileSourceConfig;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
 
@@ -25,35 +26,17 @@ struct TailContext {
     obs_tx: mpsc::UnboundedSender<Observation>,
 }
 
-pub fn spawn_file_sources(
-    tasks: &mut JoinSet<()>,
-    sources: &BTreeMap<String, SourceConfig>,
-    obs_tx: mpsc::UnboundedSender<Observation>,
-    cancel: CancellationToken,
-) {
-    for (name, source) in sources {
-        match source {
-            SourceConfig::File(cfg) => {
-                spawn_file_source(
-                    tasks,
-                    name.clone(),
-                    cfg.clone(),
-                    obs_tx.clone(),
-                    cancel.clone(),
-                );
-            }
-        }
-    }
-}
-
-fn spawn_file_source(
+pub(crate) fn spawn_file_source(
     tasks: &mut JoinSet<()>,
     name: String,
     cfg: FileSourceConfig,
     obs_tx: mpsc::UnboundedSender<Observation>,
     cancel: CancellationToken,
 ) {
-    let parser = match daemon8_parse::resolve_parser(&cfg.parser) {
+    let parser = match daemon8_parse::resolve_parser_with_pattern(
+        &cfg.parser,
+        cfg.parser_pattern.as_deref(),
+    ) {
         Ok(p) => Arc::from(p),
         Err(e) => {
             tracing::error!(source = %name, parser = %cfg.parser, "failed to resolve parser: {e}");
@@ -247,6 +230,12 @@ fn read_new_lines(
                 None,
             );
 
+            if let Some(ref ts) = parsed.timestamp
+                && let Some(ns) = normalize_timestamp_ns(ts)
+            {
+                obs.timestamp_ns = ns as u64;
+            }
+
             if !ctx.tags.is_empty() {
                 obs.tags = Some(ctx.tags.clone());
             }
@@ -303,8 +292,32 @@ fn path_matches_glob(path: &Path, pattern: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
     use std::io::Write;
     use tempfile::tempdir;
+
+    use crate::config::SourceConfig;
+
+    fn spawn_file_sources(
+        tasks: &mut JoinSet<()>,
+        sources: &BTreeMap<String, SourceConfig>,
+        obs_tx: mpsc::UnboundedSender<Observation>,
+        cancel: CancellationToken,
+    ) {
+        for (name, source) in sources {
+            match source {
+                SourceConfig::File(cfg) => {
+                    spawn_file_source(
+                        tasks,
+                        name.clone(),
+                        cfg.clone(),
+                        obs_tx.clone(),
+                        cancel.clone(),
+                    );
+                }
+            }
+        }
+    }
 
     #[tokio::test]
     async fn basic_tail_produces_observations() {
@@ -322,6 +335,7 @@ mod tests {
             SourceConfig::File(FileSourceConfig {
                 path: log_file.to_string_lossy().to_string(),
                 parser: "line".to_string(),
+                parser_pattern: None,
                 tags: vec![],
             }),
         );
@@ -373,6 +387,7 @@ mod tests {
             SourceConfig::File(FileSourceConfig {
                 path: log_file.to_string_lossy().to_string(),
                 parser: "json".to_string(),
+                parser_pattern: None,
                 tags: vec!["app".to_string()],
             }),
         );
@@ -438,6 +453,7 @@ mod tests {
             SourceConfig::File(FileSourceConfig {
                 path: log_file.to_string_lossy().to_string(),
                 parser: "line".to_string(),
+                parser_pattern: None,
                 tags: vec![],
             }),
         );

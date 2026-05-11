@@ -1,15 +1,27 @@
 // SPDX-License-Identifier: LicenseRef-FCL-1.0-ALv2
 // Copyright (c) 2026 Havy.tech, LLC
 
+pub mod active_session;
+pub mod debug_session;
+pub mod error_hash;
+pub mod hash_cache;
 mod lens;
+pub mod librarian;
 pub mod memory;
 mod surreal;
 
+pub use active_session::{ActiveDebugSession, ActiveSessionState};
+pub use debug_session::SurrealDebugSessionStore;
+pub use hash_cache::ObservationHashCache;
 pub use lens::{LensManager, LensStatus};
+pub use librarian::SurrealLibrarianStore;
 pub use memory::SurrealMemoryStore;
 pub use surreal::SurrealStore;
 
-use daemon8_types::{Checkpoint, Filter, MemoryKind, Observation, RuntimeSummary, StateSlice};
+use daemon8_types::{
+    Checkpoint, DebugSessionOutcome, DebugSessionStatus, Filter, LibrarianEdgeKind,
+    LibrarianNodeKind, LocatorKind, MemoryKind, Observation, RuntimeSummary, StateSlice,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, thiserror::Error)]
@@ -58,6 +70,11 @@ pub struct Memory {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
     pub confidence: f64,
+    /// Optional structured payload. SessionSummary uses this to carry
+    /// resolve_debug_session's rich-capture fields (root_cause, fix_diff,
+    /// commands_used, related_errors). Other memory kinds may leave it empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -77,4 +94,128 @@ pub trait MemoryStore: Send + Sync {
     async fn get_memory(&self, id: &str) -> Result<Option<Memory>, StoreError>;
     async fn update_memory(&self, memory: Memory) -> Result<(), StoreError>;
     async fn forget_memory(&self, id: &str) -> Result<bool, StoreError>;
+}
+
+/// A persistent debug investigation. Multiple checkpoints belong to one session;
+/// the session is the high-level lifecycle that bookends a debugging effort.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DebugSession {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub started_at: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ended_at: Option<u64>,
+    pub last_activity: u64,
+    pub project_slug: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub status: DebugSessionStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<DebugSessionOutcome>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary_memory_id: Option<String>,
+    pub agent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feature: Option<String>,
+}
+
+/// A bookmark within a debug session — anchors a moment in the observation
+/// stream so the agent can ask "what changed since this point" later.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DebugCheckpoint {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub debug_session_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub created_at: u64,
+    pub seq_at_creation: u64,
+}
+
+#[async_trait::async_trait]
+pub trait DebugSessionStore: Send + Sync {
+    async fn start_debug_session(&self, session: DebugSession) -> Result<String, StoreError>;
+    async fn get_debug_session(&self, id: &str) -> Result<Option<DebugSession>, StoreError>;
+    async fn list_debug_sessions(
+        &self,
+        status: Option<DebugSessionStatus>,
+    ) -> Result<Vec<DebugSession>, StoreError>;
+    async fn end_debug_session(
+        &self,
+        id: &str,
+        status: DebugSessionStatus,
+        outcome: Option<DebugSessionOutcome>,
+        summary_memory_id: Option<String>,
+        ended_at: u64,
+    ) -> Result<(), StoreError>;
+    async fn touch_debug_session(&self, id: &str, last_activity: u64) -> Result<(), StoreError>;
+    async fn find_stale_active(&self, threshold_ns: u64) -> Result<Vec<DebugSession>, StoreError>;
+
+    async fn create_checkpoint(&self, checkpoint: DebugCheckpoint) -> Result<String, StoreError>;
+    async fn get_checkpoint(&self, id: &str) -> Result<Option<DebugCheckpoint>, StoreError>;
+    async fn list_checkpoints(
+        &self,
+        debug_session_id: &str,
+    ) -> Result<Vec<DebugCheckpoint>, StoreError>;
+}
+
+// ── Librarian catalog ────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LibrarianNode {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub kind: LibrarianNodeKind,
+    pub label: String,
+    pub locator_kind: LocatorKind,
+    pub locator: String,
+    pub tags: Vec<String>,
+    pub project_slug: String,
+    pub version: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
+    pub created_at: u64,
+    pub updated_at: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_read_at: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deprecated_at: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub canonicalized_at: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LibrarianEdge {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub kind: LibrarianEdgeKind,
+    pub from_node: String,
+    pub to_node: String,
+    pub created_at: u64,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct LibrarianFilter {
+    pub kinds: Option<Vec<LibrarianNodeKind>>,
+    pub tags: Option<Vec<String>>,
+    pub project_slug: Option<String>,
+    pub text_match: Option<String>,
+    pub limit: Option<usize>,
+    pub include_deprecated: bool,
+    pub stale_before: Option<u64>,
+    pub parent_id: Option<String>,
+}
+
+#[async_trait::async_trait]
+pub trait LibrarianStore: Send + Sync {
+    async fn index_node(&self, node: LibrarianNode) -> Result<String, StoreError>;
+    async fn index_edge(&self, edge: LibrarianEdge) -> Result<String, StoreError>;
+    async fn lookup(&self, filter: &LibrarianFilter) -> Result<Vec<LibrarianNode>, StoreError>;
+    async fn get_node(&self, id: &str) -> Result<Option<LibrarianNode>, StoreError>;
+    async fn get_edges(&self, node_id: &str) -> Result<Vec<LibrarianEdge>, StoreError>;
+    async fn get_children(&self, parent_id: &str) -> Result<Vec<LibrarianNode>, StoreError>;
+    async fn touch_read(&self, id: &str) -> Result<(), StoreError>;
+    async fn deprecate_node(&self, id: &str) -> Result<bool, StoreError>;
+    async fn forget_node(&self, id: &str) -> Result<bool, StoreError>;
+    async fn forget_edge(&self, id: &str) -> Result<bool, StoreError>;
 }

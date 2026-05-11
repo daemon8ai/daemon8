@@ -11,10 +11,9 @@ use std::path::Path;
 use anyhow::{Context, Result};
 
 use crate::cli_config::PROJECT_CONFIG_FILENAME;
-use crate::providers::{
-    HookScope, Provider, ProviderWriteSummary, dirs_home, install_claude_hooks,
-    install_codex_hooks, is_non_interactive, parse_provider_list, summarize_restarts,
-    write_provider_config,
+use daemon8_providers::{
+    HookScope, Provider, ProviderWriteSummary, dirs_home, install_hooks_for_provider,
+    is_non_interactive, parse_provider_list, summarize_restarts, write_provider_config,
 };
 
 #[derive(clap::ValueEnum, Clone, Debug)]
@@ -85,21 +84,50 @@ pub fn cmd_init(args: InitArgs) -> Result<()> {
 
     let mut summary = ProviderWriteSummary::default();
 
+    let port = crate::config::load(None).unwrap_or_default().server.port;
+    let mcp_url = format!("http://127.0.0.1:{port}/mcp");
+
     let home = dirs_home();
     for provider in resolve_providers(&args, non_interactive)? {
         let config_path = provider.config_path(&dirs_home());
-        write_provider_config(provider, &config_path, Some(&cwd))?;
+        write_provider_config(
+            provider,
+            &config_path,
+            &mcp_url,
+            Some(&cwd),
+            &crate::cli_config::SERVICE,
+        )?;
         summary.provider_files.push(config_path);
         summary.note_restart(provider);
 
-        if provider == Provider::Codex {
-            let hook_path = install_codex_hooks(&home, args.force_hooks)?;
+        if let Some(hp) = provider.as_hook_provider() {
+            let scopes = hp.supported_scopes();
+            let scope = if scopes.len() == 1 {
+                scopes[0]
+            } else {
+                continue;
+            };
+            let hook_path = install_hooks_for_provider(
+                provider,
+                scope,
+                &cwd,
+                &home,
+                args.force_hooks,
+                &crate::cli_config::SERVICE,
+            )?;
             summary.hook_files.push(hook_path);
         }
     }
 
     if let Some(scope) = resolve_hook_scope(&args, non_interactive)? {
-        let path = install_claude_hooks(scope, &cwd, &home, args.force_hooks)?;
+        let path = install_hooks_for_provider(
+            Provider::ClaudeCode,
+            scope,
+            &cwd,
+            &home,
+            args.force_hooks,
+            &crate::cli_config::SERVICE,
+        )?;
         summary.hook_files.push(path);
         summary.note_restart(Provider::ClaudeCode);
     }
@@ -141,13 +169,14 @@ fn resolve_providers(args: &InitArgs, non_interactive: bool) -> Result<Vec<Provi
         return Ok(Vec::new());
     }
 
+    let items: Vec<(Provider, &str, &str)> = daemon8_providers::ALL_PROVIDERS
+        .iter()
+        .map(|&p| (p, p.label(), p.as_provider().init_hint()))
+        .collect();
+
     Ok(cliclack::multiselect("Select provider configs to write")
         .required(false)
-        .item(Provider::ClaudeCode, "Claude Code", "MCP config")
-        .item(Provider::Cursor, "Cursor", "MCP config")
-        .item(Provider::Windsurf, "Windsurf", "MCP config")
-        .item(Provider::Gemini, "Gemini", "MCP config")
-        .item(Provider::Codex, "Codex", "MCP config + trust project")
+        .items(&items)
         .interact()?)
 }
 
@@ -166,12 +195,18 @@ fn resolve_hook_scope(args: &InitArgs, non_interactive: bool) -> Result<Option<H
         return Ok(None);
     }
 
-    let scope = cliclack::select("Choose the hook settings target")
-        .item(HookScope::Local, "local", ".claude/settings.local.json")
-        .item(HookScope::Shared, "shared", ".claude/settings.json")
-        .item(HookScope::Global, "global", "~/.claude/settings.json")
-        .interact()?;
-    Ok(Some(scope))
+    let hp = Provider::ClaudeCode.as_hook_provider().unwrap();
+    let cwd = env::current_dir().unwrap_or_default();
+    let home = dirs_home();
+    let mut select = cliclack::select("Choose the hook settings target");
+    for &s in hp.supported_scopes() {
+        select = select.item(
+            s,
+            daemon8_providers::hook_management::scope_label(s),
+            hp.scope_display_hint(s, &cwd, &home),
+        );
+    }
+    Ok(Some(select.interact()?))
 }
 
 fn derive_slug(cwd: &Path) -> String {

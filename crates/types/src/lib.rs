@@ -209,6 +209,17 @@ pub enum ObservationKindTag {
     Custom,
     JsException,
     Lifecycle,
+    ToolCall,
+}
+
+impl ObservationKindTag {
+    pub fn is_dedup_exempt(self) -> bool {
+        matches!(self, Self::ToolCall | Self::Metric | Self::Lifecycle)
+    }
+}
+
+pub trait SourceActivator: Send + Sync {
+    fn touch_matching(&self, filter: &Filter);
 }
 
 impl fmt::Display for ObservationKindTag {
@@ -223,6 +234,7 @@ impl fmt::Display for ObservationKindTag {
             Self::Custom => "custom",
             Self::JsException => "js_exception",
             Self::Lifecycle => "lifecycle",
+            Self::ToolCall => "tool_call",
         };
         f.write_str(s)
     }
@@ -242,6 +254,7 @@ impl std::str::FromStr for ObservationKindTag {
             "custom" => Ok(Self::Custom),
             "js_exception" => Ok(Self::JsException),
             "lifecycle" => Ok(Self::Lifecycle),
+            "tool_call" => Ok(Self::ToolCall),
             other => Err(format!("unknown observation kind: {other}")),
         }
     }
@@ -284,6 +297,17 @@ pub enum ObservationKind {
         event_name: String,
         frame_id: String,
     },
+    ToolCall {
+        tool: String,
+        #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+        input: serde_json::Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        output: Option<serde_json::Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        exit_code: Option<i32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        duration_ms: Option<f64>,
+    },
 }
 
 impl ObservationKind {
@@ -298,6 +322,7 @@ impl ObservationKind {
             Self::Custom { .. } => ObservationKindTag::Custom,
             Self::JsException { .. } => ObservationKindTag::JsException,
             Self::Lifecycle { .. } => ObservationKindTag::Lifecycle,
+            Self::ToolCall { .. } => ObservationKindTag::ToolCall,
         }
     }
 }
@@ -334,6 +359,12 @@ pub struct Observation {
     pub session_id: Option<Arc<str>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_id: Option<Arc<str>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub debug_session_id: Option<Arc<str>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint_id: Option<Arc<str>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_hash: Option<Arc<str>>,
 }
 
 impl Observation {
@@ -365,6 +396,9 @@ impl Observation {
             tags: None,
             session_id: None,
             node_id: None,
+            debug_session_id: None,
+            checkpoint_id: None,
+            error_hash: None,
         }
     }
 }
@@ -414,6 +448,15 @@ pub fn observation_search_text(obs: &Observation) -> String {
     }
     if let Some(ref node_id) = obs.node_id {
         push_search_part(&mut text, node_id);
+    }
+    if let Some(ref debug_session_id) = obs.debug_session_id {
+        push_search_part(&mut text, debug_session_id);
+    }
+    if let Some(ref checkpoint_id) = obs.checkpoint_id {
+        push_search_part(&mut text, checkpoint_id);
+    }
+    if let Some(ref error_hash) = obs.error_hash {
+        push_search_part(&mut text, error_hash);
     }
 
     push_search_part(&mut text, obs.data.to_string());
@@ -648,6 +691,177 @@ impl std::str::FromStr for MemoryKind {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DebugSessionStatus {
+    Active,
+    Completed,
+    Abandoned,
+}
+
+impl fmt::Display for DebugSessionStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            Self::Active => "active",
+            Self::Completed => "completed",
+            Self::Abandoned => "abandoned",
+        };
+        f.write_str(s)
+    }
+}
+
+impl std::str::FromStr for DebugSessionStatus {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "active" => Ok(Self::Active),
+            "completed" => Ok(Self::Completed),
+            "abandoned" => Ok(Self::Abandoned),
+            other => Err(format!("unknown debug session status: {other}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DebugSessionOutcome {
+    Resolved,
+    Abandoned,
+    InProgress,
+}
+
+impl fmt::Display for DebugSessionOutcome {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            Self::Resolved => "resolved",
+            Self::Abandoned => "abandoned",
+            Self::InProgress => "in_progress",
+        };
+        f.write_str(s)
+    }
+}
+
+impl std::str::FromStr for DebugSessionOutcome {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "resolved" => Ok(Self::Resolved),
+            "abandoned" => Ok(Self::Abandoned),
+            "in_progress" => Ok(Self::InProgress),
+            other => Err(format!("unknown debug session outcome: {other}")),
+        }
+    }
+}
+
+// ── Librarian catalog enums ──────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LibrarianNodeKind {
+    Doc,
+    SourceTemplate,
+    Fix,
+    Project,
+}
+
+impl fmt::Display for LibrarianNodeKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            Self::Doc => "doc",
+            Self::SourceTemplate => "source_template",
+            Self::Fix => "fix",
+            Self::Project => "project",
+        };
+        f.write_str(s)
+    }
+}
+
+impl std::str::FromStr for LibrarianNodeKind {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "doc" => Ok(Self::Doc),
+            "source_template" => Ok(Self::SourceTemplate),
+            "fix" => Ok(Self::Fix),
+            "project" => Ok(Self::Project),
+            other => Err(format!("unknown librarian node kind: {other}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LibrarianEdgeKind {
+    HasSource,
+    DocumentedBy,
+    Fixes,
+    Supersedes,
+    ChildOf,
+}
+
+impl fmt::Display for LibrarianEdgeKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            Self::HasSource => "has_source",
+            Self::DocumentedBy => "documented_by",
+            Self::Fixes => "fixes",
+            Self::Supersedes => "supersedes",
+            Self::ChildOf => "child_of",
+        };
+        f.write_str(s)
+    }
+}
+
+impl std::str::FromStr for LibrarianEdgeKind {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "has_source" => Ok(Self::HasSource),
+            "documented_by" => Ok(Self::DocumentedBy),
+            "fixes" => Ok(Self::Fixes),
+            "supersedes" => Ok(Self::Supersedes),
+            "child_of" => Ok(Self::ChildOf),
+            other => Err(format!("unknown librarian edge kind: {other}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LocatorKind {
+    File,
+    Url,
+    Vault,
+}
+
+impl fmt::Display for LocatorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            Self::File => "file",
+            Self::Url => "url",
+            Self::Vault => "vault",
+        };
+        f.write_str(s)
+    }
+}
+
+impl std::str::FromStr for LocatorKind {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "file" => Ok(Self::File),
+            "url" => Ok(Self::Url),
+            "vault" => Ok(Self::Vault),
+            other => Err(format!("unknown locator kind: {other}")),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SliceSummary {
     pub total: usize,
@@ -714,6 +928,9 @@ mod tests {
             tags: None,
             session_id: None,
             node_id: None,
+            debug_session_id: None,
+            checkpoint_id: None,
+            error_hash: None,
         }
     }
 
@@ -795,6 +1012,13 @@ mod tests {
             ObservationKind::Lifecycle {
                 event_name: "ready".into(),
                 frame_id: "frame-1".into(),
+            },
+            ObservationKind::ToolCall {
+                tool: "Bash".into(),
+                input: json!({"command": "ls"}),
+                output: Some(json!({"stdout": "Cargo.toml\n"})),
+                exit_code: Some(0),
+                duration_ms: Some(12.5),
             },
         ];
 
@@ -1022,5 +1246,71 @@ mod tests {
             let back: DebugAction = serde_json::from_str(&text).unwrap();
             assert_eq!(back, variant);
         }
+    }
+
+    #[test]
+    fn librarian_node_kind_roundtrip() {
+        for (variant, wire) in [
+            (LibrarianNodeKind::Doc, "doc"),
+            (LibrarianNodeKind::SourceTemplate, "source_template"),
+            (LibrarianNodeKind::Fix, "fix"),
+            (LibrarianNodeKind::Project, "project"),
+        ] {
+            let json = serde_json::to_string(&variant).unwrap();
+            assert_eq!(json, format!("\"{wire}\""));
+            let back: LibrarianNodeKind = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, variant);
+            assert_eq!(variant.to_string(), wire);
+            assert_eq!(wire.parse::<LibrarianNodeKind>().unwrap(), variant);
+        }
+    }
+
+    #[test]
+    fn librarian_edge_kind_roundtrip() {
+        for (variant, wire) in [
+            (LibrarianEdgeKind::HasSource, "has_source"),
+            (LibrarianEdgeKind::DocumentedBy, "documented_by"),
+            (LibrarianEdgeKind::Fixes, "fixes"),
+            (LibrarianEdgeKind::Supersedes, "supersedes"),
+            (LibrarianEdgeKind::ChildOf, "child_of"),
+        ] {
+            let json = serde_json::to_string(&variant).unwrap();
+            assert_eq!(json, format!("\"{wire}\""));
+            let back: LibrarianEdgeKind = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, variant);
+            assert_eq!(variant.to_string(), wire);
+            assert_eq!(wire.parse::<LibrarianEdgeKind>().unwrap(), variant);
+        }
+    }
+
+    #[test]
+    fn locator_kind_roundtrip() {
+        for (variant, wire) in [
+            (LocatorKind::File, "file"),
+            (LocatorKind::Url, "url"),
+            (LocatorKind::Vault, "vault"),
+        ] {
+            let json = serde_json::to_string(&variant).unwrap();
+            assert_eq!(json, format!("\"{wire}\""));
+            let back: LocatorKind = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, variant);
+            assert_eq!(variant.to_string(), wire);
+            assert_eq!(wire.parse::<LocatorKind>().unwrap(), variant);
+        }
+    }
+
+    #[test]
+    fn dedup_exempt_kinds() {
+        assert!(ObservationKindTag::ToolCall.is_dedup_exempt());
+        assert!(ObservationKindTag::Metric.is_dedup_exempt());
+        assert!(ObservationKindTag::Lifecycle.is_dedup_exempt());
+
+        assert!(!ObservationKindTag::Log.is_dedup_exempt());
+        assert!(!ObservationKindTag::Query.is_dedup_exempt());
+        assert!(!ObservationKindTag::HttpExchange.is_dedup_exempt());
+        assert!(!ObservationKindTag::Exception.is_dedup_exempt());
+        assert!(!ObservationKindTag::JsException.is_dedup_exempt());
+        assert!(!ObservationKindTag::StateSnapshot.is_dedup_exempt());
+        assert!(!ObservationKindTag::Custom.is_dedup_exempt());
     }
 }

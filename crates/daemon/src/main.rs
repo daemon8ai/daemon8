@@ -5,7 +5,6 @@ mod cleanup;
 mod cli;
 mod cli_config;
 mod config;
-mod providers;
 mod screenshot;
 mod sources;
 pub(crate) mod style;
@@ -70,7 +69,7 @@ enum Commands {
     Install,
     /// Remove daemon8 system service
     Uninstall,
-    /// Inspect, plan, or apply guided setup
+    /// Register daemon8 MCP server with detected AI coding tools
     Setup(cli::setup::SetupArgs),
     /// Real-time alert relay for MCP clients (experimental)
     Channel,
@@ -85,6 +84,11 @@ enum Commands {
     CliHook(cli::hook_handler::CliHookArgs),
     /// Initialize a `.daemon8.toml` at the current project
     Init(cli::init::InitArgs),
+    /// Manage daemon8 CLI hooks across providers (Claude Code, Codex, Gemini)
+    #[command(subcommand)]
+    Hooks(cli::hooks::HooksSubcommand),
+    /// Enable daemon8 features interactively (hooks, project init)
+    Features(cli::features::FeaturesArgs),
 }
 
 #[tokio::main]
@@ -131,6 +135,8 @@ async fn main() -> Result<()> {
         Commands::Doctor { fix } => cli::doctor::cmd_doctor(cli.config, fix).await,
         Commands::CliHook(args) => cli::hook_handler::cmd_cli_hook(args),
         Commands::Init(args) => cli::init::cmd_init(args),
+        Commands::Hooks(sub) => cli::hooks::cmd_hooks(sub).await,
+        Commands::Features(args) => cli::features::cmd_features(args),
     }
 }
 

@@ -7,102 +7,203 @@
 </p>
 
 <p align="center">
-  <em>A runtime layer made for AI agents.</em>
+  <em>Situational awareness for AI agents.</em>
 </p>
 
 ---
 
-# What is Daemon8?
+## Table of Contents
 
-Daemon8 is a local runtime layer for AI agents.
+- [What is Daemon8?](#what-is-daemon8)
+- [Install](#install)
+- [Getting Started](#getting-started)
+- [Features](#features)
+  - [Observation Stream](#observation-stream)
+  - [Browser Actions](#browser-actions)
+  - [CLI Hooks](#cli-hooks)
+  - [Lenses](#lenses)
+  - [Checkpoints and Debug Sessions](#checkpoints-and-debug-sessions)
+  - [Memory](#memory)
+  - [Librarian Index](#librarian-index)
+  - [File Sources](#file-sources)
+  - [Device Monitoring (ADB)](#device-monitoring-adb)
+- [MCP Tools](#mcp-tools)
+- [HTTP API](#http-api)
+- [CLI Reference](#cli-reference)
+- [Architecture](#architecture)
+- [Contributing](#contributing)
+- [License](#license)
+- [Contact](#contact)
 
-Today, most agents can read and write code quickly, but they still do not have one reliable source of runtime truth while debugging. At its core, that is what Daemon8 provides: one place where logs and context converge.
+## What is Daemon8?
 
-When agents have one place to look for errors, they can move from "I changed code" to "I can see what happened" in one loop. They query observations, filter what matters, and act on the result without guessing.
+Daemon8 is a local process that gives AI agents access to runtime data. Console errors, network failures, device logs, and application traces land in one observation stream as code is being edited and executed. A built-in librarian index catalogs local context so agents can look up what they need without leaving their workflow.
 
-Picture application logs, browser console output, network failures, traces, and device logs funneled into one stream. With lens-based filtering, the agent can ignore noise and focus directly on the signal it needs.
+The daemon runs on your machine. All features are opt-in via the CLI. Runtime data and curated memory stay local.
 
-> Note: daemon8 is in active development right now. Show support by starring, trying it out, and/or submitting issues - it's greatly appreciated!
-
-### Daily Workflow Scenarios
-
-**Working in Chrome / frontend**
-
-- While editing frontend or backend code, your agent can use `query_observations` to immediately inspect browser console and network failures.
-- It can use `issue_command` to run JS, capture screenshots, inspect DOM, and validate fixes without leaving the workflow.
-
-**Working in backend / API debugging**
-
-- App logs and ingestion events land in the same stream as browser signals, so the agent can inspect frontend and backend state in one query path.
-- `create_checkpoint` and `query_observations` make before/after verification explicit after each change.
-
-**Working with multiple agents**
-
-- Agents can emit observations with `ingest_observation` so handoffs, findings, and status notes stay in the same stream as runtime facts.
-- Other sessions can filter by origin, tag, correlation id, or checkpoint without depending on a separate coordination system.
-
-Daemon8 runs locally and provides one stream for runtime awareness plus one MCP surface to query, act, and record useful findings. Runtime data and curated memory stay on your machine.
-
-## Features
-
-- **Observation bus** — one stream for browser console, network, JS exceptions, lifecycle events, device logs, and app telemetry.
-- **Lens** — per-session filter with buffered matches for quick follow-up queries.
-- **Browser actions** — eval JS, screenshot, inject CSS, navigate, set viewport, throttle network, inspect/set storage, and tab controls via Chrome DevTools Protocol.
-- **Curated memory** — save and query verified lessons, decisions, and error signatures through one local memory table.
-- **Doctor** — checks config, storage, setup state, sources, and service health; `--fix` repairs what it can.
-- **System service** — `daemon8 install` registers launchd (macOS), systemd user service (Linux), or Task Scheduler (Windows).
+> v0.3 alpha — in active development. Show support by starring, trying it out, and submitting issues.
 
 ## Install
+
+```bash
+curl -fsSL https://daemon8.ai/install.sh | bash
+```
+
+Windows (PowerShell):
+
+```powershell
+irm https://daemon8.ai/install.ps1 | iex
+```
+
+Or install from source:
 
 ```bash
 cargo install daemon8
 ```
 
-macOS — sign the binary so Gatekeeper and launchd accept it:
+Pin a specific version with `DAEMON8_VERSION=v0.3.3` before the curl command.
 
-```bash
-codesign --force --sign - ~/.cargo/bin/daemon8
-```
-
-Register as a system service and configure your AI clients:
-
-```bash
-daemon8 install
-daemon8 init
-daemon8 setup plan
-daemon8 setup apply --yes
-```
-
-`daemon8 install` registers a user-level service. `daemon8 init` creates the project `.daemon8.toml`. `daemon8 setup plan` previews configuration changes. `daemon8 setup apply --yes` registers runtime sources. Add `--providers codex-cli` for Codex MCP/hooks, and `--install-hooks <local|shared|global>` for Claude Code hooks.
+The installer downloads the binary, verifies its SHA-256 checksum, installs it, and runs `daemon8 setup` to show current state.
 
 > [!WARNING]
-> **macOS:** first launch triggers an "unidentified developer" Gatekeeper prompt and may request Background Items and App Management permissions. Both are expected until signed release binaries ship.
+> **macOS:** first launch may trigger an "unidentified developer" Gatekeeper prompt and request Background Items and App Management permissions. Both are expected until signed release binaries ship.
 
-## Verify
+## Getting Started
+
+```bash
+daemon8 install        # register as a system service
+daemon8 init           # create .daemon8.toml in the current project
+daemon8 setup apply    # register runtime sources and configure AI providers
+```
+
+`daemon8 features` opens an interactive menu for enabling hooks and project scaffolding.
+
+For best results, add daemon8 instructions to your AI context file (`~/.claude/CLAUDE.md`, `~/.gemini/GEMINI.md`, or `~/.codex/AGENTS.md`) telling the agent to use daemon8 for debugging, note-taking, and agent communication.
+
+Verify the daemon is running:
 
 ```bash
 daemon8 status
 daemon8 doctor
 ```
 
-## How it works
+## Features
 
+The observation stream is always on. Everything else is opt-in via the CLI (`daemon8 features`).
+
+### Observation Stream
+
+All runtime signals live-stream into one feed: application logs, browser console output, network failures, device logs, CLI hook telemetry, and agent-emitted notes. The SSE endpoint (`/api/stream`) supports `Last-Event-ID` replay; `subscribe_observations` pushes real-time alerts directly into agent sessions.
+
+```bash
+daemon8 tail                                # live-stream observations
+daemon8 query --kinds log,exception --limit 20  # query stored observations
 ```
-Sources (inputs)                          Agents (outputs)
------------------                         ----------------
-Browser (CDP)   ---\                       /--  Codex
-Applications    ---->  daemon8            ----> Claude Code
-Devices (ADB)   ---/   [localhost:8888]    \--> Gemini CLI
-CLI hooks       --/                    
+
+Ingestion endpoints accept observations over HTTP (`POST /ingest`), UDP (port 8889), and Unix socket.
+
+```bash
+curl -X POST http://localhost:8888/ingest -H 'Content-Type: application/json' -d '{"kind":"log","severity":"info","app":"my-api","data":{"message":"deploy complete"}}'
 ```
 
-Sources push observations into the daemon loop. Agents then query, subscribe, and run actions through MCP (`http://localhost:8888/mcp`) or the parallel HTTP API.
+### Browser Actions
 
-_some sources are configured by you, some are integrated directly into the daemon_
+Connect the daemon to Chrome DevTools Protocol to observe console output, network requests, JS exceptions, and lifecycle events. Run JavaScript, capture screenshots, inject CSS, and inspect storage.
 
-## MCP tools
+**Enable:** call the `connect_browser` MCP tool, or:
 
-There are 17 MCP tools grouped by capability. Every tool returns JSON. Destructive and apply-style operations require explicit confirmation flags.
+```bash
+daemon8 browser connect
+```
+
+### CLI Hooks
+
+Stream what your agent does. Hooks capture tool calls, file edits, and command runs as observations -- giving agents cause-and-effect context across their own actions.
+
+**Enable:**
+
+```bash
+daemon8 setup apply --install-hooks local   # project-level hooks
+daemon8 setup apply --install-hooks global  # machine-level hooks
+```
+
+Or manage hooks directly:
+
+```bash
+daemon8 hooks list
+daemon8 hooks update
+daemon8 hooks repair
+```
+
+### Lenses
+
+A lens is a focused filter that buffers matching observations into a ring buffer (up to 1000 rows). Set a lens before making a change, then query to see only what matched.
+
+Lenses are always available. No setup required.
+
+```bash
+daemon8 lens set --kinds exception --severity-min warn
+daemon8 lens status
+daemon8 lens clear
+```
+
+### Checkpoints and Debug Sessions
+
+Bookmark the stream before a change, then query only what happened after.
+
+```bash
+# via MCP: create_checkpoint, then query_observations with since_checkpoint
+```
+
+Debug sessions group checkpoints, observations, and a resolution summary into one investigation. Sessions are always available through MCP tools (`start_debug_session`, `create_checkpoint`, `resolve_debug_session`).
+
+### Memory
+
+Save verified fixes, error signatures, patterns, and decisions to a local memory table. Query by kind, tags, project, or text. Tag `hash:<error_hash>` links error signatures with their fix summaries.
+
+Memory is always available. No setup required.
+
+```bash
+daemon8 memory export --kind pattern --project my-app
+```
+
+### Librarian Index
+
+A graph-based catalog on SurrealDB for looking up local and remote context. Agents index docs, source templates, fixes, and projects as nodes with typed edges (has_source, documented_by, fixes, supersedes, child_of). Lookup-only by design -- agents query the catalog, they don't generate from it.
+
+**Enable:** available when SurrealDB store is configured (default with `daemon8 serve`).
+
+```bash
+# via MCP: librarian_index, librarian_lookup, librarian_forget
+```
+
+### File Sources
+
+Tail log files and parse them into structured observations. Eight built-in parsers: JSON, syslog, monolog, logfmt, CLF, line, grok, and auto-detect.
+
+**Enable:** add `[sources.*]` entries to `.daemon8.toml`:
+
+```toml
+[sources.api-logs]
+path = "/var/log/my-api/app.log"
+parser = "auto"
+tags = ["api"]
+```
+
+### Device Monitoring (ADB)
+
+Stream logcat from Android devices connected via ADB.
+
+**Enable:** set `[adb] enabled = true` in `~/.config/daemon8/config.toml`:
+
+```toml
+[adb]
+enabled = true
+```
+
+## MCP Tools
+
+29 MCP tools grouped by capability. Every tool returns the standard envelope (`{result, daemon8, error}`) -- see `daemon8_help(topic="envelope")`. Destructive and apply-style operations require explicit confirmation flags.
 
 ### Observation
 
@@ -110,10 +211,19 @@ There are 17 MCP tools grouped by capability. Every tool returns JSON. Destructi
 |------|---------|
 | `query_observations` | Filter the observation stream by kind, severity, origin, text, tags, correlation id, or checkpoint. |
 | `status` | Health snapshot: error rate, source counts, observation count, version. |
-| `create_checkpoint` | Mark a stream position; subsequent queries can resume from it. |
 | `list_connections` | Active sources plus browser connection state. |
-| `subscribe_observations` | Register a real-time alert filter. Matching observations are buffered into the next `query_observations` response. |
+| `subscribe_observations` | Register a real-time alert filter. Matching observations push as MCP notifications. |
 | `ingest_observation` | Record an observation from inside an agent loop. |
+
+### Debug Session
+
+| Tool | Purpose |
+|------|---------|
+| `start_debug_session` | Open an investigation. Required prereq for checkpoints and resolution. |
+| `create_checkpoint` | Bookmark the stream inside an active session; pair with `since_checkpoint`. |
+| `resolve_debug_session` | Close on success with a rich SessionSummary memory (root_cause, fix_diff, commands, related errors). |
+| `end_debug_session` | Close without a fix; writes a thin SessionSummary so the row never silently disappears. |
+| `list_debug_sessions` | Enumerate sessions, optionally filtered by status. |
 
 ### Action
 
@@ -135,7 +245,7 @@ There are 17 MCP tools grouped by capability. Every tool returns JSON. Destructi
 | Tool | Purpose |
 |------|---------|
 | `save_memory` | Store a `pattern`, `decision`, `error_signature`, `session_summary`, or `user_flagged` memory. |
-| `query_memory` | Search by kind, tags, project, or text. |
+| `query_memory` | Search by kind, tags, project, or text. Tag `hash:<x>` joins error signatures with their fix summaries. |
 | `forget_memory` | Delete by id; requires `confirm=true`. |
 
 ### Setup
@@ -145,6 +255,29 @@ There are 17 MCP tools grouped by capability. Every tool returns JSON. Destructi
 | `setup_status` | Report current setup state for the project at `cwd`. |
 | `setup_plan` | Compute the action plan that `setup_apply` would run. |
 | `setup_apply` | Apply the plan to the project; requires `yes=true`. |
+
+### Hooks
+
+| Tool | Purpose |
+|------|---------|
+| `hooks_list` | Enumerate installed daemon8 CLI hooks across providers and scopes. |
+| `hooks_remove` | Uninstall daemon8 hook entries from a provider/scope. |
+| `hooks_update` | Reinstall (force) -- fixes drift after binary moves or spec changes. |
+| `hooks_repair` | Detect drift across all providers and reinstall only what's stale. |
+
+### Librarian
+
+| Tool | Purpose |
+|------|---------|
+| `librarian_index` | Catalog a node (doc, source_template, fix, project) with tags and edges. |
+| `librarian_lookup` | Query the catalog by kind, tags, project, or text. |
+| `librarian_forget` | Remove a node; requires `confirm=true`. |
+
+### Help
+
+| Tool | Purpose |
+|------|---------|
+| `daemon8_help` | Narrative protocol docs by topic (debug_session, checkpoint, setup, hooks, lens, librarian, memory, observations, envelope). |
 
 ## HTTP API
 
@@ -173,7 +306,7 @@ Ingestion endpoints live alongside the API on the same port:
 
 A UDP listener accepts the same JSON shapes on port 8889 for fire-and-forget telemetry.
 
-## CLI
+## CLI Reference
 
 | Command | Description |
 |---------|-------------|
@@ -194,16 +327,21 @@ A UDP listener accepts the same JSON shapes on port 8889 for fire-and-forget tel
 | `daemon8 channel` | Real-time alert relay for MCP clients (experimental). |
 | `daemon8 doctor` | Diagnose configuration and environment (`--fix` to auto-repair). |
 | `daemon8 init` | Scaffold a `.daemon8.toml` in the current project. |
-
-## Ingestion examples
-
-```bash
-curl -X POST http://localhost:8888/ingest -H 'Content-Type: application/json' -d '{"kind":"query","severity":"info","app":"my-api","data":{"sql":"SELECT * FROM users","duration_ms":3.2}}'
-```
-
-Batch endpoint: `POST /ingest/batch` with a JSON array. UDP fire-and-forget on port 8889.
+| `daemon8 hooks` | Manage daemon8 CLI hooks across providers (`list \| remove \| update \| repair`). |
+| `daemon8 features` | Interactive feature activation menu. |
 
 ## Architecture
+
+```
+Sources (inputs)                          Agents (outputs)
+-----------------                         ----------------
+Browser (CDP)   ---\                       /--  Codex
+Applications    ---->  daemon8            ----> Claude Code
+Devices (ADB)   ---/   [localhost:8888]    \--> Gemini CLI
+CLI hooks       --/
+```
+
+Sources push observations into the daemon loop. Agents query, subscribe, and act through MCP (`http://localhost:8888/mcp`) or the parallel HTTP API.
 
 Core crates in the Cargo workspace:
 
@@ -211,13 +349,14 @@ Core crates in the Cargo workspace:
 |-------|---------|
 | `daemon` | CLI binary, command dispatch, runtime wiring. |
 | `types` | Shared types: `Observation`, `Filter`, severity, origin, and memory kind records. |
-| `store` | SurrealDB backend for observations, curated memory, and the `LensManager` ring buffer. |
+| `store` | SurrealDB backend for observations, curated memory, debug sessions, librarian catalog, and the `LensManager` ring buffer. |
 | `api` | Axum HTTP routes: observe, stream, lens, memory, and browser actions. |
-| `mcp` | MCP server: 17 tools across observe, action, lens, memory, and setup routers. |
+| `mcp` | MCP server: 29 tools across observe, debug-session, action, lens, memory, librarian, setup, hooks, help routers. |
 | `ingest` | HTTP, UDP, and Unix socket ingest endpoints. |
 | `chrome` | Chrome DevTools Protocol bridge over raw WebSocket. |
 | `adb` | Android Debug Bridge transport for device logcat. |
-| `parse` | Observation parsing and extraction for log sources. |
+| `parse` | Log parser trait with built-in format parsers (JSON, syslog, monolog, logfmt, CLF, grok, auto-detect). |
+| `providers` | AI tool detection, hook management, and provider configuration. |
 
 ## Contributing
 

@@ -1,7 +1,0 @@
-Remove the active observation lens. Stops buffering and discards any observations currently in the ring buffer. No-op if no lens is active.
-
-Parameters: none.
-
-Returns: { active: false }.
-
-Mutating in the sense that the buffer is dropped — but no observations are deleted from the underlying store. To create a new lens, call `set_lens` again.

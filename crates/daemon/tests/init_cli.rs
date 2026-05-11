@@ -186,8 +186,6 @@ fn cli_yes_writes_toml_only() {
     assert!(work.join(".daemon8.toml").exists());
     let toml = std::fs::read_to_string(work.join(".daemon8.toml")).unwrap();
     assert!(!toml.contains("role_default"));
-    assert!(!toml.contains("inbox"));
-    assert!(!toml.contains("envelope"));
     assert!(
         !work.join(".claude").exists(),
         ".claude must NOT be created without --install-hooks"
@@ -539,91 +537,21 @@ fn cli_skips_existing_toml_without_force() {
 }
 
 #[test]
-fn setup_status_and_plan_are_read_only() {
+fn setup_json_reports_providers_and_daemon_state() {
     let (_tmp, work, home) = setup_dirs();
     let config_path = work.join("global-config.toml");
-    std::fs::write(
-        work.join(".daemon8.toml"),
-        r#"
-[project]
-slug = "demo"
 
-[sources.app]
-type = "file"
-path = "logs/app.log"
-parser = "line"
-"#,
-    )
-    .unwrap();
-
-    let status = run_setup(&work, &home, &config_path, &["status", "--json"]);
-    assert!(
-        status.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&status.stderr)
-    );
-    assert!(
-        !config_path.exists(),
-        "status must not create global config"
-    );
-    let parsed: Value = serde_json::from_slice(&status.stdout).unwrap();
-    assert_eq!(parsed["project"]["slug"], "demo");
-
-    let plan = run_setup(&work, &home, &config_path, &["plan", "--json"]);
-    assert!(
-        plan.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&plan.stderr)
-    );
-    assert!(!config_path.exists(), "plan must not create global config");
-    let parsed: Value = serde_json::from_slice(&plan.stdout).unwrap();
-    assert_eq!(parsed["actions"][0]["kind"], "source-register");
-}
-
-#[test]
-fn setup_apply_registers_runtime_sources_and_state() {
-    let (_tmp, work, home) = setup_dirs();
-    let config_path = work.join("global-config.toml");
-    std::fs::create_dir_all(work.join("logs")).unwrap();
-    std::fs::write(work.join("logs/app.log"), "").unwrap();
-    std::fs::write(
-        work.join(".daemon8.toml"),
-        r#"
-[project]
-slug = "demo"
-
-[sources.app]
-type = "file"
-path = "logs/app.log"
-parser = "line"
-tags = ["app"]
-"#,
-    )
-    .unwrap();
-
-    let out = run_setup(&work, &home, &config_path, &["apply", "--yes", "--json"]);
+    let out = run_setup(&work, &home, &config_path, &["--json"]);
     assert!(
         out.status.success(),
         "stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
 
-    let global = std::fs::read_to_string(&config_path).unwrap();
-    let parsed: toml::Value = toml::from_str(&global).unwrap();
-    let source = &parsed["sources"]["demo.app"];
-    assert_eq!(source["type"].as_str(), Some("file"));
-    assert!(source["path"].as_str().unwrap().ends_with("logs/app.log"));
-    assert!(
-        source["tags"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|tag| tag.as_str() == Some("project:demo"))
-    );
-    assert_eq!(
-        parsed["setup"]["projects"]["demo"]["slug"].as_str(),
-        Some("demo")
-    );
+    let parsed: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(parsed["providers"].is_array());
+    assert!(parsed["daemon_running"].is_boolean());
+    assert!(parsed["issues"].is_array());
 }
 
 #[test]

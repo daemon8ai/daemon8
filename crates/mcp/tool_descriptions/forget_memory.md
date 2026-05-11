@@ -1,0 +1,26 @@
+## Purpose
+
+Delete a long-term memory by id. No undo. Use only when a memory is outdated, incorrect, or no longer relevant.
+
+## When
+
+Cleaning up a wrong save, removing a stale ErrorSignature whose normalization changed, or honoring a user "forget X" request.
+
+## Prereq
+
+A confirmed-correct id. Run query_memory first to verify.
+
+## Args
+  - id: required string. The memory id from save_memory or query_memory.
+  - confirm: required boolean. MUST be true to delete. The gate exists to prevent silent data loss when an agent misroutes a delete intent.
+
+## Returns
+  result: {deleted: true|false}. false means the id did not exist.
+
+## Errors
+  - missing_confirm: confirm was absent or false. hint: pass confirm=true to acknowledge deletion.
+  - memory_store_unavailable: persistence not configured.
+
+## Next
+
+query_memory to confirm the row is gone.

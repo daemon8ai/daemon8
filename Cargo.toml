@@ -8,6 +8,7 @@ members = [
     "crates/adb",
     "crates/mcp",
     "crates/parse",
+    "crates/providers",
     "crates/daemon",
     "tools/vda-probe",
     "xtask",
@@ -15,7 +16,7 @@ members = [
 resolver = "3"
 
 [workspace.package]
-version = "0.3.0"
+version = "0.3.2"
 edition = "2024"
 license-file = "LICENSE"
 description = "Runtime awareness management for AI agents"
@@ -27,14 +28,15 @@ categories = ["development-tools::debugging", "command-line-utilities"]
 
 [workspace.dependencies]
 # Internal crates
-daemon8-types = { version = "0.3.0", path = "crates/types" }
-daemon8-store = { version = "0.3.0", path = "crates/store" }
-daemon8-ingest = { version = "0.3.0", path = "crates/ingest" }
-daemon8-chrome = { version = "0.3.0", path = "crates/chrome" }
-daemon8-mcp = { version = "0.3.0", path = "crates/mcp" }
-daemon8-adb = { version = "0.3.0", path = "crates/adb" }
-daemon8-api = { version = "0.3.0", path = "crates/api" }
-daemon8-parse = { version = "0.3.0", path = "crates/parse" }
+daemon8-types = { version = "0.3.2", path = "crates/types" }
+daemon8-store = { version = "0.3.2", path = "crates/store" }
+daemon8-ingest = { version = "0.3.2", path = "crates/ingest" }
+daemon8-chrome = { version = "0.3.2", path = "crates/chrome" }
+daemon8-mcp = { version = "0.3.2", path = "crates/mcp" }
+daemon8-adb = { version = "0.3.2", path = "crates/adb" }
+daemon8-api = { version = "0.3.2", path = "crates/api" }
+daemon8-parse = { version = "0.3.2", path = "crates/parse" }
+daemon8-providers = { version = "0.3.2", path = "crates/providers" }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -95,6 +97,17 @@ async-trait = "0.1"
 
 # Regex
 regex = "1"
+
+# Log parsing
+dateparser = "0.3"
+syslog_loose = "0.23"
+grok = "2"
+
+# Hashing (error fingerprints)
+sha2 = "0.10"
+
+# Concurrent cache (observation dedupe)
+quick_cache = "0.6"
 
 # File watching
 notify = { version = "8", features = ["macos_fsevent"] }

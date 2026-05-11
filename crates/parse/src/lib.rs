@@ -3,6 +3,8 @@
 
 pub mod builtin;
 pub mod custom;
+pub mod severity;
+pub mod timestamp;
 
 use std::path::PathBuf;
 
@@ -26,6 +28,10 @@ pub enum ParseError {
     InvalidRegex { name: String, source: regex::Error },
     #[error("custom parser {name} missing required field mapping: {field}")]
     MissingFieldMapping { name: String, field: String },
+    #[error("grok parser requires a pattern (set parser_pattern in source config)")]
+    GrokPatternRequired,
+    #[error("invalid grok pattern: {0}")]
+    InvalidGrokPattern(String),
 }
 
 #[derive(Debug, Clone)]
@@ -43,6 +49,20 @@ pub trait Parser: Send + Sync {
 }
 
 pub fn resolve_parser(name: &str) -> Result<Box<dyn Parser>, ParseError> {
+    resolve_parser_with_pattern(name, None)
+}
+
+pub fn resolve_parser_with_pattern(
+    name: &str,
+    pattern: Option<&str>,
+) -> Result<Box<dyn Parser>, ParseError> {
+    if name == "grok" {
+        let pat = pattern.ok_or(ParseError::GrokPatternRequired)?;
+        let parser =
+            builtin::grok_parser::GrokParser::new(pat).map_err(ParseError::InvalidGrokPattern)?;
+        return Ok(Box::new(parser));
+    }
+
     if let Some(parser) = builtin::get(name) {
         return Ok(parser);
     }
@@ -67,7 +87,7 @@ mod tests {
 
     #[test]
     fn resolve_builtin_parsers() {
-        for name in ["monolog", "json", "line", "syslog", "logfmt", "clf"] {
+        for name in ["monolog", "json", "line", "syslog", "logfmt", "clf", "auto"] {
             let parser = resolve_parser(name);
             assert!(parser.is_ok(), "builtin parser '{name}' should resolve");
             assert_eq!(parser.unwrap().name(), name);

@@ -893,6 +893,9 @@ async fn handle_cdp_event(
                     tags: None,
                     session_id: None,
                     node_id: None,
+                    debug_session_id: None,
+                    checkpoint_id: None,
+                    error_hash: None,
                 };
                 let _ = obs_tx.send(obs);
             }
@@ -920,6 +923,9 @@ async fn handle_cdp_event(
                     tags: None,
                     session_id: None,
                     node_id: None,
+                    debug_session_id: None,
+                    checkpoint_id: None,
+                    error_hash: None,
                 };
                 let _ = obs_tx.send(obs);
             }
@@ -977,6 +983,9 @@ async fn handle_cdp_event(
                     tags: None,
                     session_id: None,
                     node_id: None,
+                    debug_session_id: None,
+                    checkpoint_id: None,
+                    error_hash: None,
                 };
                 let _ = obs_tx.send(obs);
 
@@ -1016,6 +1025,9 @@ async fn handle_cdp_event(
                     tags: None,
                     session_id: None,
                     node_id: None,
+                    debug_session_id: None,
+                    checkpoint_id: None,
+                    error_hash: None,
                 };
                 let _ = obs_tx.send(obs);
 
@@ -1049,6 +1061,9 @@ async fn handle_cdp_event(
                     tags: None,
                     session_id: None,
                     node_id: None,
+                    debug_session_id: None,
+                    checkpoint_id: None,
+                    error_hash: None,
                 };
                 let _ = obs_tx.send(obs);
             }
@@ -1075,6 +1090,9 @@ async fn handle_cdp_event(
                     tags: None,
                     session_id: None,
                     node_id: None,
+                    debug_session_id: None,
+                    checkpoint_id: None,
+                    error_hash: None,
                 };
                 let _ = obs_tx.send(obs);
             }
@@ -1187,6 +1205,9 @@ async fn handle_cdp_event(
                     tags: None,
                     session_id: None,
                     node_id: None,
+                    debug_session_id: None,
+                    checkpoint_id: None,
+                    error_hash: None,
                 };
                 let _ = obs_tx.send(obs);
             }
@@ -1707,10 +1728,26 @@ fn pid_alive(pid: u32) -> bool {
 
 #[cfg(all(unix, not(target_os = "macos")))]
 fn pid_alive(pid: u32) -> bool {
-    // SAFETY: kill with signal 0 is the documented POSIX liveness probe and
-    // does not deliver a signal. Linux has no TCC equivalent so this path is
-    // unchanged from prior behavior.
     unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+}
+
+#[cfg(windows)]
+fn pid_alive(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return false;
+        }
+        let mut exit_code: u32 = 0;
+        let alive =
+            GetExitCodeProcess(handle, &mut exit_code) != 0 && exit_code == STILL_ACTIVE as u32;
+        CloseHandle(handle);
+        alive
+    }
 }
 
 // Whether a CDP Target is a user-addressable page. Filters out Chrome's

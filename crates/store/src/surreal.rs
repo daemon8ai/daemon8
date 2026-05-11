@@ -16,7 +16,10 @@ use daemon8_types::{
     observation_search_text,
 };
 
-use crate::{StateModel, StoreError, memory::SurrealMemoryStore};
+use crate::{
+    StateModel, StoreError, debug_session::SurrealDebugSessionStore,
+    librarian::SurrealLibrarianStore, memory::SurrealMemoryStore,
+};
 
 const NAMESPACE: &str = "daemon8";
 const DATABASE: &str = "observations";
@@ -51,6 +54,12 @@ struct ObsRecord {
     session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     node_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    debug_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    checkpoint_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    error_hash: Option<String>,
 }
 
 impl ObsRecord {
@@ -74,6 +83,9 @@ impl ObsRecord {
             tags: obs.tags.clone(),
             session_id: obs.session_id.as_deref().map(String::from),
             node_id: obs.node_id.as_deref().map(String::from),
+            debug_session_id: obs.debug_session_id.as_deref().map(String::from),
+            checkpoint_id: obs.checkpoint_id.as_deref().map(String::from),
+            error_hash: obs.error_hash.as_deref().map(String::from),
         })
     }
 
@@ -106,6 +118,9 @@ impl ObsRecord {
             tags: self.tags,
             session_id: self.session_id.map(Into::into),
             node_id: self.node_id.map(Into::into),
+            debug_session_id: self.debug_session_id.map(Into::into),
+            checkpoint_id: self.checkpoint_id.map(Into::into),
+            error_hash: self.error_hash.map(Into::into),
         })
     }
 }
@@ -135,6 +150,9 @@ impl SurrealStore {
             connections: Mutex::new(Vec::new()),
         };
         store.init_schema().await?;
+        store.memory_store().init_schema().await?;
+        store.debug_session_store().init_schema().await?;
+        store.librarian_store().init_schema().await?;
         store.recover_seq().await?;
         Ok(store)
     }
@@ -152,6 +170,9 @@ impl SurrealStore {
             connections: Mutex::new(Vec::new()),
         };
         store.init_schema().await?;
+        store.memory_store().init_schema().await?;
+        store.debug_session_store().init_schema().await?;
+        store.librarian_store().init_schema().await?;
         Ok(store)
     }
 
@@ -159,6 +180,15 @@ impl SurrealStore {
     /// `Surreal<Db>` is internally Arc'd, so cloning is cheap.
     pub fn memory_store(&self) -> SurrealMemoryStore {
         SurrealMemoryStore::new(self.db.clone())
+    }
+
+    /// Create a `SurrealDebugSessionStore` sharing this database handle.
+    pub fn debug_session_store(&self) -> SurrealDebugSessionStore {
+        SurrealDebugSessionStore::new(self.db.clone())
+    }
+
+    pub fn librarian_store(&self) -> SurrealLibrarianStore {
+        SurrealLibrarianStore::new(self.db.clone())
     }
 
     async fn init_schema(&self) -> Result<(), StoreError> {
@@ -191,6 +221,9 @@ impl SurrealStore {
                  DEFINE FIELD IF NOT EXISTS tags           ON observation TYPE option<array>;
                  DEFINE FIELD IF NOT EXISTS session_id     ON observation TYPE option<string>;
                  DEFINE FIELD IF NOT EXISTS node_id        ON observation TYPE option<string>;
+                 DEFINE FIELD IF NOT EXISTS debug_session_id ON observation TYPE option<string>;
+                 DEFINE FIELD IF NOT EXISTS checkpoint_id    ON observation TYPE option<string>;
+                 DEFINE FIELD IF NOT EXISTS error_hash       ON observation TYPE option<string>;
 
                  DEFINE INDEX IF NOT EXISTS idx_seq         ON observation FIELDS seq;
                  DEFINE INDEX IF NOT EXISTS idx_timestamp   ON observation FIELDS timestamp_ns;
@@ -207,7 +240,13 @@ impl SurrealStore {
                  DEFINE INDEX IF NOT EXISTS idx_obs_origin_key_seq
                    ON observation FIELDS origin_key, seq CONCURRENTLY;
                  DEFINE INDEX IF NOT EXISTS idx_obs_tags
-                   ON observation FIELDS tags CONCURRENTLY;",
+                   ON observation FIELDS tags CONCURRENTLY;
+                 DEFINE INDEX IF NOT EXISTS idx_obs_debug_session
+                   ON observation FIELDS debug_session_id CONCURRENTLY;
+                 DEFINE INDEX IF NOT EXISTS idx_obs_checkpoint
+                   ON observation FIELDS checkpoint_id CONCURRENTLY;
+                 DEFINE INDEX IF NOT EXISTS idx_obs_error_hash
+                   ON observation FIELDS error_hash CONCURRENTLY;",
             )
             .await
             .map_err(|e| StoreError::Db(format!("schema init: {e}")))?
@@ -343,7 +382,7 @@ impl SurrealStore {
         if let Some(ref required_tags) = filter.tags
             && !required_tags.is_empty()
         {
-            conditions.push("tags CONTAINSALL $required_tags".to_string());
+            conditions.push("tags CONTAINSANY $required_tags".to_string());
             binds.push(("required_tags".into(), serde_json::json!(required_tags)));
         }
 
@@ -586,11 +625,24 @@ impl StateModel for SurrealStore {
     }
 
     async fn cleanup_before(&self, timestamp_ns: u64) -> Result<u64, StoreError> {
+        // Skip rows whose debug_session_id points to an active debug session
+        // — losing that context mid-investigation would defeat the purpose
+        // of the situational-awareness layer. Sessions stuck in "active"
+        // beyond the inactivity threshold are auto-ended by
+        // `auto_end_stale_debug_sessions` before this cleanup runs, so any
+        // session still active here is genuinely live.
+        let safety_clause = "AND (debug_session_id IS NONE
+                 OR debug_session_id NOT IN (
+                    SELECT VALUE meta::id(id) FROM debug_session WHERE status = 'active'
+                 ))";
+
+        let count_sql = format!(
+            "SELECT count() AS total FROM observation
+             WHERE timestamp_ns < $cutoff {safety_clause} GROUP ALL"
+        );
         let mut result = self
             .db
-            .query(
-                "SELECT count() AS total FROM observation WHERE timestamp_ns < $cutoff GROUP ALL",
-            )
+            .query(&count_sql)
             .bind(("cutoff", serde_json::json!(timestamp_ns)))
             .await
             .map_err(|e| StoreError::Db(format!("cleanup count: {e}")))?;
@@ -603,8 +655,10 @@ impl StateModel for SurrealStore {
             .and_then(|v| v.get("total").and_then(|t| t.as_u64()))
             .unwrap_or(0);
 
+        let delete_sql =
+            format!("DELETE FROM observation WHERE timestamp_ns < $cutoff {safety_clause}");
         self.db
-            .query("DELETE FROM observation WHERE timestamp_ns < $cutoff")
+            .query(&delete_sql)
             .bind(("cutoff", serde_json::json!(timestamp_ns)))
             .await
             .map_err(|e| StoreError::Db(format!("cleanup delete: {e}")))?
@@ -695,6 +749,9 @@ mod tests {
             tags: None,
             session_id: None,
             node_id: None,
+            debug_session_id: None,
+            checkpoint_id: None,
+            error_hash: None,
         }
     }
 
@@ -774,6 +831,7 @@ mod tests {
                     project_slug: "daemon8".into(),
                     session_id: None,
                     confidence: 1.0,
+                    data: None,
                 })
                 .await
                 .unwrap();
@@ -1093,6 +1151,9 @@ mod tests {
             tags: Some(vec!["domain:legacy".into()]),
             session_id: None,
             node_id: None,
+            debug_session_id: None,
+            checkpoint_id: None,
+            error_hash: None,
         };
 
         store

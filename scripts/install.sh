@@ -18,7 +18,7 @@ ok()   { printf "  ${GREEN}+${RESET} %s\n" "$1"; }
 dim()  { printf "  ${DIM}%s${RESET}\n" "$1"; }
 err()  { printf "  ${RED}!${RESET} %s\n" "$1" >&2; }
 
-TOTAL_STEPS=3
+TOTAL_STEPS=4
 
 detect_target() {
   local os arch
@@ -50,12 +50,28 @@ resolve_install_dir() {
   fi
 }
 
+compute_sha256() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    shasum -a 256 "$1" | awk '{print $1}'
+  fi
+}
+
 download_url() {
   local target="$1"
   if [ "$VERSION" = "latest" ]; then
     echo "https://github.com/${REPO}/releases/latest/download/${BINARY}-${target}.tar.gz"
   else
     echo "https://github.com/${REPO}/releases/download/${VERSION}/${BINARY}-${target}.tar.gz"
+  fi
+}
+
+checksums_url() {
+  if [ "$VERSION" = "latest" ]; then
+    echo "https://github.com/${REPO}/releases/latest/download/checksums.sha256"
+  else
+    echo "https://github.com/${REPO}/releases/download/${VERSION}/checksums.sha256"
   fi
 }
 
@@ -67,28 +83,58 @@ resolve_install_dir
 step 1 $TOTAL_STEPS "Download"
 
 URL="$(download_url "$TARGET")"
+ARCHIVE_NAME="${BINARY}-${TARGET}.tar.gz"
 dim "Platform: $TARGET"
 dim "Source:   $URL"
 
 TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR"' EXIT
 
-if ! curl -fsSL "$URL" | tar xz -C "$TMPDIR" 2>/dev/null; then
-  err "Download failed. Check your internet connection and that a release exists."
+ARCHIVE="$TMPDIR/$ARCHIVE_NAME"
+if ! curl -fsSL "$URL" -o "$ARCHIVE" 2>/dev/null; then
+  err "Download failed for $TARGET."
+  err "No prebuilt binary may exist for this platform."
+  err "Install from source instead: cargo install daemon8"
   if [ "$VERSION" != "latest" ]; then
     err "Version requested: $VERSION"
   fi
   exit 1
 fi
 
+ok "Downloaded $ARCHIVE_NAME"
+
+step 2 $TOTAL_STEPS "Verify"
+
+CHECKSUMS_URL="$(checksums_url)"
+CHECKSUMS_FILE="$TMPDIR/checksums.sha256"
+if curl -fsSL "$CHECKSUMS_URL" -o "$CHECKSUMS_FILE" 2>/dev/null; then
+  EXPECTED="$(grep "$ARCHIVE_NAME" "$CHECKSUMS_FILE" | awk '{print $1}')"
+  if [ -z "$EXPECTED" ]; then
+    dim "No checksum entry for $ARCHIVE_NAME; skipping verification"
+  else
+    ACTUAL="$(compute_sha256 "$ARCHIVE")"
+    if [ "$EXPECTED" = "$ACTUAL" ]; then
+      ok "SHA-256 verified"
+    else
+      err "Checksum verification failed!"
+      err "Expected: $EXPECTED"
+      err "Got:      $ACTUAL"
+      err "The downloaded file may be corrupted. Aborting."
+      exit 1
+    fi
+  fi
+else
+  dim "Checksum file not available; skipping verification"
+fi
+
+tar xz -C "$TMPDIR" -f "$ARCHIVE"
+
 if [ ! -f "$TMPDIR/$BINARY" ]; then
   err "Binary not found in archive"
   exit 1
 fi
 
-ok "Downloaded $BINARY"
-
-step 2 $TOTAL_STEPS "Install"
+step 3 $TOTAL_STEPS "Install"
 
 if [ -f "$INSTALL_DIR/$BINARY" ]; then
   dim "Updating existing installation"
@@ -135,6 +181,6 @@ case ":${PATH}:" in
     ;;
 esac
 
-step 3 $TOTAL_STEPS "Setup"
+step 4 $TOTAL_STEPS "Setup"
 echo ""
 "$INSTALL_DIR/$BINARY" setup

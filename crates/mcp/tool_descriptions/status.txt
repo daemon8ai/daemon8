@@ -1,7 +1,0 @@
-Health snapshot of the daemon: total observation count, errors observed in the last 60 seconds, connected sources, and the daemon version.
-
-Call this first when starting a debugging session to confirm telemetry is flowing and to identify which sources are sending data. The list of source names tells you what to filter `query_observations` against.
-
-Parameters: none.
-
-Returns: { version: <string>, uptime_seconds: <int>, observations_total: <int>, errors_last_60s: <int>, connected_sources: [<name>...], healthy: <bool>, ... }. `healthy` is false if any source is in `disconnected` state or if error rate exceeds the configured threshold.

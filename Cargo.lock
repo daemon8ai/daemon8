@@ -1352,7 +1352,7 @@ dependencies = [
 
 [[package]]
 name = "daemon8"
-version = "0.3.0"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -1366,6 +1366,7 @@ dependencies = [
  "daemon8-ingest",
  "daemon8-mcp",
  "daemon8-parse",
+ "daemon8-providers",
  "daemon8-store",
  "daemon8-types",
  "directories",
@@ -1400,7 +1401,7 @@ dependencies = [
 
 [[package]]
 name = "daemon8-adb"
-version = "0.3.0"
+version = "0.3.2"
 dependencies = [
  "adb_client",
  "daemon8-types",
@@ -1413,7 +1414,7 @@ dependencies = [
 
 [[package]]
 name = "daemon8-api"
-version = "0.3.0"
+version = "0.3.2"
 dependencies = [
  "axum",
  "daemon8-chrome",
@@ -1431,7 +1432,7 @@ dependencies = [
 
 [[package]]
 name = "daemon8-chrome"
-version = "0.3.0"
+version = "0.3.2"
 dependencies = [
  "base64",
  "daemon8-types",
@@ -1450,7 +1451,7 @@ dependencies = [
 
 [[package]]
 name = "daemon8-ingest"
-version = "0.3.0"
+version = "0.3.2"
 dependencies = [
  "axum",
  "daemon8-types",
@@ -1466,7 +1467,7 @@ dependencies = [
 
 [[package]]
 name = "daemon8-mcp"
-version = "0.3.0"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "daemon8-chrome",
@@ -1484,26 +1485,44 @@ dependencies = [
 
 [[package]]
 name = "daemon8-parse"
-version = "0.3.0"
+version = "0.3.2"
 dependencies = [
  "daemon8-types",
+ "dateparser",
  "dirs",
+ "grok",
  "regex",
  "serde",
  "serde_json",
+ "syslog_loose",
  "tempfile",
  "thiserror 2.0.18",
  "toml 0.8.23",
 ]
 
 [[package]]
+name = "daemon8-providers"
+version = "0.3.2"
+dependencies = [
+ "anyhow",
+ "dirs",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml 0.8.23",
+]
+
+[[package]]
 name = "daemon8-store"
-version = "0.3.0"
+version = "0.3.2"
 dependencies = [
  "async-trait",
  "daemon8-types",
+ "quick_cache",
+ "regex",
  "serde",
  "serde_json",
+ "sha2",
  "surrealdb",
  "thiserror 2.0.18",
  "tokio",
@@ -1512,7 +1531,7 @@ dependencies = [
 
 [[package]]
 name = "daemon8-types"
-version = "0.3.0"
+version = "0.3.2"
 dependencies = [
  "rmcp",
  "serde",
@@ -1572,6 +1591,17 @@ name = "data-encoding"
 version = "2.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d7a1e2f27636f116493b8b860f5546edb47c8d8f8ea73e1d2a20be88e28d1fea"
+
+[[package]]
+name = "dateparser"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fa7c3b5f25f753dcbf8f77a535166e08cba151529b6df9be966984053a68cf39"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "regex",
+]
 
 [[package]]
 name = "der"
@@ -2427,6 +2457,16 @@ name = "glob"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
+
+[[package]]
+name = "grok"
+version = "2.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6ddab6a9c8bb998cb2fc3101fde8ef561b7c4970db3957be7a8eee1e168f666b"
+dependencies = [
+ "glob",
+ "onig",
+]
 
 [[package]]
 name = "group"
@@ -4083,6 +4123,28 @@ name = "once_cell_polyfill"
 version = "1.70.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
+
+[[package]]
+name = "onig"
+version = "6.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0cc3cbf698f9438986c11a880c90a6d04b9de27575afd28bbf45b154b6c709e2"
+dependencies = [
+ "bitflags 2.11.0",
+ "libc",
+ "once_cell",
+ "onig_sys",
+]
+
+[[package]]
+name = "onig_sys"
+version = "69.9.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e68317604e77e53b85896388e1a803c1d21b74c899ec9e5e1112db90735edd7"
+dependencies = [
+ "cc",
+ "pkg-config",
+]
 
 [[package]]
 name = "openssl-probe"
@@ -6336,6 +6398,16 @@ dependencies = [
  "objc2-core-foundation",
  "objc2-io-kit",
  "windows 0.61.3",
+]
+
+[[package]]
+name = "syslog_loose"
+version = "0.23.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3ddbead3f86a91bd8c9b559ce0c5b0cbf03e774ffb7f8511eaf78375cc4a7837"
+dependencies = [
+ "chrono",
+ "nom 8.0.0",
 ]
 
 [[package]]

@@ -7,8 +7,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use daemon8_store::{LensManager, MemoryStore, StateModel};
-use daemon8_types::{Checkpoint, DevicePlatform, Filter, Observation};
+use daemon8_store::{
+    ActiveSessionState, DebugSessionStore, LensManager, LibrarianStore, MemoryStore, StateModel,
+};
+use daemon8_types::{Checkpoint, DevicePlatform, Filter, Observation, SourceActivator};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{Implementation, ServerCapabilities, ServerInfo, Tool};
@@ -18,7 +20,12 @@ use serde::Deserialize;
 use tokio::sync::broadcast;
 use tracing::Instrument;
 
-const INSTRUCTIONS: &str = include_str!("../tool_descriptions/instructions.txt");
+pub mod envelope;
+pub mod help;
+use envelope::{ActiveSessionEcho, DaemonMeta};
+use help::FeatureGate;
+
+const INSTRUCTIONS: &str = include_str!("../tool_descriptions/instructions.md");
 static MCP_SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 fn next_mcp_session_id() -> String {
@@ -353,20 +360,154 @@ pub struct ForgetMemoryParams {
     pub confirm: Option<bool>,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct HelpParams {
+    #[schemars(
+        description = "Help topic: index, debug_session, checkpoint, setup, hooks, lens, memory, observations, envelope, librarian. Omit for index."
+    )]
+    pub topic: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct LibrarianIndexEdge {
+    #[schemars(
+        description = "Edge kind: has_source | documented_by | fixes | supersedes | child_of"
+    )]
+    pub kind: String,
+    #[schemars(description = "Target catalog node ID for this edge")]
+    pub target_node_id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct LibrarianIndexParams {
+    #[schemars(description = "Node kind: doc | source_template | fix | project")]
+    pub kind: String,
+    #[schemars(description = "Human-readable name for this reference")]
+    pub label: String,
+    #[schemars(description = "Locator type: file | url | vault")]
+    pub locator_kind: String,
+    #[schemars(description = "The actual pointer — a file path, URL, or vault note path")]
+    pub locator: String,
+    #[schemars(description = "Free-form retrieval tags")]
+    pub tags: Option<Vec<String>>,
+    #[schemars(description = "Project slug to scope this reference")]
+    pub project_slug: Option<String>,
+    #[schemars(description = "Place under an existing catalog node for hierarchy")]
+    pub parent_id: Option<String>,
+    #[schemars(description = "Optional edge to create at index time")]
+    pub edge: Option<LibrarianIndexEdge>,
+    #[schemars(
+        description = "Mark as authoritative reference — canonicalized nodes are never flagged as stale"
+    )]
+    pub canonicalize: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct LibrarianLookupParams {
+    #[schemars(description = "Look up a single node by ID (returns node + edges)")]
+    pub id: Option<String>,
+    #[schemars(description = "Filter by kind: doc | source_template | fix | project")]
+    pub kinds: Option<Vec<String>>,
+    #[schemars(description = "Filter by tags")]
+    pub tags: Option<Vec<String>>,
+    #[schemars(description = "Scope to a project")]
+    pub project_slug: Option<String>,
+    #[schemars(description = "Case-insensitive search across label and locator")]
+    pub text: Option<String>,
+    #[schemars(description = "Max results. Default 20, max 500.")]
+    pub limit: Option<u32>,
+    #[schemars(description = "Include superseded/deprecated entries. Default false.")]
+    pub include_deprecated: Option<bool>,
+    #[schemars(description = "Find nodes not accessed in N days")]
+    pub stale_before_days: Option<u32>,
+    #[schemars(description = "Browse children of a specific catalog node")]
+    pub parent_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct LibrarianForgetParams {
+    #[schemars(description = "Catalog node ID to remove or deprecate")]
+    pub id: String,
+    #[schemars(
+        description = "Required for hard delete (deprecate=false). Must be true to proceed."
+    )]
+    pub confirm: Option<bool>,
+    #[schemars(
+        description = "Default true. When true: soft-delete (deprecated_at set). When false and confirm=true: permanent removal."
+    )]
+    pub deprecate: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CreateCheckpointParams {
+    #[schemars(
+        description = "Optional human-readable note about why this checkpoint exists (e.g. \"before applying retry patch\")."
+    )]
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct StartDebugSessionParams {
+    #[schemars(description = "Project slug to scope the session to (e.g. \"daemon8\").")]
+    pub project: Option<String>,
+    #[schemars(description = "One-line description of what is being investigated.")]
+    pub description: Option<String>,
+    #[schemars(
+        description = "Required. Agent identity in format :host/tool+role> (e.g. :mbp/claude+plan-agent>). Identifies who is running this investigation."
+    )]
+    pub agent_id: String,
+    #[schemars(
+        description = "Optional. Feature being investigated (e.g. 'auth', 'search'). Used by other agents to discover overlapping work."
+    )]
+    pub feature: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct EndDebugSessionParams {
+    #[schemars(
+        description = "Outcome string. Defaults to \"abandoned\". Use resolve_debug_session for \"resolved\"."
+    )]
+    pub outcome: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ResolveDebugSessionParams {
+    #[schemars(description = "Required: human summary of what broke and what fixed it.")]
+    pub summary: String,
+    #[schemars(description = "Optional: one-sentence root cause.")]
+    pub root_cause: Option<String>,
+    #[schemars(description = "Optional: unified diff or short patch text.")]
+    pub fix_diff: Option<String>,
+    #[schemars(description = "Optional: CLI commands that mattered to the fix.")]
+    pub commands_used: Option<Vec<String>>,
+    #[schemars(description = "Optional: error_hash strings this fix resolves.")]
+    pub related_errors: Option<Vec<String>>,
+    #[schemars(description = "Optional: extra tags for retrieval.")]
+    pub tags: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ListDebugSessionsParams {
+    #[schemars(description = "Filter by status: active, completed, abandoned. Omit for all.")]
+    pub status: Option<String>,
+    #[schemars(
+        description = "Optional. Filter by feature name (e.g. 'auth', 'search'). Returns only sessions investigating that feature."
+    )]
+    pub feature: Option<String>,
+}
+
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct SetupToolAction {
-    #[schemars(description = "Setup action: status, plan, or apply.")]
+    #[schemars(description = "Setup action: status or apply.")]
     pub action: String,
     #[schemars(description = "Project working directory. Defaults to daemon current directory.")]
     pub cwd: Option<String>,
     #[schemars(description = "Required to confirm mutating setup_apply.")]
     pub yes: Option<bool>,
-    #[schemars(description = "Comma-separated providers to configure during setup_apply.")]
+    #[schemars(
+        description = "Comma-separated providers to configure (e.g. \"claude-code,gemini,codex\"). Omit for auto-detection."
+    )]
     pub providers: Option<String>,
-    #[schemars(description = "Hook install scope for setup_apply: local, shared, or global.")]
-    pub install_hooks: Option<String>,
-    #[schemars(description = "Replace stale daemon8 hook entries during setup_apply.")]
-    pub force_hooks: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -387,20 +528,34 @@ pub struct SetupApplyParams {
     pub cwd: Option<String>,
     #[schemars(description = "Required to confirm setup_apply writes.")]
     pub yes: bool,
-    #[schemars(description = "Comma-separated providers to configure.")]
+    #[schemars(
+        description = "Comma-separated providers to configure (e.g. \"claude-code,gemini,codex\"). Omit for auto-detection."
+    )]
     pub providers: Option<String>,
-    #[schemars(description = "Hook install scope: local, shared, or global.")]
-    pub install_hooks: Option<String>,
-    #[schemars(description = "Replace stale daemon8 hook entries.")]
-    pub force_hooks: Option<bool>,
 }
 
 pub type SetupToolFn =
     Arc<dyn Fn(SetupToolAction) -> Pin<Box<dyn Future<Output = String> + Send>> + Send + Sync>;
 
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct HooksToolAction {
+    #[schemars(description = "Action: list, remove, update, repair.")]
+    pub action: String,
+    #[schemars(description = "Provider for remove/update: claude or codex.")]
+    pub provider: Option<String>,
+    #[schemars(description = "Scope for remove/update (claude only): local, shared, or global.")]
+    pub scope: Option<String>,
+}
+
+pub type HooksToolFn =
+    Arc<dyn Fn(HooksToolAction) -> Pin<Box<dyn Future<Output = String> + Send>> + Send + Sync>;
+
 pub struct DaemonMcp {
     store: Arc<dyn StateModel>,
     memory_store: Option<Arc<dyn MemoryStore>>,
+    debug_session_store: Option<Arc<dyn DebugSessionStore>>,
+    librarian_store: Option<Arc<dyn LibrarianStore>>,
+    active_state: ActiveSessionState,
     obs_tx: tokio::sync::mpsc::UnboundedSender<Observation>,
     chrome_tx: tokio::sync::mpsc::Sender<ChromeCommand>,
     chrome_state: tokio::sync::watch::Receiver<daemon8_chrome::ConnectionState>,
@@ -415,15 +570,20 @@ pub struct DaemonMcp {
     broadcast_tx: broadcast::Sender<(Arc<Observation>, Arc<str>)>,
     lens: Arc<LensManager>,
     setup_tool_fn: Option<SetupToolFn>,
+    hooks_tool_fn: Option<HooksToolFn>,
+    source_activator: Option<Arc<dyn SourceActivator>>,
     /// Parent cancellation token. The push task spawned in `on_initialized`
     /// uses a child token so daemon shutdown propagates cleanly.
     cancel: tokio_util::sync::CancellationToken,
+    enabled_features: Vec<FeatureGate>,
     tool_router: ToolRouter<Self>,
 }
 
 pub struct DaemonMcpConfig {
     pub store: Arc<dyn StateModel>,
     pub memory_store: Option<Arc<dyn MemoryStore>>,
+    pub debug_session_store: Option<Arc<dyn DebugSessionStore>>,
+    pub librarian_store: Option<Arc<dyn LibrarianStore>>,
     pub obs_tx: tokio::sync::mpsc::UnboundedSender<Observation>,
     pub chrome_tx: tokio::sync::mpsc::Sender<ChromeCommand>,
     pub chrome_state: tokio::sync::watch::Receiver<daemon8_chrome::ConnectionState>,
@@ -433,6 +593,8 @@ pub struct DaemonMcpConfig {
     pub broadcast_tx: broadcast::Sender<(Arc<Observation>, Arc<str>)>,
     pub lens: Arc<LensManager>,
     pub setup_tool_fn: Option<SetupToolFn>,
+    pub hooks_tool_fn: Option<HooksToolFn>,
+    pub source_activator: Option<Arc<dyn SourceActivator>>,
     /// Parent cancellation token. Use the daemon-wide token; the MCP push task
     /// derives a child from it so daemon shutdown stops per-session work.
     pub cancel: tokio_util::sync::CancellationToken,
@@ -447,13 +609,41 @@ impl DaemonMcp {
         if cfg.memory_store.is_some() {
             router += Self::memory_tool_router();
         }
+        if cfg.debug_session_store.is_some() && cfg.memory_store.is_some() {
+            router += Self::debug_session_tool_router();
+        }
         if cfg.setup_tool_fn.is_some() {
             router += Self::setup_tool_router();
+        }
+        if cfg.hooks_tool_fn.is_some() {
+            router += Self::hooks_tool_router();
+        }
+        if cfg.librarian_store.is_some() {
+            router += Self::librarian_tool_router();
+        }
+        let mut enabled_features = Vec::new();
+        if cfg.memory_store.is_some() {
+            enabled_features.push(FeatureGate::Memory);
+        }
+        if cfg.debug_session_store.is_some() && cfg.memory_store.is_some() {
+            enabled_features.push(FeatureGate::DebugSession);
+        }
+        if cfg.setup_tool_fn.is_some() {
+            enabled_features.push(FeatureGate::Setup);
+        }
+        if cfg.hooks_tool_fn.is_some() {
+            enabled_features.push(FeatureGate::Hooks);
+        }
+        if cfg.librarian_store.is_some() {
+            enabled_features.push(FeatureGate::Librarian);
         }
         let (subscription_tx, _) = tokio::sync::watch::channel::<Option<Filter>>(None);
         Self {
             store: cfg.store,
             memory_store: cfg.memory_store,
+            debug_session_store: cfg.debug_session_store,
+            librarian_store: cfg.librarian_store,
+            active_state: ActiveSessionState::new(),
             obs_tx: cfg.obs_tx,
             chrome_tx: cfg.chrome_tx,
             chrome_state: cfg.chrome_state,
@@ -465,7 +655,10 @@ impl DaemonMcp {
             broadcast_tx: cfg.broadcast_tx,
             lens: cfg.lens,
             setup_tool_fn: cfg.setup_tool_fn,
+            hooks_tool_fn: cfg.hooks_tool_fn,
+            source_activator: cfg.source_activator,
             cancel: cfg.cancel,
+            enabled_features,
             tool_router: router,
         }
     }
@@ -491,6 +684,22 @@ impl DaemonMcp {
     #[cfg(feature = "test-util")]
     pub fn child_cancel_token(&self) -> tokio_util::sync::CancellationToken {
         self.cancel.child_token()
+    }
+
+    #[cfg(feature = "test-util")]
+    pub fn help_index_body(&self) -> String {
+        help::build_dynamic_index(&self.enabled_features, self.librarian_store.is_some())
+    }
+
+    #[cfg(feature = "test-util")]
+    pub fn help_topic_body(&self, topic: &str) -> (String, String) {
+        match help::find_topic(topic, &self.enabled_features) {
+            Some(t) => (t.name.to_string(), t.body.to_string()),
+            None => (
+                "index".to_string(),
+                help::build_dynamic_index(&self.enabled_features, self.librarian_store.is_some()),
+            ),
+        }
     }
 
     /// Ensure Chrome is connected, waiting up to `timeout` for the connection.
@@ -549,7 +758,7 @@ impl DaemonMcp {
         }
     }
 
-    #[doc = include_str!("../tool_descriptions/query_observations.txt")]
+    #[doc = include_str!("../tool_descriptions/query_observations.md")]
     #[tool(name = "query_observations")]
     async fn query_observations(&self, Parameters(params): Parameters<ObserveParams>) -> String {
         // If the caller wants browser observations, ensure Chrome is connected.
@@ -587,6 +796,10 @@ impl DaemonMcp {
             include_system: params.include_system,
         };
 
+        if let Some(ref sa) = self.source_activator {
+            sa.touch_matching(&filter);
+        }
+
         match self.store.query(&filter).await {
             Ok(slice) => {
                 let mut result = serde_json::to_value(&slice).unwrap_or_default();
@@ -603,14 +816,13 @@ impl DaemonMcp {
                     result["lens_count"] = serde_json::json!(lens_obs.len());
                 }
 
-                serde_json::to_string_pretty(&result)
-                    .unwrap_or_else(|e| error_json(&format!("serialization failed: {e}")))
+                self.ok(result)
             }
-            Err(e) => error_json(&format!("query failed: {e}")),
+            Err(e) => self.err("query_failed", &e.to_string(), None, None),
         }
     }
 
-    #[doc = include_str!("../tool_descriptions/status.txt")]
+    #[doc = include_str!("../tool_descriptions/status.md")]
     #[tool(name = "status")]
     async fn status(&self) -> String {
         match self.store.summary().await {
@@ -622,34 +834,105 @@ impl DaemonMcp {
                             serde_json::Value::String(env!("CARGO_PKG_VERSION").to_string()),
                         );
                     }
-                    serde_json::to_string_pretty(&val)
-                        .unwrap_or_else(|e| error_json(&format!("serialization failed: {e}")))
+                    self.ok(val)
                 }
-                Err(e) => error_json(&format!("serialization failed: {e}")),
+                Err(e) => self.err("serialization_failed", &e.to_string(), None, None),
             },
-            Err(e) => error_json(&format!("summary failed: {e}")),
+            Err(e) => self.err("summary_failed", &e.to_string(), None, None),
         }
     }
 
-    #[doc = include_str!("../tool_descriptions/create_checkpoint.txt")]
+    #[tool(
+        name = "daemon8_help",
+        description = "Narrative documentation for daemon8 protocols. Pass topic='index' (or omit) for the topic list. Returns markdown."
+    )]
+    async fn daemon8_help(&self, Parameters(params): Parameters<HelpParams>) -> String {
+        let topic = params.topic.as_deref().unwrap_or("index");
+        if topic == "index" {
+            let body =
+                help::build_dynamic_index(&self.enabled_features, self.librarian_store.is_some());
+            return self.ok(serde_json::json!({ "topic": "index", "body": body }));
+        }
+        match help::find_topic(topic, &self.enabled_features) {
+            Some(t) => self.ok(serde_json::json!({ "topic": t.name, "body": t.body })),
+            None => {
+                let body = help::build_dynamic_index(
+                    &self.enabled_features,
+                    self.librarian_store.is_some(),
+                );
+                self.ok(serde_json::json!({ "topic": "index", "body": body }))
+            }
+        }
+    }
+
+    #[doc = include_str!("../tool_descriptions/create_checkpoint.md")]
     #[tool(name = "create_checkpoint")]
-    async fn create_checkpoint(&self) -> String {
-        let current = self.store.checkpoint().await;
+    async fn create_checkpoint(
+        &self,
+        Parameters(params): Parameters<CreateCheckpointParams>,
+    ) -> String {
+        let active = match self.active_state.current_session() {
+            Some(s) => s,
+            None => {
+                return self.err(
+                    "no_active_debug_session",
+                    "create_checkpoint requires an active debug session",
+                    Some("call start_debug_session first"),
+                    Some("start_debug_session"),
+                );
+            }
+        };
+        let ds_store = match &self.debug_session_store {
+            Some(s) => s,
+            None => {
+                return self.err(
+                    "internal_error",
+                    "debug_session store not available",
+                    None,
+                    None,
+                );
+            }
+        };
+
+        let seq = self.store.checkpoint().await;
+        let now = current_ns();
+        let cp = daemon8_store::DebugCheckpoint {
+            id: None,
+            debug_session_id: active.id.to_string(),
+            description: params.description,
+            created_at: now,
+            seq_at_creation: seq.0,
+        };
+        let cp_id = match ds_store.create_checkpoint(cp).await {
+            Ok(id) => id,
+            Err(e) => return self.err("create_checkpoint_failed", &e.to_string(), None, None),
+        };
+        self.active_state
+            .set_checkpoint(Some(Arc::from(cp_id.as_str())));
+        active.touch(now);
         *self
             .last_checkpoint
             .lock()
-            .expect("last_checkpoint mutex poisoned") = current;
-        serde_json::to_string_pretty(&serde_json::json!({ "checkpoint": current.0 }))
-            .unwrap_or_else(|e| error_json(&format!("serialization failed: {e}")))
+            .expect("last_checkpoint mutex poisoned") = seq;
+        self.ok_with(
+            serde_json::json!({
+                "checkpoint_id": cp_id,
+                "debug_session_id": active.id.as_ref(),
+                "seq_at_creation": seq.0,
+                "created_at": now
+            }),
+            vec!["query_observations"],
+            Some("checkpoint set; query_observations(since_checkpoint=...) shows what comes next"),
+        )
     }
 
-    #[doc = include_str!("../tool_descriptions/list_connections.txt")]
+    #[doc = include_str!("../tool_descriptions/list_connections.md")]
     #[tool(name = "list_connections")]
     async fn list_connections(&self) -> String {
-        self.connections_json().await
+        wrap_inner_result(self, &self.connections_json().await)
     }
 
-    #[doc = include_str!("../tool_descriptions/ingest_observation.txt")]
+    #[doc = include_str!("../tool_descriptions/ingest_observation.md")]
     #[tool(name = "ingest_observation")]
     async fn ingest_observation(&self, Parameters(params): Parameters<IngestParams>) -> String {
         let mut body = serde_json::Map::new();
@@ -687,7 +970,28 @@ impl DaemonMcp {
         }
         body.insert("data".into(), params.data);
 
-        let obs = daemon8_ingest::normalize::normalize(serde_json::Value::Object(body));
+        let mut obs = daemon8_ingest::normalize::normalize(serde_json::Value::Object(body));
+
+        // Stamp per-session debug-session and checkpoint links. Each DaemonMcp
+        // instance owns its own ActiveSessionState, so concurrent MCP sessions
+        // do not interfere with each other's observation stamping.
+        if let Some(ref session) = self.active_state.current_session() {
+            obs.debug_session_id = Some(session.id.clone());
+            let slug_tag = format!("project:{}", session.project_slug);
+            obs.tags = Some(match obs.tags {
+                Some(mut existing) => {
+                    if !existing.contains(&slug_tag) {
+                        existing.push(slug_tag);
+                    }
+                    existing
+                }
+                None => vec![slug_tag],
+            });
+        }
+        if let Some(cp) = self.active_state.current_checkpoint() {
+            obs.checkpoint_id = Some(cp);
+        }
+
         if let Err(e) = self.obs_tx.send(obs) {
             tracing::warn!(
                 origin = ?e.0.origin,
@@ -695,13 +999,18 @@ impl DaemonMcp {
                 severity = %e.0.severity,
                 "MCP ingest failed: observation channel closed"
             );
-            return error_json("Daemon is shutting down.");
+            return self.err(
+                "daemon_shutting_down",
+                "Daemon is shutting down.",
+                None,
+                None,
+            );
         }
 
-        serde_json::to_string(&serde_json::json!({"ok": true})).unwrap_or_default()
+        self.ok(serde_json::json!({"ok": true}))
     }
 
-    #[doc = include_str!("../tool_descriptions/subscribe_observations.txt")]
+    #[doc = include_str!("../tool_descriptions/subscribe_observations.md")]
     #[tool(name = "subscribe_observations")]
     async fn subscribe_observations(
         &self,
@@ -725,6 +1034,10 @@ impl DaemonMcp {
             include_system: params.include_system,
         };
 
+        if let Some(ref sa) = self.source_activator {
+            sa.touch_matching(&filter);
+        }
+
         let is_default = filter.kinds.is_none()
             && filter.severity_min.is_none()
             && filter.origins.is_none()
@@ -735,31 +1048,29 @@ impl DaemonMcp {
 
         if is_default {
             self.subscription_tx.send_replace(None);
-            serde_json::to_string(&serde_json::json!({
+            self.ok(serde_json::json!({
                 "subscribed": true,
                 "filter": "default (severity >= warn)"
             }))
-            .unwrap_or_default()
         } else {
             self.subscription_tx.send_replace(Some(filter));
-            serde_json::to_string(&serde_json::json!({
+            self.ok(serde_json::json!({
                 "subscribed": true,
                 "filter": "custom"
             }))
-            .unwrap_or_default()
         }
     }
 }
 
 #[tool_router(router = action_tool_router, vis = "pub")]
 impl DaemonMcp {
-    #[doc = include_str!("../tool_descriptions/connect_browser.txt")]
+    #[doc = include_str!("../tool_descriptions/connect_browser.md")]
     #[tool(name = "connect_browser")]
     async fn connect_browser(&self, Parameters(params): Parameters<ConnectParams>) -> String {
         self.connect_browser_inner(params).await
     }
 
-    #[doc = include_str!("../tool_descriptions/issue_command.txt")]
+    #[doc = include_str!("../tool_descriptions/issue_command.md")]
     #[tool(name = "issue_command")]
     async fn issue_command(&self, Parameters(params): Parameters<ActParams>) -> String {
         self.issue_command_inner(params).await
@@ -768,7 +1079,7 @@ impl DaemonMcp {
 
 #[tool_router(router = lens_tool_router, vis = "pub")]
 impl DaemonMcp {
-    #[doc = include_str!("../tool_descriptions/set_lens.txt")]
+    #[doc = include_str!("../tool_descriptions/set_lens.md")]
     #[tool(name = "set_lens")]
     async fn set_lens(&self, Parameters(params): Parameters<LensParams>) -> String {
         let filter = Filter {
@@ -783,69 +1094,136 @@ impl DaemonMcp {
             include_system: None,
         };
 
+        if let Some(ref sa) = self.source_activator {
+            sa.touch_matching(&filter);
+        }
         let capacity = params.capacity.unwrap_or(200).min(1000);
         self.lens.set_with_capacity(filter, capacity).await;
 
         let status = self.lens.status().await;
-        serde_json::to_string_pretty(&status)
-            .unwrap_or_else(|e| error_json(&format!("serialization failed: {e}")))
+        self.ok(serde_json::to_value(&status).unwrap_or(serde_json::Value::Null))
     }
 
-    #[doc = include_str!("../tool_descriptions/clear_lens.txt")]
+    #[doc = include_str!("../tool_descriptions/clear_lens.md")]
     #[tool(name = "clear_lens")]
     async fn clear_lens(&self) -> String {
         self.lens.clear().await;
-        serde_json::to_string(&serde_json::json!({"cleared": true})).unwrap_or_default()
+        self.ok(serde_json::json!({"cleared": true}))
     }
 
-    #[doc = include_str!("../tool_descriptions/lens_status.txt")]
+    #[doc = include_str!("../tool_descriptions/lens_status.md")]
     #[tool(name = "lens_status")]
     async fn lens_status(&self) -> String {
         let status = self.lens.status().await;
-        serde_json::to_string_pretty(&status)
-            .unwrap_or_else(|e| error_json(&format!("serialization failed: {e}")))
+        self.ok(serde_json::to_value(&status).unwrap_or(serde_json::Value::Null))
     }
 }
 
 #[tool_router(router = memory_tool_router, vis = "pub")]
 impl DaemonMcp {
-    #[doc = include_str!("../tool_descriptions/save_memory.txt")]
+    #[doc = include_str!("../tool_descriptions/save_memory.md")]
     #[tool(name = "save_memory")]
     async fn save_memory(&self, Parameters(params): Parameters<SaveMemoryParams>) -> String {
         let mem_store = match &self.memory_store {
             Some(s) => s,
-            None => return error_json("memory store not available"),
+            None => {
+                return self.err(
+                    "memory_store_unavailable",
+                    "memory store not available",
+                    None,
+                    None,
+                );
+            }
         };
-        save_memory_inner(mem_store.as_ref(), params).await
+        let hint = if self.librarian_store.is_some() {
+            detect_librarian_hint(&params.content)
+        } else {
+            None
+        };
+        let inner = save_memory_inner(mem_store.as_ref(), params).await;
+        match hint {
+            Some(h) => match serde_json::from_str::<serde_json::Value>(&inner) {
+                Ok(v) if v.get("error").is_none() => self.ok_with(v, vec![], Some(&h)),
+                _ => wrap_inner_result(self, &inner),
+            },
+            None => wrap_inner_result(self, &inner),
+        }
     }
 
-    #[doc = include_str!("../tool_descriptions/query_memory.txt")]
+    #[doc = include_str!("../tool_descriptions/query_memory.md")]
     #[tool(name = "query_memory")]
     async fn query_memory(&self, Parameters(params): Parameters<QueryMemoryParams>) -> String {
         let mem_store = match &self.memory_store {
             Some(s) => s,
-            None => return error_json("memory store not available"),
+            None => {
+                return self.err(
+                    "memory_store_unavailable",
+                    "memory store not available",
+                    None,
+                    None,
+                );
+            }
         };
-        query_memory_inner(mem_store.as_ref(), params).await
+        let inner = query_memory_inner(mem_store.as_ref(), params).await;
+        wrap_inner_result(self, &inner)
     }
 
-    #[doc = include_str!("../tool_descriptions/forget_memory.txt")]
+    #[doc = include_str!("../tool_descriptions/forget_memory.md")]
     #[tool(name = "forget_memory")]
     async fn forget_memory(&self, Parameters(params): Parameters<ForgetMemoryParams>) -> String {
         if let Err(msg) = check_forget_memory_confirm(params.confirm) {
-            return msg;
+            return self.err(
+                "missing_confirm",
+                &msg,
+                Some("pass confirm=true to acknowledge deletion"),
+                None,
+            );
         }
 
         let mem_store = match &self.memory_store {
             Some(s) => s,
-            None => return error_json("memory store not available"),
+            None => {
+                return self.err(
+                    "memory_store_unavailable",
+                    "memory store not available",
+                    None,
+                    None,
+                );
+            }
         };
 
         match mem_store.forget_memory(&params.id).await {
-            Ok(existed) => serde_json::to_string(&serde_json::json!({ "deleted": existed }))
-                .unwrap_or_default(),
-            Err(e) => error_json(&format!("forget_memory failed: {e}")),
+            Ok(existed) => self.ok(serde_json::json!({ "deleted": existed })),
+            Err(e) => self.err("forget_memory_failed", &e.to_string(), None, None),
         }
+    }
+}
+
+/// Wrap a JSON string from an inner helper (no envelope) into the standard
+/// envelope shape. Pure best-effort: malformed JSON falls back to a string
+/// payload so the LLM still gets *something* readable instead of an opaque
+/// error.
+fn wrap_inner_result(daemon: &DaemonMcp, raw: &str) -> String {
+    match serde_json::from_str::<serde_json::Value>(raw) {
+        Ok(v) => {
+            // If the inner function already produced an envelope-shaped value
+            // (i.e. `error_json(...)` from inside the inner), pass it through
+            // by extracting the error and rewrapping. Otherwise it's a raw
+            // success payload to wrap as `result`.
+            if let Some(err_obj) = v.get("error").and_then(|e| e.as_object()) {
+                let code = err_obj
+                    .get("code")
+                    .and_then(|c| c.as_str())
+                    .unwrap_or("internal_error");
+                let message = err_obj
+                    .get("message")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("(no message)");
+                return daemon.err(code, message, None, None);
+            }
+            daemon.ok(v)
+        }
+        Err(_) => daemon.ok(serde_json::json!({"raw": raw})),
     }
 }
 
@@ -855,54 +1233,669 @@ impl DaemonMcp {
 fn check_forget_memory_confirm(confirm: Option<bool>) -> Result<(), String> {
     match confirm {
         Some(true) => Ok(()),
-        _ => Err(error_json(
-            "forget_memory requires confirm=true to delete the memory",
-        )),
+        _ => Err("forget_memory requires confirm=true to delete the memory".into()),
+    }
+}
+
+/// Validate agent_id against the `:host/tool+role>` convention.
+/// All lowercase, bounded by `:` prefix and `>` suffix, `/` separates host from tool,
+/// `+` separates tool from role. Max 64 chars total.
+fn validate_agent_id(id: &str) -> Result<(), String> {
+    if id.len() > 64 {
+        return Err("agent_id must be at most 64 characters".into());
+    }
+    let body = id
+        .strip_prefix(':')
+        .and_then(|s| s.strip_suffix('>'))
+        .ok_or("agent_id must start with ':' and end with '>'")?;
+    let (host_rest, role) = body
+        .split_once('+')
+        .ok_or("agent_id must contain '+' separating tool from role")?;
+    let (host, tool) = host_rest
+        .split_once('/')
+        .ok_or("agent_id must contain '/' separating host from tool")?;
+    if host.is_empty() || tool.is_empty() || role.is_empty() {
+        return Err("host, tool, and role must be non-empty".into());
+    }
+    let valid_segment = |s: &str| {
+        s.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    };
+    if !valid_segment(host) || !valid_segment(tool) || !valid_segment(role) {
+        return Err("agent_id segments must be lowercase alphanumeric with hyphens only".into());
+    }
+    Ok(())
+}
+
+#[tool_router(router = debug_session_tool_router, vis = "pub")]
+impl DaemonMcp {
+    #[doc = include_str!("../tool_descriptions/start_debug_session.md")]
+    #[tool(name = "start_debug_session")]
+    async fn start_debug_session(
+        &self,
+        Parameters(params): Parameters<StartDebugSessionParams>,
+    ) -> String {
+        let ds_store = match &self.debug_session_store {
+            Some(s) => s,
+            None => {
+                return self.err(
+                    "debug_session_unavailable",
+                    "debug_session store not available",
+                    Some("ensure setup_apply has run"),
+                    Some("setup_apply"),
+                );
+            }
+        };
+        if let Some(existing) = self.active_state.current_session() {
+            return self.err(
+                "already_active_debug_session",
+                &format!("session {} is already active", existing.id),
+                Some(
+                    "call end_debug_session(outcome=\"abandoned\") or resolve_debug_session first",
+                ),
+                Some("end_debug_session"),
+            );
+        }
+        if let Err(msg) = validate_agent_id(&params.agent_id) {
+            return self.err(
+                "invalid_agent_id",
+                &msg,
+                Some("agent_id format: :host/tool+role> (e.g. :mbp/claude+plan-agent>)"),
+                None,
+            );
+        }
+        let now = current_ns();
+        let session = daemon8_store::DebugSession {
+            id: None,
+            started_at: now,
+            ended_at: None,
+            last_activity: now,
+            project_slug: params.project.unwrap_or_else(|| "unknown".into()),
+            description: params.description,
+            status: daemon8_types::DebugSessionStatus::Active,
+            outcome: None,
+            summary_memory_id: None,
+            agent_id: params.agent_id.clone(),
+            feature: params.feature.clone(),
+        };
+        match ds_store.start_debug_session(session.clone()).await {
+            Ok(id) => {
+                self.active_state
+                    .set_session(Some(daemon8_store::ActiveDebugSession {
+                        id: Arc::from(id.as_str()),
+                        project_slug: Arc::from(session.project_slug.as_str()),
+                        started_at_ns: now,
+                        last_activity_ns: Arc::new(AtomicU64::new(now)),
+                        agent_id: Arc::from(params.agent_id.as_str()),
+                        feature: params.feature.as_deref().map(Arc::from),
+                    }));
+                self.ok_with(
+                    serde_json::json!({
+                        "debug_session_id": id,
+                        "started_at": now,
+                    }),
+                    vec!["create_checkpoint", "query_observations"],
+                    Some("debug session opened; checkpoint before any change you might want to roll back through"),
+                )
+            }
+            Err(e) => self.err("start_debug_session_failed", &e.to_string(), None, None),
+        }
+    }
+
+    #[doc = include_str!("../tool_descriptions/end_debug_session.md")]
+    #[tool(name = "end_debug_session")]
+    async fn end_debug_session(
+        &self,
+        Parameters(params): Parameters<EndDebugSessionParams>,
+    ) -> String {
+        end_or_resolve_inner(
+            self,
+            EndIntent::Abandon {
+                outcome_str: params.outcome,
+            },
+        )
+        .await
+    }
+
+    #[doc = include_str!("../tool_descriptions/resolve_debug_session.md")]
+    #[tool(name = "resolve_debug_session")]
+    async fn resolve_debug_session(
+        &self,
+        Parameters(params): Parameters<ResolveDebugSessionParams>,
+    ) -> String {
+        end_or_resolve_inner(self, EndIntent::Resolve(params)).await
+    }
+
+    #[doc = include_str!("../tool_descriptions/list_debug_sessions.md")]
+    #[tool(name = "list_debug_sessions")]
+    async fn list_debug_sessions(
+        &self,
+        Parameters(params): Parameters<ListDebugSessionsParams>,
+    ) -> String {
+        let ds_store = match &self.debug_session_store {
+            Some(s) => s,
+            None => {
+                return self.err(
+                    "debug_session_unavailable",
+                    "debug_session store not available",
+                    Some("ensure setup_apply has run"),
+                    Some("setup_apply"),
+                );
+            }
+        };
+        let status = match params.status.as_deref() {
+            Some(s) => match s.parse::<daemon8_types::DebugSessionStatus>() {
+                Ok(v) => Some(v),
+                Err(e) => return self.err("bad_status", &e, None, None),
+            },
+            None => None,
+        };
+        match ds_store.list_debug_sessions(status).await {
+            Ok(mut sessions) => {
+                if let Some(ref feat) = params.feature {
+                    sessions.retain(|s| s.feature.as_deref() == Some(feat.as_str()));
+                }
+                self.ok(serde_json::json!({
+                    "count": sessions.len(),
+                    "sessions": sessions,
+                }))
+            }
+            Err(e) => self.err("list_debug_sessions_failed", &e.to_string(), None, None),
+        }
+    }
+}
+
+enum EndIntent {
+    Abandon { outcome_str: Option<String> },
+    Resolve(ResolveDebugSessionParams),
+}
+
+async fn end_or_resolve_inner(daemon: &DaemonMcp, intent: EndIntent) -> String {
+    let ds_store = match &daemon.debug_session_store {
+        Some(s) => s,
+        None => {
+            return daemon.err(
+                "debug_session_unavailable",
+                "debug_session store not available",
+                None,
+                None,
+            );
+        }
+    };
+    let mem_store = match &daemon.memory_store {
+        Some(s) => s,
+        None => {
+            return daemon.err(
+                "memory_store_unavailable",
+                "memory store not available",
+                None,
+                None,
+            );
+        }
+    };
+    let active = match daemon.active_state.current_session() {
+        Some(s) => s,
+        None => {
+            return daemon.err(
+                "no_active_debug_session",
+                "no active debug session to end/resolve",
+                Some("call start_debug_session first"),
+                Some("start_debug_session"),
+            );
+        }
+    };
+    let now = current_ns();
+
+    // Gather source observations from this session's checkpoints. Falls back
+    // to the bare seq range from start..now if checkpoint listing fails.
+    let checkpoints = ds_store
+        .list_checkpoints(active.id.as_ref())
+        .await
+        .unwrap_or_default();
+    let mut source_observations: Vec<u64> =
+        checkpoints.iter().map(|cp| cp.seq_at_creation).collect();
+
+    let (outcome, summary_text, tags, data_blob) = match intent {
+        EndIntent::Abandon { outcome_str } => {
+            let outcome = outcome_str
+                .as_deref()
+                .and_then(|s| s.parse::<daemon8_types::DebugSessionOutcome>().ok())
+                .unwrap_or(daemon8_types::DebugSessionOutcome::Abandoned);
+            let summary = format!(
+                "Debug session abandoned. Project: {}, started_at_ns: {}, checkpoints: {}.",
+                active.project_slug,
+                active.started_at_ns,
+                checkpoints.len()
+            );
+            let tags = vec![
+                "kind:debug_session_summary".to_string(),
+                format!("project:{}", active.project_slug),
+                format!("outcome:{}", outcome),
+            ];
+            (outcome, summary, tags, None)
+        }
+        EndIntent::Resolve(params) => {
+            let mut tags = vec![
+                "kind:debug_session_summary".to_string(),
+                format!("project:{}", active.project_slug),
+                "outcome:resolved".to_string(),
+            ];
+            if let Some(extra) = &params.tags {
+                tags.extend(extra.iter().cloned());
+            }
+            // Add error_hash tags so query_memory(tags=["hash:abc"]) finds
+            // the resolution alongside the ErrorSignature memory.
+            if let Some(errs) = &params.related_errors {
+                tags.extend(errs.iter().map(|h| format!("hash:{h}")));
+            }
+            let mut data = serde_json::Map::new();
+            if let Some(rc) = &params.root_cause {
+                data.insert("root_cause".into(), serde_json::json!(rc));
+            }
+            if let Some(diff) = &params.fix_diff {
+                data.insert("fix_diff".into(), serde_json::json!(diff));
+            }
+            if let Some(cmds) = &params.commands_used {
+                data.insert("commands_used".into(), serde_json::json!(cmds));
+            }
+            if let Some(errs) = &params.related_errors {
+                data.insert("related_errors".into(), serde_json::json!(errs));
+            }
+            data.insert(
+                "checkpoint_count".into(),
+                serde_json::json!(checkpoints.len()),
+            );
+            data.insert(
+                "started_at_ns".into(),
+                serde_json::json!(active.started_at_ns),
+            );
+            data.insert("ended_at_ns".into(), serde_json::json!(now));
+            (
+                daemon8_types::DebugSessionOutcome::Resolved,
+                params.summary,
+                tags,
+                Some(serde_json::Value::Object(data)),
+            )
+        }
+    };
+
+    // Cap source_observations to the most recent 50 to avoid unbounded blobs.
+    if source_observations.len() > 50 {
+        let drop = source_observations.len() - 50;
+        source_observations.drain(0..drop);
+    }
+
+    let mem = daemon8_store::Memory {
+        id: None,
+        created_at: now,
+        updated_at: now,
+        kind: daemon8_types::MemoryKind::SessionSummary,
+        content: summary_text,
+        source_observations,
+        tags,
+        project_slug: active.project_slug.to_string(),
+        session_id: Some(active.id.to_string()),
+        confidence: 1.0,
+        data: data_blob,
+    };
+
+    let summary_memory_id = match mem_store.save_memory(mem).await {
+        Ok(id) => id,
+        Err(e) => {
+            return daemon.err("session_summary_save_failed", &e.to_string(), None, None);
+        }
+    };
+
+    let status = match outcome {
+        daemon8_types::DebugSessionOutcome::Resolved => {
+            daemon8_types::DebugSessionStatus::Completed
+        }
+        daemon8_types::DebugSessionOutcome::Abandoned
+        | daemon8_types::DebugSessionOutcome::InProgress => {
+            daemon8_types::DebugSessionStatus::Abandoned
+        }
+    };
+
+    if let Err(e) = ds_store
+        .end_debug_session(
+            active.id.as_ref(),
+            status,
+            Some(outcome),
+            Some(summary_memory_id.clone()),
+            now,
+        )
+        .await
+    {
+        return daemon.err(
+            "end_debug_session_db_update_failed",
+            &e.to_string(),
+            None,
+            None,
+        );
+    }
+
+    daemon.active_state.clear();
+
+    daemon.ok_with(
+        serde_json::json!({
+            "debug_session_id": active.id.as_ref(),
+            "summary_memory_id": summary_memory_id,
+            "checkpoint_count": checkpoints.len(),
+        }),
+        vec!["start_debug_session", "query_memory"],
+        Some("session closed; start_debug_session for the next investigation"),
+    )
+}
+
+fn current_ns() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64
+}
+
+impl DaemonMcp {
+    /// Build the per-tool-call meta block. Currently echoes the active debug
+    /// session so the LLM sees its lifecycle context on every response.
+    /// Setup-status surfacing lands in v0.4 once the synchronous probe is
+    /// wired across crate boundaries; until then `setup_status` remains the
+    /// explicit tool for setup state.
+    pub(crate) fn current_meta(&self) -> DaemonMeta {
+        let mut meta = DaemonMeta::default();
+        if let Some(s) = self.active_state.current_session() {
+            meta.active_debug_session = Some(ActiveSessionEcho {
+                id: s.id.to_string(),
+                project_slug: s.project_slug.to_string(),
+                started_at_ns: s.started_at_ns,
+            });
+        }
+        meta
+    }
+
+    pub(crate) fn current_meta_with(
+        &self,
+        next_actions: Vec<&str>,
+        hint: Option<&str>,
+    ) -> DaemonMeta {
+        let mut meta = self.current_meta();
+        if !next_actions.is_empty() {
+            meta.next_actions = Some(next_actions.into_iter().map(String::from).collect());
+        }
+        if let Some(h) = hint {
+            meta.hint = Some(h.to_string());
+        }
+        meta
+    }
+
+    pub(crate) fn ok(&self, value: serde_json::Value) -> String {
+        envelope::ok_value(value, self.current_meta())
+    }
+
+    pub(crate) fn ok_with(
+        &self,
+        value: serde_json::Value,
+        next_actions: Vec<&str>,
+        hint: Option<&str>,
+    ) -> String {
+        envelope::ok_value(value, self.current_meta_with(next_actions, hint))
+    }
+
+    pub(crate) fn err(
+        &self,
+        code: &str,
+        message: &str,
+        hint: Option<&str>,
+        fix_tool: Option<&str>,
+    ) -> String {
+        envelope::err(code, message, hint, fix_tool, self.current_meta())
     }
 }
 
 #[tool_router(router = setup_tool_router, vis = "pub")]
 impl DaemonMcp {
-    #[doc = include_str!("../tool_descriptions/setup_status.txt")]
+    #[doc = include_str!("../tool_descriptions/setup_status.md")]
     #[tool(name = "setup_status")]
     async fn setup_status(&self, Parameters(params): Parameters<SetupStatusParams>) -> String {
-        self.call_setup_tool(SetupToolAction {
-            action: "status".into(),
-            cwd: params.cwd,
-            yes: None,
-            providers: None,
-            install_hooks: None,
-            force_hooks: None,
-        })
-        .await
+        let inner = self
+            .call_setup_tool(SetupToolAction {
+                action: "status".into(),
+                cwd: params.cwd,
+                yes: None,
+                providers: None,
+            })
+            .await;
+        wrap_inner_result(self, &inner)
     }
 
-    #[doc = include_str!("../tool_descriptions/setup_plan.txt")]
+    #[doc = include_str!("../tool_descriptions/setup_plan.md")]
     #[tool(name = "setup_plan")]
     async fn setup_plan(&self, Parameters(params): Parameters<SetupPlanParams>) -> String {
-        self.call_setup_tool(SetupToolAction {
-            action: "plan".into(),
-            cwd: params.cwd,
-            yes: None,
-            providers: None,
-            install_hooks: None,
-            force_hooks: None,
-        })
-        .await
+        let inner = self
+            .call_setup_tool(SetupToolAction {
+                action: "status".into(),
+                cwd: params.cwd,
+                yes: None,
+                providers: None,
+            })
+            .await;
+        wrap_inner_result(self, &inner)
     }
 
-    #[doc = include_str!("../tool_descriptions/setup_apply.txt")]
+    #[doc = include_str!("../tool_descriptions/setup_apply.md")]
     #[tool(name = "setup_apply")]
     async fn setup_apply(&self, Parameters(params): Parameters<SetupApplyParams>) -> String {
-        self.call_setup_tool(SetupToolAction {
-            action: "apply".into(),
-            cwd: params.cwd,
-            yes: Some(params.yes),
-            providers: params.providers,
-            install_hooks: params.install_hooks,
-            force_hooks: params.force_hooks,
-        })
-        .await
+        let inner = self
+            .call_setup_tool(SetupToolAction {
+                action: "apply".into(),
+                cwd: params.cwd,
+                yes: Some(params.yes),
+                providers: params.providers,
+            })
+            .await;
+        wrap_inner_result(self, &inner)
+    }
+}
+
+#[tool_router(router = hooks_tool_router, vis = "pub")]
+impl DaemonMcp {
+    #[doc = include_str!("../tool_descriptions/hooks_list.md")]
+    #[tool(name = "hooks_list")]
+    async fn hooks_list(&self) -> String {
+        let inner = self
+            .call_hooks_tool(HooksToolAction {
+                action: "list".into(),
+                provider: None,
+                scope: None,
+            })
+            .await;
+        wrap_inner_result(self, &inner)
+    }
+
+    #[doc = include_str!("../tool_descriptions/hooks_remove.md")]
+    #[tool(name = "hooks_remove")]
+    async fn hooks_remove(&self, Parameters(params): Parameters<HooksToolAction>) -> String {
+        let inner = self
+            .call_hooks_tool(HooksToolAction {
+                action: "remove".into(),
+                provider: params.provider,
+                scope: params.scope,
+            })
+            .await;
+        wrap_inner_result(self, &inner)
+    }
+
+    #[doc = include_str!("../tool_descriptions/hooks_update.md")]
+    #[tool(name = "hooks_update")]
+    async fn hooks_update(&self, Parameters(params): Parameters<HooksToolAction>) -> String {
+        let inner = self
+            .call_hooks_tool(HooksToolAction {
+                action: "update".into(),
+                provider: params.provider,
+                scope: params.scope,
+            })
+            .await;
+        wrap_inner_result(self, &inner)
+    }
+
+    #[doc = include_str!("../tool_descriptions/hooks_repair.md")]
+    #[tool(name = "hooks_repair")]
+    async fn hooks_repair(&self) -> String {
+        let inner = self
+            .call_hooks_tool(HooksToolAction {
+                action: "repair".into(),
+                provider: None,
+                scope: None,
+            })
+            .await;
+        wrap_inner_result(self, &inner)
+    }
+}
+
+#[tool_router(router = librarian_tool_router, vis = "pub")]
+impl DaemonMcp {
+    #[doc = include_str!("../tool_descriptions/librarian_index.md")]
+    #[tool(name = "librarian_index")]
+    async fn librarian_index(
+        &self,
+        Parameters(params): Parameters<LibrarianIndexParams>,
+    ) -> String {
+        let lib_store = match &self.librarian_store {
+            Some(s) => s,
+            None => {
+                return self.err(
+                    "librarian_store_unavailable",
+                    "librarian catalog not configured",
+                    None,
+                    None,
+                );
+            }
+        };
+        let inner = librarian_index_inner(lib_store.as_ref(), params).await;
+        match serde_json::from_str::<serde_json::Value>(&inner) {
+            Ok(v) if v.get("error").is_some() => wrap_inner_result(self, &inner),
+            Ok(v) => {
+                let mut hints = Vec::new();
+                let kind = v.get("kind").and_then(|k| k.as_str()).unwrap_or("");
+                let version = v.get("version").and_then(|v| v.as_str()).unwrap_or("");
+                match kind {
+                    "project" => hints.push(
+                        "Next: index its documentation and source configs with edges linking back.",
+                    ),
+                    "fix" => hints.push(
+                        "Consider linking this fix to the error it resolves with edge kind 'fixes'.",
+                    ),
+                    _ => {}
+                }
+                if version.matches('.').count() > 2 {
+                    hints.push("Previous version deprecated and linked via supersedes edge.");
+                }
+                if v.get("parent_id").and_then(|p| p.as_str()).is_none() && kind != "project" {
+                    hints.push("Consider organizing under a parent node for hierarchy.");
+                }
+                let hint = if hints.is_empty() {
+                    None
+                } else {
+                    Some(hints.join(" "))
+                };
+                self.ok_with(v, vec!["librarian_lookup"], hint.as_deref())
+            }
+            Err(_) => wrap_inner_result(self, &inner),
+        }
+    }
+
+    #[doc = include_str!("../tool_descriptions/librarian_lookup.md")]
+    #[tool(name = "librarian_lookup")]
+    async fn librarian_lookup(
+        &self,
+        Parameters(params): Parameters<LibrarianLookupParams>,
+    ) -> String {
+        let lib_store = match &self.librarian_store {
+            Some(s) => s,
+            None => {
+                return self.err(
+                    "librarian_store_unavailable",
+                    "librarian catalog not configured",
+                    None,
+                    None,
+                );
+            }
+        };
+        let inner = librarian_lookup_inner(lib_store.as_ref(), params).await;
+        match serde_json::from_str::<serde_json::Value>(&inner) {
+            Ok(v) if v.get("error").is_some() => wrap_inner_result(self, &inner),
+            Ok(v) => {
+                let mut hints = Vec::new();
+                if let Some(nodes) = v.get("nodes").and_then(|n| n.as_array()) {
+                    let thirty_days_ago_ns = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_nanos() as u64
+                        - 30 * 86_400_000_000_000;
+                    let stale_count = nodes
+                        .iter()
+                        .filter(|n| {
+                            if n.get("canonicalized_at").and_then(|c| c.as_u64()).is_some() {
+                                return false;
+                            }
+                            n.get("last_read_at")
+                                .and_then(|r| r.as_u64())
+                                .is_none_or(|ts| ts < thirty_days_ago_ns)
+                        })
+                        .count();
+                    if stale_count > 0 {
+                        hints.push(
+                            "Some results haven't been accessed in over 30 days. Consider reviewing and deprecating stale entries with librarian_forget(deprecate=true).",
+                        );
+                    }
+                }
+                let hint = if hints.is_empty() {
+                    None
+                } else {
+                    Some(hints.join(" "))
+                };
+                self.ok_with(v, vec![], hint.as_deref())
+            }
+            Err(_) => wrap_inner_result(self, &inner),
+        }
+    }
+
+    #[doc = include_str!("../tool_descriptions/librarian_forget.md")]
+    #[tool(name = "librarian_forget")]
+    async fn librarian_forget(
+        &self,
+        Parameters(params): Parameters<LibrarianForgetParams>,
+    ) -> String {
+        let lib_store = match &self.librarian_store {
+            Some(s) => s,
+            None => {
+                return self.err(
+                    "librarian_store_unavailable",
+                    "librarian catalog not configured",
+                    None,
+                    None,
+                );
+            }
+        };
+        let deprecate = params.deprecate.unwrap_or(true);
+        if deprecate {
+            match lib_store.deprecate_node(&params.id).await {
+                Ok(existed) => self.ok(serde_json::json!({ "deprecated": existed })),
+                Err(e) => self.err("librarian_forget_failed", &e.to_string(), None, None),
+            }
+        } else {
+            if params.confirm != Some(true) {
+                return self.err(
+                    "missing_confirm",
+                    "hard delete requires confirm=true",
+                    Some("pass confirm=true to permanently delete, or use deprecate=true (default) for soft-delete"),
+                    None,
+                );
+            }
+            match lib_store.forget_node(&params.id).await {
+                Ok(existed) => self.ok(serde_json::json!({ "deleted": existed })),
+                Err(e) => self.err("librarian_forget_failed", &e.to_string(), None, None),
+            }
+        }
     }
 }
 
@@ -912,6 +1905,13 @@ impl DaemonMcp {
         match &self.setup_tool_fn {
             Some(f) => f(action).await,
             None => error_json("setup tools not available"),
+        }
+    }
+
+    async fn call_hooks_tool(&self, action: HooksToolAction) -> String {
+        match &self.hooks_tool_fn {
+            Some(f) => f(action).await,
+            None => error_json("hooks tools not available"),
         }
     }
 
@@ -930,15 +1930,19 @@ impl DaemonMcp {
         {
             Ok(()) => {
                 tracing::info!(endpoint = %endpoint, "MCP requested browser connection");
-                serde_json::to_string(&serde_json::json!({
+                self.ok(serde_json::json!({
                     "status": "connecting",
                     "endpoint": endpoint,
                 }))
-                .unwrap_or_default()
             }
             Err(_) => {
                 tracing::warn!(endpoint = %endpoint, "browser connect command rejected: daemon shutting down");
-                error_json("Daemon is shutting down.")
+                self.err(
+                    "daemon_shutting_down",
+                    "Daemon is shutting down.",
+                    None,
+                    None,
+                )
             }
         }
     }
@@ -1407,8 +2411,36 @@ fn screenshot_path(dir: &std::path::Path, target: &str, label: Option<&str>) -> 
     dir.join(format!("daemon8-screenshot-{ts}-{safe_target}{suffix}.png"))
 }
 
+/// Standalone error builder for code paths without &self access (free
+/// functions, inner helpers). Produces an envelope-shaped error with no
+/// `daemon8` meta — tool methods that have &self should prefer
+/// `self.err(...)` so the active debug session echoes correctly.
 fn error_json(msg: &str) -> String {
-    serde_json::to_string(&serde_json::json!({ "error": msg })).unwrap_or_default()
+    envelope::err(
+        "internal_error",
+        msg,
+        None,
+        None,
+        envelope::DaemonMeta::default(),
+    )
+}
+
+fn detect_librarian_hint(content: &str) -> Option<String> {
+    let lower = content.to_ascii_lowercase();
+    if lower.contains("documentation")
+        || lower.contains("config template")
+        || lower.contains("source config")
+        || lower.contains("log source")
+    {
+        Some("This memory describes a reference — consider also indexing it with librarian_index(kind=\"doc\" or \"source_template\") for graph-based retrieval.".into())
+    } else if lower.contains("fix for")
+        || lower.contains("fixed by")
+        || lower.contains("workaround")
+    {
+        Some("This memory describes a fix — consider also indexing it with librarian_index(kind=\"fix\") to link it to the error it resolves.".into())
+    } else {
+        None
+    }
 }
 
 impl DaemonMcp {
@@ -1466,6 +2498,7 @@ impl ServerHandler for DaemonMcp {
         let peer = context.peer;
         let mut rx = self.broadcast_tx.subscribe();
         let sub_rx = self.subscription_tx.subscribe();
+        let push_source_activator = self.source_activator.clone();
         let session_cancel = self.cancel.child_token();
         let span = tracing::info_span!("mcp_session", session_id = %session_id);
 
@@ -1500,6 +2533,10 @@ impl ServerHandler for DaemonMcp {
 
                 if !should_push {
                     continue;
+                }
+
+                if let (Some(f), Some(sa)) = (&filter, &push_source_activator) {
+                    sa.touch_matching(f);
                 }
 
                 if last_push.elapsed() < Duration::from_secs(1) {
@@ -1542,6 +2579,36 @@ impl ServerHandler for DaemonMcp {
             tracing::debug!("MCP observation push task ended");
         }
         .instrument(span));
+
+        // Per-session debug session flush: periodically writes the in-memory
+        // last_activity to the DB so the cleanup task's find_stale_active
+        // sees current data. Each MCP session flushes its own active session.
+        if let Some(ds_store) = self.debug_session_store.clone() {
+            let flush_state = self.active_state.clone();
+            let flush_cancel = self.cancel.child_token();
+            tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        () = tokio::time::sleep(Duration::from_secs(60)) => {}
+                        () = flush_cancel.cancelled() => break,
+                    }
+                    if let Some(session) = flush_state.current_session() {
+                        let last = session.last_activity();
+                        if let Err(e) = ds_store
+                            .touch_debug_session(session.id.as_ref(), last)
+                            .await
+                        {
+                            tracing::warn!(
+                                session_id = %session.id,
+                                error = %e,
+                                "per-session debug session flush failed"
+                            );
+                        }
+                    }
+                }
+                tracing::debug!("per-session debug session flush task ended");
+            });
+        }
     }
 
     async fn list_tools(
@@ -1614,6 +2681,7 @@ pub async fn save_memory_inner(mem_store: &dyn MemoryStore, params: SaveMemoryPa
         project_slug: params.project_slug.unwrap_or_default(),
         session_id: params.session_id,
         confidence: params.confidence.unwrap_or(1.0),
+        data: None,
     };
 
     match mem_store.save_memory(memory).await {
@@ -1644,6 +2712,163 @@ pub async fn query_memory_inner(mem_store: &dyn MemoryStore, params: QueryMemory
         Ok(memories) => serde_json::to_string_pretty(&memories)
             .unwrap_or_else(|e| error_json(&format!("serialization failed: {e}"))),
         Err(e) => error_json(&format!("query_memory failed: {e}")),
+    }
+}
+
+pub async fn librarian_index_inner(
+    lib_store: &dyn LibrarianStore,
+    params: LibrarianIndexParams,
+) -> String {
+    let kind = match params.kind.parse::<daemon8_types::LibrarianNodeKind>() {
+        Ok(k) => k,
+        Err(_) => {
+            return error_json(&format!(
+                "invalid kind '{}'. Use: doc, source_template, fix, project",
+                params.kind
+            ));
+        }
+    };
+    let locator_kind = match params.locator_kind.parse::<daemon8_types::LocatorKind>() {
+        Ok(k) => k,
+        Err(_) => {
+            return error_json(&format!(
+                "invalid locator_kind '{}'. Use: file, url, vault",
+                params.locator_kind
+            ));
+        }
+    };
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64;
+
+    let node = daemon8_store::LibrarianNode {
+        id: None,
+        kind,
+        label: params.label,
+        locator_kind,
+        locator: params.locator,
+        tags: params.tags.unwrap_or_default(),
+        project_slug: params.project_slug.unwrap_or_default(),
+        version: String::new(),
+        parent_id: params.parent_id.clone(),
+        created_at: now,
+        updated_at: now,
+        last_read_at: None,
+        deprecated_at: None,
+        canonicalized_at: if params.canonicalize.unwrap_or(false) {
+            Some(now)
+        } else {
+            None
+        },
+    };
+
+    let id = match lib_store.index_node(node).await {
+        Ok(id) => id,
+        Err(e) => return error_json(&format!("librarian_index failed: {e}")),
+    };
+
+    let indexed_node = match lib_store.get_node(&id).await {
+        Ok(Some(n)) => n,
+        _ => {
+            return serde_json::to_string(&serde_json::json!({
+                "id": id, "version": "unknown", "kind": kind.to_string()
+            }))
+            .unwrap_or_default();
+        }
+    };
+
+    if let Some(ref edge) = params.edge {
+        let edge_kind = match edge.kind.parse::<daemon8_types::LibrarianEdgeKind>() {
+            Ok(k) => k,
+            Err(_) => {
+                return serde_json::to_string(&serde_json::json!({
+                    "id": id,
+                    "version": indexed_node.version,
+                    "kind": kind.to_string(),
+                    "edge_error": format!("invalid edge kind '{}'. Use: has_source, documented_by, fixes, supersedes, child_of", edge.kind)
+                }))
+                .unwrap_or_default();
+            }
+        };
+        let lib_edge = daemon8_store::LibrarianEdge {
+            id: None,
+            kind: edge_kind,
+            from_node: id.clone(),
+            to_node: edge.target_node_id.clone(),
+            created_at: now,
+        };
+        if let Err(e) = lib_store.index_edge(lib_edge).await {
+            return serde_json::to_string(&serde_json::json!({
+                "id": id,
+                "version": indexed_node.version,
+                "kind": kind.to_string(),
+                "edge_error": format!("edge creation failed: {e}")
+            }))
+            .unwrap_or_default();
+        }
+    }
+
+    serde_json::to_string(&serde_json::json!({
+        "id": id,
+        "version": indexed_node.version,
+        "kind": kind.to_string(),
+        "parent_id": params.parent_id,
+    }))
+    .unwrap_or_default()
+}
+
+pub async fn librarian_lookup_inner(
+    lib_store: &dyn LibrarianStore,
+    params: LibrarianLookupParams,
+) -> String {
+    if let Some(ref id) = params.id {
+        let node = match lib_store.get_node(id).await {
+            Ok(Some(n)) => n,
+            Ok(None) => return error_json(&format!("node '{id}' not found")),
+            Err(e) => return error_json(&format!("librarian_lookup failed: {e}")),
+        };
+        let edges = match lib_store.get_edges(id).await {
+            Ok(e) => e,
+            Err(e) => return error_json(&format!("librarian_lookup edges: {e}")),
+        };
+        return serde_json::to_string_pretty(&serde_json::json!({
+            "node": node,
+            "edges": edges,
+        }))
+        .unwrap_or_default();
+    }
+
+    let kinds = params.kinds.map(|v| {
+        v.into_iter()
+            .filter_map(|s| s.parse::<daemon8_types::LibrarianNodeKind>().ok())
+            .collect()
+    });
+
+    let stale_before = params.stale_before_days.map(|days| {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+        now.saturating_sub(u64::from(days) * 86_400_000_000_000)
+    });
+
+    let filter = daemon8_store::LibrarianFilter {
+        kinds,
+        tags: params.tags,
+        project_slug: params.project_slug,
+        text_match: params.text,
+        limit: Some(params.limit.unwrap_or(20).min(500) as usize),
+        include_deprecated: params.include_deprecated.unwrap_or(false),
+        stale_before,
+        parent_id: params.parent_id,
+    };
+
+    match lib_store.lookup(&filter).await {
+        Ok(nodes) => serde_json::to_string_pretty(&serde_json::json!({ "nodes": nodes }))
+            .unwrap_or_else(|e| error_json(&format!("serialization failed: {e}"))),
+        Err(e) => error_json(&format!("librarian_lookup failed: {e}")),
     }
 }
 
@@ -1733,6 +2958,232 @@ mod logging_tests {
         assert_eq!(p.confirm, Some(false));
     }
 
+    async fn build_mcp_with_debug_session() -> DaemonMcp {
+        let store = Arc::new(daemon8_store::SurrealStore::memory().await.unwrap());
+        let memory_store: Arc<dyn MemoryStore> = Arc::new(store.memory_store());
+        let debug_session_store: Arc<dyn DebugSessionStore> = Arc::new(store.debug_session_store());
+        let (obs_tx, _obs_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (chrome_tx, _chrome_rx) = tokio::sync::mpsc::channel(8);
+        let (_, chrome_state) =
+            tokio::sync::watch::channel(daemon8_chrome::ConnectionState::Disconnected);
+        let (broadcast_tx, _broadcast_rx) = broadcast::channel(8);
+        let lens = Arc::new(LensManager::new(broadcast_tx.subscribe(), None));
+        DaemonMcp::new(DaemonMcpConfig {
+            store: store.clone(),
+            memory_store: Some(memory_store),
+            debug_session_store: Some(debug_session_store),
+            librarian_store: None,
+            obs_tx,
+            chrome_tx,
+            chrome_state,
+            chrome_endpoint: Arc::new(Mutex::new(None)),
+            device_screenshot_fn: None,
+            screenshot_dir: std::env::temp_dir().join("daemon8-test"),
+            broadcast_tx,
+            lens,
+            setup_tool_fn: None,
+            hooks_tool_fn: None,
+            source_activator: None,
+            cancel: tokio_util::sync::CancellationToken::new(),
+        })
+    }
+
+    #[tokio::test]
+    async fn debug_session_lifecycle_resolved_writes_rich_summary() {
+        let mcp = build_mcp_with_debug_session().await;
+
+        // start
+        let start_res = mcp
+            .start_debug_session(Parameters(StartDebugSessionParams {
+                project: Some("daemon8".into()),
+                description: Some("flaky login test".into()),
+                agent_id: ":test/claude+plan-agent>".into(),
+                feature: None,
+            }))
+            .await;
+        let started: serde_json::Value = serde_json::from_str(&start_res).unwrap();
+        let session_id = started["result"]["debug_session_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(mcp.active_state.current_session().is_some());
+
+        // resolve with rich fields
+        let resolve_res = mcp
+            .resolve_debug_session(Parameters(ResolveDebugSessionParams {
+                summary: "Cookie domain mismatch dropped session on subdomain switch.".into(),
+                root_cause: Some("Set-Cookie missing Domain attr".into()),
+                fix_diff: Some(
+                    "- res.cookie('s', tok)\n+ res.cookie('s', tok, {domain: '.x'})".into(),
+                ),
+                commands_used: Some(vec!["cargo test login".into()]),
+                related_errors: Some(vec!["abcd1234deadbeef".into()]),
+                tags: Some(vec!["auth".into(), "regression".into()]),
+            }))
+            .await;
+        let resolved: serde_json::Value = serde_json::from_str(&resolve_res).unwrap();
+        assert_eq!(resolved["result"]["debug_session_id"], session_id);
+        let memory_id = resolved["result"]["summary_memory_id"].as_str().unwrap();
+
+        // active state cleared
+        assert!(mcp.active_state.current_session().is_none());
+
+        // SessionSummary memory landed with rich data
+        let mem_store = mcp.memory_store.clone().unwrap();
+        let mem = mem_store.get_memory(memory_id).await.unwrap().unwrap();
+        assert_eq!(mem.kind, daemon8_types::MemoryKind::SessionSummary);
+        assert!(mem.content.contains("Cookie domain"));
+        let data = mem.data.expect("resolved session must carry rich data");
+        assert_eq!(data["root_cause"], "Set-Cookie missing Domain attr");
+        assert!(mem.tags.contains(&"outcome:resolved".to_string()));
+        assert!(mem.tags.contains(&"hash:abcd1234deadbeef".to_string()));
+        assert!(mem.tags.contains(&"auth".to_string()));
+
+        // session row updated to completed
+        let ds_store = mcp.debug_session_store.clone().unwrap();
+        let session = ds_store
+            .get_debug_session(&session_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(session.status, daemon8_types::DebugSessionStatus::Completed);
+        assert_eq!(
+            session.outcome,
+            Some(daemon8_types::DebugSessionOutcome::Resolved)
+        );
+        assert_eq!(session.summary_memory_id.as_deref(), Some(memory_id));
+    }
+
+    #[tokio::test]
+    async fn debug_session_double_start_rejected() {
+        let mcp = build_mcp_with_debug_session().await;
+        let _ = mcp
+            .start_debug_session(Parameters(StartDebugSessionParams {
+                project: None,
+                description: None,
+                agent_id: ":test/claude+plan-agent>".into(),
+                feature: None,
+            }))
+            .await;
+        let second = mcp
+            .start_debug_session(Parameters(StartDebugSessionParams {
+                project: None,
+                description: None,
+                agent_id: ":test/claude+plan-agent>".into(),
+                feature: None,
+            }))
+            .await;
+        assert!(
+            second.contains("already_active_debug_session"),
+            "second start must be rejected: {second}"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_checkpoint_without_active_session_returns_structured_error() {
+        let mcp = build_mcp_with_debug_session().await;
+        let res = mcp
+            .create_checkpoint(Parameters(CreateCheckpointParams { description: None }))
+            .await;
+        let parsed: serde_json::Value = serde_json::from_str(&res).unwrap();
+        assert_eq!(parsed["error"]["code"], "no_active_debug_session");
+        assert_eq!(parsed["error"]["fix"]["tool"], "start_debug_session");
+        assert!(parsed["result"].is_null());
+    }
+
+    #[tokio::test]
+    async fn create_checkpoint_inside_active_session_writes_row_and_updates_active_state() {
+        let mcp = build_mcp_with_debug_session().await;
+        let _ = mcp
+            .start_debug_session(Parameters(StartDebugSessionParams {
+                project: Some("daemon8".into()),
+                description: None,
+                agent_id: ":test/claude+plan-agent>".into(),
+                feature: None,
+            }))
+            .await;
+        let res = mcp
+            .create_checkpoint(Parameters(CreateCheckpointParams {
+                description: Some("before fix".into()),
+            }))
+            .await;
+        let parsed: serde_json::Value = serde_json::from_str(&res).unwrap();
+        let result = &parsed["result"];
+        let cp_id = result["checkpoint_id"].as_str().unwrap();
+        assert!(result["seq_at_creation"].is_number());
+        // Envelope echoes the active session.
+        assert!(parsed["daemon8"]["active_debug_session"].is_object());
+
+        // active_state.checkpoint should now match
+        let active_cp = mcp.active_state.current_checkpoint().unwrap();
+        assert_eq!(active_cp.as_ref(), cp_id);
+
+        // Row exists in store with our description
+        let ds_store = mcp.debug_session_store.clone().unwrap();
+        let cp = ds_store.get_checkpoint(cp_id).await.unwrap().unwrap();
+        assert_eq!(cp.description.as_deref(), Some("before fix"));
+    }
+
+    #[tokio::test]
+    async fn end_without_active_session_returns_error() {
+        let mcp = build_mcp_with_debug_session().await;
+        let res = mcp
+            .end_debug_session(Parameters(EndDebugSessionParams { outcome: None }))
+            .await;
+        assert!(res.contains("no_active_debug_session"));
+    }
+
+    #[tokio::test]
+    async fn list_debug_sessions_filters_by_status() {
+        let mcp = build_mcp_with_debug_session().await;
+        // start + resolve one
+        let _ = mcp
+            .start_debug_session(Parameters(StartDebugSessionParams {
+                project: Some("p".into()),
+                description: None,
+                agent_id: ":test/claude+plan-agent>".into(),
+                feature: None,
+            }))
+            .await;
+        let _ = mcp
+            .resolve_debug_session(Parameters(ResolveDebugSessionParams {
+                summary: "x".into(),
+                root_cause: None,
+                fix_diff: None,
+                commands_used: None,
+                related_errors: None,
+                tags: None,
+            }))
+            .await;
+        // start a fresh one (active)
+        let _ = mcp
+            .start_debug_session(Parameters(StartDebugSessionParams {
+                project: Some("p".into()),
+                description: None,
+                agent_id: ":test/claude+plan-agent>".into(),
+                feature: None,
+            }))
+            .await;
+
+        let active_only = mcp
+            .list_debug_sessions(Parameters(ListDebugSessionsParams {
+                status: Some("active".into()),
+                feature: None,
+            }))
+            .await;
+        let parsed: serde_json::Value = serde_json::from_str(&active_only).unwrap();
+        assert_eq!(parsed["result"]["count"], 1);
+
+        let all = mcp
+            .list_debug_sessions(Parameters(ListDebugSessionsParams {
+                status: None,
+                feature: None,
+            }))
+            .await;
+        let parsed: serde_json::Value = serde_json::from_str(&all).unwrap();
+        assert_eq!(parsed["result"]["count"], 2);
+    }
+
     #[tokio::test]
     async fn save_memory_inner_persists_curated_memory() {
         let store = daemon8_store::SurrealStore::memory().await.unwrap();
@@ -1787,5 +3238,391 @@ mod logging_tests {
         assert_eq!(param.data["kind"], "log");
         assert_eq!(param.data["origin"], "app:test-app");
         assert_eq!(param.data["observation_id"], 42);
+    }
+
+    // ── B4: Multi-session + agent ID tests ──────────────────────────
+
+    /// Two MCP instances from a shared SurrealDB store — each gets its own
+    /// ActiveSessionState (created internally by DaemonMcp::new), so they
+    /// do not interfere with each other's debug sessions.
+    async fn build_shared_mcps() -> (DaemonMcp, DaemonMcp) {
+        let shared_store = Arc::new(daemon8_store::SurrealStore::memory().await.unwrap());
+        let shared_mem: Arc<dyn MemoryStore> = Arc::new(shared_store.memory_store());
+        let shared_ds: Arc<dyn DebugSessionStore> = Arc::new(shared_store.debug_session_store());
+
+        // Keep receivers alive so observations sent via ingest_observation
+        // actually reach the store through the drain tasks.
+        let (shared_obs_tx, mut shared_obs_rx) = tokio::sync::mpsc::unbounded_channel();
+
+        // Drain task: reads from the shared channel and inserts into the store.
+        // Tokio drops the spawned task when the test runtime shuts down.
+        let drain_store = shared_store.clone();
+        tokio::spawn(async move {
+            while let Some(obs) = shared_obs_rx.recv().await {
+                let _ = drain_store.insert(obs).await;
+            }
+        });
+
+        let make = || {
+            let (chrome_tx, _chrome_rx) = tokio::sync::mpsc::channel(8);
+            let (_, chrome_state) =
+                tokio::sync::watch::channel(daemon8_chrome::ConnectionState::Disconnected);
+            let (broadcast_tx, _broadcast_rx) = broadcast::channel(8);
+            let lens = Arc::new(LensManager::new(broadcast_tx.subscribe(), None));
+            DaemonMcp::new(DaemonMcpConfig {
+                store: shared_store.clone(),
+                memory_store: Some(shared_mem.clone()),
+                debug_session_store: Some(shared_ds.clone()),
+                librarian_store: None,
+                obs_tx: shared_obs_tx.clone(),
+                chrome_tx,
+                chrome_state,
+                chrome_endpoint: Arc::new(Mutex::new(None)),
+                device_screenshot_fn: None,
+                screenshot_dir: std::env::temp_dir().join("daemon8-test"),
+                broadcast_tx,
+                lens,
+                setup_tool_fn: None,
+                hooks_tool_fn: None,
+                source_activator: None,
+                cancel: tokio_util::sync::CancellationToken::new(),
+            })
+        };
+
+        (make(), make())
+    }
+
+    #[tokio::test]
+    async fn multi_session_two_agents_non_conflicting() {
+        let (a, b) = build_shared_mcps().await;
+
+        let a_start = a
+            .start_debug_session(Parameters(StartDebugSessionParams {
+                project: Some("daemon8".into()),
+                description: Some("agent A investigating auth".into()),
+                agent_id: ":test/claude+plan-agent>".into(),
+                feature: Some("auth".into()),
+            }))
+            .await;
+        let a_parsed: serde_json::Value = serde_json::from_str(&a_start).unwrap();
+        assert!(
+            a_parsed["result"]["debug_session_id"].is_string(),
+            "agent A must start successfully: {a_start}"
+        );
+
+        let b_start = b
+            .start_debug_session(Parameters(StartDebugSessionParams {
+                project: Some("daemon8".into()),
+                description: Some("agent B investigating search".into()),
+                agent_id: ":test/codex+build-agent>".into(),
+                feature: Some("search".into()),
+            }))
+            .await;
+        let b_parsed: serde_json::Value = serde_json::from_str(&b_start).unwrap();
+        assert!(
+            b_parsed["result"]["debug_session_id"].is_string(),
+            "agent B must start successfully — no global single-active: {b_start}"
+        );
+
+        // Verify B's response does NOT contain an already_active error
+        assert!(
+            !b_start.contains("already_active_debug_session"),
+            "agent B must not be blocked by agent A's active session"
+        );
+    }
+
+    #[tokio::test]
+    async fn multi_session_observations_stamped_independently() {
+        let (a, b) = build_shared_mcps().await;
+
+        // Agent A starts auth session
+        let a_start: serde_json::Value = serde_json::from_str(
+            &a.start_debug_session(Parameters(StartDebugSessionParams {
+                project: Some("p".into()),
+                description: None,
+                agent_id: ":test/claude+plan-agent>".into(),
+                feature: None,
+            }))
+            .await,
+        )
+        .unwrap();
+        let a_sid = a_start["result"]["debug_session_id"].as_str().unwrap();
+
+        // Agent B starts search session
+        let b_start: serde_json::Value = serde_json::from_str(
+            &b.start_debug_session(Parameters(StartDebugSessionParams {
+                project: Some("p".into()),
+                description: None,
+                agent_id: ":test/codex+build-agent>".into(),
+                feature: None,
+            }))
+            .await,
+        )
+        .unwrap();
+        let b_sid = b_start["result"]["debug_session_id"].as_str().unwrap();
+
+        assert_ne!(a_sid, b_sid, "each agent must get a distinct session id");
+
+        // Each ingests an observation through their own MCP instance
+        a.ingest_observation(Parameters(IngestParams {
+            kind: Some("log".into()),
+            severity: Some("info".into()),
+            app: Some("test-a".into()),
+            channel: None,
+            correlation_id: None,
+            parent_id: None,
+            node_id: None,
+            session_id: None,
+            tags: None,
+            data: serde_json::json!({"msg": "from agent A"}),
+        }))
+        .await;
+
+        b.ingest_observation(Parameters(IngestParams {
+            kind: Some("log".into()),
+            severity: Some("info".into()),
+            app: Some("test-b".into()),
+            channel: None,
+            correlation_id: None,
+            parent_id: None,
+            node_id: None,
+            session_id: None,
+            tags: None,
+            data: serde_json::json!({"msg": "from agent B"}),
+        }))
+        .await;
+
+        // Let the drain task process both observations
+        tokio::task::yield_now().await;
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+        // Query the store directly to verify each observation got the right stamp
+        let slice = a
+            .store
+            .query(&daemon8_types::Filter {
+                kinds: Some(vec![daemon8_types::ObservationKindTag::Log]),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(
+            slice.observations.len(),
+            2,
+            "both observations must be in the shared store"
+        );
+
+        let has_a = slice
+            .observations
+            .iter()
+            .any(|o| o.debug_session_id.as_deref() == Some(a_sid));
+        let has_b = slice
+            .observations
+            .iter()
+            .any(|o| o.debug_session_id.as_deref() == Some(b_sid));
+        assert!(
+            has_a,
+            "observation from agent A must be stamped with A's session"
+        );
+        assert!(
+            has_b,
+            "observation from agent B must be stamped with B's session"
+        );
+    }
+
+    #[tokio::test]
+    async fn multi_session_end_one_leaves_other_active() {
+        let (a, b) = build_shared_mcps().await;
+
+        // Both start sessions
+        let _ = a
+            .start_debug_session(Parameters(StartDebugSessionParams {
+                project: None,
+                description: None,
+                agent_id: ":test/claude+plan-agent>".into(),
+                feature: None,
+            }))
+            .await;
+        let _ = b
+            .start_debug_session(Parameters(StartDebugSessionParams {
+                project: None,
+                description: None,
+                agent_id: ":test/codex+build-agent>".into(),
+                feature: None,
+            }))
+            .await;
+
+        // A ends its session
+        let end_res: serde_json::Value = serde_json::from_str(
+            &a.end_debug_session(Parameters(EndDebugSessionParams { outcome: None }))
+                .await,
+        )
+        .unwrap();
+        assert!(
+            end_res["result"]["debug_session_id"].is_string(),
+            "end must succeed: {end_res}"
+        );
+
+        // A's active state should be clear
+        assert!(a.active_state.current_session().is_none());
+
+        // B's active state should still be present
+        assert!(
+            b.active_state.current_session().is_some(),
+            "agent B must remain active after A ends"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_debug_sessions_filters_by_feature() {
+        let (a, _b) = build_shared_mcps().await;
+
+        // Agent A creates two sessions with different features
+        let _ = a
+            .start_debug_session(Parameters(StartDebugSessionParams {
+                project: Some("p".into()),
+                description: None,
+                agent_id: ":test/claude+plan-agent>".into(),
+                feature: Some("auth".into()),
+            }))
+            .await;
+        // End first session so we can start a second (single-active per instance)
+        let _ = a
+            .end_debug_session(Parameters(EndDebugSessionParams { outcome: None }))
+            .await;
+        let _ = a
+            .start_debug_session(Parameters(StartDebugSessionParams {
+                project: Some("p".into()),
+                description: None,
+                agent_id: ":test/claude+plan-agent>".into(),
+                feature: Some("search".into()),
+            }))
+            .await;
+
+        // Filter by feature
+        let auth_only: serde_json::Value = serde_json::from_str(
+            &a.list_debug_sessions(Parameters(ListDebugSessionsParams {
+                status: None,
+                feature: Some("auth".into()),
+            }))
+            .await,
+        )
+        .unwrap();
+        assert_eq!(
+            auth_only["result"]["count"], 1,
+            "feature filter must return only the auth session"
+        );
+        assert_eq!(
+            auth_only["result"]["sessions"][0]["feature"], "auth",
+            "returned session must have the matching feature"
+        );
+
+        let search_only: serde_json::Value = serde_json::from_str(
+            &a.list_debug_sessions(Parameters(ListDebugSessionsParams {
+                status: None,
+                feature: Some("search".into()),
+            }))
+            .await,
+        )
+        .unwrap();
+        assert_eq!(
+            search_only["result"]["count"], 1,
+            "feature filter must return only the search session"
+        );
+
+        let none: serde_json::Value = serde_json::from_str(
+            &a.list_debug_sessions(Parameters(ListDebugSessionsParams {
+                status: None,
+                feature: Some("nonexistent".into()),
+            }))
+            .await,
+        )
+        .unwrap();
+        assert_eq!(
+            none["result"]["count"], 0,
+            "unknown feature must return empty"
+        );
+    }
+
+    // ── B4: Agent ID validation ──────────────────────────────────────
+
+    #[test]
+    fn agent_id_valid_formats() {
+        for id in [
+            ":mbp/claude+plan-agent>",
+            ":linux/codex+build-agent>",
+            ":mbp/gemini+researcher>",
+            ":mini/copilot+reviewer>",
+            ":box/opencode+crawler>",
+            ":test-host/my-tool+my-role>",
+        ] {
+            assert!(
+                validate_agent_id(id).is_ok(),
+                "valid agent_id must pass: {id}"
+            );
+        }
+    }
+
+    #[test]
+    fn agent_id_rejects_missing_colon() {
+        assert!(validate_agent_id("mbp/claude+agent>").is_err());
+    }
+
+    #[test]
+    fn agent_id_rejects_missing_gt() {
+        assert!(validate_agent_id(":mbp/claude+agent").is_err());
+    }
+
+    #[test]
+    fn agent_id_rejects_missing_slash() {
+        assert!(validate_agent_id(":mbp-claude+agent>").is_err());
+    }
+
+    #[test]
+    fn agent_id_rejects_missing_plus() {
+        assert!(validate_agent_id(":mbp/claude-agent>").is_err());
+    }
+
+    #[test]
+    fn agent_id_rejects_uppercase() {
+        assert!(validate_agent_id(":MBP/claude+agent>").is_err());
+    }
+
+    #[test]
+    fn agent_id_rejects_empty_host() {
+        assert!(validate_agent_id(":/tool+role>").is_err());
+    }
+
+    #[test]
+    fn agent_id_rejects_empty_tool() {
+        assert!(validate_agent_id(":host/+role>").is_err());
+    }
+
+    #[test]
+    fn agent_id_rejects_empty_role() {
+        assert!(validate_agent_id(":host/tool+>").is_err());
+    }
+
+    #[test]
+    fn agent_id_rejects_too_long() {
+        let long_id = format!(":{}", "x".repeat(65));
+        assert!(validate_agent_id(&long_id).is_err());
+    }
+
+    #[tokio::test]
+    async fn start_debug_session_rejects_invalid_agent_id() {
+        let mcp = build_mcp_with_debug_session().await;
+        let res = mcp
+            .start_debug_session(Parameters(StartDebugSessionParams {
+                project: None,
+                description: None,
+                agent_id: "bad-format".into(),
+                feature: None,
+            }))
+            .await;
+        assert!(
+            res.contains("invalid_agent_id"),
+            "bad agent_id must be rejected: {res}"
+        );
     }
 }

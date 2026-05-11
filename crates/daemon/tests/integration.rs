@@ -188,8 +188,12 @@ async fn start_server(
         chrome_cmd_tx,
         chrome_state: chrome_state_rx,
         chrome_endpoint: std::sync::Arc::new(std::sync::Mutex::new(None)),
-        lens: std::sync::Arc::new(daemon8_store::LensManager::new(broadcast_tx.subscribe())),
+        lens: std::sync::Arc::new(daemon8_store::LensManager::new(
+            broadcast_tx.subscribe(),
+            None,
+        )),
         memory_store: None,
+        source_activator: None,
     };
 
     let app =
@@ -440,6 +444,7 @@ async fn memory_export_endpoint_streams_paged_ndjson_for_memory_rows() {
                 project_slug: "daemon8".into(),
                 session_id: None,
                 confidence: 1.0,
+                data: None,
             })
             .await
             .unwrap();
@@ -495,29 +500,6 @@ async fn memory_export_endpoint_streams_paged_ndjson_for_memory_rows() {
         .await
         .unwrap();
     assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
-}
-
-#[tokio::test]
-async fn removed_feature_api_routes_are_absent() {
-    let store: Arc<dyn StateModel> = Arc::new(SurrealStore::memory().await.unwrap());
-    let (base, _tx, _handle) = start_server(store).await;
-    let client = reqwest::Client::new();
-
-    for path in [
-        "/api/memory/short",
-        "/api/memory/reference",
-        "/api/memory/long",
-        "/api/embedding/profiles",
-        "/api/bookkeeper/sweep",
-        "/api/deliber8/inbox",
-    ] {
-        let resp = client.get(format!("{base}{path}")).send().await.unwrap();
-        assert_eq!(
-            resp.status(),
-            reqwest::StatusCode::NOT_FOUND,
-            "removed route {path} must not be exposed"
-        );
-    }
 }
 
 // -----------------------------------------------------------------------
@@ -1169,8 +1151,9 @@ async fn start_act_server() -> (
         chrome_cmd_tx,
         chrome_state: chrome_state_rx,
         chrome_endpoint: std::sync::Arc::new(std::sync::Mutex::new(None)),
-        lens: std::sync::Arc::new(daemon8_store::LensManager::new(stream_tx.subscribe())),
+        lens: std::sync::Arc::new(daemon8_store::LensManager::new(stream_tx.subscribe(), None)),
         memory_store: None,
+        source_activator: None,
     };
     let app = daemon8_api::api_router(api_state);
 

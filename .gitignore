@@ -19,6 +19,8 @@ target/
 !/.gitignore
 !/.github/
 !/.github/**
+!/crates/mcp/tool_descriptions/
+!/crates/mcp/tool_descriptions/**
 !/README.md
 !/DEPLOY.md
 !/LICENSE
@@ -28,3 +30,4 @@ target/
 !/CODE_OF_CONDUCT.md
 !/NOTICE
 !/logo.svg
+!/tools/sandbox/.daemon8.toml

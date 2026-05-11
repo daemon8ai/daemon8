@@ -6,7 +6,7 @@ use std::path::PathBuf;
 #[cfg(target_os = "macos")]
 use std::process::Output;
 
-use crate::providers::Provider;
+use daemon8_providers::Provider;
 
 #[cfg(target_os = "macos")]
 const LABEL: &str = "dev.daemon8.daemon";
@@ -166,12 +166,10 @@ pub fn cmd_uninstall() -> Result<()> {
     }
 
     // 5. Remove daemon8 from provider MCP configs
-    let home = crate::providers::dirs_home();
-    remove_provider_entry(Provider::ClaudeCode, &home);
-    remove_provider_entry(Provider::Cursor, &home);
-    remove_provider_entry(Provider::Windsurf, &home);
-    remove_provider_entry(Provider::Gemini, &home);
-    remove_provider_entry(Provider::Codex, &home);
+    let home = daemon8_providers::dirs_home();
+    for &provider in daemon8_providers::ALL_PROVIDERS {
+        remove_provider_entry(provider, &home);
+    }
 
     // 6. Remove hook entries from provider hook config files
     remove_cli_hooks(&home, &cwd);
@@ -201,157 +199,35 @@ fn remove_provider_entry(provider: Provider, home: &std::path::Path) {
     if !config_path.exists() {
         return;
     }
-
-    if provider == Provider::Codex {
-        let contents = match std::fs::read_to_string(&config_path) {
-            Ok(c) => c,
-            Err(_) => return,
-        };
-        let mut table: toml::Table = match contents.parse() {
-            Ok(t) => t,
-            Err(_) => return,
-        };
-        if let Some(mcp) = table.get_mut("mcp_servers").and_then(|v| v.as_table_mut())
-            && mcp.remove("daemon8").is_some()
-            && let Ok(s) = toml::to_string_pretty(&table)
-        {
-            let _ = std::fs::write(&config_path, s);
-            println!("  [ok] removed daemon8 from {}", config_path.display());
-        }
-        return;
-    }
-
-    // Claude Code: try CLI first
-    if provider == Provider::ClaudeCode {
-        let ok = crate::providers::shim_command("claude")
-            .args(["mcp", "remove", "--scope", "user", "daemon8"])
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false);
-        if ok {
-            println!("  [ok] removed daemon8 MCP from Claude Code");
-        }
-        let _ = crate::providers::shim_command("claude")
-            .args(["mcp", "remove", "--scope", "user", "daemon8-channel"])
-            .output();
-        return;
-    }
-
-    // Gemini: try CLI first
-    if provider == Provider::Gemini {
-        let ok = crate::providers::shim_command("gemini")
-            .args(["mcp", "remove", "daemon8"])
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false);
-        if ok {
-            println!("  [ok] removed daemon8 MCP from Gemini");
-            return;
-        }
-    }
-
-    // JSON-based providers: remove the daemon8 key from mcpServers
-    let contents = match std::fs::read_to_string(&config_path) {
-        Ok(c) => c,
-        Err(_) => return,
-    };
-    let mut json: serde_json::Value = match serde_json::from_str(&contents) {
-        Ok(v) => v,
-        Err(_) => return,
-    };
-    if let Some(servers) = json.get_mut("mcpServers").and_then(|v| v.as_object_mut()) {
-        let had_daemon8 = servers.remove("daemon8").is_some();
-        let had_channel = servers.remove("daemon8-channel").is_some();
-        if (had_daemon8 || had_channel)
-            && let Ok(s) = serde_json::to_string_pretty(&json)
-        {
-            let _ = std::fs::write(&config_path, s);
-            println!("  [ok] removed daemon8 from {}", config_path.display());
-        }
+    match provider
+        .as_provider()
+        .remove_mcp_config(&config_path, &crate::cli_config::SERVICE)
+    {
+        Ok(true) => println!("  [ok] removed daemon8 from {}", config_path.display()),
+        Ok(false) => {}
+        Err(e) => println!("  [!!] {}: {e}", config_path.display()),
     }
 }
 
 fn remove_cli_hooks(home: &std::path::Path, cwd: &std::path::Path) {
-    for settings_path in [
-        home.join(".claude/settings.json"),
-        home.join(".claude/settings.local.json"),
-        home.join(".codex/hooks.json"),
-        cwd.join(".claude/settings.json"),
-        cwd.join(".claude/settings.local.json"),
-    ] {
-        if !settings_path.exists() {
-            continue;
-        }
-        let contents = match std::fs::read_to_string(&settings_path) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
-        let mut json: serde_json::Value = match serde_json::from_str(&contents) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        let mut modified = false;
-        if let Some(hooks) = json.get_mut("hooks").and_then(|v| v.as_object_mut()) {
-            for (_event, matchers) in hooks.iter_mut() {
-                if let Some(arr) = matchers.as_array_mut() {
-                    let before = arr.len();
-                    for entry in arr.iter_mut() {
-                        modified |= remove_daemon8_cli_hooks(entry);
+    for &provider in daemon8_providers::HOOK_PROVIDERS {
+        let hp = provider.as_hook_provider().unwrap();
+        for &scope in hp.supported_scopes() {
+            for dir in [cwd, home] {
+                let path = hp.hooks_path(scope, dir, home);
+                if !path.exists() {
+                    continue;
+                }
+                match hp.remove_hooks(scope, dir, home, &crate::cli_config::SERVICE) {
+                    Ok(Some(p)) => {
+                        println!("  [ok] removed daemon8 hooks from {}", p.display())
                     }
-                    arr.retain(|entry| !hook_group_is_empty(entry));
-                    if arr.len() < before {
-                        modified = true;
-                    }
+                    Ok(None) => {}
+                    Err(e) => println!("  [!!] hooks {}: {e}", path.display()),
                 }
             }
         }
-        if modified && let Ok(s) = serde_json::to_string_pretty(&json) {
-            let _ = std::fs::write(&settings_path, s);
-            println!(
-                "  [ok] removed daemon8 hooks from {}",
-                settings_path.display()
-            );
-        }
     }
-}
-
-fn remove_daemon8_cli_hooks(entry: &mut serde_json::Value) -> bool {
-    if entry
-        .get("command")
-        .and_then(|command| command.as_str())
-        .is_some_and(is_daemon8_cli_hook_command)
-    {
-        *entry = serde_json::Value::Null;
-        return true;
-    }
-
-    if let Some(hooks) = entry
-        .get_mut("hooks")
-        .and_then(|hooks| hooks.as_array_mut())
-    {
-        let before = hooks.len();
-        hooks.retain(|hook| {
-            !hook
-                .get("command")
-                .and_then(|command| command.as_str())
-                .is_some_and(is_daemon8_cli_hook_command)
-        });
-        return hooks.len() < before;
-    }
-
-    false
-}
-
-fn hook_group_is_empty(entry: &serde_json::Value) -> bool {
-    entry.is_null()
-        || entry
-            .get("hooks")
-            .and_then(|hooks| hooks.as_array())
-            .is_some_and(Vec::is_empty)
-}
-
-fn is_daemon8_cli_hook_command(command: &str) -> bool {
-    command.contains("daemon8") && command.contains("cli-hook")
 }
 
 // ---------------------------------------------------------------------------

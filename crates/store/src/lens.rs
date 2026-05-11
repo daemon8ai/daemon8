@@ -4,7 +4,7 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use daemon8_types::{Filter, Observation};
+use daemon8_types::{Filter, Observation, SourceActivator};
 use serde::Serialize;
 use tokio::sync::{Mutex, broadcast};
 
@@ -21,7 +21,7 @@ pub struct LensStatus {
 
 struct ActiveLens {
     filter: Filter,
-    buffer: VecDeque<Observation>,
+    buffer: VecDeque<Arc<Observation>>,
     capacity: usize,
     cursor: u64,
 }
@@ -36,9 +36,9 @@ impl ActiveLens {
         }
     }
 
-    fn push(&mut self, obs: Observation) {
+    fn push(&mut self, obs: Arc<Observation>) -> bool {
         if !self.filter.matches(&obs) {
-            return;
+            return false;
         }
         if obs.id > self.cursor {
             self.cursor = obs.id;
@@ -47,9 +47,10 @@ impl ActiveLens {
             self.buffer.pop_front();
         }
         self.buffer.push_back(obs);
+        true
     }
 
-    fn drain(&mut self) -> Vec<Observation> {
+    fn drain(&mut self) -> Vec<Arc<Observation>> {
         self.buffer.drain(..).collect()
     }
 
@@ -69,12 +70,15 @@ pub struct LensManager {
 }
 
 impl LensManager {
-    pub fn new(broadcast_rx: broadcast::Receiver<(Arc<Observation>, Arc<str>)>) -> Self {
+    pub fn new(
+        broadcast_rx: broadcast::Receiver<(Arc<Observation>, Arc<str>)>,
+        source_activator: Option<Arc<dyn SourceActivator>>,
+    ) -> Self {
         let inner: Arc<Mutex<Option<ActiveLens>>> = Arc::new(Mutex::new(None));
 
         let pump_inner = inner.clone();
         tokio::spawn(async move {
-            Self::pump(broadcast_rx, pump_inner).await;
+            Self::pump(broadcast_rx, pump_inner, source_activator).await;
         });
 
         Self { inner }
@@ -83,13 +87,17 @@ impl LensManager {
     async fn pump(
         mut rx: broadcast::Receiver<(Arc<Observation>, Arc<str>)>,
         inner: Arc<Mutex<Option<ActiveLens>>>,
+        source_activator: Option<Arc<dyn SourceActivator>>,
     ) {
         loop {
             match rx.recv().await {
                 Ok((obs, _json)) => {
                     let mut guard = inner.lock().await;
-                    if let Some(lens) = guard.as_mut() {
-                        lens.push((*obs).clone());
+                    if let Some(lens) = guard.as_mut()
+                        && lens.push(Arc::clone(&obs))
+                        && let Some(ref sa) = source_activator
+                    {
+                        sa.touch_matching(&lens.filter);
                     }
                 }
                 Err(broadcast::error::RecvError::Lagged(n)) => {
@@ -114,7 +122,7 @@ impl LensManager {
         *guard = None;
     }
 
-    pub async fn drain(&self) -> Vec<Observation> {
+    pub async fn drain(&self) -> Vec<Arc<Observation>> {
         let mut guard = self.inner.lock().await;
         match guard.as_mut() {
             Some(lens) => lens.drain(),
@@ -158,6 +166,9 @@ mod tests {
             tags: Some(vec![tag.to_string()]),
             session_id: None,
             node_id: None,
+            debug_session_id: None,
+            checkpoint_id: None,
+            error_hash: None,
         }
     }
 
@@ -169,9 +180,9 @@ mod tests {
         };
         let mut lens = ActiveLens::new(filter, 10);
 
-        lens.push(make_obs(1, Severity::Info, "important"));
-        lens.push(make_obs(2, Severity::Info, "noise"));
-        lens.push(make_obs(3, Severity::Error, "important"));
+        lens.push(Arc::new(make_obs(1, Severity::Info, "important")));
+        lens.push(Arc::new(make_obs(2, Severity::Info, "noise")));
+        lens.push(Arc::new(make_obs(3, Severity::Error, "important")));
 
         assert_eq!(lens.buffer.len(), 2);
         assert_eq!(lens.cursor, 3);
@@ -190,8 +201,8 @@ mod tests {
         let mut other = make_obs(2, Severity::Info, "domain:browser");
         other.data = serde_json::json!({"msg": "plain payload"});
 
-        lens.push(matching);
-        lens.push(other);
+        lens.push(Arc::new(matching));
+        lens.push(Arc::new(other));
 
         assert_eq!(lens.buffer.len(), 1);
         assert_eq!(lens.buffer[0].id, 1);
@@ -203,7 +214,7 @@ mod tests {
         let mut lens = ActiveLens::new(filter, 3);
 
         for i in 1..=5 {
-            lens.push(make_obs(i, Severity::Info, "x"));
+            lens.push(Arc::new(make_obs(i, Severity::Info, "x")));
         }
 
         assert_eq!(lens.buffer.len(), 3);
@@ -215,8 +226,8 @@ mod tests {
     fn drain_empties_buffer() {
         let filter = Filter::default();
         let mut lens = ActiveLens::new(filter, 10);
-        lens.push(make_obs(1, Severity::Info, "a"));
-        lens.push(make_obs(2, Severity::Info, "b"));
+        lens.push(Arc::new(make_obs(1, Severity::Info, "a")));
+        lens.push(Arc::new(make_obs(2, Severity::Info, "b")));
 
         let drained = lens.drain();
         assert_eq!(drained.len(), 2);
@@ -227,7 +238,7 @@ mod tests {
     #[tokio::test]
     async fn lens_manager_lifecycle() {
         let (tx, rx) = broadcast::channel::<(Arc<Observation>, Arc<str>)>(64);
-        let manager = LensManager::new(rx);
+        let manager = LensManager::new(rx, None);
 
         let status = manager.status().await;
         assert!(!status.active);
@@ -267,5 +278,80 @@ mod tests {
 
         manager.clear().await;
         assert!(!manager.status().await.active);
+    }
+
+    struct MockActivator {
+        call_count: std::sync::atomic::AtomicUsize,
+    }
+
+    impl MockActivator {
+        fn new() -> Self {
+            Self {
+                call_count: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+
+        fn calls(&self) -> usize {
+            self.call_count.load(std::sync::atomic::Ordering::Relaxed)
+        }
+    }
+
+    impl SourceActivator for MockActivator {
+        fn touch_matching(&self, _filter: &Filter) {
+            self.call_count
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    #[tokio::test]
+    async fn lens_pump_touches_source_activator_on_match() {
+        let activator = Arc::new(MockActivator::new());
+        let (tx, rx) = broadcast::channel::<(Arc<Observation>, Arc<str>)>(64);
+        let manager = LensManager::new(rx, Some(activator.clone() as Arc<dyn SourceActivator>));
+
+        manager
+            .set(Filter {
+                tags: Some(vec!["important".to_string()]),
+                ..Default::default()
+            })
+            .await;
+
+        let obs = Arc::new(make_obs(1, Severity::Info, "important"));
+        let json: Arc<str> = Arc::from(serde_json::to_string(&*obs).unwrap().as_str());
+        tx.send((obs, json)).unwrap();
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        assert_eq!(
+            activator.calls(),
+            1,
+            "source activator should be touched when lens matches"
+        );
+    }
+
+    #[tokio::test]
+    async fn lens_pump_does_not_touch_activator_on_non_match() {
+        let activator = Arc::new(MockActivator::new());
+        let (tx, rx) = broadcast::channel::<(Arc<Observation>, Arc<str>)>(64);
+        let manager = LensManager::new(rx, Some(activator.clone() as Arc<dyn SourceActivator>));
+
+        manager
+            .set(Filter {
+                tags: Some(vec!["important".to_string()]),
+                ..Default::default()
+            })
+            .await;
+
+        let obs = Arc::new(make_obs(1, Severity::Info, "noise"));
+        let json: Arc<str> = Arc::from(serde_json::to_string(&*obs).unwrap().as_str());
+        tx.send((obs, json)).unwrap();
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        assert_eq!(
+            activator.calls(),
+            0,
+            "source activator should NOT be touched when lens rejects observation"
+        );
     }
 }

@@ -10,7 +10,9 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
 use daemon8_mcp::ChromeCommand;
-use daemon8_store::{StateModel, SurrealStore};
+use daemon8_store::{
+    DebugSessionStore, MemoryStore, ObservationHashCache, StateModel, SurrealStore, error_hash,
+};
 use daemon8_types::Observation;
 
 use crate::config;
@@ -50,6 +52,10 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
     );
 
     let memory_store: Arc<dyn daemon8_store::MemoryStore> = Arc::new(surreal_store.memory_store());
+    let debug_session_store: Arc<dyn daemon8_store::DebugSessionStore> =
+        Arc::new(surreal_store.debug_session_store());
+    let librarian_store: Arc<dyn daemon8_store::LibrarianStore> =
+        Arc::new(surreal_store.librarian_store());
     let store: Arc<dyn StateModel> = surreal_store.clone();
 
     // Unbounded channel — deliberate policy.  The daemon captures observations
@@ -73,16 +79,29 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
     spawn_store_writer(
         &mut tasks,
         obs_rx,
-        store.clone(),
-        broadcast_tx.clone(),
+        StoreWriterCtx {
+            store: store.clone(),
+            memory_store: Some(memory_store.clone()),
+            debug_session_store: Some(debug_session_store.clone()),
+            broadcast_tx: broadcast_tx.clone(),
+            node_id,
+            hash_cache: ObservationHashCache::new(),
+        },
         cancel.clone(),
-        node_id,
     );
 
     let screenshot_dir = config::resolve_screenshot_path(&cfg);
     crate::cleanup::spawn_cleanup_task(
         &mut tasks,
-        store.clone(),
+        crate::cleanup::CleanupCtx {
+            store: store.clone(),
+            debug_session_store: Some(debug_session_store.clone()),
+            memory_store: Some(memory_store.clone()),
+            inactivity_auto_end_secs: cfg
+                .debug_session
+                .inactivity_auto_end_secs
+                .unwrap_or(crate::cleanup::DEFAULT_INACTIVITY_AUTO_END_SECS),
+        },
         screenshot_dir.clone(),
         cancel.clone(),
     );
@@ -158,21 +177,33 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
         );
     }
 
-    if !cfg.sources.is_empty() {
-        tracing::info!(count = cfg.sources.len(), "starting file sources");
-        crate::sources::spawn_file_sources(
-            &mut tasks,
-            &cfg.sources,
-            obs_tx.clone(),
-            cancel.clone(),
-        );
-    }
+    let source_activator: Option<Arc<dyn daemon8_types::SourceActivator>> =
+        if !cfg.sources.is_empty() {
+            tracing::info!(
+                count = cfg.sources.len(),
+                "registering file sources (lazy activation)"
+            );
+            let mgr = crate::sources::SourceManager::new(
+                cfg.sources.clone(),
+                obs_tx.clone(),
+                cfg.source_config.idle_ttl_secs,
+            );
+            let activator: Arc<dyn daemon8_types::SourceActivator> = Arc::new(mgr.clone());
+            mgr.spawn_reaper_task(&mut tasks, cancel.clone());
+            Some(activator)
+        } else {
+            None
+        };
 
     let setup_tool_fn: daemon8_mcp::SetupToolFn = Arc::new(move |action| {
         let setup_config_path = setup_config_path.clone();
         Box::pin(async move {
             crate::cli::setup::cmd_setup_mcp(action, setup_config_path.as_deref()).await
         })
+    });
+
+    let hooks_tool_fn: daemon8_mcp::HooksToolFn = Arc::new(move |action| {
+        Box::pin(async move { crate::cli::hooks::cmd_hooks_mcp(action).await })
     });
 
     // Only start MCP stdio when stdin is a real FIFO from an MCP client.
@@ -185,10 +216,15 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
     if stdin_is_pipe {
         use rmcp::ServiceExt;
 
-        let lens = Arc::new(daemon8_store::LensManager::new(broadcast_tx.subscribe()));
+        let lens = Arc::new(daemon8_store::LensManager::new(
+            broadcast_tx.subscribe(),
+            source_activator.clone(),
+        ));
         let mcp = daemon8_mcp::DaemonMcp::new(daemon8_mcp::DaemonMcpConfig {
             store: store.clone(),
             memory_store: Some(memory_store.clone()),
+            debug_session_store: Some(debug_session_store.clone()),
+            librarian_store: Some(librarian_store.clone()),
             obs_tx: obs_tx.clone(),
             chrome_tx: chrome_cmd_tx.clone(),
             chrome_state: chrome_state_rx.clone(),
@@ -198,7 +234,9 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
             broadcast_tx: broadcast_tx.clone(),
             lens,
             setup_tool_fn: Some(setup_tool_fn.clone()),
+            hooks_tool_fn: Some(hooks_tool_fn.clone()),
             cancel: cancel.clone(),
+            source_activator: source_activator.clone(),
         });
         let cancel_on_eof = cancel.clone();
         tasks.spawn(async move {
@@ -222,6 +260,8 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
 
     let mcp_store = store.clone();
     let mcp_memory_store = memory_store.clone();
+    let mcp_debug_session_store = debug_session_store.clone();
+    let mcp_librarian_store = librarian_store.clone();
     let mcp_obs_tx = obs_tx.clone();
     let mcp_chrome_tx = chrome_cmd_tx.clone();
     let mcp_state_rx = chrome_state_rx.clone();
@@ -229,6 +269,7 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
     let mcp_screenshot_fn = device_screenshot_fn.clone();
     let mcp_screenshot_dir = screenshot_dir.clone();
     let mcp_broadcast_tx = broadcast_tx.clone();
+    let mcp_source_activator = source_activator.clone();
     let mcp_cancel = cancel.child_token();
     // Daemon-wide cancel cloned into the per-session factory closure. Each
     // `DaemonMcp` then derives its own child token for the push task in
@@ -241,6 +282,8 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
             Ok(daemon8_mcp::DaemonMcp::new(daemon8_mcp::DaemonMcpConfig {
                 store: mcp_store.clone(),
                 memory_store: Some(mcp_memory_store.clone()),
+                debug_session_store: Some(mcp_debug_session_store.clone()),
+                librarian_store: Some(mcp_librarian_store.clone()),
                 obs_tx: mcp_obs_tx.clone(),
                 chrome_tx: mcp_chrome_tx.clone(),
                 chrome_state: mcp_state_rx.clone(),
@@ -250,9 +293,12 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
                 broadcast_tx: mcp_broadcast_tx.clone(),
                 lens: Arc::new(daemon8_store::LensManager::new(
                     mcp_broadcast_tx.subscribe(),
+                    mcp_source_activator.clone(),
                 )),
                 setup_tool_fn: Some(setup_tool_fn.clone()),
+                hooks_tool_fn: Some(hooks_tool_fn.clone()),
                 cancel: mcp_root_cancel.clone(),
+                source_activator: mcp_source_activator.clone(),
             }))
         },
         Arc::new({
@@ -265,7 +311,10 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
             .with_cancellation_token(mcp_cancel),
     );
 
-    let api_lens = Arc::new(daemon8_store::LensManager::new(broadcast_tx.subscribe()));
+    let api_lens = Arc::new(daemon8_store::LensManager::new(
+        broadcast_tx.subscribe(),
+        source_activator.clone(),
+    ));
     let api_state = daemon8_api::ApiState {
         store: store.clone(),
         stream_tx: broadcast_tx.clone(),
@@ -274,6 +323,7 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
         chrome_endpoint: chrome_endpoint.clone(),
         lens: api_lens,
         memory_store: Some(memory_store.clone()),
+        source_activator: source_activator.clone(),
     };
     let port = cfg.server.port;
     let app = daemon8_ingest::ingest_router(obs_tx.clone())
@@ -355,42 +405,28 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
 /// filtering and the pre-serialized JSON for zero-copy fanout. The JSON
 /// carries the real `id` assigned by `store.insert`; callers relying on
 /// `Last-Event-ID` depend on this ordering.
+pub(crate) struct StoreWriterCtx {
+    pub store: Arc<dyn StateModel>,
+    pub memory_store: Option<Arc<dyn MemoryStore>>,
+    pub debug_session_store: Option<Arc<dyn DebugSessionStore>>,
+    pub broadcast_tx: broadcast::Sender<(Arc<Observation>, Arc<str>)>,
+    pub node_id: Arc<str>,
+    pub hash_cache: ObservationHashCache,
+}
+
 fn spawn_store_writer(
     tasks: &mut JoinSet<()>,
     mut rx: mpsc::UnboundedReceiver<Observation>,
-    store: Arc<dyn StateModel>,
-    broadcast_tx: broadcast::Sender<(Arc<Observation>, Arc<str>)>,
+    ctx: StoreWriterCtx,
     cancel: CancellationToken,
-    node_id: Arc<str>,
 ) {
     tasks.spawn(async move {
         loop {
             tokio::select! {
                 msg = rx.recv() => {
                     match msg {
-                        Some(mut obs) => {
-                            if obs.node_id.is_none() {
-                                obs.node_id = Some(node_id.clone());
-                            }
-                            let insert_copy = obs.clone();
-                            match store.insert(insert_copy).await {
-                                Ok(id) => {
-                                    obs.id = id;
-                                    match serde_json::to_string(&obs) {
-                                        Ok(json) => {
-                                            let arc_obs = Arc::new(obs);
-                                            let arc_json: Arc<str> = Arc::from(json);
-                                            let _ = broadcast_tx.send((arc_obs, arc_json));
-                                        }
-                                        Err(e) => {
-                                            tracing::error!(id, error = %e, "observation failed to serialize; dropping from broadcast");
-                                        }
-                                    }
-                                }
-                                Err(e) => {
-                                    tracing::error!("store insert failed: {e}");
-                                }
-                            }
+                        Some(obs) => {
+                            handle_observation(obs, &ctx).await;
                         }
                         None => break, // channel closed
                     }
@@ -400,6 +436,268 @@ fn spawn_store_writer(
         }
         tracing::debug!("store writer stopped");
     });
+}
+
+async fn handle_observation(mut obs: Observation, ctx: &StoreWriterCtx) {
+    let now_ns = current_ns();
+
+    if obs.node_id.is_none() {
+        obs.node_id = Some(ctx.node_id.clone());
+    }
+
+    // Compute error hash (cheap, sync) for any error-shaped observation.
+    // Must run BEFORE the hash cache check — error observations always
+    // pass through to ensure error signature promotion runs and seen_count
+    // is bumped for recurrences.
+    if obs.error_hash.is_none()
+        && let Some(text) = error_hash::extract_error_text(&obs)
+    {
+        let normalized = error_hash::normalize_error_text(&text);
+        let hash = error_hash::hash_error(&normalized);
+        obs.error_hash = Some(Arc::from(hash.as_str()));
+    }
+
+    // Burst dedupe: skip structurally identical non-error observations.
+    // Error-severity observations always pass through — their recurrence
+    // signal (seen_count bump in error signature memory) is valuable and
+    // must not be lost.
+    if obs.severity < daemon8_types::Severity::Error && !obs.kind.tag().is_dedup_exempt() {
+        let obs_hash = ObservationHashCache::dedup_fingerprint(&obs);
+        if ctx.hash_cache.contains_or_insert(obs_hash) {
+            tracing::trace!(
+                hash = obs_hash,
+                origin = ?obs.origin,
+                kind = %obs.kind.tag(),
+                "observation deduped by hash cache"
+            );
+            return;
+        }
+    }
+
+    let insert_copy = obs.clone();
+    let inserted_id = match ctx.store.insert(insert_copy).await {
+        Ok(id) => id,
+        Err(e) => {
+            tracing::error!("store insert failed: {e}");
+            return;
+        }
+    };
+    obs.id = inserted_id;
+
+    // Broadcast to any subscribers (zero-copy fanout).
+    match serde_json::to_string(&obs) {
+        Ok(json) => {
+            let arc_obs = Arc::new(obs);
+            let arc_json: Arc<str> = Arc::from(json);
+            let _ = ctx.broadcast_tx.send((arc_obs.clone(), arc_json));
+
+            // Promote error signature to memory if applicable. Done after
+            // the row is on disk so source_observations references the real
+            // seq id. Fire-and-forget if memory_store isn't wired.
+            if let (Some(mem_store), Some(hash)) =
+                (ctx.memory_store.as_ref(), arc_obs.error_hash.as_ref())
+            {
+                let project_slug = arc_obs
+                    .tags
+                    .as_ref()
+                    .and_then(|tags| tags.iter().find_map(|t| t.strip_prefix("project:")))
+                    .unwrap_or("unknown")
+                    .to_string();
+                let normalized = error_hash::extract_error_text(&arc_obs)
+                    .map(|t| error_hash::normalize_error_text(&t))
+                    .unwrap_or_default();
+                if let Err(e) = error_hash::promote_error_signature(
+                    mem_store.as_ref(),
+                    hash,
+                    &normalized,
+                    &project_slug,
+                    inserted_id,
+                    now_ns,
+                )
+                .await
+                {
+                    tracing::warn!(error = %e, "error signature promotion failed");
+                }
+            }
+        }
+        Err(e) => {
+            tracing::error!(id = inserted_id, error = %e, "observation failed to serialize; dropping from broadcast");
+        }
+    }
+
+    // touch_debug_session is handled by per-MCP-session flush tasks (B1.6).
+    let _ = ctx.debug_session_store.as_ref();
+}
+
+fn current_ns() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64
+}
+
+#[cfg(test)]
+mod writer_tests {
+    use super::*;
+    use daemon8_store::{ActiveDebugSession, MemoryFilter, MemoryStore};
+    use daemon8_types::{AppName, MemoryKind, ObservationKind, Origin, Severity};
+    use std::sync::atomic::AtomicU64;
+
+    fn fresh_obs(severity: Severity, kind: ObservationKind) -> Observation {
+        Observation {
+            id: 0,
+            origin: Origin::Application {
+                name: AppName::from("test-app"),
+            },
+            kind,
+            data: serde_json::json!({"msg": "x"}),
+            severity,
+            source_location: None,
+            timestamp_ns: 0,
+            correlation_id: None,
+            parent_id: None,
+            tags: None,
+            session_id: None,
+            node_id: None,
+            debug_session_id: None,
+            checkpoint_id: None,
+            error_hash: None,
+        }
+    }
+
+    async fn build_ctx_with_active(
+        _session: Option<ActiveDebugSession>,
+        _checkpoint: Option<&str>,
+    ) -> (StoreWriterCtx, Arc<dyn StateModel>, Arc<dyn MemoryStore>) {
+        let ss = Arc::new(SurrealStore::memory().await.unwrap());
+        let mem: Arc<dyn MemoryStore> = Arc::new(ss.memory_store());
+        let ds: Arc<dyn DebugSessionStore> = Arc::new(ss.debug_session_store());
+        let (broadcast_tx, _rx) = broadcast::channel(8);
+        let store: Arc<dyn StateModel> = ss.clone();
+        (
+            StoreWriterCtx {
+                store: store.clone(),
+                memory_store: Some(mem.clone()),
+                debug_session_store: Some(ds),
+                broadcast_tx,
+                node_id: Arc::from("node-test"),
+                hash_cache: ObservationHashCache::new(),
+            },
+            store,
+            mem,
+        )
+    }
+
+    /// Writer no longer stamps session/checkpoint — that responsibility moved
+    /// to each DaemonMcp instance's own ActiveSessionState (B1.4). The writer
+    /// only handles node_id, error_hash, and error signature promotion.
+    #[tokio::test]
+    async fn writer_does_not_stamp_debug_session_or_checkpoint() {
+        let (ctx, store, _mem) = build_ctx_with_active(None, None).await;
+
+        let mut obs = fresh_obs(Severity::Info, ObservationKind::Log);
+        // Pre-stamp the observation as the MCP tool would
+        obs.debug_session_id = Some(Arc::from("mcp-session-1"));
+        obs.checkpoint_id = Some(Arc::from("mcp-cp-1"));
+        obs.tags = Some(vec!["project:daemon8".into()]);
+        handle_observation(obs, &ctx).await;
+
+        let slice = store
+            .query(&daemon8_types::Filter::default())
+            .await
+            .unwrap();
+        assert_eq!(slice.observations.len(), 1);
+        let stored = &slice.observations[0];
+        // Pre-stamped values pass through to the store unchanged
+        assert_eq!(stored.debug_session_id.as_deref(), Some("mcp-session-1"));
+        assert_eq!(stored.checkpoint_id.as_deref(), Some("mcp-cp-1"));
+        // Writer still stamps node_id
+        assert_eq!(stored.node_id.as_deref(), Some("node-test"));
+    }
+
+    #[tokio::test]
+    async fn writer_stamps_node_id_on_every_observation() {
+        let (ctx, store, _mem) = build_ctx_with_active(None, None).await;
+
+        handle_observation(fresh_obs(Severity::Info, ObservationKind::Log), &ctx).await;
+
+        let slice = store
+            .query(&daemon8_types::Filter::default())
+            .await
+            .unwrap();
+        let obs = &slice.observations[0];
+        assert_eq!(obs.node_id.as_deref(), Some("node-test"));
+    }
+
+    #[tokio::test]
+    async fn computes_error_hash_on_exception_and_promotes_signature() {
+        let (ctx, store, mem) = build_ctx_with_active(None, None).await;
+
+        let exc = ObservationKind::Exception {
+            message: "DB timeout after 5000ms on conn 7".into(),
+            trace: Some("at db::query in /Users/x/proj/src/db.rs:42".into()),
+        };
+        let mut obs1 = fresh_obs(Severity::Error, exc.clone());
+        obs1.tags = Some(vec!["project:daemon8".into()]);
+        handle_observation(obs1, &ctx).await;
+        // Same shape — should bump seen, not create a new memory.
+        let exc2 = ObservationKind::Exception {
+            message: "DB timeout after 9999ms on conn 12".into(),
+            trace: Some("at db::query in /Users/y/other/src/db.rs:42".into()),
+        };
+        let mut obs2 = fresh_obs(Severity::Error, exc2);
+        obs2.tags = Some(vec!["project:daemon8".into()]);
+        handle_observation(obs2, &ctx).await;
+
+        let slice = store
+            .query(&daemon8_types::Filter::default())
+            .await
+            .unwrap();
+        assert_eq!(slice.observations.len(), 2);
+        assert!(slice.observations[0].error_hash.is_some());
+        assert_eq!(
+            slice.observations[0].error_hash, slice.observations[1].error_hash,
+            "structurally identical errors must hash to the same value"
+        );
+
+        let signatures = mem
+            .query_memory(&MemoryFilter {
+                kinds: Some(vec![MemoryKind::ErrorSignature]),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            signatures.len(),
+            1,
+            "second occurrence must reuse the same ErrorSignature"
+        );
+        assert!(signatures[0].tags.contains(&"seen:2".to_string()));
+    }
+
+    /// Multi-session stamping is now handled at the MCP ingest level (B1.4).
+    /// Writer-level touch tests moved to `crates/mcp/tests/multi_session_behavior.rs`.
+    #[ignore = "touch responsibility moved to MCP ingest + per-session flush (B1.4/B1.6)"]
+    #[tokio::test]
+    async fn touch_bumps_active_session_last_activity() {
+        let last = Arc::new(AtomicU64::new(1_000));
+        let session = ActiveDebugSession {
+            id: Arc::from("ds_t"),
+            project_slug: Arc::from("p"),
+            started_at_ns: 1_000,
+            last_activity_ns: last.clone(),
+            agent_id: Arc::from(":test/claude+plan-agent>"),
+            feature: None,
+        };
+        let (ctx, _store, _mem) = build_ctx_with_active(Some(session), None).await;
+
+        handle_observation(fresh_obs(Severity::Info, ObservationKind::Log), &ctx).await;
+
+        assert!(
+            last.load(std::sync::atomic::Ordering::Relaxed) > 1_000,
+            "active session last_activity_ns must be touched on each insert"
+        );
+    }
 }
 
 /// Periodically delete observations and screenshots older than their retention windows.
