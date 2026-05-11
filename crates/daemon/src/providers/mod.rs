@@ -9,7 +9,7 @@ pub mod hook_management;
 pub mod opencode;
 pub mod traits;
 
-pub use traits::{AiProvider, CanonicalEvent, HookProvider, HookScope};
+pub use traits::{AiProvider, HookEvent, HookProvider, HookScope};
 
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
@@ -197,31 +197,31 @@ pub fn detect_provider_from_env() -> Option<(&'static str, Provider)> {
     None
 }
 
-pub fn normalize_hook_event_name(raw: &str) -> Option<(CanonicalEvent, Severity)> {
+pub fn resolve_hook_event(raw: &str) -> Option<(HookEvent, Severity)> {
     for &provider in HOOK_PROVIDERS {
         let hp = provider.as_hook_provider().unwrap();
-        for event in hp.hook_events() {
-            if event.native_name.eq_ignore_ascii_case(raw) {
-                return Some((event.canonical, event.severity));
+        for entry in hp.hook_events() {
+            if entry.native_name.eq_ignore_ascii_case(raw) {
+                return Some((entry.event, entry.severity));
             }
         }
     }
 
-    static EXTRA_ALIASES: &[(&str, CanonicalEvent)] = &[
-        ("userpromptsubmitted", CanonicalEvent::PromptSubmit),
-        ("beforesubmitprompt", CanonicalEvent::PromptSubmit),
-        ("session.compacting", CanonicalEvent::PreCompact),
-        ("postcompact", CanonicalEvent::PostCompact),
+    static EXTRA_ALIASES: &[(&str, HookEvent)] = &[
+        ("userpromptsubmitted", HookEvent::PromptSubmit),
+        ("beforesubmitprompt", HookEvent::PromptSubmit),
+        ("session.compacting", HookEvent::PreCompact),
+        ("postcompact", HookEvent::PostCompact),
     ];
 
-    for &(alias, canonical) in EXTRA_ALIASES {
+    for &(alias, hook_event) in EXTRA_ALIASES {
         if alias.eq_ignore_ascii_case(raw) {
-            let severity = match canonical {
-                CanonicalEvent::ToolPre | CanonicalEvent::ToolPost => Severity::Debug,
-                CanonicalEvent::PermissionRequest => Severity::Warn,
+            let severity = match hook_event {
+                HookEvent::ToolPre | HookEvent::ToolPost => Severity::Debug,
+                HookEvent::PermissionRequest => Severity::Warn,
                 _ => Severity::Info,
             };
-            return Some((canonical, severity));
+            return Some((hook_event, severity));
         }
     }
 

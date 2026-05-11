@@ -101,10 +101,6 @@ struct HookToolInput {
     file_path: Option<String>,
 }
 
-// ---------------------------------------------------------------------------
-// Normalized CLI hook event
-// ---------------------------------------------------------------------------
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CliHookEvent {
     SessionStarted,
@@ -159,18 +155,18 @@ impl HookPolicy {
 }
 
 fn normalize_event(raw: &str) -> CliHookEvent {
-    use crate::providers::CanonicalEvent;
+    use crate::providers::HookEvent;
 
-    match crate::providers::normalize_hook_event_name(raw) {
-        Some((canonical, _)) => match canonical {
-            CanonicalEvent::SessionStart => CliHookEvent::SessionStarted,
-            CanonicalEvent::SessionEnd | CanonicalEvent::Stop => CliHookEvent::SessionEnded,
-            CanonicalEvent::PromptSubmit => CliHookEvent::PromptSubmitted,
-            CanonicalEvent::ToolPre => CliHookEvent::ToolPreUse,
-            CanonicalEvent::ToolPost => CliHookEvent::ToolPostUse,
-            CanonicalEvent::PermissionRequest => CliHookEvent::PermissionRequested,
-            CanonicalEvent::PreCompact => CliHookEvent::PreCompact,
-            CanonicalEvent::PostCompact => CliHookEvent::PostCompact,
+    match crate::providers::resolve_hook_event(raw) {
+        Some((event, _)) => match event {
+            HookEvent::SessionStart => CliHookEvent::SessionStarted,
+            HookEvent::SessionEnd | HookEvent::Stop => CliHookEvent::SessionEnded,
+            HookEvent::PromptSubmit => CliHookEvent::PromptSubmitted,
+            HookEvent::ToolPre => CliHookEvent::ToolPreUse,
+            HookEvent::ToolPost => CliHookEvent::ToolPostUse,
+            HookEvent::PermissionRequest => CliHookEvent::PermissionRequested,
+            HookEvent::PreCompact => CliHookEvent::PreCompact,
+            HookEvent::PostCompact => CliHookEvent::PostCompact,
         },
         None => CliHookEvent::Other,
     }

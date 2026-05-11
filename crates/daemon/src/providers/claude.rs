@@ -11,56 +11,56 @@ use super::helpers::{
     quote_command_path, remove_json_hooks, shim_command,
 };
 use super::traits::{
-    AiProvider, CanonicalEvent, HookProvider, HookScope, InstalledHookEntry, NormalizedHookEvent,
+    AiProvider, HookEvent, HookEventEntry, HookProvider, HookScope, InstalledHookEntry,
 };
 
 pub struct ClaudeCodeProvider;
 
-static HOOK_EVENTS: &[NormalizedHookEvent] = &[
-    NormalizedHookEvent {
-        canonical: CanonicalEvent::SessionStart,
+static HOOK_EVENTS: &[HookEventEntry] = &[
+    HookEventEntry {
+        event: HookEvent::SessionStart,
         native_name: "SessionStart",
         severity: Severity::Info,
         matcher: None,
     },
-    NormalizedHookEvent {
-        canonical: CanonicalEvent::SessionEnd,
+    HookEventEntry {
+        event: HookEvent::SessionEnd,
         native_name: "SessionEnd",
         severity: Severity::Info,
         matcher: None,
     },
-    NormalizedHookEvent {
-        canonical: CanonicalEvent::PromptSubmit,
+    HookEventEntry {
+        event: HookEvent::PromptSubmit,
         native_name: "UserPromptSubmit",
         severity: Severity::Info,
         matcher: None,
     },
-    NormalizedHookEvent {
-        canonical: CanonicalEvent::ToolPre,
+    HookEventEntry {
+        event: HookEvent::ToolPre,
         native_name: "PreToolUse",
         severity: Severity::Debug,
         matcher: None,
     },
-    NormalizedHookEvent {
-        canonical: CanonicalEvent::PermissionRequest,
+    HookEventEntry {
+        event: HookEvent::PermissionRequest,
         native_name: "PermissionRequest",
         severity: Severity::Warn,
         matcher: None,
     },
-    NormalizedHookEvent {
-        canonical: CanonicalEvent::ToolPost,
+    HookEventEntry {
+        event: HookEvent::ToolPost,
         native_name: "PostToolUse",
         severity: Severity::Debug,
         matcher: None,
     },
-    NormalizedHookEvent {
-        canonical: CanonicalEvent::PreCompact,
+    HookEventEntry {
+        event: HookEvent::PreCompact,
         native_name: "PreCompact",
         severity: Severity::Info,
         matcher: None,
     },
-    NormalizedHookEvent {
-        canonical: CanonicalEvent::Stop,
+    HookEventEntry {
+        event: HookEvent::Stop,
         native_name: "Stop",
         severity: Severity::Info,
         matcher: None,
@@ -180,7 +180,7 @@ impl HookProvider for ClaudeCodeProvider {
         }
     }
 
-    fn hook_events(&self) -> &'static [NormalizedHookEvent] {
+    fn hook_events(&self) -> &'static [HookEventEntry] {
         HOOK_EVENTS
     }
 

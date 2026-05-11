@@ -14,7 +14,7 @@ pub enum HookScope {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CanonicalEvent {
+pub enum HookEvent {
     SessionStart,
     SessionEnd,
     PromptSubmit,
@@ -27,8 +27,8 @@ pub enum CanonicalEvent {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct NormalizedHookEvent {
-    pub canonical: CanonicalEvent,
+pub struct HookEventEntry {
+    pub event: HookEvent,
     pub native_name: &'static str,
     pub severity: Severity,
     pub matcher: Option<&'static str>,
@@ -71,7 +71,7 @@ pub struct InstalledHookEntry {
 pub trait HookProvider: AiProvider {
     fn supported_scopes(&self) -> &'static [HookScope];
     fn hooks_path(&self, scope: HookScope, cwd: &Path, home: &Path) -> PathBuf;
-    fn hook_events(&self) -> &'static [NormalizedHookEvent];
+    fn hook_events(&self) -> &'static [HookEventEntry];
     fn scope_display_hint(&self, scope: HookScope, cwd: &Path, home: &Path) -> String {
         self.hooks_path(scope, cwd, home).display().to_string()
     }
