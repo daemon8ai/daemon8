@@ -18,7 +18,7 @@ pub struct HookSpec {
 
 pub fn current_exe_string() -> String {
     std::env::current_exe()
-        .unwrap_or_else(|_| PathBuf::from("daemon8"))
+        .unwrap_or_else(|_| PathBuf::from("unknown"))
         .to_string_lossy()
         .to_string()
 }
@@ -27,8 +27,8 @@ pub fn quote_command_path(path: &str) -> String {
     format!("\"{}\"", path.replace('"', "\\\""))
 }
 
-pub fn is_daemon_hook_command(command: &str) -> bool {
-    command.contains("daemon8") && command.contains("cli-hook")
+pub fn is_service_hook_command(command: &str, marker: &str) -> bool {
+    command.contains(marker) && command.contains("cli-hook")
 }
 
 pub fn install_json_hooks(
@@ -36,6 +36,7 @@ pub fn install_json_hooks(
     command: &str,
     specs: &[HookSpec],
     force: bool,
+    marker: &str,
 ) -> Result<PathBuf> {
     if let Some(parent) = settings_path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -64,9 +65,12 @@ pub fn install_json_hooks(
         let daemon_group = build_hook_group(command, spec);
 
         if force {
-            groups.retain(|group| !group_contains_daemon_hook(group));
+            groups.retain(|group| !group_contains_service_hook(group, marker));
             groups.push(daemon_group);
-        } else if !groups.iter().any(group_contains_daemon_hook) {
+        } else if !groups
+            .iter()
+            .any(|g| group_contains_service_hook(g, marker))
+        {
             groups.push(daemon_group);
         }
     }
@@ -75,7 +79,7 @@ pub fn install_json_hooks(
     Ok(settings_path.to_path_buf())
 }
 
-pub fn remove_json_hooks(settings_path: &Path) -> Result<Option<PathBuf>> {
+pub fn remove_json_hooks(settings_path: &Path, marker: &str) -> Result<Option<PathBuf>> {
     if !settings_path.exists() {
         return Ok(None);
     }
@@ -104,7 +108,7 @@ pub fn remove_json_hooks(settings_path: &Path) -> Result<Option<PathBuf>> {
             if group
                 .get("command")
                 .and_then(Value::as_str)
-                .is_some_and(is_daemon_hook_command)
+                .is_some_and(|cmd| is_service_hook_command(cmd, marker))
             {
                 *group = Value::Null;
                 removed = true;
@@ -116,8 +120,7 @@ pub fn remove_json_hooks(settings_path: &Path) -> Result<Option<PathBuf>> {
                     !item
                         .get("command")
                         .and_then(Value::as_str)
-                        .map(is_daemon_hook_command)
-                        .unwrap_or(false)
+                        .is_some_and(|cmd| is_service_hook_command(cmd, marker))
                 });
                 if items.len() != before {
                     removed = true;
@@ -153,7 +156,7 @@ pub fn remove_json_hooks(settings_path: &Path) -> Result<Option<PathBuf>> {
     Ok(Some(settings_path.to_path_buf()))
 }
 
-pub fn list_json_hooks(settings_path: &Path) -> Result<Vec<InstalledHookEntry>> {
+pub fn list_json_hooks(settings_path: &Path, marker: &str) -> Result<Vec<InstalledHookEntry>> {
     if !settings_path.exists() {
         return Ok(Vec::new());
     }
@@ -178,7 +181,7 @@ pub fn list_json_hooks(settings_path: &Path) -> Result<Vec<InstalledHookEntry>> 
                 let Some(cmd) = item.get("command").and_then(Value::as_str) else {
                     continue;
                 };
-                if is_daemon_hook_command(cmd) {
+                if is_service_hook_command(cmd, marker) {
                     entries.push(InstalledHookEntry {
                         event: event.clone(),
                         command: cmd.to_string(),
@@ -190,7 +193,7 @@ pub fn list_json_hooks(settings_path: &Path) -> Result<Vec<InstalledHookEntry>> 
     Ok(entries)
 }
 
-pub fn json_has_daemon8(config_path: &Path) -> bool {
+pub fn json_has_mcp_server(config_path: &Path, name: &str) -> bool {
     config_path.exists()
         && std::fs::read_to_string(config_path)
             .ok()
@@ -198,12 +201,12 @@ pub fn json_has_daemon8(config_path: &Path) -> bool {
             .and_then(|v| {
                 v.get("mcpServers")?
                     .as_object()
-                    .map(|m| m.contains_key("daemon8"))
+                    .map(|m| m.contains_key(name))
             })
             .unwrap_or(false)
 }
 
-pub fn codex_has_daemon8(config_path: &Path) -> bool {
+pub fn codex_has_mcp_server(config_path: &Path, name: &str) -> bool {
     config_path.exists()
         && std::fs::read_to_string(config_path)
             .ok()
@@ -211,7 +214,7 @@ pub fn codex_has_daemon8(config_path: &Path) -> bool {
             .and_then(|v| {
                 v.get("mcp_servers")?
                     .as_table()
-                    .map(|table| table.contains_key("daemon8"))
+                    .map(|table| table.contains_key(name))
             })
             .unwrap_or(false)
 }
@@ -264,19 +267,17 @@ fn build_hook_group(command: &str, spec: &HookSpec) -> Value {
     group
 }
 
-fn group_contains_daemon_hook(group: &Value) -> bool {
+fn group_contains_service_hook(group: &Value, marker: &str) -> bool {
     group
         .get("hooks")
         .and_then(Value::as_array)
-        .map(|items| {
+        .is_some_and(|items| {
             items.iter().any(|item| {
                 item.get("command")
                     .and_then(Value::as_str)
-                    .map(is_daemon_hook_command)
-                    .unwrap_or(false)
+                    .is_some_and(|cmd| is_service_hook_command(cmd, marker))
             })
         })
-        .unwrap_or(false)
 }
 
 pub fn write_json_mcp_entries(config_path: &Path, entries: &[(&str, Value)]) -> Result<()> {
@@ -334,4 +335,69 @@ pub fn shim_command(program: &str) -> std::process::Command {
 #[cfg(not(windows))]
 pub fn shim_command(program: &str) -> std::process::Command {
     std::process::Command::new(program)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_service_hook_command_matches_marker_and_cli_hook() {
+        assert!(is_service_hook_command(
+            "/usr/bin/daemon8 cli-hook",
+            "daemon8"
+        ));
+        assert!(is_service_hook_command(
+            "/usr/bin/my-tool cli-hook --tool claude",
+            "my-tool"
+        ));
+    }
+
+    #[test]
+    fn is_service_hook_command_rejects_marker_without_cli_hook() {
+        assert!(!is_service_hook_command("daemon8 status", "daemon8"));
+        assert!(!is_service_hook_command("daemon8 serve", "daemon8"));
+    }
+
+    #[test]
+    fn is_service_hook_command_rejects_cli_hook_without_marker() {
+        assert!(!is_service_hook_command(
+            "/usr/bin/other cli-hook",
+            "daemon8"
+        ));
+    }
+
+    #[test]
+    fn json_has_mcp_server_detects_named_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.json");
+        std::fs::write(
+            &path,
+            r#"{"mcpServers":{"my-service":{"url":"http://localhost"}}}"#,
+        )
+        .unwrap();
+
+        assert!(json_has_mcp_server(&path, "my-service"));
+        assert!(!json_has_mcp_server(&path, "other-service"));
+    }
+
+    #[test]
+    fn json_has_mcp_server_returns_false_for_missing_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(!json_has_mcp_server(&tmp.path().join("nope.json"), "x"));
+    }
+
+    #[test]
+    fn codex_has_mcp_server_detects_named_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "[mcp_servers.my-svc]\nname = \"My Service\"\nurl = \"http://localhost\"\n",
+        )
+        .unwrap();
+
+        assert!(codex_has_mcp_server(&path, "my-svc"));
+        assert!(!codex_has_mcp_server(&path, "other-svc"));
+    }
 }

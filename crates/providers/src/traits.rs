@@ -4,7 +4,17 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
-use daemon8_types::Severity;
+
+use super::ServiceIdentity;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum LogLevel {
+    Trace,
+    Debug,
+    Info,
+    Warn,
+    Error,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HookScope {
@@ -30,7 +40,7 @@ pub enum HookEvent {
 pub struct HookEventEntry {
     pub event: HookEvent,
     pub native_name: &'static str,
-    pub severity: Severity,
+    pub severity: LogLevel,
     pub matcher: Option<&'static str>,
 }
 
@@ -52,14 +62,15 @@ pub trait AiProvider: Send + Sync + 'static {
         "MCP config"
     }
 
-    fn is_configured(&self, config_path: &Path) -> bool;
+    fn is_configured(&self, config_path: &Path, service: &ServiceIdentity) -> bool;
     fn write_mcp_config(
         &self,
         config_path: &Path,
         mcp_url: &str,
         project_dir: Option<&Path>,
+        service: &ServiceIdentity,
     ) -> Result<()>;
-    fn remove_mcp_config(&self, config_path: &Path) -> Result<bool>;
+    fn remove_mcp_config(&self, config_path: &Path, service: &ServiceIdentity) -> Result<bool>;
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -82,6 +93,7 @@ pub trait HookProvider: AiProvider {
         cwd: &Path,
         home: &Path,
         force: bool,
+        service: &ServiceIdentity,
     ) -> Result<PathBuf>;
 
     fn list_hooks(
@@ -89,11 +101,24 @@ pub trait HookProvider: AiProvider {
         scope: HookScope,
         cwd: &Path,
         home: &Path,
+        service: &ServiceIdentity,
     ) -> Result<Vec<InstalledHookEntry>>;
 
-    fn remove_hooks(&self, scope: HookScope, cwd: &Path, home: &Path) -> Result<Option<PathBuf>>;
+    fn remove_hooks(
+        &self,
+        scope: HookScope,
+        cwd: &Path,
+        home: &Path,
+        service: &ServiceIdentity,
+    ) -> Result<Option<PathBuf>>;
 
-    fn update_hooks(&self, scope: HookScope, cwd: &Path, home: &Path) -> Result<PathBuf> {
-        self.install_hooks(scope, cwd, home, true)
+    fn update_hooks(
+        &self,
+        scope: HookScope,
+        cwd: &Path,
+        home: &Path,
+        service: &ServiceIdentity,
+    ) -> Result<PathBuf> {
+        self.install_hooks(scope, cwd, home, true, service)
     }
 }

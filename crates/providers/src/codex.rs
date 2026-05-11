@@ -4,15 +4,15 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use daemon8_types::Severity;
 use toml::Table;
 
+use super::ServiceIdentity;
 use super::helpers::{
-    HookSpec, codex_has_daemon8, current_exe_string, install_json_hooks, list_json_hooks,
+    HookSpec, codex_has_mcp_server, current_exe_string, install_json_hooks, list_json_hooks,
     quote_command_path, remove_json_hooks,
 };
 use super::traits::{
-    AiProvider, HookEvent, HookEventEntry, HookProvider, HookScope, InstalledHookEntry,
+    AiProvider, HookEvent, HookEventEntry, HookProvider, HookScope, InstalledHookEntry, LogLevel,
 };
 
 pub struct CodexProvider;
@@ -21,37 +21,37 @@ static HOOK_EVENTS: &[HookEventEntry] = &[
     HookEventEntry {
         event: HookEvent::SessionStart,
         native_name: "SessionStart",
-        severity: Severity::Info,
+        severity: LogLevel::Info,
         matcher: Some("startup|resume|clear"),
     },
     HookEventEntry {
         event: HookEvent::PromptSubmit,
         native_name: "UserPromptSubmit",
-        severity: Severity::Info,
+        severity: LogLevel::Info,
         matcher: None,
     },
     HookEventEntry {
         event: HookEvent::ToolPre,
         native_name: "PreToolUse",
-        severity: Severity::Debug,
+        severity: LogLevel::Debug,
         matcher: Some("Bash|apply_patch|Edit|Write"),
     },
     HookEventEntry {
         event: HookEvent::PermissionRequest,
         native_name: "PermissionRequest",
-        severity: Severity::Warn,
+        severity: LogLevel::Warn,
         matcher: Some("Bash|apply_patch|Edit|Write"),
     },
     HookEventEntry {
         event: HookEvent::ToolPost,
         native_name: "PostToolUse",
-        severity: Severity::Debug,
+        severity: LogLevel::Debug,
         matcher: Some("Bash|apply_patch|Edit|Write"),
     },
     HookEventEntry {
         event: HookEvent::Stop,
         native_name: "Stop",
-        severity: Severity::Info,
+        severity: LogLevel::Info,
         matcher: None,
     },
 ];
@@ -93,8 +93,8 @@ impl AiProvider for CodexProvider {
         "MCP config + trust project"
     }
 
-    fn is_configured(&self, config_path: &Path) -> bool {
-        codex_has_daemon8(config_path)
+    fn is_configured(&self, config_path: &Path, service: &ServiceIdentity) -> bool {
+        codex_has_mcp_server(config_path, service.name)
     }
 
     fn write_mcp_config(
@@ -102,11 +102,12 @@ impl AiProvider for CodexProvider {
         config_path: &Path,
         mcp_url: &str,
         project_dir: Option<&Path>,
+        service: &ServiceIdentity,
     ) -> Result<()> {
-        write_codex_toml_config(config_path, mcp_url, project_dir)
+        write_codex_toml_config(config_path, mcp_url, project_dir, service)
     }
 
-    fn remove_mcp_config(&self, config_path: &Path) -> Result<bool> {
+    fn remove_mcp_config(&self, config_path: &Path, service: &ServiceIdentity) -> Result<bool> {
         if !config_path.exists() {
             return Ok(false);
         }
@@ -118,7 +119,7 @@ impl AiProvider for CodexProvider {
         let removed = root
             .get_mut("mcp_servers")
             .and_then(toml::Value::as_table_mut)
-            .map(|table| table.remove("daemon8").is_some())
+            .map(|table| table.remove(service.name).is_some())
             .unwrap_or(false);
 
         if removed {
@@ -149,6 +150,7 @@ impl HookProvider for CodexProvider {
         cwd: &Path,
         home: &Path,
         force: bool,
+        service: &ServiceIdentity,
     ) -> Result<PathBuf> {
         let settings_path = self.hooks_path(scope, cwd, home);
         let command = format!(
@@ -161,10 +163,10 @@ impl HookProvider for CodexProvider {
                 event: e.native_name,
                 matcher: e.matcher,
                 timeout: None,
-                status_message: Some("daemon8 telemetry"),
+                status_message: service.status_message,
             })
             .collect();
-        install_json_hooks(&settings_path, &command, &specs, force)
+        install_json_hooks(&settings_path, &command, &specs, force, service.hook_marker)
     }
 
     fn list_hooks(
@@ -172,14 +174,21 @@ impl HookProvider for CodexProvider {
         scope: HookScope,
         cwd: &Path,
         home: &Path,
+        service: &ServiceIdentity,
     ) -> Result<Vec<InstalledHookEntry>> {
         let path = self.hooks_path(scope, cwd, home);
-        list_json_hooks(&path)
+        list_json_hooks(&path, service.hook_marker)
     }
 
-    fn remove_hooks(&self, scope: HookScope, cwd: &Path, home: &Path) -> Result<Option<PathBuf>> {
+    fn remove_hooks(
+        &self,
+        scope: HookScope,
+        cwd: &Path,
+        home: &Path,
+        service: &ServiceIdentity,
+    ) -> Result<Option<PathBuf>> {
         let path = self.hooks_path(scope, cwd, home);
-        remove_json_hooks(&path)
+        remove_json_hooks(&path, service.hook_marker)
     }
 }
 
@@ -187,6 +196,7 @@ fn write_codex_toml_config(
     config_path: &Path,
     mcp_url: &str,
     project_dir: Option<&Path>,
+    service: &ServiceIdentity,
 ) -> Result<()> {
     if let Some(parent) = config_path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -206,10 +216,13 @@ fn write_codex_toml_config(
         .context("codex config root must be a table")?;
 
     let mcp_servers = get_or_insert_table(root_table, "mcp_servers")?;
-    let mut daemon8_table = Table::new();
-    daemon8_table.insert("name".to_string(), toml::Value::String("Daemon8".into()));
-    daemon8_table.insert("url".to_string(), toml::Value::String(mcp_url.to_string()));
-    mcp_servers.insert("daemon8".to_string(), toml::Value::Table(daemon8_table));
+    let mut entry_table = Table::new();
+    entry_table.insert(
+        "name".to_string(),
+        toml::Value::String(service.display_name.to_string()),
+    );
+    entry_table.insert("url".to_string(), toml::Value::String(mcp_url.to_string()));
+    mcp_servers.insert(service.name.to_string(), toml::Value::Table(entry_table));
 
     let features = get_or_insert_table(root_table, "features")?;
     features.insert("codex_hooks".to_string(), toml::Value::Boolean(true));

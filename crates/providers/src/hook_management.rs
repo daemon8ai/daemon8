@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Result, bail};
 use serde::Serialize;
 
+use super::ServiceIdentity;
 use super::traits::{HookScope, InstalledHookEntry};
 use super::{HOOK_PROVIDERS, Provider, dirs_home, helpers};
 
@@ -29,14 +30,14 @@ pub struct HookActionReport {
     pub settings_path: Option<PathBuf>,
 }
 
-pub fn list_all_hooks(cwd: &Path) -> Result<Vec<InstalledHookGroup>> {
+pub fn list_all_hooks(cwd: &Path, service: &ServiceIdentity) -> Result<Vec<InstalledHookGroup>> {
     let home = dirs_home();
     let mut out = Vec::new();
 
     for &provider in HOOK_PROVIDERS {
         let hp = provider.as_hook_provider().unwrap();
         for &scope in hp.supported_scopes() {
-            let entries = hp.list_hooks(scope, cwd, &home)?;
+            let entries = hp.list_hooks(scope, cwd, &home, service)?;
             if entries.is_empty() {
                 continue;
             }
@@ -56,6 +57,7 @@ pub fn remove_hooks(
     provider: Provider,
     scope: Option<HookScope>,
     cwd: &Path,
+    service: &ServiceIdentity,
 ) -> Result<Vec<HookActionReport>> {
     let home = dirs_home();
     let Some(hp) = provider.as_hook_provider() else {
@@ -69,7 +71,7 @@ pub fn remove_hooks(
 
     let mut reports = Vec::new();
     for s in scopes {
-        let path = hp.remove_hooks(s, cwd, &home)?;
+        let path = hp.remove_hooks(s, cwd, &home, service)?;
         reports.push(HookActionReport {
             provider: hp.label(),
             scope: Some(scope_label(s)),
@@ -84,6 +86,7 @@ pub fn update_hooks(
     provider: Provider,
     scope: Option<HookScope>,
     cwd: &Path,
+    service: &ServiceIdentity,
 ) -> Result<Vec<HookActionReport>> {
     let home = dirs_home();
     let Some(hp) = provider.as_hook_provider() else {
@@ -97,7 +100,7 @@ pub fn update_hooks(
 
     let mut reports = Vec::new();
     for s in scopes {
-        let path = hp.update_hooks(s, cwd, &home)?;
+        let path = hp.update_hooks(s, cwd, &home, service)?;
         reports.push(HookActionReport {
             provider: hp.label(),
             scope: Some(scope_label(s)),
@@ -108,7 +111,7 @@ pub fn update_hooks(
     Ok(reports)
 }
 
-pub fn repair_hooks(cwd: &Path) -> Result<Vec<HookActionReport>> {
+pub fn repair_hooks(cwd: &Path, service: &ServiceIdentity) -> Result<Vec<HookActionReport>> {
     let home = dirs_home();
     let current_cmd_marker = helpers::current_exe_string();
     let mut reports = Vec::new();
@@ -116,7 +119,7 @@ pub fn repair_hooks(cwd: &Path) -> Result<Vec<HookActionReport>> {
     for &provider in HOOK_PROVIDERS {
         let hp = provider.as_hook_provider().unwrap();
         for &scope in hp.supported_scopes() {
-            let entries = hp.list_hooks(scope, cwd, &home)?;
+            let entries = hp.list_hooks(scope, cwd, &home, service)?;
             if entries.is_empty() {
                 continue;
             }
@@ -124,7 +127,7 @@ pub fn repair_hooks(cwd: &Path) -> Result<Vec<HookActionReport>> {
                 .iter()
                 .any(|e| !e.command.contains(&current_cmd_marker));
             if drifted {
-                let path = hp.install_hooks(scope, cwd, &home, true)?;
+                let path = hp.install_hooks(scope, cwd, &home, true, service)?;
                 reports.push(HookActionReport {
                     provider: hp.label(),
                     scope: Some(scope_label(scope)),
@@ -196,6 +199,7 @@ mod tests {
             std::env::set_var("HOME", tmp.path());
         }
         let home = dirs_home();
+        let svc = crate::test_service();
 
         crate::install_hooks_for_provider(
             crate::Provider::ClaudeCode,
@@ -203,19 +207,21 @@ mod tests {
             &cwd,
             &home,
             false,
+            &svc,
         )
         .unwrap();
-        let listed = list_all_hooks(&cwd).unwrap();
+        let listed = list_all_hooks(&cwd, &svc).unwrap();
         assert!(
             listed
                 .iter()
                 .any(|g| g.provider == "Claude Code" && g.scope == Some("local"))
         );
 
-        let removed = remove_hooks(Provider::ClaudeCode, Some(HookScope::Local), &cwd).unwrap();
+        let removed =
+            remove_hooks(Provider::ClaudeCode, Some(HookScope::Local), &cwd, &svc).unwrap();
         assert_eq!(removed[0].action, "removed");
 
-        let after = list_all_hooks(&cwd).unwrap();
+        let after = list_all_hooks(&cwd, &svc).unwrap();
         assert!(after.iter().all(|g| g.scope != Some("local")));
     }
 
@@ -227,6 +233,7 @@ mod tests {
             std::env::set_var("HOME", tmp.path());
         }
         let home = dirs_home();
+        let svc = crate::test_service();
 
         crate::install_hooks_for_provider(
             crate::Provider::ClaudeCode,
@@ -234,9 +241,10 @@ mod tests {
             &cwd,
             &home,
             false,
+            &svc,
         )
         .unwrap();
-        let reports = repair_hooks(&cwd).unwrap();
+        let reports = repair_hooks(&cwd, &svc).unwrap();
         let local = reports
             .iter()
             .find(|r| r.scope == Some("local"))
@@ -252,6 +260,7 @@ mod tests {
             std::env::set_var("HOME", tmp.path());
         }
         let home = dirs_home();
+        let svc = crate::test_service();
 
         crate::install_hooks_for_provider(
             crate::Provider::ClaudeCode,
@@ -259,6 +268,7 @@ mod tests {
             &cwd,
             &home,
             false,
+            &svc,
         )
         .unwrap();
 
@@ -267,7 +277,7 @@ mod tests {
         let tampered = content.replace(&helpers::current_exe_string(), "/old/path/daemon8");
         std::fs::write(&settings_path, tampered).unwrap();
 
-        let reports = repair_hooks(&cwd).unwrap();
+        let reports = repair_hooks(&cwd, &svc).unwrap();
         let local = reports
             .iter()
             .find(|r| r.scope == Some("local"))
@@ -286,6 +296,7 @@ mod tests {
             std::env::set_var("HOME", tmp.path());
         }
         let home = dirs_home();
+        let svc = crate::test_service();
 
         crate::install_hooks_for_provider(
             crate::Provider::ClaudeCode,
@@ -293,9 +304,11 @@ mod tests {
             &cwd,
             &home,
             false,
+            &svc,
         )
         .unwrap();
-        let reports = update_hooks(Provider::ClaudeCode, Some(HookScope::Local), &cwd).unwrap();
+        let reports =
+            update_hooks(Provider::ClaudeCode, Some(HookScope::Local), &cwd, &svc).unwrap();
         assert_eq!(reports.len(), 1);
         assert_eq!(reports[0].action, "updated");
         assert!(reports[0].settings_path.is_some());

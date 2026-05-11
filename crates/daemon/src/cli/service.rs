@@ -199,7 +199,10 @@ fn remove_provider_entry(provider: Provider, home: &std::path::Path) {
     if !config_path.exists() {
         return;
     }
-    match provider.as_provider().remove_mcp_config(&config_path) {
+    match provider
+        .as_provider()
+        .remove_mcp_config(&config_path, &crate::cli_config::SERVICE)
+    {
         Ok(true) => println!("  [ok] removed daemon8 from {}", config_path.display()),
         Ok(false) => {}
         Err(e) => println!("  [!!] {}: {e}", config_path.display()),
@@ -215,7 +218,7 @@ fn remove_cli_hooks(home: &std::path::Path, cwd: &std::path::Path) {
                 if !path.exists() {
                     continue;
                 }
-                match hp.remove_hooks(scope, dir, home) {
+                match hp.remove_hooks(scope, dir, home, &crate::cli_config::SERVICE) {
                     Ok(Some(p)) => {
                         println!("  [ok] removed daemon8 hooks from {}", p.display())
                     }

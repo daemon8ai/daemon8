@@ -41,7 +41,7 @@ pub async fn cmd_hooks_mcp(action: daemon8_mcp::HooksToolAction) -> String {
     };
     let result: anyhow::Result<serde_json::Value> = (|| -> anyhow::Result<serde_json::Value> {
         Ok(match action.action.as_str() {
-            "list" => serde_json::to_value(list_all_hooks(&cwd)?)?,
+            "list" => serde_json::to_value(list_all_hooks(&cwd, &crate::cli_config::SERVICE)?)?,
             "remove" => {
                 let provider = action
                     .provider
@@ -49,7 +49,12 @@ pub async fn cmd_hooks_mcp(action: daemon8_mcp::HooksToolAction) -> String {
                     .ok_or_else(|| anyhow::anyhow!("provider is required for remove"))?;
                 let provider = parse_hook_provider(provider)?;
                 let scope = action.scope.as_deref().map(parse_scope).transpose()?;
-                serde_json::to_value(remove_hooks(provider, scope, &cwd)?)?
+                serde_json::to_value(remove_hooks(
+                    provider,
+                    scope,
+                    &cwd,
+                    &crate::cli_config::SERVICE,
+                )?)?
             }
             "update" => {
                 let provider = action
@@ -58,9 +63,14 @@ pub async fn cmd_hooks_mcp(action: daemon8_mcp::HooksToolAction) -> String {
                     .ok_or_else(|| anyhow::anyhow!("provider is required for update"))?;
                 let provider = parse_hook_provider(provider)?;
                 let scope = action.scope.as_deref().map(parse_scope).transpose()?;
-                serde_json::to_value(update_hooks(provider, scope, &cwd)?)?
+                serde_json::to_value(update_hooks(
+                    provider,
+                    scope,
+                    &cwd,
+                    &crate::cli_config::SERVICE,
+                )?)?
             }
-            "repair" => serde_json::to_value(repair_hooks(&cwd)?)?,
+            "repair" => serde_json::to_value(repair_hooks(&cwd, &crate::cli_config::SERVICE)?)?,
             other => anyhow::bail!(
                 "unknown hooks action '{other}' (valid: list, remove, update, repair)"
             ),
@@ -80,18 +90,32 @@ pub async fn cmd_hooks(sub: HooksSubcommand) -> Result<()> {
     let cwd = env::current_dir()?;
 
     let payload = match sub {
-        HooksSubcommand::List => serde_json::to_value(list_all_hooks(&cwd)?)?,
+        HooksSubcommand::List => {
+            serde_json::to_value(list_all_hooks(&cwd, &crate::cli_config::SERVICE)?)?
+        }
         HooksSubcommand::Remove { provider, scope } => {
             let provider = parse_hook_provider(&provider)?;
             let scope = scope.as_deref().map(parse_scope).transpose()?;
-            serde_json::to_value(remove_hooks(provider, scope, &cwd)?)?
+            serde_json::to_value(remove_hooks(
+                provider,
+                scope,
+                &cwd,
+                &crate::cli_config::SERVICE,
+            )?)?
         }
         HooksSubcommand::Update { provider, scope } => {
             let provider = parse_hook_provider(&provider)?;
             let scope = scope.as_deref().map(parse_scope).transpose()?;
-            serde_json::to_value(update_hooks(provider, scope, &cwd)?)?
+            serde_json::to_value(update_hooks(
+                provider,
+                scope,
+                &cwd,
+                &crate::cli_config::SERVICE,
+            )?)?
         }
-        HooksSubcommand::Repair => serde_json::to_value(repair_hooks(&cwd)?)?,
+        HooksSubcommand::Repair => {
+            serde_json::to_value(repair_hooks(&cwd, &crate::cli_config::SERVICE)?)?
+        }
     };
 
     println!("{}", serde_json::to_string_pretty(&payload)?);

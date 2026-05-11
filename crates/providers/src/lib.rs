@@ -10,19 +10,27 @@ pub mod opencode;
 pub mod traits;
 
 pub use traits::{
-    AiProvider, HookEvent, HookEventEntry, HookProvider, HookScope, InstalledHookEntry,
+    AiProvider, HookEvent, HookEventEntry, HookProvider, HookScope, InstalledHookEntry, LogLevel,
 };
 
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
-use daemon8_types::Severity;
 
 use self::claude::ClaudeCodeProvider;
 use self::codex::CodexProvider;
 use self::gemini::GeminiProvider;
 use self::opencode::OpenCodeProvider;
+
+#[derive(Debug, Clone)]
+pub struct ServiceIdentity {
+    pub name: &'static str,
+    pub channel_name: Option<&'static str>,
+    pub display_name: &'static str,
+    pub hook_marker: &'static str,
+    pub status_message: Option<&'static str>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Provider {
@@ -124,7 +132,7 @@ pub fn parse_provider_list(raw: &str) -> Result<Vec<Provider>> {
     Ok(parsed)
 }
 
-pub fn detect_ai_tools() -> Vec<DetectedProvider> {
+pub fn detect_ai_tools(service: &ServiceIdentity) -> Vec<DetectedProvider> {
     let home = dirs_home();
     let mut tools = Vec::new();
 
@@ -135,7 +143,7 @@ pub fn detect_ai_tools() -> Vec<DetectedProvider> {
 
         let p = provider.as_provider();
         let config_path = p.config_path(&home);
-        let already_configured = p.is_configured(&config_path);
+        let already_configured = p.is_configured(&config_path, service);
 
         tools.push(DetectedProvider {
             provider,
@@ -153,10 +161,11 @@ pub fn write_provider_config(
     config_path: &Path,
     mcp_url: &str,
     project_dir: Option<&Path>,
+    service: &ServiceIdentity,
 ) -> Result<()> {
     provider
         .as_provider()
-        .write_mcp_config(config_path, mcp_url, project_dir)
+        .write_mcp_config(config_path, mcp_url, project_dir, service)
 }
 
 pub fn dirs_home() -> PathBuf {
@@ -167,7 +176,7 @@ pub fn summarize_restarts(summary: &ProviderWriteSummary) -> Vec<String> {
     summary
         .restart_labels
         .iter()
-        .map(|label| (*label).to_string())
+        .map(|label| label.to_string())
         .collect()
 }
 
@@ -177,11 +186,12 @@ pub fn install_hooks_for_provider(
     cwd: &Path,
     home: &Path,
     force: bool,
+    service: &ServiceIdentity,
 ) -> Result<PathBuf> {
     let hp = provider
         .as_hook_provider()
         .ok_or_else(|| anyhow::anyhow!("{} does not support hooks", provider.label()))?;
-    hp.install_hooks(scope, cwd, home, force)
+    hp.install_hooks(scope, cwd, home, force, service)
 }
 
 pub fn detect_provider_from_env() -> Option<(&'static str, Provider)> {
@@ -198,7 +208,7 @@ pub fn detect_provider_from_env() -> Option<(&'static str, Provider)> {
     None
 }
 
-pub fn resolve_hook_event(raw: &str) -> Option<(HookEvent, Severity)> {
+pub fn resolve_hook_event(raw: &str) -> Option<(HookEvent, LogLevel)> {
     for &provider in HOOK_PROVIDERS {
         let hp = provider.as_hook_provider().unwrap();
         for entry in hp.hook_events() {
@@ -217,12 +227,12 @@ pub fn resolve_hook_event(raw: &str) -> Option<(HookEvent, Severity)> {
 
     for &(alias, hook_event) in EXTRA_ALIASES {
         if alias.eq_ignore_ascii_case(raw) {
-            let severity = match hook_event {
-                HookEvent::ToolPre | HookEvent::ToolPost => Severity::Debug,
-                HookEvent::PermissionRequest => Severity::Warn,
-                _ => Severity::Info,
+            let level = match hook_event {
+                HookEvent::ToolPre | HookEvent::ToolPost => LogLevel::Debug,
+                HookEvent::PermissionRequest => LogLevel::Warn,
+                _ => LogLevel::Info,
             };
-            return Some((hook_event, severity));
+            return Some((hook_event, level));
         }
     }
 
@@ -235,5 +245,16 @@ impl Provider {
             .iter()
             .find(|p| p.as_provider().label() == label)
             .copied()
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_service() -> ServiceIdentity {
+    ServiceIdentity {
+        name: "test-svc",
+        channel_name: Some("test-channel"),
+        display_name: "Test Service",
+        hook_marker: "daemon8",
+        status_message: Some("test telemetry"),
     }
 }

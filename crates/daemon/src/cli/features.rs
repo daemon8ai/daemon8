@@ -64,7 +64,7 @@ pub fn cmd_features(args: FeaturesArgs) -> Result<()> {
 }
 
 fn enable_hooks() -> Result<()> {
-    let detected = detect_ai_tools();
+    let detected = detect_ai_tools(&crate::cli_config::SERVICE);
     let hook_providers: Vec<Provider> = detected
         .iter()
         .filter(|d| d.provider.as_hook_provider().is_some())
@@ -105,7 +105,14 @@ fn enable_hooks() -> Result<()> {
             }
             select.interact()?
         };
-        let path = install_hooks_for_provider(provider, scope, &cwd, &home, false)?;
+        let path = install_hooks_for_provider(
+            provider,
+            scope,
+            &cwd,
+            &home,
+            false,
+            &crate::cli_config::SERVICE,
+        )?;
         println!("  wrote: {}", path.display());
     }
 

@@ -4,15 +4,15 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
-use daemon8_types::Severity;
 use serde_json::json;
 
+use super::ServiceIdentity;
 use super::helpers::{
-    HookSpec, current_exe_string, install_json_hooks, json_has_daemon8, list_json_hooks,
+    HookSpec, current_exe_string, install_json_hooks, json_has_mcp_server, list_json_hooks,
     quote_command_path, remove_json_hooks, shim_command,
 };
 use super::traits::{
-    AiProvider, HookEvent, HookEventEntry, HookProvider, HookScope, InstalledHookEntry,
+    AiProvider, HookEvent, HookEventEntry, HookProvider, HookScope, InstalledHookEntry, LogLevel,
 };
 
 pub struct GeminiProvider;
@@ -21,31 +21,31 @@ static HOOK_EVENTS: &[HookEventEntry] = &[
     HookEventEntry {
         event: HookEvent::SessionStart,
         native_name: "SessionStart",
-        severity: Severity::Info,
+        severity: LogLevel::Info,
         matcher: None,
     },
     HookEventEntry {
         event: HookEvent::SessionEnd,
         native_name: "SessionEnd",
-        severity: Severity::Info,
+        severity: LogLevel::Info,
         matcher: None,
     },
     HookEventEntry {
         event: HookEvent::ToolPre,
         native_name: "BeforeTool",
-        severity: Severity::Debug,
+        severity: LogLevel::Debug,
         matcher: None,
     },
     HookEventEntry {
         event: HookEvent::ToolPost,
         native_name: "AfterTool",
-        severity: Severity::Debug,
+        severity: LogLevel::Debug,
         matcher: None,
     },
     HookEventEntry {
         event: HookEvent::PreCompact,
         native_name: "PreCompress",
-        severity: Severity::Info,
+        severity: LogLevel::Info,
         matcher: None,
     },
 ];
@@ -83,8 +83,8 @@ impl AiProvider for GeminiProvider {
         "GEMINI.md"
     }
 
-    fn is_configured(&self, config_path: &Path) -> bool {
-        json_has_daemon8(config_path)
+    fn is_configured(&self, config_path: &Path, service: &ServiceIdentity) -> bool {
+        json_has_mcp_server(config_path, service.name)
     }
 
     fn write_mcp_config(
@@ -92,12 +92,13 @@ impl AiProvider for GeminiProvider {
         config_path: &Path,
         mcp_url: &str,
         _project_dir: Option<&Path>,
+        service: &ServiceIdentity,
     ) -> Result<()> {
         let ok = shim_command("gemini")
             .args([
                 "mcp",
                 "add",
-                "daemon8",
+                service.name,
                 mcp_url,
                 "--transport",
                 "http",
@@ -112,20 +113,20 @@ impl AiProvider for GeminiProvider {
             Ok(())
         } else {
             let entry = json!({ "httpUrl": mcp_url });
-            super::helpers::write_json_mcp_entries(config_path, &[("daemon8", entry)])
+            super::helpers::write_json_mcp_entries(config_path, &[(service.name, entry)])
         }
     }
 
-    fn remove_mcp_config(&self, config_path: &Path) -> Result<bool> {
+    fn remove_mcp_config(&self, config_path: &Path, service: &ServiceIdentity) -> Result<bool> {
         let ok = shim_command("gemini")
-            .args(["mcp", "remove", "daemon8"])
+            .args(["mcp", "remove", service.name])
             .output()
             .map(|o| o.status.success())
             .unwrap_or(false);
         if ok {
             return Ok(true);
         }
-        super::helpers::remove_json_mcp_entry(config_path, "daemon8")
+        super::helpers::remove_json_mcp_entry(config_path, service.name)
     }
 }
 
@@ -148,6 +149,7 @@ impl HookProvider for GeminiProvider {
         cwd: &Path,
         home: &Path,
         force: bool,
+        service: &ServiceIdentity,
     ) -> Result<PathBuf> {
         let settings_path = self.hooks_path(scope, cwd, home);
         let command = format!(
@@ -163,7 +165,7 @@ impl HookProvider for GeminiProvider {
                 status_message: None,
             })
             .collect();
-        install_json_hooks(&settings_path, &command, &specs, force)
+        install_json_hooks(&settings_path, &command, &specs, force, service.hook_marker)
     }
 
     fn list_hooks(
@@ -171,14 +173,21 @@ impl HookProvider for GeminiProvider {
         scope: HookScope,
         cwd: &Path,
         home: &Path,
+        service: &ServiceIdentity,
     ) -> Result<Vec<InstalledHookEntry>> {
         let path = self.hooks_path(scope, cwd, home);
-        list_json_hooks(&path)
+        list_json_hooks(&path, service.hook_marker)
     }
 
-    fn remove_hooks(&self, scope: HookScope, cwd: &Path, home: &Path) -> Result<Option<PathBuf>> {
+    fn remove_hooks(
+        &self,
+        scope: HookScope,
+        cwd: &Path,
+        home: &Path,
+        service: &ServiceIdentity,
+    ) -> Result<Option<PathBuf>> {
         let path = self.hooks_path(scope, cwd, home);
-        remove_json_hooks(&path)
+        remove_json_hooks(&path, service.hook_marker)
     }
 }
 
@@ -192,9 +201,10 @@ mod tests {
         let tmp = tempdir().unwrap();
         let home = tmp.path().to_path_buf();
         std::fs::create_dir_all(home.join(".gemini")).unwrap();
+        let svc = crate::test_service();
 
         let path = GeminiProvider
-            .install_hooks(HookScope::Global, &PathBuf::new(), &home, false)
+            .install_hooks(HookScope::Global, &PathBuf::new(), &home, false, &svc)
             .unwrap();
         assert!(path.exists());
 
@@ -217,24 +227,25 @@ mod tests {
         let tmp = tempdir().unwrap();
         let home = tmp.path().to_path_buf();
         std::fs::create_dir_all(home.join(".gemini")).unwrap();
+        let svc = crate::test_service();
 
         GeminiProvider
-            .install_hooks(HookScope::Global, &PathBuf::new(), &home, false)
+            .install_hooks(HookScope::Global, &PathBuf::new(), &home, false, &svc)
             .unwrap();
 
         let entries = GeminiProvider
-            .list_hooks(HookScope::Global, &PathBuf::new(), &home)
+            .list_hooks(HookScope::Global, &PathBuf::new(), &home, &svc)
             .unwrap();
         assert!(!entries.is_empty());
         assert!(entries[0].command.contains("cli-hook --tool gemini-cli"));
 
         let removed = GeminiProvider
-            .remove_hooks(HookScope::Global, &PathBuf::new(), &home)
+            .remove_hooks(HookScope::Global, &PathBuf::new(), &home, &svc)
             .unwrap();
         assert!(removed.is_some());
 
         let after = GeminiProvider
-            .list_hooks(HookScope::Global, &PathBuf::new(), &home)
+            .list_hooks(HookScope::Global, &PathBuf::new(), &home, &svc)
             .unwrap();
         assert!(after.is_empty());
     }

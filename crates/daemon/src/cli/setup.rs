@@ -83,7 +83,7 @@ fn run_setup(
     cwd: Option<&Path>,
     dry_run: bool,
 ) -> Result<SetupResult> {
-    let detected = detect_ai_tools();
+    let detected = detect_ai_tools(&crate::cli_config::SERVICE);
     let targets = resolve_targets(providers_override, &detected)?;
 
     let port = crate::config::load(None).unwrap_or_default().server.port;
@@ -116,7 +116,13 @@ fn run_setup(
             continue;
         }
 
-        match write_provider_config(target.provider, &config_path, &mcp_url, cwd) {
+        match write_provider_config(
+            target.provider,
+            &config_path,
+            &mcp_url,
+            cwd,
+            &crate::cli_config::SERVICE,
+        ) {
             Ok(()) => {
                 results.push(ProviderResult {
                     name: target.provider.label(),

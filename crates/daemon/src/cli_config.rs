@@ -23,6 +23,14 @@ use serde::{Deserialize, Serialize};
 pub const PROJECT_CONFIG_FILENAME: &str = ".daemon8.toml";
 pub const USER_CONFIG_FILENAME: &str = "cli.toml";
 
+pub const SERVICE: daemon8_providers::ServiceIdentity = daemon8_providers::ServiceIdentity {
+    name: "daemon8",
+    channel_name: Some("daemon8-channel"),
+    display_name: "Daemon8",
+    hook_marker: "daemon8",
+    status_message: Some("daemon8 telemetry"),
+};
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CliConfig {

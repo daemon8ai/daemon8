@@ -90,7 +90,13 @@ pub fn cmd_init(args: InitArgs) -> Result<()> {
     let home = dirs_home();
     for provider in resolve_providers(&args, non_interactive)? {
         let config_path = provider.config_path(&dirs_home());
-        write_provider_config(provider, &config_path, &mcp_url, Some(&cwd))?;
+        write_provider_config(
+            provider,
+            &config_path,
+            &mcp_url,
+            Some(&cwd),
+            &crate::cli_config::SERVICE,
+        )?;
         summary.provider_files.push(config_path);
         summary.note_restart(provider);
 
@@ -101,15 +107,27 @@ pub fn cmd_init(args: InitArgs) -> Result<()> {
             } else {
                 continue;
             };
-            let hook_path =
-                install_hooks_for_provider(provider, scope, &cwd, &home, args.force_hooks)?;
+            let hook_path = install_hooks_for_provider(
+                provider,
+                scope,
+                &cwd,
+                &home,
+                args.force_hooks,
+                &crate::cli_config::SERVICE,
+            )?;
             summary.hook_files.push(hook_path);
         }
     }
 
     if let Some(scope) = resolve_hook_scope(&args, non_interactive)? {
-        let path =
-            install_hooks_for_provider(Provider::ClaudeCode, scope, &cwd, &home, args.force_hooks)?;
+        let path = install_hooks_for_provider(
+            Provider::ClaudeCode,
+            scope,
+            &cwd,
+            &home,
+            args.force_hooks,
+            &crate::cli_config::SERVICE,
+        )?;
         summary.hook_files.push(path);
         summary.note_restart(Provider::ClaudeCode);
     }
