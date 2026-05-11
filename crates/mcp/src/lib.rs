@@ -424,18 +424,16 @@ pub struct ListDebugSessionsParams {
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct SetupToolAction {
-    #[schemars(description = "Setup action: status, plan, or apply.")]
+    #[schemars(description = "Setup action: status or apply.")]
     pub action: String,
     #[schemars(description = "Project working directory. Defaults to daemon current directory.")]
     pub cwd: Option<String>,
     #[schemars(description = "Required to confirm mutating setup_apply.")]
     pub yes: Option<bool>,
-    #[schemars(description = "Comma-separated providers to configure during setup_apply.")]
+    #[schemars(
+        description = "Comma-separated providers to configure (e.g. \"claude-code,gemini,codex\"). Omit for auto-detection."
+    )]
     pub providers: Option<String>,
-    #[schemars(description = "Hook install scope for setup_apply: local, shared, or global.")]
-    pub install_hooks: Option<String>,
-    #[schemars(description = "Replace stale daemon8 hook entries during setup_apply.")]
-    pub force_hooks: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -456,12 +454,10 @@ pub struct SetupApplyParams {
     pub cwd: Option<String>,
     #[schemars(description = "Required to confirm setup_apply writes.")]
     pub yes: bool,
-    #[schemars(description = "Comma-separated providers to configure.")]
+    #[schemars(
+        description = "Comma-separated providers to configure (e.g. \"claude-code,gemini,codex\"). Omit for auto-detection."
+    )]
     pub providers: Option<String>,
-    #[schemars(description = "Hook install scope: local, shared, or global.")]
-    pub install_hooks: Option<String>,
-    #[schemars(description = "Replace stale daemon8 hook entries.")]
-    pub force_hooks: Option<bool>,
 }
 
 pub type SetupToolFn =
@@ -1558,8 +1554,6 @@ impl DaemonMcp {
                 cwd: params.cwd,
                 yes: None,
                 providers: None,
-                install_hooks: None,
-                force_hooks: None,
             })
             .await;
         wrap_inner_result(self, &inner)
@@ -1570,12 +1564,10 @@ impl DaemonMcp {
     async fn setup_plan(&self, Parameters(params): Parameters<SetupPlanParams>) -> String {
         let inner = self
             .call_setup_tool(SetupToolAction {
-                action: "plan".into(),
+                action: "status".into(),
                 cwd: params.cwd,
                 yes: None,
                 providers: None,
-                install_hooks: None,
-                force_hooks: None,
             })
             .await;
         wrap_inner_result(self, &inner)
@@ -1590,8 +1582,6 @@ impl DaemonMcp {
                 cwd: params.cwd,
                 yes: Some(params.yes),
                 providers: params.providers,
-                install_hooks: params.install_hooks,
-                force_hooks: params.force_hooks,
             })
             .await;
         wrap_inner_result(self, &inner)

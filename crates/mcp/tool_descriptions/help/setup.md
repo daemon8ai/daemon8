@@ -1,24 +1,17 @@
 # Setup
 
-daemon8 needs three things to be useful in a project:
-1. A `.daemon8.toml` at the project root — registers the project slug and any custom sources.
-2. CLI hooks installed on the AI tool you use (Claude Code, Codex, Gemini CLI) — the daemon receives PreToolUse/PostToolUse events as `tool_call` observations.
-3. The daemon8 service running — `daemon8 install` registers it as a system service.
+daemon8 setup registers the MCP server with detected AI coding tools. It auto-detects installed providers and writes their config files.
+
+Supported providers: Claude Code, Codex, Gemini CLI, OpenCode.
 
 ## Tools
 
-- `setup_status(cwd)` — read-only state report. Returns `{config_present, providers, runtime_sources, issues}`.
-- `setup_plan(cwd)` — preview what `setup_apply` would write. Diff against current state.
-- `setup_apply(cwd, yes=true, providers?, install_hooks?, force_hooks?)` — write `.daemon8.toml`, register MCP server entries with detected providers, install hooks at the requested scope. Idempotent.
-
-## Hook scopes (Claude Code)
-
-- `local` — `<cwd>/.claude/settings.local.json` (gitignored, per-machine)
-- `shared` — `<cwd>/.claude/settings.json` (committed, team-wide)
-- `global` — `~/.claude/settings.json` (cross-project, user-wide)
-
-For codex, hooks are global only (`~/.codex/hooks.json`).
+- `setup_status(cwd)` — read-only state report. Returns `{providers, daemon_running, issues}`.
+- `setup_plan(cwd)` — alias for setup_status (backward compatibility).
+- `setup_apply(cwd, yes=true, providers?)` — write MCP server config to detected providers. Idempotent.
 
 ## After setup
+
+For additional features (CLI hooks, project init), use `daemon8 features` interactively or the `hooks_*` MCP tools.
 
 The agent should call `start_debug_session` when investigating something specific — that scopes observations and tool calls into a retrievable artifact.

@@ -1,6 +1,6 @@
-Purpose: Read-only setup state for one project: registered sources, wired providers, hook installation per scope, service install state, global config health.
+Purpose: Read-only setup state: which providers are detected and configured, whether the daemon is running, and any issues.
 
-When: Determining whether `setup_apply` has been run, auditing configuration, confirming a setup change landed.
+When: Checking whether daemon8 is wired into your AI tools. Confirming a setup_apply landed.
 
 Prereq: None.
 
@@ -8,8 +8,8 @@ Args:
   - cwd: optional string. Project working directory. Defaults to the daemon's cwd.
 
 Returns:
-  result: {project, global_config_path, global_setup_applied, runtime_sources, providers, service_installed, issues}.
+  result: {providers: [{name, config_path, was_configured, action}], daemon_running, issues}.
 
 Errors: none expected.
 
-Next: setup_plan to preview changes; setup_apply(yes=true) to apply.
+Next: setup_apply(yes=true) to register MCP server with detected providers.

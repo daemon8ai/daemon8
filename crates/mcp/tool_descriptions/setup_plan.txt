@@ -1,6 +1,6 @@
-Purpose: Compute the action plan `setup_apply` would execute, without writing anything. Reports planned source registration, provider config, hook installation, setup-state diffs.
+Purpose: Alias for setup_status. Returns the same read-only state report. Kept for backward compatibility.
 
-When: Previewing a setup change before mutating files; diffing against `setup_status` to understand exactly what will change.
+When: Previewing what providers are detected before calling setup_apply.
 
 Prereq: None.
 
@@ -8,9 +8,8 @@ Args:
   - cwd: optional string. Project working directory. Defaults to the daemon's cwd.
 
 Returns:
-  result: {status: {...same shape as setup_status.result}, actions: [{kind, target, detail, mutating}]}.
-  Empty actions array means nothing needs to change.
+  result: same shape as setup_status.
 
 Errors: none expected.
 
-Next: setup_apply(yes=true) to execute; setup_status to confirm post-apply.
+Next: setup_apply(yes=true) to register MCP server with detected providers.
