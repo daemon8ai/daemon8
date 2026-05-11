@@ -60,7 +60,7 @@ Or install from source:
 cargo install daemon8
 ```
 
-Pin a specific version with `DAEMON8_VERSION=v0.3.1` before the curl command.
+Pin a specific version with `DAEMON8_VERSION=v0.3.2` before the curl command.
 
 The installer downloads the binary, verifies its SHA-256 checksum, installs it, and runs `daemon8 setup` to show current state.
 
