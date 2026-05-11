@@ -1366,6 +1366,7 @@ dependencies = [
  "daemon8-ingest",
  "daemon8-mcp",
  "daemon8-parse",
+ "daemon8-providers",
  "daemon8-store",
  "daemon8-types",
  "directories",
@@ -1496,6 +1497,19 @@ dependencies = [
  "syslog_loose",
  "tempfile",
  "thiserror 2.0.18",
+ "toml 0.8.23",
+]
+
+[[package]]
+name = "daemon8-providers"
+version = "0.3.1"
+dependencies = [
+ "anyhow",
+ "daemon8-types",
+ "dirs",
+ "serde",
+ "serde_json",
+ "tempfile",
  "toml 0.8.23",
 ]
 

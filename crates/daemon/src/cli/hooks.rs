@@ -6,7 +6,7 @@ use std::env;
 use anyhow::Result;
 use clap::Subcommand;
 
-use crate::providers::hook_management::{
+use daemon8_providers::hook_management::{
     list_all_hooks, parse_hook_provider, parse_scope, remove_hooks, repair_hooks, update_hooks,
 };
 

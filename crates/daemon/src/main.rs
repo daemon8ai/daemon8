@@ -5,7 +5,6 @@ mod cleanup;
 mod cli;
 mod cli_config;
 mod config;
-mod providers;
 mod screenshot;
 mod sources;
 pub(crate) mod style;

@@ -155,9 +155,9 @@ impl HookPolicy {
 }
 
 fn normalize_event(raw: &str) -> CliHookEvent {
-    use crate::providers::HookEvent;
+    use daemon8_providers::HookEvent;
 
-    match crate::providers::resolve_hook_event(raw) {
+    match daemon8_providers::resolve_hook_event(raw) {
         Some((event, _)) => match event {
             HookEvent::SessionStart => CliHookEvent::SessionStarted,
             HookEvent::SessionEnd | HookEvent::Stop => CliHookEvent::SessionEnded,
@@ -180,7 +180,7 @@ fn detect_tool(explicit: Option<&str>) -> String {
     if let Some(t) = explicit {
         return t.to_string();
     }
-    crate::providers::detect_provider_from_env()
+    daemon8_providers::detect_provider_from_env()
         .map(|(id, _)| id.to_string())
         .unwrap_or_else(|| "unknown".into())
 }
@@ -366,7 +366,7 @@ fn effective_session_id(input: &HookInput) -> Option<String> {
     if let Some(ref s) = input.conversation_id {
         return Some(s.clone());
     }
-    for &provider in crate::providers::ALL_PROVIDERS {
+    for &provider in daemon8_providers::ALL_PROVIDERS {
         for &var in provider.as_provider().session_id_env_vars() {
             if let Ok(v) = env::var(var)
                 && !v.is_empty()

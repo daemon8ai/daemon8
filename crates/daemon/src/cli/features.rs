@@ -6,7 +6,7 @@ use std::io::IsTerminal;
 use anyhow::{Result, bail};
 use clap::Args;
 
-use crate::providers::{
+use daemon8_providers::{
     Provider, detect_ai_tools, dirs_home, hook_management::scope_label, install_hooks_for_provider,
 };
 

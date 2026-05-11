@@ -8,7 +8,7 @@ use clap::Args;
 use daemon8_mcp::SetupToolAction;
 use serde::Serialize;
 
-use crate::providers::{DetectedProvider, detect_ai_tools, dirs_home, write_provider_config};
+use daemon8_providers::{DetectedProvider, detect_ai_tools, dirs_home, write_provider_config};
 
 #[derive(Args, Default)]
 pub struct SetupArgs {
@@ -86,6 +86,9 @@ fn run_setup(
     let detected = detect_ai_tools();
     let targets = resolve_targets(providers_override, &detected)?;
 
+    let port = crate::config::load(None).unwrap_or_default().server.port;
+    let mcp_url = format!("http://127.0.0.1:{port}/mcp");
+
     let mut results = Vec::new();
     let mut issues = Vec::new();
 
@@ -113,7 +116,7 @@ fn run_setup(
             continue;
         }
 
-        match write_provider_config(target.provider, &config_path, cwd) {
+        match write_provider_config(target.provider, &config_path, &mcp_url, cwd) {
             Ok(()) => {
                 results.push(ProviderResult {
                     name: target.provider.label(),
@@ -154,7 +157,7 @@ fn resolve_targets(
     detected: &[DetectedProvider],
 ) -> Result<Vec<DetectedProvider>> {
     if let Some(raw) = providers_override {
-        let requested = crate::providers::parse_provider_list(raw)?;
+        let requested = daemon8_providers::parse_provider_list(raw)?;
         let home = dirs_home();
         return Ok(requested
             .into_iter()
@@ -216,7 +219,7 @@ fn print_human(result: &SetupResult) {
     println!();
     println!("  1. Add instructions to your provider's context file:");
     for p in &connected {
-        if let Some(provider) = crate::providers::Provider::from_label(p) {
+        if let Some(provider) = daemon8_providers::Provider::from_label(p) {
             println!(
                 "       {:<12} {}",
                 p,

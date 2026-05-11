@@ -8,6 +8,7 @@ members = [
     "crates/adb",
     "crates/mcp",
     "crates/parse",
+    "crates/providers",
     "crates/daemon",
     "tools/vda-probe",
     "xtask",
@@ -35,6 +36,7 @@ daemon8-mcp = { version = "0.3.0", path = "crates/mcp" }
 daemon8-adb = { version = "0.3.0", path = "crates/adb" }
 daemon8-api = { version = "0.3.0", path = "crates/api" }
 daemon8-parse = { version = "0.3.0", path = "crates/parse" }
+daemon8-providers = { version = "0.3.0", path = "crates/providers" }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }

@@ -1,0 +1,18 @@
+[package]
+name = "daemon8-providers"
+version.workspace = true
+edition.workspace = true
+license-file.workspace = true
+description = "AI coding tool provider detection, configuration, and hook management for daemon8"
+repository.workspace = true
+
+[dependencies]
+daemon8-types.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+dirs.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

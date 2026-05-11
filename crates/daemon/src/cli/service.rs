@@ -6,7 +6,7 @@ use std::path::PathBuf;
 #[cfg(target_os = "macos")]
 use std::process::Output;
 
-use crate::providers::Provider;
+use daemon8_providers::Provider;
 
 #[cfg(target_os = "macos")]
 const LABEL: &str = "dev.daemon8.daemon";
@@ -166,8 +166,8 @@ pub fn cmd_uninstall() -> Result<()> {
     }
 
     // 5. Remove daemon8 from provider MCP configs
-    let home = crate::providers::dirs_home();
-    for &provider in crate::providers::ALL_PROVIDERS {
+    let home = daemon8_providers::dirs_home();
+    for &provider in daemon8_providers::ALL_PROVIDERS {
         remove_provider_entry(provider, &home);
     }
 
@@ -207,7 +207,7 @@ fn remove_provider_entry(provider: Provider, home: &std::path::Path) {
 }
 
 fn remove_cli_hooks(home: &std::path::Path, cwd: &std::path::Path) {
-    for &provider in crate::providers::HOOK_PROVIDERS {
+    for &provider in daemon8_providers::HOOK_PROVIDERS {
         let hp = provider.as_hook_provider().unwrap();
         for &scope in hp.supported_scopes() {
             for dir in [cwd, home] {

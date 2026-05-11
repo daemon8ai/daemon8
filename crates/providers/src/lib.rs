@@ -4,12 +4,14 @@
 pub mod claude;
 pub mod codex;
 pub mod gemini;
-pub mod helpers;
+pub(crate) mod helpers;
 pub mod hook_management;
 pub mod opencode;
 pub mod traits;
 
-pub use traits::{AiProvider, HookEvent, HookProvider, HookScope};
+pub use traits::{
+    AiProvider, HookEvent, HookEventEntry, HookProvider, HookScope, InstalledHookEntry,
+};
 
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
@@ -149,13 +151,12 @@ pub fn detect_ai_tools() -> Vec<DetectedProvider> {
 pub fn write_provider_config(
     provider: Provider,
     config_path: &Path,
+    mcp_url: &str,
     project_dir: Option<&Path>,
 ) -> Result<()> {
-    let port = crate::config::load(None).unwrap_or_default().server.port;
-    let mcp_url = format!("http://127.0.0.1:{port}/mcp");
     provider
         .as_provider()
-        .write_mcp_config(config_path, &mcp_url, project_dir)
+        .write_mcp_config(config_path, mcp_url, project_dir)
 }
 
 pub fn dirs_home() -> PathBuf {

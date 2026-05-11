@@ -197,8 +197,8 @@ mod tests {
         }
         let home = dirs_home();
 
-        super::super::install_hooks_for_provider(
-            super::Provider::ClaudeCode,
+        crate::install_hooks_for_provider(
+            crate::Provider::ClaudeCode,
             HookScope::Local,
             &cwd,
             &home,
@@ -228,8 +228,8 @@ mod tests {
         }
         let home = dirs_home();
 
-        super::super::install_hooks_for_provider(
-            super::Provider::ClaudeCode,
+        crate::install_hooks_for_provider(
+            crate::Provider::ClaudeCode,
             HookScope::Local,
             &cwd,
             &home,
@@ -253,8 +253,8 @@ mod tests {
         }
         let home = dirs_home();
 
-        super::super::install_hooks_for_provider(
-            super::Provider::ClaudeCode,
+        crate::install_hooks_for_provider(
+            crate::Provider::ClaudeCode,
             HookScope::Local,
             &cwd,
             &home,
@@ -287,8 +287,8 @@ mod tests {
         }
         let home = dirs_home();
 
-        super::super::install_hooks_for_provider(
-            super::Provider::ClaudeCode,
+        crate::install_hooks_for_provider(
+            crate::Provider::ClaudeCode,
             HookScope::Local,
             &cwd,
             &home,
