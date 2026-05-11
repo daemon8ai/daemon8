@@ -167,11 +167,9 @@ pub fn cmd_uninstall() -> Result<()> {
 
     // 5. Remove daemon8 from provider MCP configs
     let home = crate::providers::dirs_home();
-    remove_provider_entry(Provider::ClaudeCode, &home);
-    remove_provider_entry(Provider::Cursor, &home);
-    remove_provider_entry(Provider::Windsurf, &home);
-    remove_provider_entry(Provider::Gemini, &home);
-    remove_provider_entry(Provider::Codex, &home);
+    for &provider in crate::providers::ALL_PROVIDERS {
+        remove_provider_entry(provider, &home);
+    }
 
     // 6. Remove hook entries from provider hook config files
     remove_cli_hooks(&home, &cwd);
@@ -276,6 +274,7 @@ fn remove_cli_hooks(home: &std::path::Path, cwd: &std::path::Path) {
         home.join(".claude/settings.json"),
         home.join(".claude/settings.local.json"),
         home.join(".codex/hooks.json"),
+        home.join(".gemini/settings.json"),
         cwd.join(".claude/settings.json"),
         cwd.join(".claude/settings.local.json"),
     ] {

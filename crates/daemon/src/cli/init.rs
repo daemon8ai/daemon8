@@ -13,8 +13,8 @@ use anyhow::{Context, Result};
 use crate::cli_config::PROJECT_CONFIG_FILENAME;
 use crate::providers::{
     HookScope, Provider, ProviderWriteSummary, dirs_home, install_claude_hooks,
-    install_codex_hooks, is_non_interactive, parse_provider_list, summarize_restarts,
-    write_provider_config,
+    install_codex_hooks, install_gemini_hooks, is_non_interactive, parse_provider_list,
+    summarize_restarts, write_provider_config,
 };
 
 #[derive(clap::ValueEnum, Clone, Debug)]
@@ -96,6 +96,10 @@ pub fn cmd_init(args: InitArgs) -> Result<()> {
             let hook_path = install_codex_hooks(&home, args.force_hooks)?;
             summary.hook_files.push(hook_path);
         }
+        if provider == Provider::Gemini {
+            let hook_path = install_gemini_hooks(&home, args.force_hooks)?;
+            summary.hook_files.push(hook_path);
+        }
     }
 
     if let Some(scope) = resolve_hook_scope(&args, non_interactive)? {
@@ -144,10 +148,9 @@ fn resolve_providers(args: &InitArgs, non_interactive: bool) -> Result<Vec<Provi
     Ok(cliclack::multiselect("Select provider configs to write")
         .required(false)
         .item(Provider::ClaudeCode, "Claude Code", "MCP config")
-        .item(Provider::Cursor, "Cursor", "MCP config")
-        .item(Provider::Windsurf, "Windsurf", "MCP config")
-        .item(Provider::Gemini, "Gemini", "MCP config")
+        .item(Provider::Gemini, "Gemini CLI", "MCP config")
         .item(Provider::Codex, "Codex", "MCP config + trust project")
+        .item(Provider::OpenCode, "OpenCode", "MCP config")
         .interact()?)
 }
 

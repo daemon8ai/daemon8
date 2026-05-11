@@ -2,7 +2,7 @@
 
 daemon8 needs three things to be useful in a project:
 1. A `.daemon8.toml` at the project root — registers the project slug and any custom sources.
-2. CLI hooks installed on the AI tool you use (Claude Code, Codex, Cursor, Windsurf, Gemini) — the daemon receives PreToolUse/PostToolUse events as `tool_call` observations.
+2. CLI hooks installed on the AI tool you use (Claude Code, Codex, Gemini CLI) — the daemon receives PreToolUse/PostToolUse events as `tool_call` observations.
 3. The daemon8 service running — `daemon8 install` registers it as a system service.
 
 ## Tools

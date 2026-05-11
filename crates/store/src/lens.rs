@@ -21,7 +21,7 @@ pub struct LensStatus {
 
 struct ActiveLens {
     filter: Filter,
-    buffer: VecDeque<Observation>,
+    buffer: VecDeque<Arc<Observation>>,
     capacity: usize,
     cursor: u64,
 }
@@ -36,7 +36,7 @@ impl ActiveLens {
         }
     }
 
-    fn push(&mut self, obs: Observation) -> bool {
+    fn push(&mut self, obs: Arc<Observation>) -> bool {
         if !self.filter.matches(&obs) {
             return false;
         }
@@ -50,7 +50,7 @@ impl ActiveLens {
         true
     }
 
-    fn drain(&mut self) -> Vec<Observation> {
+    fn drain(&mut self) -> Vec<Arc<Observation>> {
         self.buffer.drain(..).collect()
     }
 
@@ -94,7 +94,7 @@ impl LensManager {
                 Ok((obs, _json)) => {
                     let mut guard = inner.lock().await;
                     if let Some(lens) = guard.as_mut()
-                        && lens.push((*obs).clone())
+                        && lens.push(Arc::clone(&obs))
                         && let Some(ref sa) = source_activator
                     {
                         sa.touch_matching(&lens.filter);
@@ -122,7 +122,7 @@ impl LensManager {
         *guard = None;
     }
 
-    pub async fn drain(&self) -> Vec<Observation> {
+    pub async fn drain(&self) -> Vec<Arc<Observation>> {
         let mut guard = self.inner.lock().await;
         match guard.as_mut() {
             Some(lens) => lens.drain(),
@@ -180,9 +180,9 @@ mod tests {
         };
         let mut lens = ActiveLens::new(filter, 10);
 
-        lens.push(make_obs(1, Severity::Info, "important"));
-        lens.push(make_obs(2, Severity::Info, "noise"));
-        lens.push(make_obs(3, Severity::Error, "important"));
+        lens.push(Arc::new(make_obs(1, Severity::Info, "important")));
+        lens.push(Arc::new(make_obs(2, Severity::Info, "noise")));
+        lens.push(Arc::new(make_obs(3, Severity::Error, "important")));
 
         assert_eq!(lens.buffer.len(), 2);
         assert_eq!(lens.cursor, 3);
@@ -201,8 +201,8 @@ mod tests {
         let mut other = make_obs(2, Severity::Info, "domain:browser");
         other.data = serde_json::json!({"msg": "plain payload"});
 
-        lens.push(matching);
-        lens.push(other);
+        lens.push(Arc::new(matching));
+        lens.push(Arc::new(other));
 
         assert_eq!(lens.buffer.len(), 1);
         assert_eq!(lens.buffer[0].id, 1);
@@ -214,7 +214,7 @@ mod tests {
         let mut lens = ActiveLens::new(filter, 3);
 
         for i in 1..=5 {
-            lens.push(make_obs(i, Severity::Info, "x"));
+            lens.push(Arc::new(make_obs(i, Severity::Info, "x")));
         }
 
         assert_eq!(lens.buffer.len(), 3);
@@ -226,8 +226,8 @@ mod tests {
     fn drain_empties_buffer() {
         let filter = Filter::default();
         let mut lens = ActiveLens::new(filter, 10);
-        lens.push(make_obs(1, Severity::Info, "a"));
-        lens.push(make_obs(2, Severity::Info, "b"));
+        lens.push(Arc::new(make_obs(1, Severity::Info, "a")));
+        lens.push(Arc::new(make_obs(2, Severity::Info, "b")));
 
         let drained = lens.drain();
         assert_eq!(drained.len(), 2);

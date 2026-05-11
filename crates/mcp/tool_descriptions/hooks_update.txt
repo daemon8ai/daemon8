@@ -5,7 +5,7 @@ When: After upgrading daemon8 to a new install location, after edits to the cano
 Prereq: None.
 
 Args:
-  - provider: REQUIRED. "claude" or "codex".
+  - provider: REQUIRED. "claude", "codex", or "gemini".
   - scope: optional, claude only. "local" | "shared" | "global". Omit to update all three claude scopes.
 
 Returns:

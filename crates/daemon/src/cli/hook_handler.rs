@@ -32,7 +32,7 @@ use crate::config;
 
 #[derive(clap::Args, Default)]
 pub struct CliHookArgs {
-    /// Explicit tool identifier, e.g. "claude-code" / "cursor" / "gemini-cli".
+    /// Explicit tool identifier, e.g. "claude-code" / "codex-cli" / "gemini-cli".
     /// When omitted, detected from env vars.
     #[arg(long)]
     pub tool: Option<String>,
@@ -195,9 +195,6 @@ fn detect_tool(explicit: Option<&str>) -> String {
     }
     if env::var_os("CODEX_SESSION_ID").is_some() {
         return "codex-cli".into();
-    }
-    if env::var_os("CURSOR_SESSION_ID").is_some() {
-        return "cursor".into();
     }
     "unknown".into()
 }
@@ -809,7 +806,7 @@ mod tests {
     }
 
     #[test]
-    fn normalize_cursor_events() {
+    fn normalize_camel_case_events() {
         assert_eq!(
             normalize_event("sessionStart"),
             CliHookEvent::SessionStarted
@@ -860,7 +857,7 @@ mod tests {
 
     #[test]
     fn detect_tool_respects_explicit_flag() {
-        assert_eq!(detect_tool(Some("cursor")), "cursor");
+        assert_eq!(detect_tool(Some("gemini-cli")), "gemini-cli");
     }
 
     #[test]
@@ -872,8 +869,7 @@ mod tests {
     }
 
     #[test]
-    fn hook_input_parses_cursor_shape() {
-        // Cursor uses conversation_id + generation_id
+    fn hook_input_parses_conversation_id_shape() {
         let json = r#"{"conversation_id":"conv-42","hook_event_name":"preToolUse"}"#;
         let parsed: HookInput = serde_json::from_str(json).unwrap();
         assert_eq!(parsed.conversation_id.as_deref(), Some("conv-42"));

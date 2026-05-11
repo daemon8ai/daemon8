@@ -15,5 +15,6 @@ CLI provider hooks let daemon8 capture every tool call (Bash, Edit, Write, Read,
 |----------|------------------|
 | claude   | local, shared, global |
 | codex    | global only      |
+| gemini   | global only      |
 
-Cursor, Windsurf, and Gemini do not currently expose a hook callback surface daemon8 enrolls in; their MCP server registration happens via `setup_apply` instead.
+OpenCode uses a plugin system instead of CLI hooks; its MCP server registration happens via `setup_apply`.

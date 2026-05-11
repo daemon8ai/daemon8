@@ -1,99 +1,77 @@
 // SPDX-License-Identifier: LicenseRef-FCL-1.0-ALv2
 // Copyright (c) 2026 Havy.tech, LLC
 
-pub mod config;
+pub mod claude;
+pub mod codex;
+pub mod gemini;
+pub mod helpers;
 pub mod hook_management;
-pub mod hooks;
+pub mod opencode;
+pub mod traits;
 
-pub use config::write_provider_config;
-pub use hooks::{
-    InstalledHookEntry, install_claude_hooks, install_codex_hooks, list_claude_hooks,
-    list_codex_hooks, remove_claude_hooks, remove_codex_hooks, update_claude_hooks,
-    update_codex_hooks,
-};
+pub use helpers::shim_command;
+pub use traits::{AiProvider, HookProvider, HookScope};
 
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
 
-#[cfg(windows)]
-pub(crate) fn shim_command(program: &str) -> std::process::Command {
-    let mut cmd = std::process::Command::new("cmd");
-    cmd.arg("/C").arg(program);
-    cmd
-}
-
-#[cfg(not(windows))]
-pub(crate) fn shim_command(program: &str) -> std::process::Command {
-    std::process::Command::new(program)
-}
+use self::claude::ClaudeCodeProvider;
+use self::codex::CodexProvider;
+use self::gemini::GeminiProvider;
+use self::opencode::OpenCodeProvider;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Provider {
     ClaudeCode,
-    Cursor,
-    Windsurf,
     Gemini,
     Codex,
+    OpenCode,
 }
 
+pub const ALL_PROVIDERS: &[Provider] = &[
+    Provider::ClaudeCode,
+    Provider::Gemini,
+    Provider::Codex,
+    Provider::OpenCode,
+];
+
+pub const HOOK_PROVIDERS: &[Provider] = &[Provider::ClaudeCode, Provider::Gemini, Provider::Codex];
+
 impl Provider {
-    pub fn label(self) -> &'static str {
+    pub fn as_provider(self) -> &'static dyn AiProvider {
         match self {
-            Self::ClaudeCode => "Claude Code",
-            Self::Cursor => "Cursor",
-            Self::Windsurf => "Windsurf",
-            Self::Gemini => "Gemini",
-            Self::Codex => "Codex",
+            Self::ClaudeCode => &ClaudeCodeProvider,
+            Self::Gemini => &GeminiProvider,
+            Self::Codex => &CodexProvider,
+            Self::OpenCode => &OpenCodeProvider,
         }
+    }
+
+    pub fn as_hook_provider(self) -> Option<&'static dyn HookProvider> {
+        match self {
+            Self::ClaudeCode => Some(&ClaudeCodeProvider),
+            Self::Gemini => Some(&GeminiProvider),
+            Self::Codex => Some(&CodexProvider),
+            Self::OpenCode => None,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        self.as_provider().label()
     }
 
     pub fn restart_label(self) -> &'static str {
-        match self {
-            Self::ClaudeCode => "restart Claude Code sessions",
-            Self::Cursor => "restart Cursor",
-            Self::Windsurf => "restart Windsurf",
-            Self::Gemini => "restart Gemini CLI sessions",
-            Self::Codex => "restart Codex sessions",
-        }
+        self.as_provider().restart_label()
     }
 
     pub fn detect_dir(self) -> &'static str {
-        match self {
-            Self::ClaudeCode => ".claude",
-            Self::Cursor => ".cursor",
-            Self::Windsurf => ".codeium/windsurf",
-            Self::Gemini => ".gemini",
-            Self::Codex => ".codex",
-        }
+        self.as_provider().detect_dir()
     }
 
     pub fn config_path(self, home: &Path) -> PathBuf {
-        match self {
-            Self::ClaudeCode => home.join(".claude.json"),
-            Self::Cursor => home.join(".cursor/mcp.json"),
-            Self::Windsurf => home.join(".codeium/windsurf/mcp_config.json"),
-            Self::Gemini => home.join(".gemini/settings.json"),
-            Self::Codex => home.join(".codex/config.toml"),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HookScope {
-    Local,
-    Shared,
-    Global,
-}
-
-impl HookScope {
-    pub fn settings_path(self, cwd: &Path, home: &Path) -> PathBuf {
-        match self {
-            Self::Local => cwd.join(".claude/settings.local.json"),
-            Self::Shared => cwd.join(".claude/settings.json"),
-            Self::Global => home.join(".claude/settings.json"),
-        }
+        self.as_provider().config_path(home)
     }
 }
 
@@ -113,8 +91,9 @@ pub struct ProviderWriteSummary {
 
 impl ProviderWriteSummary {
     pub fn note_restart(&mut self, provider: Provider) {
-        if !self.restart_labels.contains(&provider.restart_label()) {
-            self.restart_labels.push(provider.restart_label());
+        let label = provider.restart_label();
+        if !self.restart_labels.contains(&label) {
+            self.restart_labels.push(label);
         }
     }
 }
@@ -128,10 +107,9 @@ pub fn parse_provider_list(raw: &str) -> Result<Vec<Provider>> {
     for item in raw.split(',').map(str::trim).filter(|s| !s.is_empty()) {
         let provider = match item {
             "claude" | "claude-code" => Provider::ClaudeCode,
-            "cursor" => Provider::Cursor,
-            "windsurf" => Provider::Windsurf,
             "gemini" | "gemini-cli" => Provider::Gemini,
             "codex" | "codex-cli" => Provider::Codex,
+            "opencode" => Provider::OpenCode,
             other => bail!("unknown provider '{other}'"),
         };
         if !parsed.contains(&provider) {
@@ -145,22 +123,14 @@ pub fn detect_ai_tools() -> Vec<DetectedProvider> {
     let home = dirs_home();
     let mut tools = Vec::new();
 
-    for provider in [
-        Provider::ClaudeCode,
-        Provider::Cursor,
-        Provider::Windsurf,
-        Provider::Gemini,
-        Provider::Codex,
-    ] {
-        if !home_dir_exists(provider.detect_dir()) {
+    for &provider in ALL_PROVIDERS {
+        if !home.join(provider.detect_dir()).exists() {
             continue;
         }
 
-        let config_path = provider.config_path(&home);
-        let already_configured = match provider {
-            Provider::Codex => codex_has_daemon8(&config_path),
-            _ => json_has_daemon8(&config_path),
-        };
+        let p = provider.as_provider();
+        let config_path = p.config_path(&home);
+        let already_configured = p.is_configured(&config_path);
 
         tools.push(DetectedProvider {
             provider,
@@ -173,41 +143,16 @@ pub fn detect_ai_tools() -> Vec<DetectedProvider> {
     tools
 }
 
-pub(crate) fn current_exe_string() -> String {
-    std::env::current_exe()
-        .unwrap_or_else(|_| PathBuf::from("daemon8"))
-        .to_string_lossy()
-        .to_string()
-}
-
-pub(crate) fn json_has_daemon8(config_path: &Path) -> bool {
-    config_path.exists()
-        && std::fs::read_to_string(config_path)
-            .ok()
-            .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
-            .and_then(|v| {
-                v.get("mcpServers")?
-                    .as_object()
-                    .map(|m| m.contains_key("daemon8"))
-            })
-            .unwrap_or(false)
-}
-
-pub(crate) fn codex_has_daemon8(config_path: &Path) -> bool {
-    config_path.exists()
-        && std::fs::read_to_string(config_path)
-            .ok()
-            .and_then(|c| toml::from_str::<toml::Value>(&c).ok())
-            .and_then(|v| {
-                v.get("mcp_servers")?
-                    .as_table()
-                    .map(|table| table.contains_key("daemon8"))
-            })
-            .unwrap_or(false)
-}
-
-fn home_dir_exists(rel: &str) -> bool {
-    dirs_home().join(rel).exists()
+pub fn write_provider_config(
+    provider: Provider,
+    config_path: &Path,
+    project_dir: Option<&Path>,
+) -> Result<()> {
+    let port = crate::config::load(None).unwrap_or_default().server.port;
+    let mcp_url = format!("http://127.0.0.1:{port}/mcp");
+    provider
+        .as_provider()
+        .write_mcp_config(config_path, &mcp_url, project_dir)
 }
 
 pub fn dirs_home() -> PathBuf {
@@ -215,9 +160,28 @@ pub fn dirs_home() -> PathBuf {
 }
 
 pub fn summarize_restarts(summary: &ProviderWriteSummary) -> Vec<String> {
-    let mut messages = Vec::new();
-    for label in &summary.restart_labels {
-        messages.push((*label).to_string());
-    }
-    messages
+    summary
+        .restart_labels
+        .iter()
+        .map(|label| (*label).to_string())
+        .collect()
+}
+
+// Convenience wrappers delegating to trait impls (used by init.rs, setup.rs, service.rs)
+
+pub fn install_claude_hooks(
+    scope: HookScope,
+    cwd: &Path,
+    home: &Path,
+    force: bool,
+) -> Result<PathBuf> {
+    ClaudeCodeProvider.install_hooks(scope, cwd, home, force)
+}
+
+pub fn install_codex_hooks(home: &Path, force: bool) -> Result<PathBuf> {
+    CodexProvider.install_hooks(HookScope::Global, &PathBuf::new(), home, force)
+}
+
+pub fn install_gemini_hooks(home: &Path, force: bool) -> Result<PathBuf> {
+    GeminiProvider.install_hooks(HookScope::Global, &PathBuf::new(), home, force)
 }
