@@ -22,6 +22,7 @@ pub enum CanonicalEvent {
     ToolPost,
     PermissionRequest,
     PreCompact,
+    PostCompact,
     Stop,
 }
 
@@ -33,24 +34,23 @@ pub struct NormalizedHookEvent {
     pub matcher: Option<&'static str>,
 }
 
-pub struct ProviderDocs {
-    pub hooks: Option<&'static str>,
-    pub mcp: Option<&'static str>,
-    pub config: Option<&'static str>,
-    pub instructions: Option<&'static str>,
-}
-
 pub trait AiProvider: Send + Sync + 'static {
     fn id(&self) -> &'static str;
     fn label(&self) -> &'static str;
     fn restart_label(&self) -> &'static str;
+    fn aliases(&self) -> &'static [&'static str];
 
     fn detect_dir(&self) -> &'static str;
     fn session_env_vars(&self) -> &'static [&'static str];
+    fn session_id_env_vars(&self) -> &'static [&'static str] {
+        self.session_env_vars()
+    }
 
     fn config_path(&self, home: &Path) -> PathBuf;
-    fn project_config_path(&self, project: &Path) -> Option<PathBuf>;
     fn instruction_file_name(&self) -> &'static str;
+    fn init_hint(&self) -> &'static str {
+        "MCP config"
+    }
 
     fn is_configured(&self, config_path: &Path) -> bool;
     fn write_mcp_config(
@@ -60,8 +60,6 @@ pub trait AiProvider: Send + Sync + 'static {
         project_dir: Option<&Path>,
     ) -> Result<()>;
     fn remove_mcp_config(&self, config_path: &Path) -> Result<bool>;
-
-    fn docs(&self) -> &'static ProviderDocs;
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -74,6 +72,9 @@ pub trait HookProvider: AiProvider {
     fn supported_scopes(&self) -> &'static [HookScope];
     fn hooks_path(&self, scope: HookScope, cwd: &Path, home: &Path) -> PathBuf;
     fn hook_events(&self) -> &'static [NormalizedHookEvent];
+    fn scope_display_hint(&self, scope: HookScope, cwd: &Path, home: &Path) -> String {
+        self.hooks_path(scope, cwd, home).display().to_string()
+    }
 
     fn install_hooks(
         &self,

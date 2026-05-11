@@ -6,16 +6,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde_json::json;
 
-use super::traits::{AiProvider, ProviderDocs};
+use super::traits::AiProvider;
 
 pub struct OpenCodeProvider;
-
-static DOCS: ProviderDocs = ProviderDocs {
-    hooks: Some("https://opencode.ai/docs/plugins/"),
-    mcp: Some("https://opencode.ai/docs/mcp-servers/"),
-    config: Some("https://opencode.ai/docs/config/"),
-    instructions: Some("https://opencode.ai/docs/rules/"),
-};
 
 impl AiProvider for OpenCodeProvider {
     fn id(&self) -> &'static str {
@@ -30,6 +23,10 @@ impl AiProvider for OpenCodeProvider {
         "restart OpenCode sessions"
     }
 
+    fn aliases(&self) -> &'static [&'static str] {
+        &["opencode"]
+    }
+
     fn detect_dir(&self) -> &'static str {
         ".config/opencode"
     }
@@ -40,10 +37,6 @@ impl AiProvider for OpenCodeProvider {
 
     fn config_path(&self, home: &Path) -> PathBuf {
         home.join(".config/opencode/opencode.json")
-    }
-
-    fn project_config_path(&self, project: &Path) -> Option<PathBuf> {
-        Some(project.join("opencode.json"))
     }
 
     fn instruction_file_name(&self) -> &'static str {
@@ -122,10 +115,6 @@ impl AiProvider for OpenCodeProvider {
             std::fs::rename(&tmp, config_path)?;
         }
         Ok(removed)
-    }
-
-    fn docs(&self) -> &'static ProviderDocs {
-        &DOCS
     }
 }
 

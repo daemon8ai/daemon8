@@ -100,11 +100,40 @@ pub fn remove_json_hooks(settings_path: &Path) -> Result<Option<PathBuf>> {
         let Some(groups) = entry.as_array_mut() else {
             continue;
         };
-        let before = groups.len();
-        groups.retain(|group| !group_contains_daemon_hook(group));
-        if groups.len() != before {
-            removed = true;
+        for group in groups.iter_mut() {
+            if group
+                .get("command")
+                .and_then(Value::as_str)
+                .is_some_and(is_daemon_hook_command)
+            {
+                *group = Value::Null;
+                removed = true;
+                continue;
+            }
+            if let Some(items) = group.get_mut("hooks").and_then(Value::as_array_mut) {
+                let before = items.len();
+                items.retain(|item| {
+                    !item
+                        .get("command")
+                        .and_then(Value::as_str)
+                        .map(is_daemon_hook_command)
+                        .unwrap_or(false)
+                });
+                if items.len() != before {
+                    removed = true;
+                }
+            }
         }
+        groups.retain(|group| {
+            if group.is_null() {
+                return false;
+            }
+            group
+                .get("hooks")
+                .and_then(Value::as_array)
+                .map(|items| !items.is_empty())
+                .unwrap_or(true)
+        });
         if groups.is_empty() {
             empty_events.push(event.clone());
         }

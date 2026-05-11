@@ -7,8 +7,7 @@ use anyhow::{Result, bail};
 use clap::Args;
 
 use crate::providers::{
-    HookScope, Provider, detect_ai_tools, dirs_home, install_claude_hooks, install_codex_hooks,
-    install_gemini_hooks,
+    Provider, detect_ai_tools, dirs_home, hook_management::scope_label, install_hooks_for_provider,
 };
 
 #[derive(Args, Default)]
@@ -93,26 +92,21 @@ fn enable_hooks() -> Result<()> {
     let cwd = std::env::current_dir()?;
 
     for provider in selected {
-        match provider {
-            Provider::ClaudeCode => {
-                let scope: HookScope = cliclack::select("Claude Code hook scope")
-                    .item(HookScope::Local, "local", ".claude/settings.local.json")
-                    .item(HookScope::Shared, "shared", ".claude/settings.json")
-                    .item(HookScope::Global, "global", "~/.claude/settings.json")
-                    .interact()?;
-                let path = install_claude_hooks(scope, &cwd, &home, false)?;
-                println!("  wrote: {}", path.display());
+        let Some(hp) = provider.as_hook_provider() else {
+            continue;
+        };
+        let scopes = hp.supported_scopes();
+        let scope = if scopes.len() == 1 {
+            scopes[0]
+        } else {
+            let mut select = cliclack::select(format!("{} hook scope", provider.label()));
+            for &s in scopes {
+                select = select.item(s, scope_label(s), hp.scope_display_hint(s, &cwd, &home));
             }
-            Provider::Codex => {
-                let path = install_codex_hooks(&home, false)?;
-                println!("  wrote: {}", path.display());
-            }
-            Provider::Gemini => {
-                let path = install_gemini_hooks(&home, false)?;
-                println!("  wrote: {}", path.display());
-            }
-            Provider::OpenCode => {}
-        }
+            select.interact()?
+        };
+        let path = install_hooks_for_provider(provider, scope, &cwd, &home, false)?;
+        println!("  wrote: {}", path.display());
     }
 
     Ok(())

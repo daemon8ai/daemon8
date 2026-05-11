@@ -25,6 +25,7 @@ pub struct SetupArgs {
 struct SetupResult {
     providers: Vec<ProviderResult>,
     daemon_running: bool,
+    service_installed: bool,
     issues: Vec<String>,
 }
 
@@ -138,10 +139,12 @@ fn run_setup(
     }
 
     let daemon_running = probe_daemon();
+    let service_installed = super::service::service_installed();
 
     Ok(SetupResult {
         providers: results,
         daemon_running,
+        service_installed,
         issues,
     })
 }
@@ -213,12 +216,12 @@ fn print_human(result: &SetupResult) {
     println!();
     println!("  1. Add instructions to your provider's context file:");
     for p in &connected {
-        match *p {
-            "Claude Code" => println!("       Claude Code  CLAUDE.md"),
-            "Gemini CLI" => println!("       Gemini CLI   GEMINI.md"),
-            "Codex" => println!("       Codex        AGENTS.md"),
-            "OpenCode" => println!("       OpenCode     AGENTS.md"),
-            _ => {}
+        if let Some(provider) = crate::providers::Provider::from_label(p) {
+            println!(
+                "       {:<12} {}",
+                p,
+                provider.as_provider().instruction_file_name()
+            );
         }
     }
     println!();

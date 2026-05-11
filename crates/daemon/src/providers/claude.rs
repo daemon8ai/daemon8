@@ -12,17 +12,9 @@ use super::helpers::{
 };
 use super::traits::{
     AiProvider, CanonicalEvent, HookProvider, HookScope, InstalledHookEntry, NormalizedHookEvent,
-    ProviderDocs,
 };
 
 pub struct ClaudeCodeProvider;
-
-static DOCS: ProviderDocs = ProviderDocs {
-    hooks: Some("https://docs.anthropic.com/en/docs/claude-code/hooks"),
-    mcp: Some("https://docs.anthropic.com/en/docs/claude-code/mcp-servers"),
-    config: Some("https://docs.anthropic.com/en/docs/claude-code/settings"),
-    instructions: Some("https://docs.anthropic.com/en/docs/claude-code/memory#claudemd"),
-};
 
 static HOOK_EVENTS: &[NormalizedHookEvent] = &[
     NormalizedHookEvent {
@@ -88,6 +80,10 @@ impl AiProvider for ClaudeCodeProvider {
         "restart Claude Code sessions"
     }
 
+    fn aliases(&self) -> &'static [&'static str] {
+        &["claude", "claude-code"]
+    }
+
     fn detect_dir(&self) -> &'static str {
         ".claude"
     }
@@ -96,12 +92,12 @@ impl AiProvider for ClaudeCodeProvider {
         &["CLAUDE_PROJECT_DIR"]
     }
 
-    fn config_path(&self, home: &Path) -> PathBuf {
-        home.join(".claude.json")
+    fn session_id_env_vars(&self) -> &'static [&'static str] {
+        &["CLAUDE_SESSION_ID", "CLAUDE_PROJECT_DIR"]
     }
 
-    fn project_config_path(&self, project: &Path) -> Option<PathBuf> {
-        Some(project.join(".claude/settings.json"))
+    fn config_path(&self, home: &Path) -> PathBuf {
+        home.join(".claude.json")
     }
 
     fn instruction_file_name(&self) -> &'static str {
@@ -156,11 +152,18 @@ impl AiProvider for ClaudeCodeProvider {
     }
 
     fn remove_mcp_config(&self, config_path: &Path) -> Result<bool> {
+        let ok = shim_command("claude")
+            .args(["mcp", "remove", "--scope", "user", "daemon8"])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if ok {
+            let _ = shim_command("claude")
+                .args(["mcp", "remove", "--scope", "user", "daemon8-channel"])
+                .output();
+            return Ok(true);
+        }
         super::helpers::remove_json_mcp_entry(config_path, "daemon8")
-    }
-
-    fn docs(&self) -> &'static ProviderDocs {
-        &DOCS
     }
 }
 
@@ -179,6 +182,14 @@ impl HookProvider for ClaudeCodeProvider {
 
     fn hook_events(&self) -> &'static [NormalizedHookEvent] {
         HOOK_EVENTS
+    }
+
+    fn scope_display_hint(&self, scope: HookScope, _cwd: &Path, _home: &Path) -> String {
+        match scope {
+            HookScope::Local => ".claude/settings.local.json".into(),
+            HookScope::Shared => ".claude/settings.json".into(),
+            HookScope::Global => "~/.claude/settings.json".into(),
+        }
     }
 
     fn install_hooks(

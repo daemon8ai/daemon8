@@ -13,17 +13,9 @@ use super::helpers::{
 };
 use super::traits::{
     AiProvider, CanonicalEvent, HookProvider, HookScope, InstalledHookEntry, NormalizedHookEvent,
-    ProviderDocs,
 };
 
 pub struct CodexProvider;
-
-static DOCS: ProviderDocs = ProviderDocs {
-    hooks: Some("https://developers.openai.com/codex/hooks"),
-    mcp: Some("https://developers.openai.com/codex/mcp"),
-    config: Some("https://developers.openai.com/codex/config-advanced"),
-    instructions: Some("https://developers.openai.com/codex/guides/agents-md"),
-};
 
 static HOOK_EVENTS: &[NormalizedHookEvent] = &[
     NormalizedHookEvent {
@@ -77,6 +69,10 @@ impl AiProvider for CodexProvider {
         "restart Codex sessions"
     }
 
+    fn aliases(&self) -> &'static [&'static str] {
+        &["codex", "codex-cli"]
+    }
+
     fn detect_dir(&self) -> &'static str {
         ".codex"
     }
@@ -89,12 +85,12 @@ impl AiProvider for CodexProvider {
         home.join(".codex/config.toml")
     }
 
-    fn project_config_path(&self, project: &Path) -> Option<PathBuf> {
-        Some(project.join(".codex/config.toml"))
-    }
-
     fn instruction_file_name(&self) -> &'static str {
         "AGENTS.md"
+    }
+
+    fn init_hint(&self) -> &'static str {
+        "MCP config + trust project"
     }
 
     fn is_configured(&self, config_path: &Path) -> bool {
@@ -131,10 +127,6 @@ impl AiProvider for CodexProvider {
             std::fs::rename(&tmp, config_path)?;
         }
         Ok(removed)
-    }
-
-    fn docs(&self) -> &'static ProviderDocs {
-        &DOCS
     }
 }
 

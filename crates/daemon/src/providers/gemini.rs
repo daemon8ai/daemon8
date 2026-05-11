@@ -13,17 +13,9 @@ use super::helpers::{
 };
 use super::traits::{
     AiProvider, CanonicalEvent, HookProvider, HookScope, InstalledHookEntry, NormalizedHookEvent,
-    ProviderDocs,
 };
 
 pub struct GeminiProvider;
-
-static DOCS: ProviderDocs = ProviderDocs {
-    hooks: Some("https://geminicli.com/docs/hooks/reference/"),
-    mcp: Some("https://geminicli.com/docs/tools/mcp-server/"),
-    config: Some("https://geminicli.com/docs/reference/configuration/"),
-    instructions: Some("https://geminicli.com/docs/cli/gemini-md/"),
-};
 
 static HOOK_EVENTS: &[NormalizedHookEvent] = &[
     NormalizedHookEvent {
@@ -71,6 +63,10 @@ impl AiProvider for GeminiProvider {
         "restart Gemini CLI sessions"
     }
 
+    fn aliases(&self) -> &'static [&'static str] {
+        &["gemini", "gemini-cli"]
+    }
+
     fn detect_dir(&self) -> &'static str {
         ".gemini"
     }
@@ -81,10 +77,6 @@ impl AiProvider for GeminiProvider {
 
     fn config_path(&self, home: &Path) -> PathBuf {
         home.join(".gemini/settings.json")
-    }
-
-    fn project_config_path(&self, project: &Path) -> Option<PathBuf> {
-        Some(project.join(".gemini/settings.json"))
     }
 
     fn instruction_file_name(&self) -> &'static str {
@@ -125,11 +117,15 @@ impl AiProvider for GeminiProvider {
     }
 
     fn remove_mcp_config(&self, config_path: &Path) -> Result<bool> {
+        let ok = shim_command("gemini")
+            .args(["mcp", "remove", "daemon8"])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if ok {
+            return Ok(true);
+        }
         super::helpers::remove_json_mcp_entry(config_path, "daemon8")
-    }
-
-    fn docs(&self) -> &'static ProviderDocs {
-        &DOCS
     }
 }
 

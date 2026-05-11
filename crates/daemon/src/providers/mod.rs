@@ -9,13 +9,13 @@ pub mod hook_management;
 pub mod opencode;
 pub mod traits;
 
-pub use helpers::shim_command;
-pub use traits::{AiProvider, HookProvider, HookScope};
+pub use traits::{AiProvider, CanonicalEvent, HookProvider, HookScope};
 
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Result, bail};
+use anyhow::Result;
+use daemon8_types::Severity;
 
 use self::claude::ClaudeCodeProvider;
 use self::codex::CodexProvider;
@@ -105,13 +105,16 @@ pub fn is_non_interactive() -> bool {
 pub fn parse_provider_list(raw: &str) -> Result<Vec<Provider>> {
     let mut parsed = Vec::new();
     for item in raw.split(',').map(str::trim).filter(|s| !s.is_empty()) {
-        let provider = match item {
-            "claude" | "claude-code" => Provider::ClaudeCode,
-            "gemini" | "gemini-cli" => Provider::Gemini,
-            "codex" | "codex-cli" => Provider::Codex,
-            "opencode" => Provider::OpenCode,
-            other => bail!("unknown provider '{other}'"),
-        };
+        let provider = ALL_PROVIDERS
+            .iter()
+            .find(|p| {
+                p.as_provider()
+                    .aliases()
+                    .iter()
+                    .any(|a| a.eq_ignore_ascii_case(item))
+            })
+            .copied()
+            .ok_or_else(|| anyhow::anyhow!("unknown provider '{item}'"))?;
         if !parsed.contains(&provider) {
             parsed.push(provider);
         }
@@ -167,21 +170,69 @@ pub fn summarize_restarts(summary: &ProviderWriteSummary) -> Vec<String> {
         .collect()
 }
 
-// Convenience wrappers delegating to trait impls (used by init.rs, setup.rs, service.rs)
-
-pub fn install_claude_hooks(
+pub fn install_hooks_for_provider(
+    provider: Provider,
     scope: HookScope,
     cwd: &Path,
     home: &Path,
     force: bool,
 ) -> Result<PathBuf> {
-    ClaudeCodeProvider.install_hooks(scope, cwd, home, force)
+    let hp = provider
+        .as_hook_provider()
+        .ok_or_else(|| anyhow::anyhow!("{} does not support hooks", provider.label()))?;
+    hp.install_hooks(scope, cwd, home, force)
 }
 
-pub fn install_codex_hooks(home: &Path, force: bool) -> Result<PathBuf> {
-    CodexProvider.install_hooks(HookScope::Global, &PathBuf::new(), home, force)
+pub fn detect_provider_from_env() -> Option<(&'static str, Provider)> {
+    for &provider in ALL_PROVIDERS {
+        let p = provider.as_provider();
+        for &var in p.session_env_vars() {
+            if std::env::var_os(var).is_some() {
+                let aliases = p.aliases();
+                let tool_name = aliases.last().copied().unwrap_or(p.id());
+                return Some((tool_name, provider));
+            }
+        }
+    }
+    None
 }
 
-pub fn install_gemini_hooks(home: &Path, force: bool) -> Result<PathBuf> {
-    GeminiProvider.install_hooks(HookScope::Global, &PathBuf::new(), home, force)
+pub fn normalize_hook_event_name(raw: &str) -> Option<(CanonicalEvent, Severity)> {
+    for &provider in HOOK_PROVIDERS {
+        let hp = provider.as_hook_provider().unwrap();
+        for event in hp.hook_events() {
+            if event.native_name.eq_ignore_ascii_case(raw) {
+                return Some((event.canonical, event.severity));
+            }
+        }
+    }
+
+    static EXTRA_ALIASES: &[(&str, CanonicalEvent)] = &[
+        ("userpromptsubmitted", CanonicalEvent::PromptSubmit),
+        ("beforesubmitprompt", CanonicalEvent::PromptSubmit),
+        ("session.compacting", CanonicalEvent::PreCompact),
+        ("postcompact", CanonicalEvent::PostCompact),
+    ];
+
+    for &(alias, canonical) in EXTRA_ALIASES {
+        if alias.eq_ignore_ascii_case(raw) {
+            let severity = match canonical {
+                CanonicalEvent::ToolPre | CanonicalEvent::ToolPost => Severity::Debug,
+                CanonicalEvent::PermissionRequest => Severity::Warn,
+                _ => Severity::Info,
+            };
+            return Some((canonical, severity));
+        }
+    }
+
+    None
+}
+
+impl Provider {
+    pub fn from_label(label: &str) -> Option<Provider> {
+        ALL_PROVIDERS
+            .iter()
+            .find(|p| p.as_provider().label() == label)
+            .copied()
+    }
 }

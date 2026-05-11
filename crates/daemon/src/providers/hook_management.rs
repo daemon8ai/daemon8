@@ -146,12 +146,24 @@ pub fn repair_hooks(cwd: &Path) -> Result<Vec<HookActionReport>> {
 }
 
 pub fn parse_hook_provider(raw: &str) -> Result<Provider> {
-    match raw.to_ascii_lowercase().as_str() {
-        "claude" | "claude-code" | "claude_code" => Ok(Provider::ClaudeCode),
-        "codex" | "codex-cli" => Ok(Provider::Codex),
-        "gemini" | "gemini-cli" => Ok(Provider::Gemini),
-        other => bail!("unknown hook provider '{other}' (valid: claude, codex, gemini)"),
+    let normalized = raw.replace('_', "-");
+    for &provider in HOOK_PROVIDERS {
+        let p = provider.as_provider();
+        if p.aliases()
+            .iter()
+            .any(|a| a.eq_ignore_ascii_case(&normalized))
+        {
+            return Ok(provider);
+        }
     }
+    let valid: Vec<&str> = HOOK_PROVIDERS
+        .iter()
+        .map(|p| p.as_provider().id())
+        .collect();
+    bail!(
+        "unknown hook provider '{raw}' (valid: {})",
+        valid.join(", ")
+    )
 }
 
 pub fn parse_scope(raw: &str) -> Result<HookScope> {
@@ -185,7 +197,14 @@ mod tests {
         }
         let home = dirs_home();
 
-        super::super::install_claude_hooks(HookScope::Local, &cwd, &home, false).unwrap();
+        super::super::install_hooks_for_provider(
+            super::Provider::ClaudeCode,
+            HookScope::Local,
+            &cwd,
+            &home,
+            false,
+        )
+        .unwrap();
         let listed = list_all_hooks(&cwd).unwrap();
         assert!(
             listed
@@ -209,7 +228,14 @@ mod tests {
         }
         let home = dirs_home();
 
-        super::super::install_claude_hooks(HookScope::Local, &cwd, &home, false).unwrap();
+        super::super::install_hooks_for_provider(
+            super::Provider::ClaudeCode,
+            HookScope::Local,
+            &cwd,
+            &home,
+            false,
+        )
+        .unwrap();
         let reports = repair_hooks(&cwd).unwrap();
         let local = reports
             .iter()
@@ -227,7 +253,14 @@ mod tests {
         }
         let home = dirs_home();
 
-        super::super::install_claude_hooks(HookScope::Local, &cwd, &home, false).unwrap();
+        super::super::install_hooks_for_provider(
+            super::Provider::ClaudeCode,
+            HookScope::Local,
+            &cwd,
+            &home,
+            false,
+        )
+        .unwrap();
 
         let settings_path = cwd.join(".claude/settings.local.json");
         let content = std::fs::read_to_string(&settings_path).unwrap();
@@ -254,7 +287,14 @@ mod tests {
         }
         let home = dirs_home();
 
-        super::super::install_claude_hooks(HookScope::Local, &cwd, &home, false).unwrap();
+        super::super::install_hooks_for_provider(
+            super::Provider::ClaudeCode,
+            HookScope::Local,
+            &cwd,
+            &home,
+            false,
+        )
+        .unwrap();
         let reports = update_hooks(Provider::ClaudeCode, Some(HookScope::Local), &cwd).unwrap();
         assert_eq!(reports.len(), 1);
         assert_eq!(reports[0].action, "updated");

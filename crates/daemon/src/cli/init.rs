@@ -12,9 +12,8 @@ use anyhow::{Context, Result};
 
 use crate::cli_config::PROJECT_CONFIG_FILENAME;
 use crate::providers::{
-    HookScope, Provider, ProviderWriteSummary, dirs_home, install_claude_hooks,
-    install_codex_hooks, install_gemini_hooks, is_non_interactive, parse_provider_list,
-    summarize_restarts, write_provider_config,
+    HookScope, Provider, ProviderWriteSummary, dirs_home, install_hooks_for_provider,
+    is_non_interactive, parse_provider_list, summarize_restarts, write_provider_config,
 };
 
 #[derive(clap::ValueEnum, Clone, Debug)]
@@ -92,18 +91,22 @@ pub fn cmd_init(args: InitArgs) -> Result<()> {
         summary.provider_files.push(config_path);
         summary.note_restart(provider);
 
-        if provider == Provider::Codex {
-            let hook_path = install_codex_hooks(&home, args.force_hooks)?;
-            summary.hook_files.push(hook_path);
-        }
-        if provider == Provider::Gemini {
-            let hook_path = install_gemini_hooks(&home, args.force_hooks)?;
+        if let Some(hp) = provider.as_hook_provider() {
+            let scopes = hp.supported_scopes();
+            let scope = if scopes.len() == 1 {
+                scopes[0]
+            } else {
+                continue;
+            };
+            let hook_path =
+                install_hooks_for_provider(provider, scope, &cwd, &home, args.force_hooks)?;
             summary.hook_files.push(hook_path);
         }
     }
 
     if let Some(scope) = resolve_hook_scope(&args, non_interactive)? {
-        let path = install_claude_hooks(scope, &cwd, &home, args.force_hooks)?;
+        let path =
+            install_hooks_for_provider(Provider::ClaudeCode, scope, &cwd, &home, args.force_hooks)?;
         summary.hook_files.push(path);
         summary.note_restart(Provider::ClaudeCode);
     }
@@ -145,12 +148,14 @@ fn resolve_providers(args: &InitArgs, non_interactive: bool) -> Result<Vec<Provi
         return Ok(Vec::new());
     }
 
+    let items: Vec<(Provider, &str, &str)> = crate::providers::ALL_PROVIDERS
+        .iter()
+        .map(|&p| (p, p.label(), p.as_provider().init_hint()))
+        .collect();
+
     Ok(cliclack::multiselect("Select provider configs to write")
         .required(false)
-        .item(Provider::ClaudeCode, "Claude Code", "MCP config")
-        .item(Provider::Gemini, "Gemini CLI", "MCP config")
-        .item(Provider::Codex, "Codex", "MCP config + trust project")
-        .item(Provider::OpenCode, "OpenCode", "MCP config")
+        .items(&items)
         .interact()?)
 }
 
@@ -169,12 +174,18 @@ fn resolve_hook_scope(args: &InitArgs, non_interactive: bool) -> Result<Option<H
         return Ok(None);
     }
 
-    let scope = cliclack::select("Choose the hook settings target")
-        .item(HookScope::Local, "local", ".claude/settings.local.json")
-        .item(HookScope::Shared, "shared", ".claude/settings.json")
-        .item(HookScope::Global, "global", "~/.claude/settings.json")
-        .interact()?;
-    Ok(Some(scope))
+    let hp = Provider::ClaudeCode.as_hook_provider().unwrap();
+    let cwd = env::current_dir().unwrap_or_default();
+    let home = dirs_home();
+    let mut select = cliclack::select("Choose the hook settings target");
+    for &s in hp.supported_scopes() {
+        select = select.item(
+            s,
+            crate::providers::hook_management::scope_label(s),
+            hp.scope_display_hint(s, &cwd, &home),
+        );
+    }
+    Ok(Some(select.interact()?))
 }
 
 fn derive_slug(cwd: &Path) -> String {

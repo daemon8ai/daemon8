@@ -159,19 +159,20 @@ impl HookPolicy {
 }
 
 fn normalize_event(raw: &str) -> CliHookEvent {
-    match raw.to_ascii_lowercase().as_str() {
-        "sessionstart" => CliHookEvent::SessionStarted,
-        "sessionend" | "stop" => CliHookEvent::SessionEnded,
-        "userpromptsubmit" | "userpromptsubmitted" | "beforesubmitprompt" => {
-            CliHookEvent::PromptSubmitted
-        }
-        "pretooluse" | "beforetool" => CliHookEvent::ToolPreUse,
-        "posttooluse" | "aftertool" => CliHookEvent::ToolPostUse,
-        "permissionrequest" => CliHookEvent::PermissionRequested,
-        "beforeagent" | "afteragent" | "afteragentresponse" => CliHookEvent::Other,
-        "precompact" | "precompress" | "session.compacting" => CliHookEvent::PreCompact,
-        "postcompact" => CliHookEvent::PostCompact,
-        _ => CliHookEvent::Other,
+    use crate::providers::CanonicalEvent;
+
+    match crate::providers::normalize_hook_event_name(raw) {
+        Some((canonical, _)) => match canonical {
+            CanonicalEvent::SessionStart => CliHookEvent::SessionStarted,
+            CanonicalEvent::SessionEnd | CanonicalEvent::Stop => CliHookEvent::SessionEnded,
+            CanonicalEvent::PromptSubmit => CliHookEvent::PromptSubmitted,
+            CanonicalEvent::ToolPre => CliHookEvent::ToolPreUse,
+            CanonicalEvent::ToolPost => CliHookEvent::ToolPostUse,
+            CanonicalEvent::PermissionRequest => CliHookEvent::PermissionRequested,
+            CanonicalEvent::PreCompact => CliHookEvent::PreCompact,
+            CanonicalEvent::PostCompact => CliHookEvent::PostCompact,
+        },
+        None => CliHookEvent::Other,
     }
 }
 
@@ -183,20 +184,9 @@ fn detect_tool(explicit: Option<&str>) -> String {
     if let Some(t) = explicit {
         return t.to_string();
     }
-    // Env-var sniffing in order of specificity.
-    if env::var_os("CLAUDE_PROJECT_DIR").is_some() {
-        return "claude-code".into();
-    }
-    if env::var_os("GEMINI_SESSION_ID").is_some() || env::var_os("GEMINI_PROJECT_DIR").is_some() {
-        return "gemini-cli".into();
-    }
-    if env::var_os("COPILOT_AGENT_SESSION_ID").is_some() {
-        return "copilot-cli".into();
-    }
-    if env::var_os("CODEX_SESSION_ID").is_some() {
-        return "codex-cli".into();
-    }
-    "unknown".into()
+    crate::providers::detect_provider_from_env()
+        .map(|(id, _)| id.to_string())
+        .unwrap_or_else(|| "unknown".into())
 }
 
 // ---------------------------------------------------------------------------
@@ -380,17 +370,13 @@ fn effective_session_id(input: &HookInput) -> Option<String> {
     if let Some(ref s) = input.conversation_id {
         return Some(s.clone());
     }
-    for var in [
-        "CLAUDE_SESSION_ID",
-        "GEMINI_SESSION_ID",
-        "COPILOT_AGENT_SESSION_ID",
-        "CODEX_SESSION_ID",
-        "CURSOR_SESSION_ID",
-    ] {
-        if let Ok(v) = env::var(var)
-            && !v.is_empty()
-        {
-            return Some(v);
+    for &provider in crate::providers::ALL_PROVIDERS {
+        for &var in provider.as_provider().session_id_env_vars() {
+            if let Ok(v) = env::var(var)
+                && !v.is_empty()
+            {
+                return Some(v);
+            }
         }
     }
     None
