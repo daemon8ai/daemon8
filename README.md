@@ -24,6 +24,7 @@
   - [Lenses](#lenses)
   - [Checkpoints and Debug Sessions](#checkpoints-and-debug-sessions)
   - [Memory](#memory)
+  - [Librarian Index](#librarian-index)
   - [File Sources](#file-sources)
   - [Device Monitoring (ADB)](#device-monitoring-adb)
 - [MCP Tools](#mcp-tools)
@@ -36,11 +37,11 @@
 
 ## What is Daemon8?
 
-Daemon8 is a local process that gives AI agents access to runtime data. Console errors, network failures, device logs, and application traces land in one observation stream. Agents query it through MCP or HTTP without leaving their workflow.
+Daemon8 is a local process that gives AI agents access to runtime data. Console errors, network failures, device logs, and application traces land in one observation stream as code is being edited and executed. A built-in librarian index catalogs local context so agents can look up what they need without leaving their workflow.
 
-The daemon runs on your machine. Runtime data and curated memory stay local.
+The daemon runs on your machine. All features are opt-in via the CLI. Runtime data and curated memory stay local.
 
-> daemon8 is in active development. Show support by starring, trying it out, and submitting issues.
+> v0.3 alpha — in active development. Show support by starring, trying it out, and submitting issues.
 
 ## Install
 
@@ -60,7 +61,7 @@ Or install from source:
 cargo install daemon8
 ```
 
-Pin a specific version with `DAEMON8_VERSION=v0.3.2` before the curl command.
+Pin a specific version with `DAEMON8_VERSION=v0.3.3` before the curl command.
 
 The installer downloads the binary, verifies its SHA-256 checksum, installs it, and runs `daemon8 setup` to show current state.
 
@@ -88,14 +89,14 @@ daemon8 doctor
 
 ## Features
 
-The observation stream is always on. Everything else is opt-in.
+The observation stream is always on. Everything else is opt-in via the CLI (`daemon8 features`).
 
 ### Observation Stream
 
-All runtime signals land in one stream: application logs, browser console output, network failures, device logs, CLI hook telemetry, and agent-emitted notes.
+All runtime signals live-stream into one feed: application logs, browser console output, network failures, device logs, CLI hook telemetry, and agent-emitted notes. The SSE endpoint (`/api/stream`) supports `Last-Event-ID` replay; `subscribe_observations` pushes real-time alerts directly into agent sessions.
 
 ```bash
-daemon8 tail                                # stream observations in real-time
+daemon8 tail                                # live-stream observations
 daemon8 query --kinds log,exception --limit 20  # query stored observations
 ```
 
@@ -117,7 +118,7 @@ daemon8 browser connect
 
 ### CLI Hooks
 
-Record what your agent does. Hooks capture tool calls, file edits, and command runs as observations in the stream.
+Stream what your agent does. Hooks capture tool calls, file edits, and command runs as observations -- giving agents cause-and-effect context across their own actions.
 
 **Enable:**
 
@@ -166,9 +167,19 @@ Memory is always available. No setup required.
 daemon8 memory export --kind pattern --project my-app
 ```
 
+### Librarian Index
+
+A graph-based catalog on SurrealDB for looking up local and remote context. Agents index docs, source templates, fixes, and projects as nodes with typed edges (has_source, documented_by, fixes, supersedes, child_of). Lookup-only by design -- agents query the catalog, they don't generate from it.
+
+**Enable:** available when SurrealDB store is configured (default with `daemon8 serve`).
+
+```bash
+# via MCP: librarian_index, librarian_lookup, librarian_forget
+```
+
 ### File Sources
 
-Tail log files and parse them into structured observations. Supported formats: JSON, syslog, monolog, logfmt, CLF, and auto-detection. Custom patterns via grok syntax.
+Tail log files and parse them into structured observations. Eight built-in parsers: JSON, syslog, monolog, logfmt, CLF, line, grok, and auto-detect.
 
 **Enable:** add `[sources.*]` entries to `.daemon8.toml`:
 
@@ -192,7 +203,7 @@ enabled = true
 
 ## MCP Tools
 
-26 MCP tools grouped by capability. Every tool returns the standard envelope (`{result, daemon8, error}`) -- see `daemon8_help(topic="envelope")`. Destructive and apply-style operations require explicit confirmation flags.
+29 MCP tools grouped by capability. Every tool returns the standard envelope (`{result, daemon8, error}`) -- see `daemon8_help(topic="envelope")`. Destructive and apply-style operations require explicit confirmation flags.
 
 ### Observation
 
@@ -254,11 +265,19 @@ enabled = true
 | `hooks_update` | Reinstall (force) -- fixes drift after binary moves or spec changes. |
 | `hooks_repair` | Detect drift across all providers and reinstall only what's stale. |
 
+### Librarian
+
+| Tool | Purpose |
+|------|---------|
+| `librarian_index` | Catalog a node (doc, source_template, fix, project) with tags and edges. |
+| `librarian_lookup` | Query the catalog by kind, tags, project, or text. |
+| `librarian_forget` | Remove a node; requires `confirm=true`. |
+
 ### Help
 
 | Tool | Purpose |
 |------|---------|
-| `daemon8_help` | Narrative protocol docs by topic (debug_session, checkpoint, setup, hooks, lens, memory, observations, envelope). |
+| `daemon8_help` | Narrative protocol docs by topic (debug_session, checkpoint, setup, hooks, lens, librarian, memory, observations, envelope). |
 
 ## HTTP API
 
@@ -332,7 +351,7 @@ Core crates in the Cargo workspace:
 | `types` | Shared types: `Observation`, `Filter`, severity, origin, and memory kind records. |
 | `store` | SurrealDB backend for observations, curated memory, debug sessions, librarian catalog, and the `LensManager` ring buffer. |
 | `api` | Axum HTTP routes: observe, stream, lens, memory, and browser actions. |
-| `mcp` | MCP server: 26 tools across observe, debug-session, action, lens, memory, setup, hooks, help routers. |
+| `mcp` | MCP server: 29 tools across observe, debug-session, action, lens, memory, librarian, setup, hooks, help routers. |
 | `ingest` | HTTP, UDP, and Unix socket ingest endpoints. |
 | `chrome` | Chrome DevTools Protocol bridge over raw WebSocket. |
 | `adb` | Android Debug Bridge transport for device logcat. |
