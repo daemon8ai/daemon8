@@ -43,7 +43,7 @@ pub fn normalize(mut raw: Value) -> Observation {
         name: app.map(Into::into).unwrap_or_else(|| "unknown".into()),
     };
 
-    let data = explicit_data.unwrap_or(raw);
+    let data = unwrap_stringified_json(explicit_data.unwrap_or(raw));
     let kind = resolve_kind(kind_str.as_deref(), channel_str, &data);
 
     let timestamp_ns = SystemTime::now()
@@ -155,6 +155,15 @@ pub fn parse_severity(s: Option<&str>) -> Severity {
             _ => Severity::Debug,
         },
         None => Severity::Debug,
+    }
+}
+
+fn unwrap_stringified_json(v: Value) -> Value {
+    match &v {
+        Value::String(s) if s.starts_with('{') || s.starts_with('[') => {
+            serde_json::from_str(s).unwrap_or(v)
+        }
+        _ => v,
     }
 }
 
@@ -270,5 +279,45 @@ fn try_state_snapshot(data: &Value) -> ObservationKind {
         None => ObservationKind::Custom {
             channel: "state_snapshot".into(),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unwrap_stringified_object() {
+        let input = Value::String(r#"{"message":"hello"}"#.into());
+        let out = unwrap_stringified_json(input);
+        assert_eq!(out, serde_json::json!({"message": "hello"}));
+    }
+
+    #[test]
+    fn unwrap_stringified_array() {
+        let input = Value::String(r#"[1,2,3]"#.into());
+        let out = unwrap_stringified_json(input);
+        assert_eq!(out, serde_json::json!([1, 2, 3]));
+    }
+
+    #[test]
+    fn passthrough_already_object() {
+        let input = serde_json::json!({"message": "hello"});
+        let out = unwrap_stringified_json(input.clone());
+        assert_eq!(out, input);
+    }
+
+    #[test]
+    fn passthrough_plain_string() {
+        let input = Value::String("just a message".into());
+        let out = unwrap_stringified_json(input.clone());
+        assert_eq!(out, input);
+    }
+
+    #[test]
+    fn passthrough_invalid_json_string() {
+        let input = Value::String("{not valid json".into());
+        let out = unwrap_stringified_json(input.clone());
+        assert_eq!(out, input);
     }
 }
