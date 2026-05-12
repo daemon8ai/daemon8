@@ -104,8 +104,10 @@ pub fn cmd_init(args: InitArgs) -> Result<()> {
             let scopes = hp.supported_scopes();
             let scope = if scopes.len() == 1 {
                 scopes[0]
+            } else if scopes.contains(&HookScope::Global) {
+                HookScope::Global
             } else {
-                continue;
+                scopes[0]
             };
             let hook_path = install_hooks_for_provider(
                 provider,

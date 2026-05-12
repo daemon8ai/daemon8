@@ -10,6 +10,8 @@ use std::path::PathBuf;
 
 use daemon8_types::Severity;
 
+pub use builtin::conversation::ConversationEvent;
+
 #[derive(Debug, thiserror::Error)]
 pub enum ParseError {
     #[error("unknown parser: {0}")]
@@ -79,6 +81,15 @@ pub fn resolve_parser_with_pattern(
     }
 
     Err(ParseError::UnknownParser(name.to_string()))
+}
+
+pub fn parse_conversation_line(provider: &str, line: &str) -> Vec<ConversationEvent> {
+    match provider {
+        "claude" => builtin::conversation::claude::parse_line(line),
+        "codex" => builtin::conversation::codex::parse_line(line),
+        "gemini" => builtin::conversation::gemini::parse_line(line),
+        _ => Vec::new(),
+    }
 }
 
 #[cfg(test)]

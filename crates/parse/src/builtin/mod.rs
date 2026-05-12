@@ -3,6 +3,7 @@
 
 pub mod auto;
 pub mod clf;
+pub mod conversation;
 pub mod grok_parser;
 pub mod json;
 pub mod line;

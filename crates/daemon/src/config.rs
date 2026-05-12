@@ -185,6 +185,7 @@ impl FromStr for LogLevel {
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum SourceConfig {
     File(FileSourceConfig),
+    Conversation(ConversationSourceConfig),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -195,6 +196,14 @@ pub struct FileSourceConfig {
     pub parser: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parser_pattern: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConversationSourceConfig {
+    pub provider: String,
     #[serde(default)]
     pub tags: Vec<String>,
 }
@@ -838,19 +847,18 @@ parser = "clf"
         )
         .unwrap();
         assert_eq!(cfg.sources.len(), 2);
-        match &cfg.sources["laravel"] {
-            SourceConfig::File(f) => {
-                assert_eq!(f.path, "/var/log/laravel/*.log");
-                assert_eq!(f.parser, "monolog");
-                assert_eq!(f.tags, vec!["php", "laravel"]);
-            }
-        }
-        match &cfg.sources["nginx"] {
-            SourceConfig::File(f) => {
-                assert_eq!(f.parser, "clf");
-                assert!(f.tags.is_empty());
-            }
-        }
+        let SourceConfig::File(f) = &cfg.sources["laravel"] else {
+            panic!("expected File source");
+        };
+        assert_eq!(f.path, "/var/log/laravel/*.log");
+        assert_eq!(f.parser, "monolog");
+        assert_eq!(f.tags, vec!["php", "laravel"]);
+
+        let SourceConfig::File(f) = &cfg.sources["nginx"] else {
+            panic!("expected File source");
+        };
+        assert_eq!(f.parser, "clf");
+        assert!(f.tags.is_empty());
     }
 
     #[test]
@@ -863,11 +871,10 @@ path = "/tmp/test.log"
 "#,
         )
         .unwrap();
-        match &cfg.sources["raw"] {
-            SourceConfig::File(f) => {
-                assert_eq!(f.parser, "line");
-            }
-        }
+        let SourceConfig::File(f) = &cfg.sources["raw"] else {
+            panic!("expected File source");
+        };
+        assert_eq!(f.parser, "line");
     }
 
     #[test]

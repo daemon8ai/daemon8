@@ -12,7 +12,7 @@ use tokio_util::sync::CancellationToken;
 
 use daemon8_types::{Filter, Observation, OriginPattern, SourceActivator};
 
-use crate::config::{FileSourceConfig, SourceConfig};
+use crate::config::{ConversationSourceConfig, FileSourceConfig, SourceConfig};
 
 const REAPER_INTERVAL: Duration = Duration::from_secs(5 * 60);
 #[cfg(test)]
@@ -24,8 +24,14 @@ enum SourceState {
     Active,
 }
 
+#[derive(Clone)]
+enum SourceKind {
+    File(FileSourceConfig),
+    Conversation(ConversationSourceConfig),
+}
+
 struct SourceEntry {
-    config: FileSourceConfig,
+    kind: SourceKind,
     state: SourceState,
     last_accessed_ns: Arc<AtomicU64>,
     cancel: Option<CancellationToken>,
@@ -47,19 +53,19 @@ impl SourceManager {
     ) -> Self {
         let mut entries = BTreeMap::new();
         for (name, source) in sources {
-            match source {
-                SourceConfig::File(cfg) => {
-                    entries.insert(
-                        name.clone(),
-                        SourceEntry {
-                            config: cfg,
-                            state: SourceState::Dormant,
-                            last_accessed_ns: Arc::new(AtomicU64::new(0)),
-                            cancel: None,
-                        },
-                    );
-                }
-            }
+            let kind = match source {
+                SourceConfig::File(cfg) => SourceKind::File(cfg),
+                SourceConfig::Conversation(cfg) => SourceKind::Conversation(cfg),
+            };
+            entries.insert(
+                name.clone(),
+                SourceEntry {
+                    kind,
+                    state: SourceState::Dormant,
+                    last_accessed_ns: Arc::new(AtomicU64::new(0)),
+                    cancel: None,
+                },
+            );
         }
 
         Self {
@@ -71,7 +77,7 @@ impl SourceManager {
     }
 
     pub async fn activate(&self, name: &str) -> bool {
-        let (cfg, cancel_child) = {
+        let (kind, cancel_child) = {
             let guard = self.sources.lock().unwrap();
             let Some(entry) = guard.get(name) else {
                 return false;
@@ -82,18 +88,31 @@ impl SourceManager {
                     .store(current_ns(), Ordering::Relaxed);
                 return false;
             }
-            (entry.config.clone(), CancellationToken::new())
+            (entry.kind.clone(), CancellationToken::new())
         };
 
         {
             let mut tasks = self.tasks.lock().await;
-            super::file_watcher::spawn_file_source(
-                &mut tasks,
-                name.to_owned(),
-                cfg,
-                self.obs_tx.clone(),
-                cancel_child.clone(),
-            );
+            match kind {
+                SourceKind::File(cfg) => {
+                    super::file_watcher::spawn_file_source(
+                        &mut tasks,
+                        name.to_owned(),
+                        cfg,
+                        self.obs_tx.clone(),
+                        cancel_child.clone(),
+                    );
+                }
+                SourceKind::Conversation(cfg) => {
+                    super::conversation_watcher::spawn_conversation_source(
+                        &mut tasks,
+                        name.to_owned(),
+                        cfg,
+                        self.obs_tx.clone(),
+                        cancel_child.clone(),
+                    );
+                }
+            }
         }
 
         {
@@ -107,7 +126,7 @@ impl SourceManager {
             }
         }
 
-        tracing::info!(source = %name, "file source activated");
+        tracing::info!(source = %name, "source activated");
         true
     }
 
@@ -123,7 +142,7 @@ impl SourceManager {
             cancel.cancel();
         }
         entry.state = SourceState::Dormant;
-        tracing::info!(source = %name, "file source deactivated");
+        tracing::info!(source = %name, "source deactivated");
         true
     }
 
@@ -156,7 +175,11 @@ impl SourceManager {
 
         if let Some(ref tags) = filter.tags {
             for (name, entry) in guard.iter() {
-                if entry.config.tags.iter().any(|t| tags.contains(t)) {
+                let source_tags = match &entry.kind {
+                    SourceKind::File(f) => &f.tags,
+                    SourceKind::Conversation(c) => &c.tags,
+                };
+                if source_tags.iter().any(|t| tags.contains(t)) {
                     matched.insert(name);
                 }
             }
@@ -169,7 +192,7 @@ impl SourceManager {
         let mut tasks = self.tasks.lock().await;
         while let Some(result) = tasks.try_join_next() {
             if let Err(e) = result {
-                tracing::warn!("file source task panicked: {e}");
+                tracing::warn!("source task panicked: {e}");
             }
         }
     }
@@ -202,7 +225,7 @@ impl SourceManager {
             }
         }
 
-        tracing::info!(count, "reaped idle file sources");
+        tracing::info!(count, "reaped idle sources");
     }
 
     async fn deactivate_all(&self) {

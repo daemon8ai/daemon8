@@ -128,15 +128,53 @@ impl AiProvider for GeminiProvider {
         }
         super::helpers::remove_json_mcp_entry(config_path, service.name)
     }
+
+    fn global_config_dir(&self, home: &Path) -> Option<PathBuf> {
+        Some(home.join(".gemini"))
+    }
+    fn project_config_dir(&self) -> Option<&'static str> {
+        Some(".gemini")
+    }
+    fn skills_dir(&self, home: &Path) -> Option<PathBuf> {
+        Some(home.join(".gemini/skills"))
+    }
+    fn project_skills_dir(&self) -> Option<&'static str> {
+        Some(".gemini/skills")
+    }
+    fn agents_dir(&self, home: &Path) -> Option<PathBuf> {
+        Some(home.join(".gemini/agents"))
+    }
+    fn project_agents_dir(&self) -> Option<&'static str> {
+        Some(".gemini/agents")
+    }
+    fn conversation_dir(&self, home: &Path) -> Option<PathBuf> {
+        Some(home.join(".gemini/tmp"))
+    }
+    fn conversation_file_glob(&self) -> Option<&'static str> {
+        Some("**/chats/session-*.jsonl")
+    }
+    fn session_id_from_env(&self) -> Option<String> {
+        std::env::var("GEMINI_SESSION_ID").ok()
+    }
 }
 
 impl HookProvider for GeminiProvider {
     fn supported_scopes(&self) -> &'static [HookScope] {
-        &[HookScope::Global]
+        &[HookScope::Shared, HookScope::Global]
     }
 
-    fn hooks_path(&self, _scope: HookScope, _cwd: &Path, home: &Path) -> PathBuf {
-        home.join(".gemini/settings.json")
+    fn hooks_path(&self, scope: HookScope, cwd: &Path, home: &Path) -> PathBuf {
+        match scope {
+            HookScope::Local | HookScope::Shared => cwd.join(".gemini/settings.json"),
+            HookScope::Global => home.join(".gemini/settings.json"),
+        }
+    }
+
+    fn scope_display_hint(&self, scope: HookScope, _cwd: &Path, _home: &Path) -> String {
+        match scope {
+            HookScope::Local | HookScope::Shared => ".gemini/settings.json".into(),
+            HookScope::Global => "~/.gemini/settings.json".into(),
+        }
     }
 
     fn hook_events(&self) -> &'static [HookEventEntry] {
@@ -223,7 +261,7 @@ mod tests {
     }
 
     #[test]
-    fn install_list_remove_round_trip() {
+    fn install_list_remove_global_round_trip() {
         let tmp = tempdir().unwrap();
         let home = tmp.path().to_path_buf();
         std::fs::create_dir_all(home.join(".gemini")).unwrap();
@@ -246,6 +284,57 @@ mod tests {
 
         let after = GeminiProvider
             .list_hooks(HookScope::Global, &PathBuf::new(), &home, &svc)
+            .unwrap();
+        assert!(after.is_empty());
+    }
+
+    #[test]
+    fn supported_scopes_include_shared_and_global() {
+        let scopes = GeminiProvider.supported_scopes();
+        assert!(scopes.contains(&HookScope::Shared));
+        assert!(scopes.contains(&HookScope::Global));
+    }
+
+    #[test]
+    fn hooks_path_routes_by_scope() {
+        let cwd = Path::new("/project");
+        let home = Path::new("/home/user");
+        assert_eq!(
+            GeminiProvider.hooks_path(HookScope::Shared, cwd, home),
+            cwd.join(".gemini/settings.json")
+        );
+        assert_eq!(
+            GeminiProvider.hooks_path(HookScope::Global, cwd, home),
+            home.join(".gemini/settings.json")
+        );
+    }
+
+    #[test]
+    fn install_list_remove_shared_scope() {
+        let tmp = tempdir().unwrap();
+        let cwd = tmp.path().to_path_buf();
+        let home = tmp.path().join("fakehome");
+        std::fs::create_dir_all(cwd.join(".gemini")).unwrap();
+        let svc = crate::test_service();
+
+        let path = GeminiProvider
+            .install_hooks(HookScope::Shared, &cwd, &home, false, &svc)
+            .unwrap();
+        assert_eq!(path, cwd.join(".gemini/settings.json"));
+        assert!(path.exists());
+
+        let entries = GeminiProvider
+            .list_hooks(HookScope::Shared, &cwd, &home, &svc)
+            .unwrap();
+        assert!(!entries.is_empty());
+
+        let removed = GeminiProvider
+            .remove_hooks(HookScope::Shared, &cwd, &home, &svc)
+            .unwrap();
+        assert!(removed.is_some());
+
+        let after = GeminiProvider
+            .list_hooks(HookScope::Shared, &cwd, &home, &svc)
             .unwrap();
         assert!(after.is_empty());
     }

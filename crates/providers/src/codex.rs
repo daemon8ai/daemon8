@@ -129,15 +129,50 @@ impl AiProvider for CodexProvider {
         }
         Ok(removed)
     }
+
+    fn global_config_dir(&self, home: &Path) -> Option<PathBuf> {
+        Some(home.join(".codex"))
+    }
+    fn project_config_dir(&self) -> Option<&'static str> {
+        Some(".codex")
+    }
+    fn skills_dir(&self, home: &Path) -> Option<PathBuf> {
+        Some(home.join(".codex/skills"))
+    }
+    fn conversation_dir(&self, home: &Path) -> Option<PathBuf> {
+        Some(home.join(".codex/sessions"))
+    }
+    fn conversation_file_glob(&self) -> Option<&'static str> {
+        Some("**/*.jsonl")
+    }
+    fn session_id_from_env(&self) -> Option<String> {
+        std::env::var("CODEX_SESSION_ID").ok()
+    }
+    fn memory_dir(&self, home: &Path) -> Option<PathBuf> {
+        Some(home.join(".codex/memories"))
+    }
+    fn history_file(&self, home: &Path) -> Option<PathBuf> {
+        Some(home.join(".codex/history.jsonl"))
+    }
 }
 
 impl HookProvider for CodexProvider {
     fn supported_scopes(&self) -> &'static [HookScope] {
-        &[HookScope::Global]
+        &[HookScope::Shared, HookScope::Global]
     }
 
-    fn hooks_path(&self, _scope: HookScope, _cwd: &Path, home: &Path) -> PathBuf {
-        home.join(".codex/hooks.json")
+    fn hooks_path(&self, scope: HookScope, cwd: &Path, home: &Path) -> PathBuf {
+        match scope {
+            HookScope::Local | HookScope::Shared => cwd.join(".codex/hooks.json"),
+            HookScope::Global => home.join(".codex/hooks.json"),
+        }
+    }
+
+    fn scope_display_hint(&self, scope: HookScope, _cwd: &Path, _home: &Path) -> String {
+        match scope {
+            HookScope::Local | HookScope::Shared => ".codex/hooks.json".into(),
+            HookScope::Global => "~/.codex/hooks.json".into(),
+        }
     }
 
     fn hook_events(&self) -> &'static [HookEventEntry] {
@@ -255,4 +290,121 @@ fn get_or_insert_table<'a>(root: &'a mut Table, key: &str) -> Result<&'a mut Tab
     value
         .as_table_mut()
         .with_context(|| format!("{key} must be a TOML table"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn supported_scopes_include_shared_and_global() {
+        let scopes = CodexProvider.supported_scopes();
+        assert!(scopes.contains(&HookScope::Shared));
+        assert!(scopes.contains(&HookScope::Global));
+    }
+
+    #[test]
+    fn hooks_path_routes_by_scope() {
+        let cwd = Path::new("/project");
+        let home = Path::new("/home/user");
+        assert_eq!(
+            CodexProvider.hooks_path(HookScope::Shared, cwd, home),
+            cwd.join(".codex/hooks.json")
+        );
+        assert_eq!(
+            CodexProvider.hooks_path(HookScope::Global, cwd, home),
+            home.join(".codex/hooks.json")
+        );
+    }
+
+    #[test]
+    fn install_list_remove_shared_scope() {
+        let tmp = tempdir().unwrap();
+        let cwd = tmp.path().to_path_buf();
+        let home = tmp.path().join("fakehome");
+        std::fs::create_dir_all(cwd.join(".codex")).unwrap();
+        let svc = crate::test_service();
+
+        let path = CodexProvider
+            .install_hooks(HookScope::Shared, &cwd, &home, false, &svc)
+            .unwrap();
+        assert_eq!(path, cwd.join(".codex/hooks.json"));
+        assert!(path.exists());
+
+        let entries = CodexProvider
+            .list_hooks(HookScope::Shared, &cwd, &home, &svc)
+            .unwrap();
+        assert!(!entries.is_empty());
+        assert!(entries[0].command.contains("cli-hook --tool codex-cli"));
+
+        let removed = CodexProvider
+            .remove_hooks(HookScope::Shared, &cwd, &home, &svc)
+            .unwrap();
+        assert!(removed.is_some());
+
+        let after = CodexProvider
+            .list_hooks(HookScope::Shared, &cwd, &home, &svc)
+            .unwrap();
+        assert!(after.is_empty());
+    }
+
+    #[test]
+    fn install_list_remove_global_scope() {
+        let tmp = tempdir().unwrap();
+        let home = tmp.path().to_path_buf();
+        std::fs::create_dir_all(home.join(".codex")).unwrap();
+        let svc = crate::test_service();
+
+        let path = CodexProvider
+            .install_hooks(HookScope::Global, &PathBuf::new(), &home, false, &svc)
+            .unwrap();
+        assert_eq!(path, home.join(".codex/hooks.json"));
+        assert!(path.exists());
+
+        let entries = CodexProvider
+            .list_hooks(HookScope::Global, &PathBuf::new(), &home, &svc)
+            .unwrap();
+        assert!(!entries.is_empty());
+
+        let removed = CodexProvider
+            .remove_hooks(HookScope::Global, &PathBuf::new(), &home, &svc)
+            .unwrap();
+        assert!(removed.is_some());
+    }
+
+    #[test]
+    fn write_mcp_config_creates_entry() {
+        let tmp = tempdir().unwrap();
+        let config = tmp.path().join("config.toml");
+        let svc = crate::test_service();
+
+        CodexProvider
+            .write_mcp_config(&config, "http://127.0.0.1:8371/mcp", None, &svc)
+            .unwrap();
+
+        let content: toml::Value =
+            toml::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
+        let entry = content
+            .get("mcp_servers")
+            .and_then(|m| m.get(svc.name))
+            .expect("mcp_servers.test-svc key");
+        assert_eq!(entry["url"].as_str().unwrap(), "http://127.0.0.1:8371/mcp");
+    }
+
+    #[test]
+    fn remove_mcp_config_deletes_entry() {
+        let tmp = tempdir().unwrap();
+        let config = tmp.path().join("config.toml");
+        let svc = crate::test_service();
+
+        CodexProvider
+            .write_mcp_config(&config, "http://127.0.0.1:8371/mcp", None, &svc)
+            .unwrap();
+        assert!(CodexProvider.is_configured(&config, &svc));
+
+        let removed = CodexProvider.remove_mcp_config(&config, &svc).unwrap();
+        assert!(removed);
+        assert!(!CodexProvider.is_configured(&config, &svc));
+    }
 }

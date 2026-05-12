@@ -71,6 +71,53 @@ pub trait AiProvider: Send + Sync + 'static {
         service: &ServiceIdentity,
     ) -> Result<()>;
     fn remove_mcp_config(&self, config_path: &Path, service: &ServiceIdentity) -> Result<bool>;
+
+    fn global_config_dir(&self, home: &Path) -> Option<PathBuf> {
+        let _ = home;
+        None
+    }
+    fn project_config_dir(&self) -> Option<&'static str> {
+        None
+    }
+    fn skills_dir(&self, home: &Path) -> Option<PathBuf> {
+        let _ = home;
+        None
+    }
+    fn project_skills_dir(&self) -> Option<&'static str> {
+        None
+    }
+    fn rules_dir(&self, home: &Path) -> Option<PathBuf> {
+        let _ = home;
+        None
+    }
+    fn project_rules_dir(&self) -> Option<&'static str> {
+        None
+    }
+    fn agents_dir(&self, home: &Path) -> Option<PathBuf> {
+        let _ = home;
+        None
+    }
+    fn project_agents_dir(&self) -> Option<&'static str> {
+        None
+    }
+    fn conversation_dir(&self, home: &Path) -> Option<PathBuf> {
+        let _ = home;
+        None
+    }
+    fn conversation_file_glob(&self) -> Option<&'static str> {
+        None
+    }
+    fn session_id_from_env(&self) -> Option<String> {
+        None
+    }
+    fn memory_dir(&self, home: &Path) -> Option<PathBuf> {
+        let _ = home;
+        None
+    }
+    fn history_file(&self, home: &Path) -> Option<PathBuf> {
+        let _ = home;
+        None
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize)]

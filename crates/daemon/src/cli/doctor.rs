@@ -355,6 +355,14 @@ fn check_sources(cfg: &config::Config) -> Check {
                     warnings.push(format!("{name}: parser '{}' — {e}", f.parser));
                 }
             }
+            SourceConfig::Conversation(c) => {
+                let known = daemon8_providers::ALL_PROVIDERS
+                    .iter()
+                    .any(|p| p.as_provider().id() == c.provider);
+                if !known {
+                    warnings.push(format!("{name}: unknown provider '{}'", c.provider));
+                }
+            }
         }
     }
 

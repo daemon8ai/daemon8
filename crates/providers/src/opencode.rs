@@ -118,6 +118,13 @@ impl AiProvider for OpenCodeProvider {
         }
         Ok(removed)
     }
+
+    fn global_config_dir(&self, home: &Path) -> Option<PathBuf> {
+        Some(home.join(".config/opencode"))
+    }
+    fn rules_dir(&self, home: &Path) -> Option<PathBuf> {
+        Some(home.join(".config/opencode/rules"))
+    }
 }
 
 fn opencode_has_mcp_server(config_path: &Path, name: &str) -> bool {

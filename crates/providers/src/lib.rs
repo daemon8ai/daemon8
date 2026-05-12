@@ -258,3 +258,126 @@ pub(crate) fn test_service() -> ServiceIdentity {
         status_message: Some("test telemetry"),
     }
 }
+
+#[cfg(test)]
+mod filesystem_layout_tests {
+    use std::path::Path;
+
+    use super::*;
+
+    fn home() -> &'static Path {
+        Path::new("/home/testuser")
+    }
+
+    #[test]
+    fn all_providers_have_global_config_dir() {
+        for p in ALL_PROVIDERS {
+            let dir = p.as_provider().global_config_dir(home());
+            assert!(
+                dir.is_some(),
+                "{} should have a global_config_dir",
+                p.label()
+            );
+        }
+    }
+
+    #[test]
+    fn claude_filesystem_layout() {
+        let p = Provider::ClaudeCode.as_provider();
+        assert_eq!(p.global_config_dir(home()).unwrap(), home().join(".claude"));
+        assert_eq!(p.project_config_dir(), Some(".claude"));
+        assert_eq!(
+            p.skills_dir(home()).unwrap(),
+            home().join(".claude/commands")
+        );
+        assert_eq!(p.project_skills_dir(), Some(".claude/commands"));
+        assert_eq!(p.rules_dir(home()).unwrap(), home().join(".claude/rules"));
+        assert_eq!(p.project_rules_dir(), Some(".claude/rules"));
+        assert!(p.agents_dir(home()).is_none());
+        assert_eq!(
+            p.conversation_dir(home()).unwrap(),
+            home().join(".claude/projects")
+        );
+        assert_eq!(p.conversation_file_glob(), Some("**/*.jsonl"));
+        assert_eq!(
+            p.memory_dir(home()).unwrap(),
+            home().join(".claude/projects")
+        );
+        assert!(p.history_file(home()).is_none());
+    }
+
+    #[test]
+    fn codex_filesystem_layout() {
+        let p = Provider::Codex.as_provider();
+        assert_eq!(p.global_config_dir(home()).unwrap(), home().join(".codex"));
+        assert_eq!(p.project_config_dir(), Some(".codex"));
+        assert_eq!(p.skills_dir(home()).unwrap(), home().join(".codex/skills"));
+        assert!(p.project_skills_dir().is_none());
+        assert!(p.rules_dir(home()).is_none());
+        assert!(p.agents_dir(home()).is_none());
+        assert_eq!(
+            p.conversation_dir(home()).unwrap(),
+            home().join(".codex/sessions")
+        );
+        assert_eq!(p.conversation_file_glob(), Some("**/*.jsonl"));
+        assert_eq!(
+            p.memory_dir(home()).unwrap(),
+            home().join(".codex/memories")
+        );
+        assert_eq!(
+            p.history_file(home()).unwrap(),
+            home().join(".codex/history.jsonl")
+        );
+    }
+
+    #[test]
+    fn gemini_filesystem_layout() {
+        let p = Provider::Gemini.as_provider();
+        assert_eq!(p.global_config_dir(home()).unwrap(), home().join(".gemini"));
+        assert_eq!(p.project_config_dir(), Some(".gemini"));
+        assert_eq!(p.skills_dir(home()).unwrap(), home().join(".gemini/skills"));
+        assert_eq!(p.project_skills_dir(), Some(".gemini/skills"));
+        assert!(p.rules_dir(home()).is_none());
+        assert_eq!(p.agents_dir(home()).unwrap(), home().join(".gemini/agents"));
+        assert_eq!(p.project_agents_dir(), Some(".gemini/agents"));
+        assert_eq!(
+            p.conversation_dir(home()).unwrap(),
+            home().join(".gemini/tmp")
+        );
+        assert_eq!(p.conversation_file_glob(), Some("**/chats/session-*.jsonl"));
+        assert!(p.memory_dir(home()).is_none());
+        assert!(p.history_file(home()).is_none());
+    }
+
+    #[test]
+    fn opencode_filesystem_layout() {
+        let p = Provider::OpenCode.as_provider();
+        assert_eq!(
+            p.global_config_dir(home()).unwrap(),
+            home().join(".config/opencode")
+        );
+        assert!(p.project_config_dir().is_none());
+        assert!(p.skills_dir(home()).is_none());
+        assert_eq!(
+            p.rules_dir(home()).unwrap(),
+            home().join(".config/opencode/rules")
+        );
+        assert!(p.agents_dir(home()).is_none());
+        assert!(p.conversation_dir(home()).is_none());
+        assert!(p.memory_dir(home()).is_none());
+    }
+
+    #[test]
+    fn hook_providers_have_conversation_dirs() {
+        for p in HOOK_PROVIDERS {
+            let dir = p.as_provider().conversation_dir(home());
+            assert!(dir.is_some(), "{} should have conversation_dir", p.label());
+            let glob = p.as_provider().conversation_file_glob();
+            assert!(
+                glob.is_some(),
+                "{} should have conversation_file_glob",
+                p.label()
+            );
+        }
+    }
+}

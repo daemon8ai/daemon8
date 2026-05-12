@@ -170,6 +170,37 @@ impl AiProvider for ClaudeCodeProvider {
         }
         super::helpers::remove_json_mcp_entry(config_path, service.name)
     }
+
+    fn global_config_dir(&self, home: &Path) -> Option<PathBuf> {
+        Some(home.join(".claude"))
+    }
+    fn project_config_dir(&self) -> Option<&'static str> {
+        Some(".claude")
+    }
+    fn skills_dir(&self, home: &Path) -> Option<PathBuf> {
+        Some(home.join(".claude/commands"))
+    }
+    fn project_skills_dir(&self) -> Option<&'static str> {
+        Some(".claude/commands")
+    }
+    fn rules_dir(&self, home: &Path) -> Option<PathBuf> {
+        Some(home.join(".claude/rules"))
+    }
+    fn project_rules_dir(&self) -> Option<&'static str> {
+        Some(".claude/rules")
+    }
+    fn conversation_dir(&self, home: &Path) -> Option<PathBuf> {
+        Some(home.join(".claude/projects"))
+    }
+    fn conversation_file_glob(&self) -> Option<&'static str> {
+        Some("**/*.jsonl")
+    }
+    fn session_id_from_env(&self) -> Option<String> {
+        std::env::var("CLAUDE_CODE_SESSION_ID").ok()
+    }
+    fn memory_dir(&self, home: &Path) -> Option<PathBuf> {
+        Some(home.join(".claude/projects"))
+    }
 }
 
 impl HookProvider for ClaudeCodeProvider {

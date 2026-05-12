@@ -305,16 +305,14 @@ mod tests {
         cancel: CancellationToken,
     ) {
         for (name, source) in sources {
-            match source {
-                SourceConfig::File(cfg) => {
-                    spawn_file_source(
-                        tasks,
-                        name.clone(),
-                        cfg.clone(),
-                        obs_tx.clone(),
-                        cancel.clone(),
-                    );
-                }
+            if let SourceConfig::File(cfg) = source {
+                spawn_file_source(
+                    tasks,
+                    name.clone(),
+                    cfg.clone(),
+                    obs_tx.clone(),
+                    cancel.clone(),
+                );
             }
         }
     }
