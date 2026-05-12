@@ -118,13 +118,14 @@ fn run_setup(
         .arg("--config")
         .arg(config_path)
         .arg("setup")
+        .arg("apply")
         .args(args)
         .current_dir(dir)
         .env("HOME", fake_home)
         .env_remove("CI")
         .stdin(Stdio::null())
         .output()
-        .expect("spawn daemon8 setup")
+        .expect("spawn daemon8 setup apply")
 }
 
 fn read_json(path: &Path) -> Value {

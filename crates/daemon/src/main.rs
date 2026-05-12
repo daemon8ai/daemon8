@@ -65,12 +65,15 @@ enum Commands {
         #[arg(value_enum)]
         shell: clap_complete::aot::Shell,
     },
-    /// Install daemon8 as a system service (starts on login, restarts on crash)
-    Install,
-    /// Remove daemon8 system service
-    Uninstall,
-    /// Register daemon8 MCP server with detected AI coding tools
-    Setup(cli::setup::SetupArgs),
+    /// Register MCP server, enable features, and initialize projects
+    #[command(subcommand)]
+    Setup(SetupSubcommand),
+    /// Manage daemon8 system service (install/uninstall)
+    #[command(subcommand)]
+    Service(ServiceSubcommand),
+    /// Manage daemon8 CLI hooks across providers (Claude Code, Codex, Gemini)
+    #[command(subcommand)]
+    Hooks(cli::hooks::HooksSubcommand),
     /// Real-time alert relay for MCP clients (experimental)
     Channel,
     /// Diagnose common configuration and environment issues
@@ -82,13 +85,34 @@ enum Commands {
     /// Universal CLI hook handler (invoked by AI coding agents)
     #[command(name = "cli-hook", hide = true)]
     CliHook(cli::hook_handler::CliHookArgs),
-    /// Initialize a `.daemon8.toml` at the current project
+
+    // Hidden aliases for backward compatibility
+    #[command(hide = true)]
+    Install,
+    #[command(hide = true)]
+    Uninstall,
+    #[command(hide = true)]
     Init(cli::init::InitArgs),
-    /// Manage daemon8 CLI hooks across providers (Claude Code, Codex, Gemini)
-    #[command(subcommand)]
-    Hooks(cli::hooks::HooksSubcommand),
+    #[command(hide = true)]
+    Features(cli::features::FeaturesArgs),
+}
+
+#[derive(Subcommand)]
+enum SetupSubcommand {
+    /// Auto-detect and register daemon8 MCP server with AI coding tools
+    Apply(cli::setup::SetupArgs),
     /// Enable daemon8 features interactively (hooks, project init)
     Features(cli::features::FeaturesArgs),
+    /// Initialize a `.daemon8.toml` at the current project
+    Init(cli::init::InitArgs),
+}
+
+#[derive(Subcommand)]
+enum ServiceSubcommand {
+    /// Install daemon8 as a system service (starts on login, restarts on crash)
+    Install,
+    /// Remove daemon8 system service
+    Uninstall,
 }
 
 #[tokio::main]
@@ -128,14 +152,24 @@ async fn main() -> Result<()> {
             use clap::CommandFactory;
             cli::completions::cmd_completions(shell, &mut Cli::command())
         }
-        Commands::Install => cli::service::cmd_install(),
-        Commands::Uninstall => cli::service::cmd_uninstall(),
-        Commands::Setup(args) => cli::setup::cmd_setup(cli.config, args).await,
+        Commands::Setup(sub) => match sub {
+            SetupSubcommand::Apply(args) => cli::setup::cmd_setup(cli.config, args).await,
+            SetupSubcommand::Features(args) => cli::features::cmd_features(args),
+            SetupSubcommand::Init(args) => cli::init::cmd_init(args),
+        },
+        Commands::Service(sub) => match sub {
+            ServiceSubcommand::Install => cli::service::cmd_install(),
+            ServiceSubcommand::Uninstall => cli::service::cmd_uninstall(),
+        },
+        Commands::Hooks(sub) => cli::hooks::cmd_hooks(sub).await,
         Commands::Channel => cli::channel::cmd_channel().await,
         Commands::Doctor { fix } => cli::doctor::cmd_doctor(cli.config, fix).await,
         Commands::CliHook(args) => cli::hook_handler::cmd_cli_hook(args),
+
+        // Hidden backward-compat aliases
+        Commands::Install => cli::service::cmd_install(),
+        Commands::Uninstall => cli::service::cmd_uninstall(),
         Commands::Init(args) => cli::init::cmd_init(args),
-        Commands::Hooks(sub) => cli::hooks::cmd_hooks(sub).await,
         Commands::Features(args) => cli::features::cmd_features(args),
     }
 }

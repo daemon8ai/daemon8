@@ -237,11 +237,11 @@ fn print_human(result: &SetupResult) {
     println!("     Tell your AI to use daemon8 for debugging and observation.");
     println!();
     println!("  2. Enable more features:");
-    println!("       daemon8 features       (interactive menu)");
+    println!("       daemon8 setup features    (interactive menu)");
     println!();
     println!("  3. Initialize a project:");
-    println!("       daemon8 init           (scaffold .daemon8.toml)");
-    println!("       daemon8 hooks list     (inspect hook state)");
+    println!("       daemon8 setup init        (scaffold .daemon8.toml)");
+    println!("       daemon8 hooks list        (inspect hook state)");
     println!();
     println!("  Docs: https://daemon8.ai/docs");
 }
