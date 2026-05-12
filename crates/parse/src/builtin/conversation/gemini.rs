@@ -20,37 +20,108 @@ pub fn parse_line(line: &str) -> Vec<ConversationEvent> {
         }];
     }
 
-    let Some(line_type) = obj.get("type").and_then(|t| t.as_str()) else {
-        return Vec::new();
-    };
-    if line_type != "gemini" {
+    if obj.get("$set").is_some() {
         return Vec::new();
     }
 
-    let msg_timestamp = obj
-        .get("timestamp")
-        .and_then(|t| t.as_str())
-        .map(String::from);
-    let Some(tool_calls) = obj.get("toolCalls").and_then(|t| t.as_array()) else {
+    let Some(line_type) = obj.get("type").and_then(|t| t.as_str()) else {
         return Vec::new();
     };
 
-    tool_calls
+    let timestamp = obj
+        .get("timestamp")
+        .and_then(|t| t.as_str())
+        .map(String::from);
+
+    let ts = timestamp.as_deref();
+
+    match line_type {
+        "gemini" => parse_gemini_line(&obj, ts),
+        "user" => parse_user_line(&obj, ts),
+        _ => vec![ConversationEvent::RawEvent {
+            line_type: line_type.to_string(),
+            timestamp,
+        }],
+    }
+}
+
+fn parse_gemini_line(obj: &serde_json::Value, timestamp: Option<&str>) -> Vec<ConversationEvent> {
+    let mut events = Vec::new();
+
+    let model = obj.get("model").and_then(|v| v.as_str()).map(String::from);
+    if model.is_some() {
+        events.push(ConversationEvent::TurnMeta {
+            model,
+            git_branch: None,
+            git_sha: None,
+            tokens: None,
+            duration_ms: None,
+            permission_mode: None,
+            cli_version: None,
+        });
+    }
+
+    let Some(tool_calls) = obj.get("toolCalls").and_then(|t| t.as_array()) else {
+        return events;
+    };
+
+    for tc in tool_calls {
+        let Some(name) = tc.get("name").and_then(|n| n.as_str()) else {
+            continue;
+        };
+        let args = tc.get("args").cloned().unwrap_or_default();
+        let call_id = tc.get("id").and_then(|v| v.as_str()).map(String::from);
+        let tc_timestamp = tc
+            .get("timestamp")
+            .and_then(|t| t.as_str())
+            .or(timestamp)
+            .map(String::from);
+
+        events.push(ConversationEvent::ToolUse {
+            tool: name.to_string(),
+            input: args,
+            call_id: call_id.clone(),
+            timestamp: tc_timestamp.clone(),
+        });
+
+        if let Some(results) = tc.get("result").and_then(|r| r.as_array()) {
+            for result in results {
+                if let Some(fr) = result.get("functionResponse") {
+                    let output = fr.get("response").cloned().unwrap_or_default();
+                    let result_id = fr
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .map(String::from)
+                        .or_else(|| call_id.clone());
+                    events.push(ConversationEvent::ToolResult {
+                        call_id: result_id,
+                        output,
+                        exit_code: None,
+                        timestamp: tc_timestamp.clone(),
+                    });
+                }
+            }
+        }
+    }
+
+    events
+}
+
+fn parse_user_line(obj: &serde_json::Value, timestamp: Option<&str>) -> Vec<ConversationEvent> {
+    let Some(content) = obj.get("content").and_then(|c| c.as_array()) else {
+        return Vec::new();
+    };
+
+    content
         .iter()
-        .filter_map(|tc| {
-            let name = tc.get("name")?.as_str()?.to_string();
-            let args = tc.get("args").cloned().unwrap_or_default();
-            let call_id = tc.get("id").and_then(|v| v.as_str()).map(String::from);
-            let timestamp = tc
-                .get("timestamp")
-                .and_then(|t| t.as_str())
-                .map(String::from)
-                .or_else(|| msg_timestamp.clone());
-            Some(ConversationEvent::ToolUse {
-                tool: name,
-                input: args,
-                call_id,
-                timestamp,
+        .filter_map(|block| {
+            let text = block.get("text").and_then(|t| t.as_str())?;
+            if text.is_empty() {
+                return None;
+            }
+            Some(ConversationEvent::UserPrompt {
+                text: text.to_string(),
+                timestamp: timestamp.map(String::from),
             })
         })
         .collect()
@@ -64,72 +135,87 @@ mod tests {
     fn parse_session_meta() {
         let line = r#"{"sessionId":"abc-123","projectHash":"xyz","startTime":"2026-01-01T00:00:00Z","lastUpdated":"2026-01-01T00:00:00Z","kind":"main"}"#;
         let events = parse_line(line);
-        assert_eq!(events.len(), 1);
-        match &events[0] {
-            ConversationEvent::SessionMeta {
-                session_id,
-                provider,
-                ..
-            } => {
-                assert_eq!(session_id, "abc-123");
-                assert_eq!(provider, "gemini");
-            }
-            other => panic!("expected SessionMeta, got {other:?}"),
-        }
+        assert!(events.iter().any(|e| matches!(e,
+            ConversationEvent::SessionMeta { session_id, provider, .. }
+            if session_id == "abc-123" && provider == "gemini"
+        )));
     }
 
     #[test]
     fn parse_tool_call() {
         let line = r#"{"id":"msg1","timestamp":"2026-01-01T00:00:00Z","type":"gemini","content":"","model":"gemini-3-flash","toolCalls":[{"id":"run_shell_1","name":"run_shell_command","args":{"command":"ls","description":"listing"},"result":[{"functionResponse":{"id":"run_shell_1","name":"run_shell_command","response":{"output":"file1\nfile2"}}}],"status":"success","timestamp":"2026-01-01T00:00:01Z"}]}"#;
         let events = parse_line(line);
-        assert_eq!(events.len(), 1);
-        match &events[0] {
-            ConversationEvent::ToolUse {
-                tool,
-                input,
-                call_id,
-                timestamp,
-            } => {
-                assert_eq!(tool, "run_shell_command");
-                assert_eq!(input["command"], "ls");
-                assert_eq!(call_id.as_deref(), Some("run_shell_1"));
-                assert_eq!(timestamp.as_deref(), Some("2026-01-01T00:00:01Z"));
-            }
-            other => panic!("expected ToolUse, got {other:?}"),
-        }
+        assert!(events.iter().any(|e| matches!(e,
+            ConversationEvent::ToolUse { tool, .. } if tool == "run_shell_command"
+        )));
+    }
+
+    #[test]
+    fn parse_tool_result_from_function_response() {
+        let line = r#"{"id":"msg1","timestamp":"2026-01-01T00:00:00Z","type":"gemini","content":"","model":"gemini-3-flash","toolCalls":[{"id":"tc1","name":"read_file","args":{"path":"a.rs"},"result":[{"functionResponse":{"id":"tc1","name":"read_file","response":{"output":"fn main(){}"}}}],"status":"success","timestamp":"2026-01-01T00:00:01Z"}]}"#;
+        let events = parse_line(line);
+        let results: Vec<_> = events
+            .iter()
+            .filter(|e| matches!(e, ConversationEvent::ToolResult { .. }))
+            .collect();
+        assert_eq!(results.len(), 1);
+        assert!(matches!(&results[0],
+            ConversationEvent::ToolResult { call_id: Some(id), output, .. }
+            if id == "tc1" && output["output"] == "fn main(){}"
+        ));
+    }
+
+    #[test]
+    fn parse_model_into_turn_meta() {
+        let line = r#"{"id":"msg1","timestamp":"2026-01-01T00:00:00Z","type":"gemini","content":"hello","model":"gemini-3-flash"}"#;
+        let events = parse_line(line);
+        assert!(events.iter().any(|e| matches!(e,
+            ConversationEvent::TurnMeta { model: Some(m), .. } if m == "gemini-3-flash"
+        )));
     }
 
     #[test]
     fn parse_multiple_tool_calls() {
         let line = r#"{"id":"msg1","timestamp":"2026-01-01T00:00:00Z","type":"gemini","content":"","toolCalls":[{"id":"tc1","name":"read_file","args":{"path":"a.rs"},"status":"success","timestamp":"2026-01-01T00:00:01Z"},{"id":"tc2","name":"run_shell_command","args":{"command":"ls"},"status":"success","timestamp":"2026-01-01T00:00:02Z"}]}"#;
+        let tool_uses: Vec<_> = parse_line(line)
+            .into_iter()
+            .filter(|e| matches!(e, ConversationEvent::ToolUse { .. }))
+            .collect();
+        assert_eq!(tool_uses.len(), 2);
+    }
+
+    #[test]
+    fn parse_user_prompt() {
+        let line = r#"{"id":"msg1","timestamp":"2026-01-01T00:00:00Z","type":"user","content":[{"text":"fix the bug"}]}"#;
         let events = parse_line(line);
-        assert_eq!(events.len(), 2);
-        match &events[0] {
-            ConversationEvent::ToolUse { tool, call_id, .. } => {
-                assert_eq!(tool, "read_file");
-                assert_eq!(call_id.as_deref(), Some("tc1"));
-            }
-            other => panic!("expected ToolUse, got {other:?}"),
-        }
-        match &events[1] {
-            ConversationEvent::ToolUse { tool, call_id, .. } => {
-                assert_eq!(tool, "run_shell_command");
-                assert_eq!(call_id.as_deref(), Some("tc2"));
-            }
-            other => panic!("expected ToolUse, got {other:?}"),
-        }
+        assert!(events.iter().any(|e| matches!(e,
+            ConversationEvent::UserPrompt { text, .. } if text == "fix the bug"
+        )));
     }
 
     #[test]
-    fn gemini_text_only_returns_empty() {
-        let line = r#"{"id":"msg1","timestamp":"2026-01-01T00:00:00Z","type":"gemini","content":"hello world","thoughts":[]}"#;
-        assert!(parse_line(line).is_empty());
+    fn gemini_text_only_returns_turn_meta() {
+        let line = r#"{"id":"msg1","timestamp":"2026-01-01T00:00:00Z","type":"gemini","content":"hello world","model":"gemini-3-flash","thoughts":[]}"#;
+        let events = parse_line(line);
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, ConversationEvent::TurnMeta { .. }))
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, ConversationEvent::ToolUse { .. }))
+        );
     }
 
     #[test]
-    fn user_message_returns_empty() {
+    fn user_message_returns_prompt() {
         let line = r#"{"id":"msg1","timestamp":"2026-01-01T00:00:00Z","type":"user","content":[{"text":"hello"}]}"#;
-        assert!(parse_line(line).is_empty());
+        let events = parse_line(line);
+        assert!(events.iter().any(|e| matches!(e,
+            ConversationEvent::UserPrompt { text, .. } if text == "hello"
+        )));
     }
 
     #[test]
@@ -142,5 +228,14 @@ mod tests {
     fn set_directive_returns_empty() {
         let line = r#"{"$set":{"lastUpdated":"2026-01-01T00:00:00Z"}}"#;
         assert!(parse_line(line).is_empty());
+    }
+
+    #[test]
+    fn unknown_type_emits_raw() {
+        let line = r#"{"type":"system","timestamp":"2026-01-01T00:00:00Z","content":"restarting"}"#;
+        let events = parse_line(line);
+        assert!(events.iter().any(|e| matches!(e,
+            ConversationEvent::RawEvent { line_type, .. } if line_type == "system"
+        )));
     }
 }

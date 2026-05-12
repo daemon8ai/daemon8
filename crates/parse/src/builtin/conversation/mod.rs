@@ -25,4 +25,32 @@ pub enum ConversationEvent {
         provider: String,
         model: Option<String>,
     },
+    UserPrompt {
+        text: String,
+        timestamp: Option<String>,
+    },
+    TurnMeta {
+        model: Option<String>,
+        git_branch: Option<String>,
+        git_sha: Option<String>,
+        tokens: Option<u64>,
+        duration_ms: Option<u64>,
+        permission_mode: Option<String>,
+        cli_version: Option<String>,
+    },
+    AgentSpawn {
+        parent_session: String,
+        child_session: String,
+        role: Option<String>,
+        nickname: Option<String>,
+        status: Option<String>,
+    },
+    FileChange {
+        path: String,
+        timestamp: Option<String>,
+    },
+    RawEvent {
+        line_type: String,
+        timestamp: Option<String>,
+    },
 }
