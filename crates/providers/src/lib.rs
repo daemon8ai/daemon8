@@ -11,6 +11,7 @@ pub mod traits;
 
 pub use traits::{
     AiProvider, HookEvent, HookEventEntry, HookProvider, HookScope, InstalledHookEntry, LogLevel,
+    ProjectEntry,
 };
 
 use std::io::IsTerminal;
@@ -106,6 +107,14 @@ impl ProviderWriteSummary {
             self.restart_labels.push(label);
         }
     }
+}
+
+pub fn list_all_projects() -> Vec<ProjectEntry> {
+    let home = dirs_home();
+    ALL_PROVIDERS
+        .iter()
+        .flat_map(|p| p.as_provider().list_projects(&home))
+        .collect()
 }
 
 pub fn is_non_interactive() -> bool {

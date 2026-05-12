@@ -186,6 +186,7 @@ impl FromStr for LogLevel {
 pub enum SourceConfig {
     File(FileSourceConfig),
     Conversation(ConversationSourceConfig),
+    Sqlite(SqliteSourceConfig),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -206,6 +207,21 @@ pub struct ConversationSourceConfig {
     pub provider: String,
     #[serde(default)]
     pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SqliteSourceConfig {
+    pub path: String,
+    pub provider: String,
+    #[serde(default = "default_sqlite_poll_secs")]
+    pub poll_interval_secs: u64,
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+fn default_sqlite_poll_secs() -> u64 {
+    60
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -510,7 +526,7 @@ pub fn resolve_screenshot_path(config: &Config) -> PathBuf {
     dir
 }
 
-fn expand_tilde(path: &std::path::Path) -> PathBuf {
+pub(crate) fn expand_tilde(path: &std::path::Path) -> PathBuf {
     let raw = path.to_string_lossy();
     if let Some(rest) = raw.strip_prefix('~')
         && let Some(home) = dirs::home_dir()
@@ -875,6 +891,47 @@ path = "/tmp/test.log"
             panic!("expected File source");
         };
         assert_eq!(f.parser, "line");
+    }
+
+    #[test]
+    fn sources_sqlite_type_parses() {
+        let cfg: Config = toml::from_str(
+            r#"
+[sources.codex-db]
+type = "sqlite"
+path = "~/.codex/state_5.sqlite"
+provider = "codex"
+poll_interval_secs = 30
+tags = ["codex", "agent-topology"]
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.sources.len(), 1);
+        let SourceConfig::Sqlite(s) = &cfg.sources["codex-db"] else {
+            panic!("expected Sqlite source");
+        };
+        assert_eq!(s.path, "~/.codex/state_5.sqlite");
+        assert_eq!(s.provider, "codex");
+        assert_eq!(s.poll_interval_secs, 30);
+        assert_eq!(s.tags, vec!["codex", "agent-topology"]);
+    }
+
+    #[test]
+    fn sources_sqlite_defaults() {
+        let cfg: Config = toml::from_str(
+            r#"
+[sources.codex-db]
+type = "sqlite"
+path = "~/.codex/state_5.sqlite"
+provider = "codex"
+"#,
+        )
+        .unwrap();
+        let SourceConfig::Sqlite(s) = &cfg.sources["codex-db"] else {
+            panic!("expected Sqlite source");
+        };
+        assert_eq!(s.poll_interval_secs, 60);
+        assert!(s.tags.is_empty());
     }
 
     #[test]

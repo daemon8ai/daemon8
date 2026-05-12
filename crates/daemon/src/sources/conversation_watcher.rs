@@ -268,7 +268,14 @@ fn event_to_observations(event: &ConversationEvent, ctx: &TailContext) -> Vec<Ob
     let origin = Origin::Application {
         name: AppName::from(ctx.origin_name.as_str()),
     };
+    convert_event(event, origin, &ctx.tags)
+}
 
+pub(super) fn convert_event(
+    event: &ConversationEvent,
+    origin: Origin,
+    tags: &[String],
+) -> Vec<Observation> {
     match event {
         ConversationEvent::ToolUse {
             tool,
@@ -291,7 +298,7 @@ fn event_to_observations(event: &ConversationEvent, ctx: &TailContext) -> Vec<Ob
                 Severity::Info,
                 None,
             );
-            apply_tags(&mut tool_obs, ctx);
+            apply_tags_to(&mut tool_obs, tags);
             if let Some(ns) = ts_ns {
                 tool_obs.timestamp_ns = ns;
             }
@@ -308,7 +315,7 @@ fn event_to_observations(event: &ConversationEvent, ctx: &TailContext) -> Vec<Ob
                 Severity::Info,
                 None,
             );
-            apply_tags(&mut custom_obs, ctx);
+            apply_tags_to(&mut custom_obs, tags);
             if let Some(ns) = ts_ns {
                 custom_obs.timestamp_ns = ns;
             }
@@ -334,7 +341,7 @@ fn event_to_observations(event: &ConversationEvent, ctx: &TailContext) -> Vec<Ob
                 Severity::Info,
                 None,
             );
-            apply_tags(&mut obs, ctx);
+            apply_tags_to(&mut obs, tags);
             apply_timestamp(&mut obs, timestamp.as_deref());
             vec![obs]
         }
@@ -358,7 +365,7 @@ fn event_to_observations(event: &ConversationEvent, ctx: &TailContext) -> Vec<Ob
                 Severity::Info,
                 None,
             );
-            apply_tags(&mut obs, ctx);
+            apply_tags_to(&mut obs, tags);
             obs.session_id = Some(session_id.as_str().into());
             vec![obs]
         }
@@ -372,7 +379,7 @@ fn event_to_observations(event: &ConversationEvent, ctx: &TailContext) -> Vec<Ob
                 Severity::Info,
                 None,
             );
-            apply_tags(&mut obs, ctx);
+            apply_tags_to(&mut obs, tags);
             apply_timestamp(&mut obs, timestamp.as_deref());
             vec![obs]
         }
@@ -402,7 +409,7 @@ fn event_to_observations(event: &ConversationEvent, ctx: &TailContext) -> Vec<Ob
                 Severity::Debug,
                 None,
             );
-            apply_tags(&mut obs, ctx);
+            apply_tags_to(&mut obs, tags);
             vec![obs]
         }
         ConversationEvent::AgentSpawn {
@@ -427,7 +434,7 @@ fn event_to_observations(event: &ConversationEvent, ctx: &TailContext) -> Vec<Ob
                 Severity::Info,
                 None,
             );
-            apply_tags(&mut obs, ctx);
+            apply_tags_to(&mut obs, tags);
             vec![obs]
         }
         ConversationEvent::FileChange { path, timestamp } => {
@@ -440,7 +447,7 @@ fn event_to_observations(event: &ConversationEvent, ctx: &TailContext) -> Vec<Ob
                 Severity::Debug,
                 None,
             );
-            apply_tags(&mut obs, ctx);
+            apply_tags_to(&mut obs, tags);
             apply_timestamp(&mut obs, timestamp.as_deref());
             vec![obs]
         }
@@ -457,26 +464,26 @@ fn event_to_observations(event: &ConversationEvent, ctx: &TailContext) -> Vec<Ob
                 Severity::Trace,
                 None,
             );
-            apply_tags(&mut obs, ctx);
+            apply_tags_to(&mut obs, tags);
             apply_timestamp(&mut obs, timestamp.as_deref());
             vec![obs]
         }
     }
 }
 
-fn apply_tags(obs: &mut Observation, ctx: &TailContext) {
-    if !ctx.tags.is_empty() {
-        obs.tags = Some(ctx.tags.clone());
+fn apply_tags_to(obs: &mut Observation, tags: &[String]) {
+    if !tags.is_empty() {
+        obs.tags = Some(tags.to_vec());
     }
 }
 
-fn apply_timestamp(obs: &mut Observation, ts: Option<&str>) {
+pub(super) fn apply_timestamp(obs: &mut Observation, ts: Option<&str>) {
     if let Some(ns) = resolve_timestamp(ts) {
         obs.timestamp_ns = ns;
     }
 }
 
-fn resolve_timestamp(ts: Option<&str>) -> Option<u64> {
+pub(super) fn resolve_timestamp(ts: Option<&str>) -> Option<u64> {
     ts.and_then(daemon8_parse::timestamp::normalize_timestamp_ns)
         .and_then(|ns| u64::try_from(ns).ok())
 }

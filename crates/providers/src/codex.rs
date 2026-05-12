@@ -154,6 +154,38 @@ impl AiProvider for CodexProvider {
     fn history_file(&self, home: &Path) -> Option<PathBuf> {
         Some(home.join(".codex/history.jsonl"))
     }
+    fn list_projects(&self, home: &Path) -> Vec<super::traits::ProjectEntry> {
+        let db_path = home.join(".codex/state_5.sqlite");
+        if !db_path.exists() {
+            return Vec::new();
+        }
+        let Ok(output) = std::process::Command::new("sqlite3")
+            .arg(&db_path)
+            .arg("SELECT cwd, MAX(COALESCE(updated_at_ms, updated_at * 1000)) FROM threads GROUP BY cwd ORDER BY 2 DESC")
+            .output()
+        else {
+            return Vec::new();
+        };
+        if !output.status.success() {
+            return Vec::new();
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        stdout
+            .lines()
+            .filter(|line| !line.is_empty())
+            .filter_map(|line| {
+                let (cwd, ts) = line.split_once('|')?;
+                let path = PathBuf::from(cwd);
+                let last_active_ms = ts.parse::<u64>().ok();
+                Some(super::traits::ProjectEntry {
+                    slug: cwd.to_string(),
+                    path,
+                    provider: "codex",
+                    last_active_ms,
+                })
+            })
+            .collect()
+    }
 }
 
 impl HookProvider for CodexProvider {
@@ -406,5 +438,12 @@ mod tests {
         let removed = CodexProvider.remove_mcp_config(&config, &svc).unwrap();
         assert!(removed);
         assert!(!CodexProvider.is_configured(&config, &svc));
+    }
+
+    #[test]
+    fn list_projects_no_db() {
+        let home = tempfile::tempdir().unwrap();
+        let entries = CodexProvider.list_projects(home.path());
+        assert!(entries.is_empty());
     }
 }

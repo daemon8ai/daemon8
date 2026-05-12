@@ -118,6 +118,18 @@ pub trait AiProvider: Send + Sync + 'static {
         let _ = home;
         None
     }
+    fn list_projects(&self, home: &Path) -> Vec<ProjectEntry> {
+        let _ = home;
+        Vec::new()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ProjectEntry {
+    pub slug: String,
+    pub path: PathBuf,
+    pub provider: &'static str,
+    pub last_active_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]

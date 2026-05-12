@@ -156,6 +156,34 @@ impl AiProvider for GeminiProvider {
     fn session_id_from_env(&self) -> Option<String> {
         std::env::var("GEMINI_SESSION_ID").ok()
     }
+    fn list_projects(&self, home: &Path) -> Vec<super::traits::ProjectEntry> {
+        let projects_path = home.join(".gemini/projects.json");
+        let Ok(content) = std::fs::read_to_string(&projects_path) else {
+            return Vec::new();
+        };
+        let Ok(root) = serde_json::from_str::<serde_json::Value>(&content) else {
+            return Vec::new();
+        };
+        let Some(projects) = root.get("projects").and_then(|v| v.as_object()) else {
+            return Vec::new();
+        };
+        projects
+            .iter()
+            .filter_map(|(path_str, slug_val)| {
+                let slug = slug_val.as_str().unwrap_or(path_str).to_string();
+                let path = PathBuf::from(path_str);
+                if !path.is_absolute() {
+                    return None;
+                }
+                Some(super::traits::ProjectEntry {
+                    slug,
+                    path,
+                    provider: "gemini",
+                    last_active_ms: None,
+                })
+            })
+            .collect()
+    }
 }
 
 impl HookProvider for GeminiProvider {
@@ -337,5 +365,40 @@ mod tests {
             .list_hooks(HookScope::Shared, &cwd, &home, &svc)
             .unwrap();
         assert!(after.is_empty());
+    }
+
+    #[test]
+    fn list_projects_parses_json() {
+        let home = tempdir().unwrap();
+        let gemini_dir = home.path().join(".gemini");
+        std::fs::create_dir_all(&gemini_dir).unwrap();
+        std::fs::write(
+            gemini_dir.join("projects.json"),
+            r#"{"projects":{"/tmp/myproject":"myproject","/tmp/other":"other"}}"#,
+        )
+        .unwrap();
+
+        let entries = GeminiProvider.list_projects(home.path());
+        assert_eq!(entries.len(), 2);
+        assert!(entries.iter().all(|e| e.provider == "gemini"));
+        assert!(entries.iter().any(|e| e.slug == "myproject"));
+    }
+
+    #[test]
+    fn list_projects_missing_file() {
+        let home = tempdir().unwrap();
+        let entries = GeminiProvider.list_projects(home.path());
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn list_projects_malformed_json() {
+        let home = tempdir().unwrap();
+        let gemini_dir = home.path().join(".gemini");
+        std::fs::create_dir_all(&gemini_dir).unwrap();
+        std::fs::write(gemini_dir.join("projects.json"), "not json").unwrap();
+
+        let entries = GeminiProvider.list_projects(home.path());
+        assert!(entries.is_empty());
     }
 }

@@ -195,6 +195,13 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
             None
         };
 
+    {
+        let lib = librarian_store.clone();
+        tasks.spawn(async move {
+            register_provider_projects(lib).await;
+        });
+    }
+
     let setup_tool_fn: daemon8_mcp::SetupToolFn = Arc::new(move |action| {
         let setup_config_path = setup_config_path.clone();
         Box::pin(async move {
@@ -1366,6 +1373,45 @@ mod chrome_handler_tests {
         assert_eq!(
             decide_connect_action(true, ConnectionState::Disconnected, false),
             ConnectDecision::AbortAndSpawn
+        );
+    }
+}
+
+async fn register_provider_projects(lib: Arc<dyn daemon8_store::LibrarianStore>) {
+    let projects = daemon8_providers::list_all_projects();
+    if projects.is_empty() {
+        return;
+    }
+    let now = current_ns();
+    let mut registered = 0u32;
+    for entry in &projects {
+        let node = daemon8_store::LibrarianNode {
+            id: None,
+            kind: daemon8_types::LibrarianNodeKind::Project,
+            label: entry.slug.clone(),
+            locator_kind: daemon8_types::LocatorKind::File,
+            locator: entry.path.to_string_lossy().to_string(),
+            tags: vec![format!("provider:{}", entry.provider)],
+            project_slug: entry.slug.clone(),
+            version: String::new(),
+            parent_id: None,
+            created_at: now,
+            updated_at: now,
+            last_read_at: None,
+            deprecated_at: None,
+            canonicalized_at: None,
+        };
+        match lib.index_node(node).await {
+            Ok(_) => registered += 1,
+            Err(e) => {
+                tracing::warn!(slug = %entry.slug, "failed to register project: {e}");
+            }
+        }
+    }
+    if registered > 0 {
+        tracing::info!(
+            count = registered,
+            "registered provider projects in librarian"
         );
     }
 }

@@ -363,6 +363,12 @@ fn check_sources(cfg: &config::Config) -> Check {
                     warnings.push(format!("{name}: unknown provider '{}'", c.provider));
                 }
             }
+            SourceConfig::Sqlite(s) => {
+                let expanded = crate::config::expand_tilde(Path::new(&s.path));
+                if !expanded.exists() {
+                    warnings.push(format!("{name}: sqlite path not found ({})", s.path));
+                }
+            }
         }
     }
 

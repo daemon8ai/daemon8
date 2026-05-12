@@ -201,6 +201,57 @@ impl AiProvider for ClaudeCodeProvider {
     fn memory_dir(&self, home: &Path) -> Option<PathBuf> {
         Some(home.join(".claude/projects"))
     }
+    fn list_projects(&self, home: &Path) -> Vec<super::traits::ProjectEntry> {
+        let projects_dir = home.join(".claude/projects");
+        let Ok(entries) = std::fs::read_dir(&projects_dir) else {
+            return Vec::new();
+        };
+
+        entries
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().map(|ft| ft.is_dir()).unwrap_or(false))
+            .filter_map(|e| {
+                let slug = e.file_name().to_string_lossy().to_string();
+                let path = decode_project_slug(&slug)?;
+                if !path.exists() {
+                    return None;
+                }
+                let last_active_ms = newest_jsonl_mtime_ms(&e.path());
+                Some(super::traits::ProjectEntry {
+                    slug,
+                    path,
+                    provider: "claude",
+                    last_active_ms,
+                })
+            })
+            .collect()
+    }
+}
+
+fn decode_project_slug(slug: &str) -> Option<PathBuf> {
+    if !slug.starts_with('-') {
+        return None;
+    }
+    let decoded = slug.replacen('-', "/", 1).replace('-', "/");
+    let path = PathBuf::from(&decoded);
+    if path.is_absolute() { Some(path) } else { None }
+}
+
+fn newest_jsonl_mtime_ms(dir: &Path) -> Option<u64> {
+    std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "jsonl"))
+        .filter_map(|e| {
+            e.metadata()
+                .ok()?
+                .modified()
+                .ok()?
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()
+                .map(|d| d.as_millis() as u64)
+        })
+        .max()
 }
 
 impl HookProvider for ClaudeCodeProvider {
@@ -292,4 +343,72 @@ fn write_claude_json_config(
     }
 
     super::helpers::write_json_mcp_entries(config_path, &entries)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decode_project_slug_valid() {
+        let path = decode_project_slug("-Users-jhavens-Code-Me-Rust-daemon8");
+        assert_eq!(
+            path,
+            Some(PathBuf::from("/Users/jhavens/Code/Me/Rust/daemon8"))
+        );
+    }
+
+    #[test]
+    fn decode_project_slug_no_leading_dash() {
+        assert!(decode_project_slug("Users-jhavens").is_none());
+    }
+
+    #[test]
+    fn decode_project_slug_root_returns_root() {
+        assert_eq!(decode_project_slug("-"), Some(PathBuf::from("/")));
+    }
+
+    #[test]
+    fn list_projects_with_temp_dirs() {
+        let home = tempfile::tempdir().unwrap();
+        let projects_dir = home.path().join(".claude/projects");
+
+        let slug = format!(
+            "-{}",
+            home.path()
+                .join("myproject")
+                .to_string_lossy()
+                .replace('/', "-")
+        );
+        let project_dir = projects_dir.join(&slug);
+        std::fs::create_dir_all(&project_dir).unwrap();
+
+        let real_project = home.path().join("myproject");
+        std::fs::create_dir_all(&real_project).unwrap();
+
+        let provider = ClaudeCodeProvider;
+        let entries = provider.list_projects(home.path());
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].path, real_project);
+        assert_eq!(entries[0].provider, "claude");
+    }
+
+    #[test]
+    fn list_projects_empty_dir() {
+        let home = tempfile::tempdir().unwrap();
+        let projects_dir = home.path().join(".claude/projects");
+        std::fs::create_dir_all(&projects_dir).unwrap();
+
+        let provider = ClaudeCodeProvider;
+        let entries = provider.list_projects(home.path());
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn list_projects_no_dir() {
+        let home = tempfile::tempdir().unwrap();
+        let provider = ClaudeCodeProvider;
+        let entries = provider.list_projects(home.path());
+        assert!(entries.is_empty());
+    }
 }
