@@ -1,0 +1,10 @@
+{
+  "name": "example/symfony-app",
+  "type": "project",
+  "require": {
+    "php": "^8.4",
+    "symfony/framework-bundle": "^7.1",
+    "symfony/runtime": "^7.1",
+    "symfony/console": "^7.1"
+  }
+}

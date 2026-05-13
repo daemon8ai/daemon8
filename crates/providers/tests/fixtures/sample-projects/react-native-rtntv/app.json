@@ -1,0 +1,10 @@
+{
+  "name": "rtntv-vega",
+  "displayName": "rtntv-vega",
+  "vega": {
+    "minSdkVersion": "1.0.0"
+  },
+  "kepler": {
+    "studioVersion": "1.0.0"
+  }
+}

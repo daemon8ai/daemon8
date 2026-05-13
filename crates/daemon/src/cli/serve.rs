@@ -1400,6 +1400,7 @@ async fn register_provider_projects(lib: Arc<dyn daemon8_store::LibrarianStore>)
             last_read_at: None,
             deprecated_at: None,
             canonicalized_at: None,
+            data: None,
         };
         match lib.index_node(node).await {
             Ok(_) => registered += 1,

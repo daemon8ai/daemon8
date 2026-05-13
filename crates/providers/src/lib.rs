@@ -7,8 +7,10 @@ pub mod gemini;
 pub(crate) mod helpers;
 pub mod hook_management;
 pub mod opencode;
+pub mod project_type;
 pub mod traits;
 
+pub use project_type::classify;
 pub use traits::{
     AiProvider, HookEvent, HookEventEntry, HookProvider, HookScope, InstalledHookEntry, LogLevel,
     ProjectEntry,

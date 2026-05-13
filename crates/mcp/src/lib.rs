@@ -2762,6 +2762,7 @@ pub async fn librarian_index_inner(
         } else {
             None
         },
+        data: None,
     };
 
     let id = match lib_store.index_node(node).await {

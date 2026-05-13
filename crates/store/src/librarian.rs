@@ -4,7 +4,9 @@
 use surrealdb::Surreal;
 use surrealdb::engine::local::Db;
 
+use crate::librarian_validators::{validate_project_node_data, validate_source_template_data};
 use crate::{LibrarianEdge, LibrarianFilter, LibrarianNode, LibrarianStore, StoreError};
+use daemon8_types::LibrarianNodeKind;
 
 const NAMESPACE: &str = "daemon8";
 const DATABASE: &str = "observations";
@@ -41,6 +43,7 @@ impl SurrealLibrarianStore {
                  DEFINE FIELD IF NOT EXISTS last_read_at  ON catalog_node TYPE option<int>;
                  DEFINE FIELD IF NOT EXISTS deprecated_at    ON catalog_node TYPE option<int>;
                  DEFINE FIELD IF NOT EXISTS canonicalized_at ON catalog_node TYPE option<int>;
+                 DEFINE FIELD IF NOT EXISTS data             ON catalog_node TYPE option<object> FLEXIBLE;
 
                  DEFINE INDEX IF NOT EXISTS idx_cn_kind       ON catalog_node FIELDS kind;
                  DEFINE INDEX IF NOT EXISTS idx_cn_project    ON catalog_node FIELDS project_slug;
@@ -245,6 +248,32 @@ fn civil_from_days(days: i64) -> (i32, u32, u32) {
 #[async_trait::async_trait]
 impl LibrarianStore for SurrealLibrarianStore {
     async fn index_node(&self, mut node: LibrarianNode) -> Result<String, StoreError> {
+        // Validate kind-specific `data` payload before any write. Source
+        // templates and project nodes carry portability and tag-set rules
+        // that must hold (see librarian_validators). Other kinds may
+        // currently ship without data — no validator runs on them.
+        if let Some(ref data) = node.data {
+            match node.kind {
+                LibrarianNodeKind::SourceTemplate => {
+                    let parsed: daemon8_types::SourceTemplateData =
+                        serde_json::from_value(data.clone()).map_err(|e| {
+                            StoreError::Other(format!(
+                                "source_template.data does not match schema: {e}"
+                            ))
+                        })?;
+                    validate_source_template_data(&parsed)?;
+                }
+                LibrarianNodeKind::Project => {
+                    let parsed: daemon8_types::ProjectNodeData =
+                        serde_json::from_value(data.clone()).map_err(|e| {
+                            StoreError::Other(format!("project.data does not match schema: {e}"))
+                        })?;
+                    validate_project_node_data(&parsed)?;
+                }
+                LibrarianNodeKind::Doc | LibrarianNodeKind::Fix => {}
+            }
+        }
+
         // Check for existing non-deprecated node with same locator
         let mut existing = self
             .db
@@ -562,6 +591,7 @@ mod tests {
             last_read_at: None,
             deprecated_at: None,
             canonicalized_at: None,
+            data: None,
         }
     }
 
@@ -1089,5 +1119,206 @@ mod tests {
         assert_eq!(parts[0].len(), 4, "year must be 4 digits");
         assert_eq!(parts[1].len(), 2, "month must be 2 digits");
         assert_eq!(parts[2].len(), 2, "day must be 2 digits");
+    }
+
+    // ── D6 data-payload round-trips and validator rejection ─────────
+
+    fn template_data_value() -> serde_json::Value {
+        serde_json::to_value(daemon8_types::SourceTemplateData {
+            project_types: vec!["react-native".into(), "vega".into()],
+            kind: daemon8_types::SourceKind::Log,
+            locator_pattern: "~/Library/Logs/example.log".into(),
+            platforms: vec![daemon8_types::Platform::Macos],
+            parser_hint: Some("react-native-bridge".into()),
+            default_tags: vec!["kepler".into()],
+            description: "example log".into(),
+            version_constraint: Some(">=0.74".into()),
+            discovered_by_session: Some("claude-a3f1b2".into()),
+            discovered_by_provider: Some("claude".into()),
+            discovered_at_ns: 1_000_000,
+            verified_count: 0,
+            last_verified_at_ns: 0,
+            confidence: daemon8_types::TemplateConfidence::AgentDiscovered,
+        })
+        .unwrap()
+    }
+
+    fn project_data_value() -> serde_json::Value {
+        let mut versions = std::collections::BTreeMap::new();
+        versions.insert("react-native".into(), "0.74.5".into());
+        serde_json::to_value(daemon8_types::ProjectNodeData {
+            root_path: std::path::PathBuf::from("/tmp/sample-rn-project"),
+            slug: "sample-rn".into(),
+            classification_tags: vec!["react-native".into(), "git-repo".into()],
+            framework_versions: versions,
+            platform: daemon8_types::Platform::Macos,
+            created_at_ns: 1_000_000,
+            last_serve_at_ns: 2_000_000,
+            skip_discovery: false,
+        })
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn source_template_data_round_trip() {
+        let (_store, lib) = setup().await;
+
+        let mut node = make_node(
+            LibrarianNodeKind::SourceTemplate,
+            "Kepler core log",
+            "~/Library/Logs/example.log",
+            "any",
+        );
+        node.tags = vec!["react-native".into(), "vega".into()];
+        node.data = Some(template_data_value());
+
+        let id = lib.index_node(node).await.unwrap();
+        let fetched = lib.get_node(&id).await.unwrap().unwrap();
+        let data = fetched.data.expect("data must round-trip");
+        let parsed: daemon8_types::SourceTemplateData = serde_json::from_value(data).unwrap();
+
+        assert_eq!(parsed.project_types, vec!["react-native", "vega"]);
+        assert_eq!(parsed.kind, daemon8_types::SourceKind::Log);
+        assert_eq!(parsed.platforms, vec![daemon8_types::Platform::Macos]);
+        assert_eq!(parsed.version_constraint.as_deref(), Some(">=0.74"));
+        assert_eq!(
+            parsed.confidence,
+            daemon8_types::TemplateConfidence::AgentDiscovered
+        );
+    }
+
+    #[tokio::test]
+    async fn project_node_data_round_trip() {
+        let (_store, lib) = setup().await;
+
+        let mut node = make_node(
+            LibrarianNodeKind::Project,
+            "sample-rn",
+            "/tmp/sample-rn-project",
+            "sample-rn",
+        );
+        node.data = Some(project_data_value());
+
+        let id = lib.index_node(node).await.unwrap();
+        let fetched = lib.get_node(&id).await.unwrap().unwrap();
+        let data = fetched.data.expect("data must round-trip");
+        let parsed: daemon8_types::ProjectNodeData = serde_json::from_value(data).unwrap();
+
+        assert_eq!(parsed.slug, "sample-rn");
+        assert_eq!(parsed.classification_tags, vec!["react-native", "git-repo"]);
+        assert_eq!(
+            parsed
+                .framework_versions
+                .get("react-native")
+                .map(String::as_str),
+            Some("0.74.5")
+        );
+        assert_eq!(parsed.platform, daemon8_types::Platform::Macos);
+        assert!(!parsed.skip_discovery);
+    }
+
+    #[tokio::test]
+    async fn rejects_template_with_absolute_home_path() {
+        let (_store, lib) = setup().await;
+
+        let mut data = template_data_value();
+        data["locator_pattern"] =
+            serde_json::Value::String("/Users/jhavens/Library/Logs/x.log".into());
+
+        let mut node = make_node(
+            LibrarianNodeKind::SourceTemplate,
+            "bad path",
+            "~/x.log",
+            "any",
+        );
+        node.data = Some(data);
+
+        let err = lib.index_node(node).await.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("absolute home path"),
+            "expected portability error, got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_template_with_empty_platforms() {
+        let (_store, lib) = setup().await;
+
+        let mut data = template_data_value();
+        data["platforms"] = serde_json::json!([]);
+
+        let mut node = make_node(
+            LibrarianNodeKind::SourceTemplate,
+            "no platforms",
+            "~/y.log",
+            "any",
+        );
+        node.data = Some(data);
+
+        let err = lib.index_node(node).await.unwrap_err();
+        assert!(err.to_string().contains("platforms must not be empty"));
+    }
+
+    #[tokio::test]
+    async fn rejects_template_with_unknown_project_type_tag() {
+        let (_store, lib) = setup().await;
+
+        let mut data = template_data_value();
+        data["project_types"] = serde_json::json!(["nonexistent-framework"]);
+
+        let mut node = make_node(
+            LibrarianNodeKind::SourceTemplate,
+            "bad tag",
+            "~/z.log",
+            "any",
+        );
+        node.data = Some(data);
+
+        let err = lib.index_node(node).await.unwrap_err();
+        assert!(err.to_string().contains("unknown tag"));
+    }
+
+    #[tokio::test]
+    async fn init_schema_is_idempotent() {
+        // Re-applying init_schema on an already-initialized store must
+        // succeed without error. This is the guarantee that dev installs
+        // with an existing observations.db survive an upgrade.
+        let store = SurrealStore::memory().await.unwrap();
+        let lib = store.librarian_store();
+        lib.init_schema().await.unwrap();
+        lib.init_schema().await.unwrap();
+        lib.init_schema().await.unwrap();
+
+        // After re-init, writes must still work and pick up the new
+        // `data` field.
+        let mut node = make_node(
+            LibrarianNodeKind::SourceTemplate,
+            "post-reinit",
+            "~/post-reinit.log",
+            "any",
+        );
+        node.data = Some(template_data_value());
+        let id = lib.index_node(node).await.unwrap();
+        assert!(!id.is_empty());
+    }
+
+    #[tokio::test]
+    async fn rejects_project_with_unknown_classification_tag() {
+        let (_store, lib) = setup().await;
+
+        let mut data = project_data_value();
+        data["classification_tags"] = serde_json::json!(["mystery"]);
+
+        let mut node = make_node(
+            LibrarianNodeKind::Project,
+            "bad project",
+            "/tmp/bad-project",
+            "bad",
+        );
+        node.data = Some(data);
+
+        let err = lib.index_node(node).await.unwrap_err();
+        assert!(err.to_string().contains("unknown tag"));
     }
 }

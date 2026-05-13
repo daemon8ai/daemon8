@@ -2,8 +2,9 @@
 // Copyright (c) 2026 Havy.tech, LLC
 
 use std::borrow::Borrow;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -860,6 +861,195 @@ impl std::str::FromStr for LocatorKind {
             other => Err(format!("unknown locator kind: {other}")),
         }
     }
+}
+
+// ── Project-aware onboarding types (D1 + D6 + D11) ───────────────────
+//
+// Host platform tag. Carried by ProjectClassification (D1) and the
+// platforms array on source_template entries (D6). Kept narrow on
+// purpose; OS variants beyond these three get added when we have a
+// concrete user need.
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Platform {
+    Macos,
+    Linux,
+    Windows,
+}
+
+impl Platform {
+    pub fn current() -> Self {
+        if cfg!(target_os = "macos") {
+            Self::Macos
+        } else if cfg!(target_os = "windows") {
+            Self::Windows
+        } else {
+            Self::Linux
+        }
+    }
+}
+
+impl fmt::Display for Platform {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            Self::Macos => "macos",
+            Self::Linux => "linux",
+            Self::Windows => "windows",
+        };
+        f.write_str(s)
+    }
+}
+
+impl std::str::FromStr for Platform {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "macos" | "darwin" | "osx" => Ok(Self::Macos),
+            "linux" => Ok(Self::Linux),
+            "windows" | "win" => Ok(Self::Windows),
+            other => Err(format!("unknown platform: {other}")),
+        }
+    }
+}
+
+// What kind of runtime data a source_template points to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceKind {
+    Log,
+    Config,
+    Conversation,
+    Cache,
+    Crash,
+    Build,
+    Db,
+    Metric,
+}
+
+impl fmt::Display for SourceKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            Self::Log => "log",
+            Self::Config => "config",
+            Self::Conversation => "conversation",
+            Self::Cache => "cache",
+            Self::Crash => "crash",
+            Self::Build => "build",
+            Self::Db => "db",
+            Self::Metric => "metric",
+        };
+        f.write_str(s)
+    }
+}
+
+impl std::str::FromStr for SourceKind {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "log" => Ok(Self::Log),
+            "config" => Ok(Self::Config),
+            "conversation" => Ok(Self::Conversation),
+            "cache" => Ok(Self::Cache),
+            "crash" => Ok(Self::Crash),
+            "build" => Ok(Self::Build),
+            "db" => Ok(Self::Db),
+            "metric" => Ok(Self::Metric),
+            other => Err(format!("unknown source kind: {other}")),
+        }
+    }
+}
+
+// Provenance of a source_template entry. Lets the doctor flow (D8)
+// distinguish "agent found this" from "user wrote this in TOML" from
+// "we've seen this template fail and marked it suspect."
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TemplateConfidence {
+    AgentDiscovered,
+    UserProvided,
+    Drifted,
+}
+
+impl fmt::Display for TemplateConfidence {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            Self::AgentDiscovered => "agent_discovered",
+            Self::UserProvided => "user_provided",
+            Self::Drifted => "drifted",
+        };
+        f.write_str(s)
+    }
+}
+
+impl std::str::FromStr for TemplateConfidence {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "agent_discovered" => Ok(Self::AgentDiscovered),
+            "user_provided" => Ok(Self::UserProvided),
+            "drifted" => Ok(Self::Drifted),
+            other => Err(format!("unknown template confidence: {other}")),
+        }
+    }
+}
+
+// Output of crates/providers/src/project_type.rs::classify.
+//
+// Multi-tag by design: a single repo can be react-native + vega +
+// git-repo. The librarian's source_template lookups use these tags
+// with OR semantics (template applies if ANY tag matches).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectClassification {
+    pub tags: Vec<String>,
+    pub framework_versions: BTreeMap<String, String>,
+    pub root: PathBuf,
+    pub manifests: BTreeMap<String, PathBuf>,
+    pub platform: Platform,
+}
+
+// Payload stored on a LibrarianNode with kind = source_template.
+// Validated at write time by crates/store/src/librarian_validators.rs.
+//
+// Cross-cutting fields (kind, locator, tags) live on LibrarianNode
+// itself for SurrealDB indexability; the per-kind fields live here
+// in `data` so the schema stays flexible.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SourceTemplateData {
+    pub project_types: Vec<String>,
+    pub kind: SourceKind,
+    pub locator_pattern: String,
+    pub platforms: Vec<Platform>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parser_hint: Option<String>,
+    pub default_tags: Vec<String>,
+    pub description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version_constraint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub discovered_by_session: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub discovered_by_provider: Option<String>,
+    pub discovered_at_ns: u64,
+    pub verified_count: u32,
+    pub last_verified_at_ns: u64,
+    pub confidence: TemplateConfidence,
+}
+
+// Payload stored on a LibrarianNode with kind = project.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectNodeData {
+    pub root_path: PathBuf,
+    pub slug: String,
+    pub classification_tags: Vec<String>,
+    pub framework_versions: BTreeMap<String, String>,
+    pub platform: Platform,
+    pub created_at_ns: u64,
+    pub last_serve_at_ns: u64,
+    pub skip_discovery: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

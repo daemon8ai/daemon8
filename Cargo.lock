@@ -1506,6 +1506,7 @@ name = "daemon8-providers"
 version = "0.3.4"
 dependencies = [
  "anyhow",
+ "daemon8-types",
  "dirs",
  "serde",
  "serde_json",

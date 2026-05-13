@@ -1,0 +1,8 @@
+{
+  "name": "rcn/rcn",
+  "type": "project",
+  "require": {
+    "php": "^8.4",
+    "laravel/framework": "^11.0"
+  }
+}

@@ -7,6 +7,7 @@ pub mod error_hash;
 pub mod hash_cache;
 mod lens;
 pub mod librarian;
+pub mod librarian_validators;
 pub mod memory;
 mod surreal;
 
@@ -182,6 +183,13 @@ pub struct LibrarianNode {
     pub deprecated_at: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub canonicalized_at: Option<u64>,
+    // Kind-specific payload (D6). The schema column is option<object>;
+    // per-kind shapes (SourceTemplateData, ProjectNodeData) live in
+    // daemon8-types and are validated at write time by
+    // crates/store/src/librarian_validators.rs. Older rows without
+    // this field stay valid.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
