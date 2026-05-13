@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: LicenseRef-FCL-1.0-ALv2
 // Copyright (c) 2026 Havy.tech, LLC
 
-//! `daemon8 discover` — CLI surface for the discovery scanner (D3).
+//! `daemon8 discover` — CLI surface for the discovery scanner (D3/D4).
 //!
-//! Two escape hatches into a running scanner wait loop:
+//! Three escape hatches:
 //!
 //! - `--complete` POSTs to the running daemon's `/api/discover/complete`
 //!   endpoint. The daemon's scanner short-circuits its wait loop on the
@@ -12,9 +12,10 @@
 //!   Future `daemon8 serve` invocations honor the marker and bypass
 //!   discovery entirely. Also POSTs to the running daemon (if any) so
 //!   an in-flight scan returns immediately.
-//!
-//! Without either flag the subcommand prints status text only — the
-//! interactive `discover --rescan` flow lands in D4.
+//! - `--rescan` removes the per-project skip marker so the next
+//!   `daemon8 serve` re-runs the scanner and re-presents the plan.
+//!   Pure local operation — the running daemon caches the project
+//!   node, so restart-on-rescan is the simplest contract.
 
 use anyhow::{Context, Result};
 
@@ -25,14 +26,19 @@ use crate::discovery::scanner::SKIP_MARKER_REL_PATH;
 pub struct DiscoverArgs {
     /// Tell the running daemon's scanner to stop waiting and return
     /// with whatever templates the librarian currently has.
-    #[arg(long, conflicts_with = "skip")]
+    #[arg(long, conflicts_with_all = ["skip", "rescan"])]
     pub complete: bool,
 
     /// Write the per-project skip marker so future `daemon8 serve`
     /// runs do not invoke the scanner. Also signals any in-flight
     /// scanner to abort its wait loop.
-    #[arg(long, conflicts_with = "complete")]
+    #[arg(long, conflicts_with_all = ["complete", "rescan"])]
     pub skip: bool,
+
+    /// Remove the per-project skip marker so the next `daemon8 serve`
+    /// re-runs the discovery scanner.
+    #[arg(long, conflicts_with_all = ["complete", "skip"])]
+    pub rescan: bool,
 
     #[command(flatten)]
     pub client: ClientArgs,
@@ -56,16 +62,27 @@ pub async fn cmd_discover(args: DiscoverArgs) -> Result<()> {
         return Ok(());
     }
 
+    if args.rescan {
+        let root = std::env::current_dir().context("reading current directory")?;
+        let marker = root.join(SKIP_MARKER_REL_PATH);
+        if marker.exists() {
+            std::fs::remove_file(&marker)
+                .with_context(|| format!("removing skip marker at {}", marker.display()))?;
+            println!("skip marker removed: {}", marker.display());
+        } else {
+            println!("no skip marker to remove at {}", marker.display());
+        }
+        println!("restart `daemon8 serve` to re-run discovery for this project");
+        return Ok(());
+    }
+
     if args.complete {
         post_signal(&args.client, "complete").await?;
         println!("discovery complete signal sent");
         return Ok(());
     }
 
-    println!(
-        "daemon8 discover: nothing to do. Pass --complete or --skip; \
-         the interactive rescan flow lands with D4."
-    );
+    println!("daemon8 discover: nothing to do. Pass --complete, --skip, or --rescan.");
     Ok(())
 }
 

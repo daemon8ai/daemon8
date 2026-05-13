@@ -20,4 +20,6 @@
 //! source registration step land in later commits.
 
 pub mod hint;
+pub mod presentation;
+pub mod registrar;
 pub mod scanner;

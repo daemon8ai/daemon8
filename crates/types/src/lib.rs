@@ -778,6 +778,12 @@ pub enum LibrarianNodeKind {
     SourceTemplate,
     Fix,
     Project,
+    // Concrete resolved source for a single project: the result of
+    // expanding a source_template's locator_pattern against this
+    // machine's filesystem (D4). One source_instance per resolved path;
+    // linked to its template via `derived_from` and to its project via
+    // `has_source`.
+    SourceInstance,
 }
 
 impl fmt::Display for LibrarianNodeKind {
@@ -787,6 +793,7 @@ impl fmt::Display for LibrarianNodeKind {
             Self::SourceTemplate => "source_template",
             Self::Fix => "fix",
             Self::Project => "project",
+            Self::SourceInstance => "source_instance",
         };
         f.write_str(s)
     }
@@ -801,6 +808,7 @@ impl std::str::FromStr for LibrarianNodeKind {
             "source_template" => Ok(Self::SourceTemplate),
             "fix" => Ok(Self::Fix),
             "project" => Ok(Self::Project),
+            "source_instance" => Ok(Self::SourceInstance),
             other => Err(format!("unknown librarian node kind: {other}")),
         }
     }
@@ -814,6 +822,10 @@ pub enum LibrarianEdgeKind {
     Fixes,
     Supersedes,
     ChildOf,
+    // Links a source_instance back to the source_template it was
+    // resolved from. None when a source_instance was created from an
+    // explicit user override rather than a learned template.
+    DerivedFrom,
 }
 
 impl fmt::Display for LibrarianEdgeKind {
@@ -824,6 +836,7 @@ impl fmt::Display for LibrarianEdgeKind {
             Self::Fixes => "fixes",
             Self::Supersedes => "supersedes",
             Self::ChildOf => "child_of",
+            Self::DerivedFrom => "derived_from",
         };
         f.write_str(s)
     }
@@ -839,6 +852,7 @@ impl std::str::FromStr for LibrarianEdgeKind {
             "fixes" => Ok(Self::Fixes),
             "supersedes" => Ok(Self::Supersedes),
             "child_of" => Ok(Self::ChildOf),
+            "derived_from" => Ok(Self::DerivedFrom),
             other => Err(format!("unknown librarian edge kind: {other}")),
         }
     }
@@ -1066,6 +1080,24 @@ pub struct ProjectNodeData {
     pub created_at_ns: u64,
     pub last_serve_at_ns: u64,
     pub skip_discovery: bool,
+}
+
+// Payload stored on a LibrarianNode with kind = source_instance.
+// Written by the D4 confirmation path: one per resolved_path that the
+// scanner produced, linked to the originating project via `has_source`
+// and (when applicable) back to its source_template via `derived_from`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct SourceInstanceData {
+    pub kind: SourceKind,
+    pub resolved_path: PathBuf,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parser: Option<String>,
+    pub tags: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version_constraint: Option<String>,
+    pub registered_at_ns: u64,
+    pub last_verified_at_ns: u64,
 }
 
 // Payload carried in the `data` field of a discovery hint observation
@@ -1491,6 +1523,7 @@ mod tests {
             (LibrarianNodeKind::SourceTemplate, "source_template"),
             (LibrarianNodeKind::Fix, "fix"),
             (LibrarianNodeKind::Project, "project"),
+            (LibrarianNodeKind::SourceInstance, "source_instance"),
         ] {
             let json = serde_json::to_string(&variant).unwrap();
             assert_eq!(json, format!("\"{wire}\""));
@@ -1509,6 +1542,7 @@ mod tests {
             (LibrarianEdgeKind::Fixes, "fixes"),
             (LibrarianEdgeKind::Supersedes, "supersedes"),
             (LibrarianEdgeKind::ChildOf, "child_of"),
+            (LibrarianEdgeKind::DerivedFrom, "derived_from"),
         ] {
             let json = serde_json::to_string(&variant).unwrap();
             assert_eq!(json, format!("\"{wire}\""));

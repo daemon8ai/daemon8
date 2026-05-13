@@ -21,7 +21,7 @@
 //!    tags would never match the D1 detector's output. Reject both at
 //!    write time rather than letting them rot in the database.
 
-use daemon8_types::{ProjectNodeData, SourceTemplateData};
+use daemon8_types::{ProjectNodeData, SourceInstanceData, SourceTemplateData};
 
 use crate::StoreError;
 
@@ -86,6 +86,20 @@ pub fn validate_source_template_data(data: &SourceTemplateData) -> Result<(), St
         ));
     }
 
+    Ok(())
+}
+
+// source_instance is a per-machine concrete path; portability rules
+// that bind source_template do not apply (the instance was resolved
+// against this filesystem on purpose). The validator only guards
+// against obviously-broken data that would render the node useless:
+// an empty path, or a path that cannot be expressed as a string.
+pub fn validate_source_instance_data(data: &SourceInstanceData) -> Result<(), StoreError> {
+    if data.resolved_path.as_os_str().is_empty() {
+        return Err(StoreError::Other(
+            "source_instance.resolved_path must not be empty".into(),
+        ));
+    }
     Ok(())
 }
 
@@ -194,7 +208,8 @@ mod tests {
     use std::path::PathBuf;
 
     use daemon8_types::{
-        Platform, ProjectNodeData, SourceKind, SourceTemplateData, TemplateConfidence,
+        Platform, ProjectNodeData, SourceInstanceData, SourceKind, SourceTemplateData,
+        TemplateConfidence,
     };
 
     use super::*;
@@ -398,5 +413,30 @@ mod tests {
         p.classification_tags = vec!["mystery-framework".into()];
         let err = validate_project_node_data(&p).unwrap_err();
         assert!(err.to_string().contains("unknown tag 'mystery-framework'"));
+    }
+
+    fn good_instance() -> SourceInstanceData {
+        SourceInstanceData {
+            kind: SourceKind::Log,
+            resolved_path: PathBuf::from("/tmp/sample/runtime.log"),
+            parser: Some("line".into()),
+            tags: vec!["fixture".into()],
+            version_constraint: None,
+            registered_at_ns: 0,
+            last_verified_at_ns: 0,
+        }
+    }
+
+    #[test]
+    fn accepts_well_formed_source_instance() {
+        validate_source_instance_data(&good_instance()).unwrap();
+    }
+
+    #[test]
+    fn rejects_empty_resolved_path() {
+        let mut i = good_instance();
+        i.resolved_path = PathBuf::new();
+        let err = validate_source_instance_data(&i).unwrap_err();
+        assert!(err.to_string().contains("resolved_path must not be empty"));
     }
 }

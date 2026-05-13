@@ -202,55 +202,40 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
         });
     }
 
-    // Project-aware discovery scanner (D3). Gated behind an opt-in env
-    // var until D4 ships first-run UX. The scanner produces a
-    // DiscoveryPlan; it does not register sources — that's D4.
-    let discovery_control: Option<Arc<dyn daemon8_types::DiscoveryControl>> =
-        if std::env::var(crate::discovery::scanner::DISCOVERY_GATE_ENV)
-            .ok()
-            .is_some_and(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))
-        {
-            let signals = crate::discovery::scanner::DiscoverySignals::new();
-            let lib = librarian_store.clone();
-            let tx = obs_tx.clone();
-            let user_sources: Vec<crate::config::SourceConfig> =
-                cfg.sources.values().cloned().collect();
-            let scan_cancel = cancel.child_token();
-            let signals_for_task = signals.clone();
-            tasks.spawn(async move {
-                let cwd = match std::env::current_dir() {
-                    Ok(p) => p,
-                    Err(e) => {
-                        tracing::warn!("discovery scanner: cannot read cwd: {e}");
-                        return;
-                    }
-                };
-                let result = crate::discovery::scanner::scan(
-                    &cwd,
-                    lib.as_ref(),
-                    &tx,
-                    user_sources,
-                    crate::discovery::scanner::ScannerConfig::default(),
-                    scan_cancel,
-                    Some(signals_for_task),
-                )
-                .await;
-                match result {
-                    Ok(plan) => tracing::info!(
-                        status = ?plan.librarian_status,
-                        resolved = plan.resolved_sources.len(),
-                        misses = plan.template_misses.len(),
-                        awaiting_agent = plan.awaiting_agent,
-                        cache_used = plan.cache_used,
-                        "discovery scan complete"
-                    ),
-                    Err(e) => tracing::warn!("discovery scan failed: {e}"),
+    // Project-aware discovery scanner (D3) + first-run presentation (D4).
+    // Runs by default: the scanner produces a DiscoveryPlan, presentation
+    // renders it, the user confirms (or the non-interactive path
+    // auto-confirms), and the registrar persists sources to the librarian.
+    // Skip via `.daemon8/skip-discovery` or the cached project-node path.
+    let discovery_control: Option<Arc<dyn daemon8_types::DiscoveryControl>> = {
+        let signals = crate::discovery::scanner::DiscoverySignals::new();
+        let lib = librarian_store.clone();
+        let tx = obs_tx.clone();
+        let user_sources: Vec<crate::config::SourceConfig> =
+            cfg.sources.values().cloned().collect();
+        let scan_cancel = cancel.child_token();
+        let signals_for_task = signals.clone();
+        tasks.spawn(async move {
+            let cwd = match std::env::current_dir() {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!("discovery scanner: cannot read cwd: {e}");
+                    return;
                 }
-            });
-            Some(signals as Arc<dyn daemon8_types::DiscoveryControl>)
-        } else {
-            None
-        };
+            };
+            run_discovery_flow(
+                &cwd,
+                lib.as_ref(),
+                &tx,
+                user_sources,
+                scan_cancel,
+                Some(signals_for_task),
+                crate::discovery::presentation::detect_mode,
+            )
+            .await;
+        });
+        Some(signals as Arc<dyn daemon8_types::DiscoveryControl>)
+    };
 
     let setup_tool_fn: daemon8_mcp::SetupToolFn = Arc::new(move |action| {
         let setup_config_path = setup_config_path.clone();
@@ -1425,6 +1410,133 @@ mod chrome_handler_tests {
             decide_connect_action(true, ConnectionState::Disconnected, false),
             ConnectDecision::AbortAndSpawn
         );
+    }
+}
+
+/// Orchestrate scanner -> presentation -> registration.
+///
+/// `tty_check` decides interactive vs non-interactive. The serve loop
+/// passes [`crate::discovery::presentation::detect_mode`] so launchd /
+/// systemd / CI runners fall to the auto-confirm path. `daemon8 setup`
+/// passes a closure that forces Interactive so an explicit user
+/// invocation always prompts, even with stdio redirected.
+///
+/// Errors are downgraded to `tracing::warn!` because discovery is a
+/// best-effort augmentation of the daemon's normal source pipeline.
+/// Failing the scan must not prevent the daemon from serving.
+pub(crate) async fn run_discovery_flow(
+    cwd: &std::path::Path,
+    librarian: &dyn daemon8_store::LibrarianStore,
+    obs_tx: &mpsc::UnboundedSender<Observation>,
+    user_overrides: Vec<crate::config::SourceConfig>,
+    cancel: CancellationToken,
+    signals: Option<Arc<crate::discovery::scanner::DiscoverySignals>>,
+    tty_check: fn() -> crate::discovery::presentation::PresentationMode,
+) {
+    use crate::discovery::{presentation, registrar, scanner};
+
+    let plan = match scanner::scan(
+        cwd,
+        librarian,
+        obs_tx,
+        user_overrides,
+        scanner::ScannerConfig::default(),
+        cancel,
+        signals,
+    )
+    .await
+    {
+        Ok(plan) => plan,
+        Err(e) => {
+            tracing::warn!("discovery scan failed: {e}");
+            return;
+        }
+    };
+
+    tracing::info!(
+        status = ?plan.librarian_status,
+        resolved = plan.resolved_sources.len(),
+        misses = plan.template_misses.len(),
+        awaiting_agent = plan.awaiting_agent,
+        cache_used = plan.cache_used,
+        "discovery scan complete"
+    );
+
+    // Cache-hit path is silent in interactive mode: the user has
+    // already confirmed this project topology on a prior serve and
+    // there is no new information to present.
+    let render_to_user =
+        plan.librarian_status != crate::discovery::scanner::LibrarianStatus::CacheHit;
+
+    if render_to_user {
+        let mut stdout = std::io::stdout().lock();
+        if let Err(e) = presentation::render_plan(&plan, &mut stdout) {
+            tracing::warn!("discovery render failed: {e}");
+        }
+        drop(stdout);
+    }
+
+    let outcome = if plan.librarian_status == crate::discovery::scanner::LibrarianStatus::CacheHit {
+        // Cache hit -> re-register silently. The sources are already
+        // known to the librarian; the registration call refreshes
+        // last_serve_at_ns and re-activates the SourceManager.
+        presentation::PromptOutcome::NonInteractiveAutoConfirm
+    } else {
+        // Run the (potentially blocking) prompt on a worker thread and
+        // bound it with a 30s timeout so a foreground daemon left at a
+        // prompt does not hang forever. The plan is cloned into the
+        // blocking task because the surrounding async function still
+        // needs it for the registration step below.
+        let plan_for_prompt = plan.clone();
+        let prompt_task = tokio::task::spawn_blocking(move || {
+            presentation::prompt_confirm(&plan_for_prompt, tty_check)
+        });
+        match tokio::time::timeout(presentation::PROMPT_TIMEOUT, prompt_task).await {
+            Ok(Ok(Ok(o))) => o,
+            Ok(Ok(Err(e))) => {
+                tracing::warn!("discovery prompt failed: {e}; treating as decline");
+                presentation::PromptOutcome::Declined
+            }
+            Ok(Err(e)) => {
+                tracing::warn!("discovery prompt task join failed: {e}; treating as decline");
+                presentation::PromptOutcome::Declined
+            }
+            Err(_) => {
+                tracing::warn!(
+                    timeout_secs = presentation::PROMPT_TIMEOUT.as_secs(),
+                    "discovery prompt timed out waiting for user input; treating as decline"
+                );
+                presentation::PromptOutcome::Declined
+            }
+        }
+    };
+
+    match outcome {
+        presentation::PromptOutcome::Confirmed
+        | presentation::PromptOutcome::NonInteractiveAutoConfirm => {
+            match registrar::register_plan(&plan, librarian, |name, _cfg| {
+                tracing::info!(
+                    source = %name,
+                    "discovered source registered with librarian; will activate on next serve"
+                );
+            })
+            .await
+            {
+                Ok(reg) => tracing::info!(
+                    project_id = ?reg.project_node_id,
+                    instances = reg.instance_ids.len(),
+                    edges = reg.edges_written,
+                    "discovery registration complete"
+                ),
+                Err(e) => tracing::warn!("discovery registration failed: {e}"),
+            }
+        }
+        presentation::PromptOutcome::Declined => {
+            tracing::info!("discovery declined; writing skip marker and persisting project node");
+            if let Err(e) = registrar::mark_skip(&plan, librarian).await {
+                tracing::warn!("discovery skip persistence failed: {e}");
+            }
+        }
     }
 }
 

@@ -57,10 +57,6 @@ pub const SKIP_MARKER_REL_PATH: &str = ".daemon8/skip-discovery";
 /// Environment variable that overrides the wait-loop timeout.
 pub const DISCOVERY_TIMEOUT_ENV: &str = "DAEMON8_DISCOVERY_TIMEOUT_SECS";
 
-/// Gate env var: scanner runs from `serve` only when this is set to a
-/// truthy value. D4 will remove the gate when first-run UX lands.
-pub const DISCOVERY_GATE_ENV: &str = "DAEMON8_DISCOVERY";
-
 /// Out-of-band signal slots flipped by `daemon8 discover --complete` /
 /// `--skip`. The scanner polls these between intervals; the HTTP /
 /// admin layer in a later commit flips the bools and pulses [`notify`]

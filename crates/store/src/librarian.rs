@@ -4,7 +4,9 @@
 use surrealdb::Surreal;
 use surrealdb::engine::local::Db;
 
-use crate::librarian_validators::{validate_project_node_data, validate_source_template_data};
+use crate::librarian_validators::{
+    validate_project_node_data, validate_source_instance_data, validate_source_template_data,
+};
 use crate::{LibrarianEdge, LibrarianFilter, LibrarianNode, LibrarianStore, StoreError};
 use daemon8_types::LibrarianNodeKind;
 
@@ -279,6 +281,22 @@ impl LibrarianStore for SurrealLibrarianStore {
                         })?;
                     validate_project_node_data(&parsed)?;
                 }
+            }
+            LibrarianNodeKind::SourceInstance => {
+                // D4 always writes a payload; reject the empty case
+                // rather than silently storing a path-less instance.
+                let data = node.data.as_ref().ok_or_else(|| {
+                    StoreError::Other(
+                        "source_instance requires data payload (SourceInstanceData)".into(),
+                    )
+                })?;
+                let parsed: daemon8_types::SourceInstanceData =
+                    serde_json::from_value(data.clone()).map_err(|e| {
+                        StoreError::Other(format!(
+                            "source_instance.data does not match schema: {e}"
+                        ))
+                    })?;
+                validate_source_instance_data(&parsed)?;
             }
             LibrarianNodeKind::Doc | LibrarianNodeKind::Fix => {}
         }

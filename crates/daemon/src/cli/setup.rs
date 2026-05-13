@@ -37,7 +37,7 @@ struct ProviderResult {
     action: &'static str,
 }
 
-pub async fn cmd_setup(_config_path: Option<String>, args: SetupArgs) -> Result<()> {
+pub async fn cmd_setup(config_path: Option<String>, args: SetupArgs) -> Result<()> {
     let cwd = std::env::current_dir().ok();
     let result = run_setup(args.providers.as_deref(), cwd.as_deref(), false)?;
 
@@ -46,7 +46,74 @@ pub async fn cmd_setup(_config_path: Option<String>, args: SetupArgs) -> Result<
     } else {
         print_human(&result);
     }
+
+    // Explicit setup invocation runs the discovery report too. Unlike
+    // serve startup, this path always prompts (even on a non-TTY): the
+    // user typed `daemon8 setup`, so we treat it as a deliberate
+    // request. JSON mode skips the prompt because the output contract
+    // is machine-readable.
+    if !args.json
+        && let Some(ref cwd) = cwd
+    {
+        run_setup_discovery_report(config_path.as_deref(), cwd).await;
+    }
+
     Ok(())
+}
+
+/// Mirror the serve-time discovery flow for an explicit `daemon8 setup`
+/// invocation. Opens a fresh store handle, runs the scanner, renders
+/// the plan, and registers on confirm. Failures log and continue —
+/// setup should not abort because the discovery scan tripped.
+async fn run_setup_discovery_report(config_path: Option<&str>, cwd: &Path) {
+    use std::sync::Arc;
+
+    use tokio::sync::mpsc;
+    use tokio_util::sync::CancellationToken;
+
+    use daemon8_store::{LibrarianStore, SurrealStore};
+    use daemon8_types::Observation;
+
+    let cfg = match crate::config::load(config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("setup discovery: cannot load config: {e}");
+            return;
+        }
+    };
+    let db_path = crate::config::resolve_db_path(cfg.storage.path.as_deref());
+    let store = match SurrealStore::open(&db_path).await {
+        Ok(s) => Arc::new(s),
+        Err(e) => {
+            tracing::warn!(
+                db = %db_path.display(),
+                "setup discovery: cannot open store: {e}"
+            );
+            return;
+        }
+    };
+    let lib: Arc<dyn LibrarianStore> = Arc::new(store.librarian_store());
+
+    let (tx, _rx) = mpsc::unbounded_channel::<Observation>();
+    let cancel = CancellationToken::new();
+    let user_overrides: Vec<crate::config::SourceConfig> = cfg.sources.values().cloned().collect();
+
+    println!();
+    println!("Running project-aware discovery scan...");
+    println!();
+
+    crate::cli::serve::run_discovery_flow(
+        cwd,
+        lib.as_ref(),
+        &tx,
+        user_overrides,
+        cancel,
+        None,
+        // Force Interactive: explicit `daemon8 setup` is always a
+        // deliberate user request, so prompt even with stdio redirected.
+        || crate::discovery::presentation::PresentationMode::Interactive,
+    )
+    .await;
 }
 
 pub async fn cmd_setup_mcp(action: SetupToolAction, _config_path: Option<&str>) -> String {
