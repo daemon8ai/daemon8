@@ -59,7 +59,7 @@ pub enum ChromeCommand {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ObserveParams {
     #[schemars(
-        description = "Filter by observation kind: log, query, http_exchange, exception, js_exception, lifecycle, state_snapshot, metric, custom. Browser console output is 'log', browser JS errors are 'js_exception', page load events are 'lifecycle', network requests are 'http_exchange'."
+        description = "Filter by observation kind: log, query, http_exchange, exception, js_exception, lifecycle, state_snapshot, metric, custom, tool_call. Browser console output is 'log', browser JS errors are 'js_exception', page load events are 'lifecycle', network requests are 'http_exchange'. Observations with kind=custom and channel='discovery_hint' are project-onboarding hints; see librarian_index for the response shape expected."
     )]
     pub kinds: Option<Vec<String>>,
 

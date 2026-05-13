@@ -1055,6 +1055,36 @@ pub struct ProjectNodeData {
     pub skip_discovery: bool,
 }
 
+// Payload carried in the `data` field of a discovery hint observation
+// (`ObservationKind::Custom { channel: "discovery_hint" }`). The hint is
+// emitted when daemon8 classifies a project but finds no `source_template`
+// entries in the librarian covering the project's tags. The agent reads
+// the hint via `query_observations` and responds by calling
+// `librarian_index` with one or more source_template nodes.
+//
+// `known_project_type_tags_ref` is a copy of the validator allowlist at
+// emission time so the agent knows exactly which tags will pass write
+// validation. Duplicated per-hint on purpose: the hint payload is the
+// agent's contract, and an in-flight hint must remain interpretable
+// even if the allowlist grows later.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct DiscoveryHintPayload {
+    pub project_root: PathBuf,
+    pub classification_tags: Vec<String>,
+    pub framework_versions: BTreeMap<String, String>,
+    pub platform: Platform,
+    pub known_templates_matched: u32,
+    pub missing_for_tags: Vec<String>,
+    pub known_project_type_tags_ref: Vec<String>,
+    pub instruction_text: String,
+    /// True only on the very first hint emitted on this machine (per D5).
+    /// Commit 5 populates this; this commit always leaves it `None`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub first_run: Option<bool>,
+    pub emitted_at_ns: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SliceSummary {
     pub total: usize,
@@ -1611,5 +1641,60 @@ mod tests {
                 "ProjectNodeData missing snake_case key {key}: {v}"
             );
         }
+    }
+
+    // D2: the discovery hint payload is the agent's contract for the
+    // `discovery_hint` channel. Round-trip + key shape are part of the
+    // public surface; lock both with one explicit test.
+    #[test]
+    fn discovery_hint_payload_round_trip_and_snake_case() {
+        let mut versions = BTreeMap::new();
+        versions.insert("react-native".into(), "0.74.5".into());
+
+        let payload = DiscoveryHintPayload {
+            project_root: PathBuf::from("/tmp/rtntv_vega"),
+            classification_tags: vec!["react-native".into(), "vega".into()],
+            framework_versions: versions,
+            platform: Platform::Macos,
+            known_templates_matched: 0,
+            missing_for_tags: vec!["react-native".into(), "vega".into()],
+            known_project_type_tags_ref: vec!["any".into(), "react-native".into()],
+            instruction_text: "find runtime data for these tags".into(),
+            first_run: None,
+            emitted_at_ns: 1_700_000_000_000_000_000,
+        };
+
+        let v = serde_json::to_value(&payload).unwrap();
+        let obj = v.as_object().unwrap();
+        for key in [
+            "project_root",
+            "classification_tags",
+            "framework_versions",
+            "platform",
+            "known_templates_matched",
+            "missing_for_tags",
+            "known_project_type_tags_ref",
+            "instruction_text",
+            "emitted_at_ns",
+        ] {
+            assert!(
+                obj.contains_key(key),
+                "DiscoveryHintPayload missing snake_case key {key}: {v}"
+            );
+        }
+        for key in obj.keys() {
+            assert!(
+                !key.chars().any(|c| c.is_ascii_uppercase()),
+                "DiscoveryHintPayload has non-snake_case key {key}"
+            );
+        }
+
+        assert!(
+            !obj.contains_key("first_run"),
+            "first_run=None should be skipped: {v}"
+        );
+
+        let round_tripped: DiscoveryHintPayload = serde_json::from_value(v).unwrap();
+        assert_eq!(round_tripped, payload);
     }
 }
