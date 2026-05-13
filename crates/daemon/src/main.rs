@@ -66,7 +66,7 @@ enum Commands {
         #[arg(value_enum)]
         shell: clap_complete::aot::Shell,
     },
-    /// Register MCP server, enable features, and initialize projects
+    /// Report what daemon8 found in this project and register with detected agents
     #[command(subcommand)]
     Setup(SetupSubcommand),
     /// Manage daemon8 system service (install/uninstall)
@@ -102,11 +102,11 @@ enum Commands {
 
 #[derive(Subcommand)]
 enum SetupSubcommand {
-    /// Auto-detect and register daemon8 MCP server with AI coding tools
+    /// Register MCP with detected agents, then run the project-aware discovery scan
     Apply(cli::setup::SetupArgs),
-    /// Enable daemon8 features interactively (hooks, project init)
+    /// Enable optional features interactively (hooks, project init)
     Features(cli::features::FeaturesArgs),
-    /// Initialize a `.daemon8.toml` at the current project
+    /// Write a `.daemon8.toml` override file for explicit source configuration
     Init(cli::init::InitArgs),
 }
 

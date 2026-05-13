@@ -16,23 +16,23 @@
 - [Install](#install)
 - [Quick Start](#quick-start)
 - [How It Works](#how-it-works)
-- [Features](#features)
+- [Auto-Discovery](#auto-discovery)
+- [The Librarian](#the-librarian)
 - [Reference](#reference)
+- [Advanced: Manual Overrides](#advanced-manual-overrides)
 - [Architecture](#architecture)
 - [Contributing](#contributing)
 - [License](#license)
 
 ## What is Daemon8?
 
-AI agents write and run code without seeing what happens at runtime. Console errors, network failures, device crashes, and application exceptions happen out of view -- leaving agents to guess, or ask the user to check.
+Daemon8 is a local runtime observation layer for AI coding agents. It runs on your machine, captures browser console, network, JavaScript exceptions, device logcat, application logs, and agent tool calls into one queryable observation stream, and exposes that stream to agents over MCP.
 
-Daemon8 is a local runtime layer that captures these signals into one observation stream as code is being written and executed. Browser console output, network traffic, application logs, device events, and agent tool calls all land in the same queryable feed. Agents connect over MCP and see what's happening without leaving their workflow.
+The daemon is project-aware. Point it at a project and it classifies the project type, consults its librarian for source locations it has learned about, connects to everything it knows, and asks the agent in the session to teach it about anything new. Subsequent projects of the same type onboard with zero prompting.
 
-But observation is just the starting point. As agents investigate bugs, daemon8 records the investigation -- which observations led to the root cause, what fix was applied, which commands were tried. These records persist as searchable memory. A built-in reference catalog links fixes, documentation, and project context into a graph that spans across projects. Over time, similar errors get diagnosed faster because the path to the fix is already indexed.
+Everything is local. The observation stream and the librarian live in `~/.daemon8/`. Nothing leaves the machine.
 
-Situational awareness is the foundation of a larger system. Some of what daemon8 is being built toward is public; some isn't yet.
-
-> v0.3 alpha -- in active development. If the concept resonates, **[star the repo](https://github.com/daemon8ai/daemon8)** to follow along.
+> v0.3 alpha — in active development. **[Star the repo](https://github.com/daemon8ai/daemon8)** to follow along.
 
 ## Install
 
@@ -46,15 +46,13 @@ Windows (PowerShell):
 irm https://daemon8.ai/install.ps1 | iex
 ```
 
-Or install from source:
+From source:
 
 ```bash
 cargo install daemon8
 ```
 
-Pin a specific version with `DAEMON8_VERSION=v0.3.4` before the curl command.
-
-The installer downloads the binary, verifies its SHA-256 checksum, and runs `daemon8 setup` to show current state.
+Pin a version by exporting `DAEMON8_VERSION=v0.3.4` before the curl command. The installer downloads the binary, verifies its SHA-256, and runs `daemon8 setup` to print current state.
 
 > [!WARNING]
 > **macOS:** first launch may trigger an "unidentified developer" Gatekeeper prompt and request Background Items and App Management permissions. Both are expected until signed release binaries ship.
@@ -62,261 +60,103 @@ The installer downloads the binary, verifies its SHA-256 checksum, and runs `dae
 ## Quick Start
 
 ```bash
-daemon8 install        # register as a system service
-daemon8 init           # create .daemon8.toml in the current project
-daemon8 setup apply    # register sources and configure AI providers
+daemon8 install                 # install as a system service
+cd /path/to/your/project
+daemon8 setup apply             # register MCP, run discovery scan
 ```
 
-`daemon8 features` opens an interactive menu for enabling hooks and project scaffolding.
+`daemon8 setup apply` does two things:
 
-For best results, add daemon8 instructions to your AI context file (`~/.claude/CLAUDE.md`, `~/.gemini/GEMINI.md`, or `~/.codex/AGENTS.md`) telling the agent to use daemon8 for runtime observation, debugging, and note-taking.
+1. Registers the daemon8 MCP server with detected AI coding agents (Claude Code, Codex, Gemini CLI).
+2. Runs a project-aware discovery scan: classifies the project, looks up source templates the librarian has learned, presents the matched sources, and prompts once.
 
-Verify everything is running:
+If the librarian already has templates for this project type, the prompt is a single confirmation. If not, daemon8 asks the agent in your session to investigate and report back via `librarian_index` — a one-time learning step per framework per machine.
+
+Verify:
 
 ```bash
 daemon8 status
 daemon8 doctor
 ```
 
+For best results, add a directive to your agent's instruction file (`~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, `~/.gemini/GEMINI.md`) telling the agent to use daemon8 for runtime observation and debugging.
+
 ## How It Works
 
-**Everything is local.** The daemon runs on your machine. Runtime data and curated knowledge stay local. Nothing phones home.
-
-**Opt-in by design.** The observation stream is always on -- it's the foundation. Every other feature is activated through the CLI when you need it. No surprise data collection, no background scanning. You choose what feeds the stream and what the agent can act on.
-
-**Agent-native help.** Daemon8 includes a built-in help system designed for LLM context windows -- small, topic-specific documents rather than large reference pages. Every tool response carries optional steering hints that guide agents toward productive next steps without extra conversation. When an agent saves a memory about a fix, daemon8 suggests cataloging it as a reference. When a checkpoint is created outside a debug session, daemon8 suggests starting one. As the catalog grows, daemon8 prompts agents to engage the user -- naming recurring bugs, reviewing duplicate context, organizing references into a structure that makes sense for the project.
-
-**The core loop:**
-
-```
-checkpoint --> make a change --> query what happened
-```
-
-Wrap that in a debug session and the investigation -- observations, root cause, fix, resolution -- persists as searchable memory. Each resolved investigation makes the next one faster.
-
-## Features
-
-### Observation Stream
-
-All runtime signals land in one feed: application logs, browser console output, network failures, device events, CLI hook telemetry, and agent-emitted notes. The stream is always on and accepts observations over HTTP, UDP, and Unix socket.
-
-```bash
-daemon8 tail                                    # live-stream
-daemon8 query --kinds log,exception --limit 20  # query stored
-```
-
-<details>
-<summary>More on observations</summary>
-
-#### Observation kinds
-
-`log`, `query`, `http_exchange`, `exception`, `js_exception`, `state_snapshot`, `metric`, `lifecycle`, `tool_call`, `custom`.
-
-#### Ingestion
-
-```bash
-curl -X POST http://localhost:8888/ingest -H 'Content-Type: application/json' -d '{"kind":"log","severity":"info","app":"my-api","data":{"message":"deploy complete"}}'
-```
-
-HTTP (`POST /ingest`), UDP (port 8889), and Unix socket endpoints all accept the same JSON shape. Batch ingestion is available at `POST /ingest/batch`.
-
-#### Subscriptions
-
-`subscribe_observations` registers a real-time alert filter. Matching observations push directly into agent sessions as MCP notifications -- no polling required.
-
-#### Replay
-
-The SSE stream supports reconnection without missing events.
-
-</details>
-
-### Checkpoints
-
-Bookmark the stream before making a change, then query only what happened after. This is the simplest and most frequently used pattern in daemon8.
+The core loop is three calls:
 
 ```
 create_checkpoint --> make a change --> query_observations(since_checkpoint=<id>)
 ```
 
-No setup required. Available immediately.
+Wrap that in a debug session and the investigation — the observations consulted, the root cause identified, the fix applied — persists as searchable memory. Each resolved investigation makes the next one faster.
 
-### Debug Sessions
+**Always-on stream.** Every connected source writes into one append-only stream, persisted locally in SurrealDB. HTTP, UDP, Unix socket, MCP, browser CDP, and ADB all normalize to the same `Observation` shape and arrive in the same query surface.
 
-A debug session wraps one or more checkpoints into a structured investigation. Observations captured during the session are linked to it. On resolution, the root cause, fix, and related errors are written as searchable memory -- so when the same error surfaces again, the path to the fix is already recorded.
+**Opt-in for everything else.** The stream is the foundation. Browser CDP, ADB logcat, file sources, CLI hooks, and project-aware discovery activate explicitly. No surprise data collection.
 
-Multiple agents -- Claude Code, Codex, Gemini CLI -- can each run their own debug session on the same project simultaneously. Agents discover overlapping work by querying sessions filtered by feature.
+**Agent-native help.** Every tool response carries optional `next_actions` and `hint` fields that steer agents toward productive follow-up calls without burning conversation turns. `daemon8_help(topic=...)` returns small, topic-specific docs sized for LLM context windows.
 
-<details>
-<summary>More on debug sessions</summary>
+## Auto-Discovery
 
-#### Lifecycle
+Daemon8 ships with zero hardcoded knowledge of where any framework's logs live. The librarian is the learning store, populated by agents over time.
 
-1. `start_debug_session` -- open an investigation, scoped to this agent's MCP session
-2. `create_checkpoint` -- bookmark moments within the session
-3. `resolve_debug_session` -- close with a rich summary (root cause, fix diff, commands tried, related errors)
-4. `end_debug_session` -- close without a fix
+### What happens on `daemon8 setup apply`
 
-#### Safety nets
+1. **Classify.** Daemon8 reads root manifests and emits tags: `react-native`, `vega`, `kepler`, `nextjs`, `vite`, `tanstack-start`, `rust`, `rust-workspace`, `laravel`, `symfony`, `python`, `django`, `flask`, `fastapi`, `go`, `rails`, `expo`, plus the universal `git-repo` tag. Framework versions are extracted from `package.json`, `composer.json`, `Gemfile.lock`, and `pyproject.toml` where present.
 
-Sessions with no activity for 4 hours are automatically marked abandoned. Observations linked to active sessions are never cleaned up, regardless of age.
+2. **Lookup.** Daemon8 queries the librarian for `source_template` entries whose `project_types` intersect the classification tags, whose `platforms` match the current OS, and whose `version_constraint` accepts the project's framework versions.
 
-#### Multi-agent coordination
+3. **Probe.** Each matched template's `locator_pattern` is expanded against `~`, env vars, `<root>`, and globs. Paths that resolve become candidate sources.
 
-Declare a feature when starting: `start_debug_session(feature="auth")`. Other agents discover this with `list_debug_sessions(feature="auth")` -- preventing duplicate investigations across concurrent sessions.
+4. **Present.** Daemon8 prints the plan and prompts once to register. Confirm registers the sources and writes a `project` node plus `has_source` edges so the next run uses the cached topology.
 
-</details>
+5. **Ask the agent if needed.** When the librarian has no templates for a project type, daemon8 emits a `discovery_hint` observation. The agent in your session reads the hint via `query_observations`, investigates with shell tools, and calls `librarian_index` with `source_template` entries. Daemon8 then re-enters the scan.
 
-### Memory
-
-Verified fixes, error signatures, patterns, and architectural decisions persist in a local memory store. They survive observation cleanup and compound across sessions.
-
-New error signatures are cataloged with a normalized hash. When an agent resolves a debug session that references the error, the fix and the signature are linked -- making the resolution retrievable by hash across projects.
+### Discovery escape hatches
 
 ```bash
-daemon8 memory export --kind pattern --project my-app
+daemon8 discover --complete     # stop waiting for the agent and use what's been written
+daemon8 discover --skip         # write .daemon8/skip-discovery; future serves bypass the scan
+daemon8 discover --rescan       # remove the skip marker; next serve re-runs discovery
 ```
 
-<details>
-<summary>More on memory</summary>
+### Drift detection
 
-#### Kinds
+`daemon8 doctor` walks the registered sources, flags any whose paths no longer resolve, and compares the project's current framework versions against the versions captured at registration. When versions differ, the diagnosis names the upgrade as the likely cause and suggests `daemon8 discover --rescan`.
 
-- `pattern` -- recurring code or architecture pattern
-- `decision` -- architectural decision and its rationale
-- `error_signature` -- normalized error with hash tag for cross-referencing
-- `session_summary` -- written by `resolve_debug_session` (rich) or `end_debug_session` (thin)
-- `user_flagged` -- general-purpose "remember this"
+## The Librarian
 
-#### Error signature linking
+The librarian is daemon8's primary memory of project topology. It is a relational graph of typed nodes — `source_template`, `source_instance`, `project`, `doc`, `fix` — connected by typed edges (`has_source`, `derived_from`, `supersedes`).
 
-Every error observation carries a normalized `error_hash`. Tag `hash:<x>` joins error signatures with their fix summaries. `query_memory(tags=["hash:<x>"])` returns both the signature and any session summaries whose resolution referenced that hash.
+Agents teach the librarian what they discover. The first React Native project a Claude session sees on this machine: the agent investigates, writes `source_template` entries for Metro, the Kepler bridge log, the Expo cache. The second React Native project on this machine: daemon8 reads those templates and applies them without asking the agent anything. The librarian gets richer with use. Daemon8 itself stays thin.
 
-#### Tools
+### Template portability
 
-- `save_memory` -- persist an insight with kind, tags, and project scope
-- `query_memory` -- search by kind, tags, project, or text
-- `forget_memory` -- delete by id (requires confirmation)
+`source_template.locator_pattern` is enforced portable across machines:
 
-</details>
+- Use `~` for the user home. Literal `/Users/<name>/...` and `/home/<name>/...` are rejected.
+- Use `$VAR` or `${VAR}` for OS-specific roots: `$XDG_CONFIG_HOME`, `$LOCALAPPDATA`, `$TMPDIR`.
+- Use `<root>` for project-relative paths.
+- Glob characters (`*`, `?`, `[...]`) expand at registration.
+- `platforms` is explicit. Never imply OS from the path.
 
-### Librarian
+Windows absolute user paths (`C:\Users\...`) and UNC paths (`\\server\share`) are rejected at write time. These rules exist so the librarian remains exportable later without schema migration.
 
-The librarian is a reference catalog -- not for storing information, but for knowing where to find it. Think of it as the index system for a library: it knows which shelf every book is on, which chapter covers the topic you need, and which edition supersedes the last.
+### Tools
 
-Agents index pointers to documentation, source configurations, known fixes, and projects as nodes in a relational graph. Typed edges link them: a project has sources, sources are documented by docs, fixes resolve specific errors. The catalog spans projects -- a fix indexed while working on one codebase is queryable from any other. As context builds, the graph enables increasingly specific lookups, moving toward the kind of granular retrieval where "this function throws this exception with this message" resolves to a specific fix with specific steps.
-
-Available by default with `daemon8 serve`.
-
-<details>
-<summary>More on the librarian</summary>
-
-#### What gets cataloged
-
-- **doc** -- documentation, READMEs, wiki pages, API references
-- **source_template** -- log source configurations, parser templates
-- **fix** -- known fix recipes, workarounds, error resolutions
-- **project** -- project entry points, workspace roots
-
-#### Relationships
-
-Nodes connect through typed edges: `has_source`, `documented_by`, `fixes`, `supersedes`, `child_of`. The graph model enables traversal -- from a project to its docs, from an error to its fix, from a fix to the investigation that produced it.
-
-#### Versioning and lifecycle
-
-Re-indexing the same reference creates a new version, deprecates the old one, and links them with a `supersedes` edge. Every node tracks when it was created, last updated, last accessed, and deprecated. Stale entries -- those not accessed in 30+ days -- surface automatically for review.
-
-#### Hierarchy
-
-Nodes can be organized under parent nodes, forming a navigable tree. Daemon8 prompts agents to suggest organization when categories grow large, and flags when nesting gets too deep.
-
-#### Tools
-
-- `librarian_index` -- catalog a reference with tags and optional edges
-- `librarian_lookup` -- query by kind, tags, project, text, or browse the hierarchy
-- `librarian_forget` -- deprecate (default) or remove a reference
-
-</details>
-
-### Lenses
-
-A lens is a focused filter that collects matching observations between queries. Set it before making a change, and subsequent queries automatically include buffered matches -- without polling.
-
-No setup required.
-
-```bash
-daemon8 lens set --kinds exception --severity-min warn
-daemon8 lens status
-daemon8 lens clear
-```
-
-<details>
-<summary>More on lenses</summary>
-
-A lens buffers up to 1000 matching observations. When you call `query_observations`, the buffered matches appear in a `lens_observations` array alongside the regular query results, then the buffer resets.
-
-Use a lens when the observation stream is high-volume but you only care about a narrow slice -- exceptions during a deploy, warnings from a specific service, network failures to a particular endpoint.
-
-</details>
-
-### Browser Actions
-
-Connect to Chrome DevTools Protocol to observe console output, network requests, JS exceptions, and lifecycle events. Run JavaScript, capture screenshots, inject CSS, navigate, and inspect storage -- all from the agent's MCP session.
-
-**Enable:** `daemon8 browser connect` or call the `connect_browser` MCP tool.
-
-### CLI Hooks
-
-Capture what your agent does. Hooks record tool calls, file edits, and command runs as structured observations -- giving agents cause-and-effect context across their own actions.
-
-**Enable:**
-
-```bash
-daemon8 setup apply --install-hooks local   # project-level
-daemon8 setup apply --install-hooks global  # machine-level
-```
-
-<details>
-<summary>More on hooks</summary>
-
-Hooks support Claude Code, Codex, Gemini CLI, and OpenCode. Each tool call becomes a `tool_call` observation linked via `correlation_id`, enabling full agent audit trails.
-
-Manage installed hooks:
-
-```bash
-daemon8 hooks list
-daemon8 hooks update
-daemon8 hooks repair
-```
-
-</details>
-
-### File Sources
-
-Tail log files and parse them into structured observations. Built-in parsers handle JSON, syslog, monolog, logfmt, CLF, grok patterns, and auto-detection.
-
-**Enable:** add `[sources.*]` entries to `.daemon8.toml`:
-
-```toml
-[sources.api-logs]
-path = "/var/log/my-api/app.log"
-parser = "auto"
-tags = ["api"]
-```
-
-### Device Monitoring (ADB)
-
-Stream logcat from Android devices connected via ADB.
-
-**Enable:** set `[adb] enabled = true` in `~/.config/daemon8/config.toml`.
-
----
+| Tool | Purpose |
+|------|---------|
+| `librarian_index` | Catalog a node with kind, tags, and optional edges. |
+| `librarian_lookup` | Query by kind, tags, project, text, or hierarchy. |
+| `librarian_forget` | Deprecate or remove a node. |
 
 ## Reference
 
 <details>
 <summary>MCP Tools (29 tools)</summary>
 
-Every tool returns the standard envelope (`{result, daemon8, error}`) with optional `next_actions` and `hint` fields for agent steering. Call `daemon8_help(topic="envelope")` for the full response format. Destructive operations require explicit confirmation.
+Every tool returns the standard envelope (`{result, daemon8, error}`) with optional `next_actions` and `hint` fields. Call `daemon8_help(topic="envelope")` for the full response format. Destructive operations require explicit confirmation.
 
 | Tool | Purpose |
 |------|---------|
@@ -372,10 +212,12 @@ Every tool returns the standard envelope (`{result, daemon8, error}`) with optio
 | GET | `/api/connections` | Active sources and browser state. |
 | POST | `/api/connect` | Set Chrome DevTools endpoint. |
 | GET | `/api/stream` | SSE observation stream with reconnection support. |
-| GET&nbsp;/&nbsp;PUT&nbsp;/&nbsp;DELETE | `/api/lens` | Inspect, set, or clear the active lens. |
+| GET / PUT / DELETE | `/api/lens` | Inspect, set, or clear the active lens. |
 | POST | `/api/browser/act` | Browser actions (same surface as `issue_command`). |
-| GET&nbsp;/&nbsp;POST | `/api/memory` | Query or save memory. |
+| GET / POST | `/api/memory` | Query or save memory. |
 | POST | `/api/memory/export` | Stream memory export as NDJSON. |
+| POST | `/api/discover/complete` | Signal the running scanner to stop waiting. |
+| POST | `/api/discover/skip` | Signal the running scanner to abort discovery. |
 | POST | `/ingest` | Single observation ingest. |
 | POST | `/ingest/batch` | Batch observation ingest. |
 | GET | `/health` | Health probe. |
@@ -389,27 +231,77 @@ UDP listener on port 8889 accepts the same JSON shapes for fire-and-forget telem
 
 | Command | Description |
 |---------|-------------|
-| `daemon8 serve` | Start the daemon. |
+| `daemon8 serve` | Start the daemon (default when no subcommand). |
 | `daemon8 status` | Daemon health and status. |
 | `daemon8 tail` | Stream observations in real-time. |
 | `daemon8 query` | Query stored observations. |
 | `daemon8 connections` | List active data sources. |
 | `daemon8 browser` | Browser DevTools commands. |
 | `daemon8 lens` | Manage observation lens. |
-| `daemon8 memory` | Export memory to Markdown files. |
+| `daemon8 memory` | Export memory query results. |
 | `daemon8 logs` | Show log location or tail logs. |
 | `daemon8 config` | Show or modify configuration. |
 | `daemon8 completions` | Generate shell completions. |
-| `daemon8 install` | Install as a system service. |
-| `daemon8 uninstall` | Remove the system service. |
-| `daemon8 setup` | Guided setup. |
-| `daemon8 channel` | Real-time alert relay for MCP clients. |
-| `daemon8 doctor` | Diagnose environment (`--fix` to auto-repair). |
-| `daemon8 init` | Scaffold `.daemon8.toml` in the current project. |
-| `daemon8 hooks` | Manage CLI hooks (`list \| remove \| update \| repair`). |
-| `daemon8 features` | Interactive feature activation menu. |
+| `daemon8 setup apply` | Register MCP with detected agents, run discovery scan. |
+| `daemon8 setup features` | Enable optional features interactively. |
+| `daemon8 setup init` | Write `.daemon8.toml` for explicit source overrides. |
+| `daemon8 service install` | Install daemon8 as a system service. |
+| `daemon8 service uninstall` | Remove the system service. |
+| `daemon8 hooks` | Manage CLI hooks (`list`, `remove`, `update`, `repair`). |
+| `daemon8 discover --complete` | Stop waiting for the agent; use what's been written. |
+| `daemon8 discover --skip` | Bypass the discovery scan for this project. |
+| `daemon8 discover --rescan` | Re-run the discovery scan on next serve. |
+| `daemon8 channel` | Real-time alert relay for MCP clients (experimental). |
+| `daemon8 doctor` | Diagnose project state and source drift (`--fix` to auto-repair). |
 
 </details>
+
+## Advanced: Manual Overrides
+
+Auto-discovery is the default path. The librarian learns what your machine's projects need over time, and most users never write a `.daemon8.toml`.
+
+Override when you need explicit control: a non-standard log location, a private SQLite file, a one-off conversation source. Entries in `.daemon8.toml` always take precedence over auto-discovered sources.
+
+### `.daemon8.toml` source kinds
+
+```toml
+[sources.api-logs]
+type = "file"
+path = "/var/log/my-api/app.log"
+parser = "auto"
+tags = ["api"]
+
+[sources.codex-db]
+type = "sqlite"
+path = "~/.codex/conversations.db"
+provider = "codex"
+poll_interval_secs = 60
+tags = ["conversation", "codex"]
+
+[sources.claude]
+type = "conversation"
+provider = "claude"
+tags = ["conversation"]
+```
+
+Three source types are supported: `file` (tails any log with built-in parsers for JSON, syslog, monolog, logfmt, CLF, grok, or auto-detect), `conversation` (watches an AI provider's transcript directory using the provider's known filesystem layout), and `sqlite` (polls a SQLite database — used for providers like Codex that write their transcripts there).
+
+`daemon8 setup init` writes a starter `.daemon8.toml` if you prefer template-driven configuration over auto-discovery.
+
+### ADB
+
+ADB device monitoring is opt-in. Set `[adb] enabled = true` in `~/.config/daemon8/config.toml`. With ADB enabled, daemon8 streams logcat from connected Android devices into the observation stream.
+
+### CLI hooks
+
+Hooks record agent tool calls as `tool_call` observations linked via `correlation_id`. They are useful when you want a full audit trail of what an agent did and when, independent of the conversation file.
+
+```bash
+daemon8 setup apply --install-hooks local    # project-level
+daemon8 setup apply --install-hooks global   # machine-level
+daemon8 hooks list
+daemon8 hooks repair
+```
 
 ## Architecture
 
@@ -422,7 +314,20 @@ Devices (ADB)   ---/   [localhost:8888]    \--> Gemini CLI
 CLI hooks       --/
 ```
 
-Sources push observations into the daemon. Agents query, subscribe, and act through MCP or the HTTP API.
+Cargo workspace:
+
+| Crate | Role |
+|-------|------|
+| `daemon` | CLI binary, command dispatch, runtime wiring (the published `daemon8` binary). |
+| `types` | Shared types: `Observation`, `Filter`, `Severity`, librarian and discovery types. |
+| `store` | SurrealDB backend: observation store, librarian, debug sessions, memory, lens manager. |
+| `api` | Axum HTTP routes for observation query, SSE, and health. |
+| `mcp` | MCP server with the 29 tools listed above. |
+| `ingest` | HTTP, UDP, and Unix socket ingestion endpoints. |
+| `chrome` | Chrome DevTools Protocol bridge. |
+| `adb` | Android Debug Bridge transport. |
+| `parse` | Log parser trait and built-in format parsers. |
+| `providers` | AI provider detection, MCP registration, project type detection. |
 
 ## Contributing
 

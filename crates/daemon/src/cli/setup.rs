@@ -12,11 +12,11 @@ use daemon8_providers::{DetectedProvider, detect_ai_tools, dirs_home, write_prov
 
 #[derive(Args, Default)]
 pub struct SetupArgs {
-    /// Emit machine-readable JSON instead of human output.
+    /// Emit machine-readable JSON and skip the discovery report.
     #[arg(long)]
     pub json: bool,
 
-    /// Comma-separated providers to configure (overrides auto-detection).
+    /// Comma-separated providers to register (overrides auto-detection).
     #[arg(long)]
     pub providers: Option<String>,
 }
@@ -307,8 +307,8 @@ fn print_human(result: &SetupResult) {
     println!("  2. Enable more features:");
     println!("       daemon8 setup features    (interactive menu)");
     println!();
-    println!("  3. Initialize a project:");
-    println!("       daemon8 setup init        (scaffold .daemon8.toml)");
+    println!("  3. Override or inspect:");
+    println!("       daemon8 setup init        (write .daemon8.toml for explicit sources)");
     println!("       daemon8 hooks list        (inspect hook state)");
     println!();
     println!("  Docs: https://daemon8.ai/docs");
