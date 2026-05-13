@@ -400,6 +400,10 @@ pub struct LibrarianIndexParams {
         description = "Mark as authoritative reference — canonicalized nodes are never flagged as stale"
     )]
     pub canonicalize: Option<bool>,
+    #[schemars(
+        description = "Kind-specific payload (snake_case JSON). For kind=source_template pass a SourceTemplateData shape; for kind=project pass a ProjectNodeData shape. See daemon8-types for the exact fields."
+    )]
+    pub data: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -2762,7 +2766,7 @@ pub async fn librarian_index_inner(
         } else {
             None
         },
-        data: None,
+        data: params.data,
     };
 
     let id = match lib_store.index_node(node).await {

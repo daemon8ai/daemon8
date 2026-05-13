@@ -23,6 +23,13 @@ use daemon8_types::{Platform, ProjectClassification};
 use serde_json::Value;
 
 pub fn classify(root: &Path) -> Result<ProjectClassification> {
+    if !root.is_dir() {
+        anyhow::bail!(
+            "classify: project root {} is not an existing directory",
+            root.display()
+        );
+    }
+
     let mut tags: Vec<String> = Vec::new();
     let mut framework_versions: BTreeMap<String, String> = BTreeMap::new();
     let mut manifests: BTreeMap<String, PathBuf> = BTreeMap::new();
@@ -31,23 +38,23 @@ pub fn classify(root: &Path) -> Result<ProjectClassification> {
         push_unique(&mut tags, "git-repo");
     }
 
+    // Malformed manifests are warned-and-skipped: a single broken file
+    // must not abort classification because other manifests can still
+    // produce useful tags. The warn surface is uniform across every
+    // parser path so users see one diagnostic style.
     if let Some(pkg_path) = manifest_path(root, "package.json") {
         manifests.insert("package.json".into(), pkg_path.clone());
         match read_json(&pkg_path) {
             Ok(pkg) => classify_package_json(&pkg, &mut tags, &mut framework_versions),
-            Err(e) => {
-                // Malformed package.json is interesting (the agent might
-                // want to know) but it must not abort classification —
-                // other manifests can still produce useful tags.
-                eprintln!("daemon8: failed to read {}: {e}", pkg_path.display());
-            }
+            Err(e) => tracing::warn!("daemon8: malformed {}: {e}", pkg_path.display()),
         }
     }
 
     if let Some(composer_path) = manifest_path(root, "composer.json") {
         manifests.insert("composer.json".into(), composer_path.clone());
-        if let Ok(composer) = read_json(&composer_path) {
-            classify_composer_json(&composer, &mut tags, &mut framework_versions);
+        match read_json(&composer_path) {
+            Ok(composer) => classify_composer_json(&composer, &mut tags, &mut framework_versions),
+            Err(e) => tracing::warn!("daemon8: malformed {}: {e}", composer_path.display()),
         }
     }
 
@@ -55,34 +62,38 @@ pub fn classify(root: &Path) -> Result<ProjectClassification> {
         manifests.insert("Cargo.toml".into(), cargo_path.clone());
         match std::fs::read_to_string(&cargo_path) {
             Ok(text) => classify_cargo_toml(&text, &mut tags),
-            Err(e) => eprintln!("daemon8: failed to read {}: {e}", cargo_path.display()),
+            Err(e) => tracing::warn!("daemon8: malformed {}: {e}", cargo_path.display()),
         }
     }
 
     if let Some(gemfile) = manifest_path(root, "Gemfile") {
         manifests.insert("Gemfile".into(), gemfile.clone());
-        if let Ok(text) = std::fs::read_to_string(&gemfile) {
-            classify_gemfile(&text, &mut tags);
+        match std::fs::read_to_string(&gemfile) {
+            Ok(text) => classify_gemfile(&text, &mut tags),
+            Err(e) => tracing::warn!("daemon8: malformed {}: {e}", gemfile.display()),
         }
         if let Some(lock) = manifest_path(root, "Gemfile.lock") {
             manifests.insert("Gemfile.lock".into(), lock.clone());
-            if let Ok(text) = std::fs::read_to_string(&lock) {
-                extract_gemfile_lock_versions(&text, &mut framework_versions);
+            match std::fs::read_to_string(&lock) {
+                Ok(text) => extract_gemfile_lock_versions(&text, &mut framework_versions),
+                Err(e) => tracing::warn!("daemon8: malformed {}: {e}", lock.display()),
             }
         }
     }
 
     if let Some(pyproject) = manifest_path(root, "pyproject.toml") {
         manifests.insert("pyproject.toml".into(), pyproject.clone());
-        if let Ok(text) = std::fs::read_to_string(&pyproject) {
-            classify_pyproject(&text, &mut tags, &mut framework_versions);
+        match std::fs::read_to_string(&pyproject) {
+            Ok(text) => classify_pyproject(&text, &mut tags, &mut framework_versions),
+            Err(e) => tracing::warn!("daemon8: malformed {}: {e}", pyproject.display()),
         }
     }
 
     if let Some(requirements) = manifest_path(root, "requirements.txt") {
         manifests.insert("requirements.txt".into(), requirements.clone());
-        if let Ok(text) = std::fs::read_to_string(&requirements) {
-            classify_requirements_txt(&text, &mut tags, &mut framework_versions);
+        match std::fs::read_to_string(&requirements) {
+            Ok(text) => classify_requirements_txt(&text, &mut tags, &mut framework_versions),
+            Err(e) => tracing::warn!("daemon8: malformed {}: {e}", requirements.display()),
         }
     }
 
@@ -282,6 +293,10 @@ fn classify_pyproject(text: &str, tags: &mut Vec<String>, versions: &mut BTreeMa
     }
 }
 
+// TODO(C3): replace this substring-with-word-boundary scan with a real
+// TOML/requirements parser. The current approach is a near-term
+// workaround for the bug where `django-rest-framework==4.0` would
+// match the `django` package and emit a wrong tag+version.
 fn extract_pyproject_version(text: &str, package: &str) -> Option<String> {
     // PEP 621: dependencies = ["django>=4.2", ...]
     // Poetry:  django = "^4.2"
@@ -290,26 +305,52 @@ fn extract_pyproject_version(text: &str, package: &str) -> Option<String> {
     for raw in text.lines() {
         let line = raw.trim();
         let lc = line.to_ascii_lowercase();
-        if !lc.contains(package) {
+        let Some(pos) = find_package_with_boundary(&lc, package) else {
             continue;
-        }
-        if let Some(pos) = lc.find(package) {
-            let after = &line[pos + package.len()..];
-            let trimmed = after.trim_start_matches(['"', '\'', ' ', '\t']);
-            // Match PEP 508 specifiers (>=, ==, ~=, !=) or poetry-style (=).
-            let specifier =
-                trimmed.trim_start_matches(['=', '>', '<', '~', '!', '^', ' ', '"', '\'']);
-            // The version itself ends at the first quote/comma/space after digits.
-            let end = specifier
-                .find(['"', '\'', ',', ']'])
-                .unwrap_or(specifier.len());
-            let version_part = specifier[..end].trim();
-            if !version_part.is_empty() && version_part.chars().any(|c| c.is_ascii_digit()) {
-                return Some(version_part.to_string());
-            }
+        };
+        let after = &line[pos + package.len()..];
+        let trimmed = after.trim_start_matches(['"', '\'', ' ', '\t']);
+        // Match PEP 508 specifiers (>=, ==, ~=, !=) or poetry-style (=).
+        let specifier = trimmed.trim_start_matches(['=', '>', '<', '~', '!', '^', ' ', '"', '\'']);
+        // The version itself ends at the first quote/comma/space after digits.
+        let end = specifier
+            .find(['"', '\'', ',', ']'])
+            .unwrap_or(specifier.len());
+        let version_part = specifier[..end].trim();
+        if !version_part.is_empty() && version_part.chars().any(|c| c.is_ascii_digit()) {
+            return Some(version_part.to_string());
         }
     }
     None
+}
+
+// Find `package` in `haystack` (already lowercased) at a position where
+// the character immediately after the package name is one of the
+// recognized separators for PEP 508 / Poetry / requirements.txt syntax,
+// or end-of-line. Prevents `django-rest-framework` from matching
+// `django`.
+fn find_package_with_boundary(haystack: &str, package: &str) -> Option<usize> {
+    let mut start = 0;
+    while let Some(rel) = haystack[start..].find(package) {
+        let pos = start + rel;
+        let after_idx = pos + package.len();
+        let next_char = haystack[after_idx..].chars().next();
+        if is_package_boundary(next_char) {
+            return Some(pos);
+        }
+        start = after_idx;
+    }
+    None
+}
+
+fn is_package_boundary(next: Option<char>) -> bool {
+    match next {
+        None => true,
+        Some(c) => matches!(
+            c,
+            '[' | '\'' | '"' | ' ' | '=' | '>' | '<' | '~' | '!' | '^' | '\t' | ',' | ']' | ';'
+        ),
+    }
 }
 
 // requirements.txt: one `package==version` per line, plus `>=`, `~=`, etc.
@@ -333,15 +374,24 @@ fn classify_requirements_txt(
         }
         let lc = stripped.to_ascii_lowercase();
         for (needle, tag) in frameworks {
-            if lc.starts_with(needle) {
-                push_unique(tags, tag);
-                let after = &stripped[needle.len()..];
-                let specifier = after.trim_start_matches(['=', '>', '<', '~', '!', ' ']);
-                let end = specifier.find([' ', ',', ';']).unwrap_or(specifier.len());
-                let version_part = specifier[..end].trim();
-                if !version_part.is_empty() {
-                    versions.insert(needle.into(), version_part.to_string());
-                }
+            // Word-boundary aware: require the char after the needle to
+            // be a recognized package-name terminator so that lines like
+            // `django-cors-headers==4.0` don't trigger the `django` tag.
+            // TODO(C3): replace with proper requirements parser.
+            if !lc.starts_with(needle) {
+                continue;
+            }
+            let next = lc[needle.len()..].chars().next();
+            if !is_package_boundary(next) {
+                continue;
+            }
+            push_unique(tags, tag);
+            let after = &stripped[needle.len()..];
+            let specifier = after.trim_start_matches(['=', '>', '<', '~', '!', ' ']);
+            let end = specifier.find([' ', ',', ';']).unwrap_or(specifier.len());
+            let version_part = specifier[..end].trim();
+            if !version_part.is_empty() {
+                versions.insert(needle.into(), version_part.to_string());
             }
         }
     }
@@ -373,21 +423,7 @@ mod tests {
     #[test]
     fn react_native_vega_project_emits_all_expected_tags() {
         let result = classify(&fixtures_root().join("react-native-rtntv")).unwrap();
-        assert!(
-            result.tags.contains(&"react-native".to_string()),
-            "tags: {:?}",
-            result.tags
-        );
-        assert!(
-            result.tags.contains(&"vega".to_string()),
-            "tags: {:?}",
-            result.tags
-        );
-        assert!(
-            result.tags.contains(&"kepler".to_string()),
-            "tags: {:?}",
-            result.tags
-        );
+        assert_eq!(result.tags, vec!["react-native", "vega", "kepler"]);
         assert_eq!(
             result
                 .framework_versions
@@ -400,11 +436,7 @@ mod tests {
     #[test]
     fn laravel_project_emits_laravel_tag_and_version() {
         let result = classify(&fixtures_root().join("laravel-rcn")).unwrap();
-        assert!(
-            result.tags.contains(&"laravel".to_string()),
-            "tags: {:?}",
-            result.tags
-        );
+        assert_eq!(result.tags, vec!["laravel"]);
         assert_eq!(
             result
                 .framework_versions
@@ -417,8 +449,7 @@ mod tests {
     #[test]
     fn rust_workspace_emits_both_rust_tags_and_no_version() {
         let result = classify(&fixtures_root().join("rust-workspace-daemon8")).unwrap();
-        assert!(result.tags.contains(&"rust".to_string()));
-        assert!(result.tags.contains(&"rust-workspace".to_string()));
+        assert_eq!(result.tags, vec!["rust", "rust-workspace"]);
         assert!(
             result.framework_versions.is_empty(),
             "Cargo versions not captured per spec; got: {:?}",
@@ -427,16 +458,19 @@ mod tests {
     }
 
     #[test]
-    fn expo_blank_project_tags_expo_and_records_version() {
+    fn expo_project_emits_both_react_native_and_expo_with_versions() {
         let result = classify(&fixtures_root().join("expo-blank")).unwrap();
-        assert!(
-            result.tags.contains(&"expo".to_string()),
-            "tags: {:?}",
-            result.tags
-        );
+        assert_eq!(result.tags, vec!["react-native", "expo"]);
         assert_eq!(
             result.framework_versions.get("expo").map(String::as_str),
             Some("~52.0.0")
+        );
+        assert_eq!(
+            result
+                .framework_versions
+                .get("react-native")
+                .map(String::as_str),
+            Some("0.76.0")
         );
     }
 
@@ -453,8 +487,184 @@ mod tests {
     #[test]
     fn classify_records_platform() {
         let result = classify(&fixtures_root().join("rust-workspace-daemon8")).unwrap();
-        // Whatever platform tests are running on, the field must be populated.
-        let _ = result.platform;
+        assert_eq!(result.platform, Platform::current());
+    }
+
+    #[test]
+    fn classify_returns_err_for_nonexistent_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let missing = tmp.path().join("does-not-exist");
+        let err = classify(&missing).unwrap_err();
+        assert!(
+            err.to_string().contains("not an existing directory"),
+            "err: {err}"
+        );
+    }
+
+    #[test]
+    fn classify_returns_err_for_file_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("not-a-dir");
+        std::fs::write(&file, "junk").unwrap();
+        let err = classify(&file).unwrap_err();
+        assert!(
+            err.to_string().contains("not an existing directory"),
+            "err: {err}"
+        );
+    }
+
+    #[test]
+    fn pyproject_django_rest_framework_does_not_emit_django_tag() {
+        let mut tags = vec![];
+        let mut versions = BTreeMap::new();
+        let text = r#"[project]
+dependencies = ["django-rest-framework==4.0", "requests==2.31"]
+"#;
+        classify_pyproject(text, &mut tags, &mut versions);
+        assert!(tags.contains(&"python".to_string()));
+        assert!(
+            !tags.contains(&"django".to_string()),
+            "django tag must not leak from django-rest-framework match; tags: {tags:?}"
+        );
+        assert!(
+            !versions.contains_key("django"),
+            "django version must not be captured; versions: {versions:?}"
+        );
+    }
+
+    #[test]
+    fn pyproject_fastapi_utils_does_not_emit_fastapi_tag() {
+        let mut tags = vec![];
+        let mut versions = BTreeMap::new();
+        let text = r#"[tool.poetry.dependencies]
+fastapi-utils = "^0.2"
+"#;
+        classify_pyproject(text, &mut tags, &mut versions);
+        assert!(
+            !tags.contains(&"fastapi".to_string()),
+            "fastapi tag must not leak from fastapi-utils; tags: {tags:?}"
+        );
+    }
+
+    #[test]
+    fn requirements_django_cors_headers_does_not_emit_django_tag() {
+        let mut tags = vec![];
+        let mut versions = BTreeMap::new();
+        classify_requirements_txt(
+            "django-cors-headers==4.0.0\nrequests==2.31.0\n",
+            &mut tags,
+            &mut versions,
+        );
+        assert!(
+            !tags.contains(&"django".to_string()),
+            "django tag must not leak from django-cors-headers; tags: {tags:?}"
+        );
+        assert!(
+            !versions.contains_key("django"),
+            "django version must not be captured; versions: {versions:?}"
+        );
+    }
+
+    #[test]
+    fn requirements_flask_restful_does_not_emit_flask_tag() {
+        let mut tags = vec![];
+        let mut versions = BTreeMap::new();
+        classify_requirements_txt("flask-restful==0.3.10\n", &mut tags, &mut versions);
+        assert!(
+            !tags.contains(&"flask".to_string()),
+            "flask tag must not leak from flask-restful; tags: {tags:?}"
+        );
+    }
+
+    #[test]
+    fn mixed_node_and_rust_project_emits_both_ecosystems() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("package.json"),
+            r#"{"dependencies":{"react-native":"0.74.0"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join("Cargo.toml"),
+            "[package]\nname = \"x\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        let result = classify(tmp.path()).unwrap();
+        assert!(result.tags.contains(&"react-native".to_string()));
+        assert!(result.tags.contains(&"rust".to_string()));
+    }
+
+    #[test]
+    fn nextjs_detected_from_js_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("next.config.js"), "module.exports = {};").unwrap();
+        let result = classify(tmp.path()).unwrap();
+        assert!(result.tags.contains(&"nextjs".to_string()));
+    }
+
+    #[test]
+    fn nextjs_detected_from_ts_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("next.config.ts"), "export default {};").unwrap();
+        let result = classify(tmp.path()).unwrap();
+        assert!(result.tags.contains(&"nextjs".to_string()));
+    }
+
+    #[test]
+    fn nextjs_detected_from_mjs_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("next.config.mjs"), "export default {};").unwrap();
+        let result = classify(tmp.path()).unwrap();
+        assert!(result.tags.contains(&"nextjs".to_string()));
+    }
+
+    #[test]
+    fn vite_detected_from_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("package.json"),
+            r#"{"devDependencies":{"vite":"^5.0.0"}}"#,
+        )
+        .unwrap();
+        let result = classify(tmp.path()).unwrap();
+        assert!(result.tags.contains(&"vite".to_string()));
+    }
+
+    #[test]
+    fn python_django_inline_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("requirements.txt"),
+            "django==4.2.7\nrequests==2.31.0\n",
+        )
+        .unwrap();
+        let result = classify(tmp.path()).unwrap();
+        assert!(result.tags.contains(&"python".to_string()));
+        assert!(result.tags.contains(&"django".to_string()));
+    }
+
+    #[test]
+    fn python_flask_inline_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("requirements.txt"), "flask==3.0.0\n").unwrap();
+        let result = classify(tmp.path()).unwrap();
+        assert!(result.tags.contains(&"flask".to_string()));
+    }
+
+    #[test]
+    fn rails_inline_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("Gemfile"), "gem \"rails\", \"~> 7.1\"\n").unwrap();
+        let result = classify(tmp.path()).unwrap();
+        assert!(result.tags.contains(&"rails".to_string()));
+    }
+
+    #[test]
+    fn go_inline_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("go.mod"), "module example.com/x\ngo 1.22\n").unwrap();
+        let result = classify(tmp.path()).unwrap();
+        assert!(result.tags.contains(&"go".to_string()));
     }
 
     #[test]

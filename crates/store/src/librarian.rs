@@ -249,29 +249,38 @@ fn civil_from_days(days: i64) -> (i32, u32, u32) {
 impl LibrarianStore for SurrealLibrarianStore {
     async fn index_node(&self, mut node: LibrarianNode) -> Result<String, StoreError> {
         // Validate kind-specific `data` payload before any write. Source
-        // templates and project nodes carry portability and tag-set rules
-        // that must hold (see librarian_validators). Other kinds may
-        // currently ship without data — no validator runs on them.
-        if let Some(ref data) = node.data {
-            match node.kind {
-                LibrarianNodeKind::SourceTemplate => {
-                    let parsed: daemon8_types::SourceTemplateData =
-                        serde_json::from_value(data.clone()).map_err(|e| {
-                            StoreError::Other(format!(
-                                "source_template.data does not match schema: {e}"
-                            ))
-                        })?;
-                    validate_source_template_data(&parsed)?;
-                }
-                LibrarianNodeKind::Project => {
+        // templates always require a payload — without one the template
+        // can never match anything useful, and the portability/tag rules
+        // are exactly the value we get from storing them. Project nodes
+        // also carry a payload eventually (D11), but the C1 provider
+        // registry path still writes `data: None`; reject-on-missing
+        // there would break that path until C3 reworks it.
+        match node.kind {
+            LibrarianNodeKind::SourceTemplate => {
+                let data = node.data.as_ref().ok_or_else(|| {
+                    StoreError::Other(
+                        "source_template requires data payload (SourceTemplateData)".into(),
+                    )
+                })?;
+                let parsed: daemon8_types::SourceTemplateData =
+                    serde_json::from_value(data.clone()).map_err(|e| {
+                        StoreError::Other(format!(
+                            "source_template.data does not match schema: {e}"
+                        ))
+                    })?;
+                validate_source_template_data(&parsed)?;
+            }
+            LibrarianNodeKind::Project => {
+                // TODO(C3): require data once register_provider_projects populates it.
+                if let Some(ref data) = node.data {
                     let parsed: daemon8_types::ProjectNodeData =
                         serde_json::from_value(data.clone()).map_err(|e| {
                             StoreError::Other(format!("project.data does not match schema: {e}"))
                         })?;
                     validate_project_node_data(&parsed)?;
                 }
-                LibrarianNodeKind::Doc | LibrarianNodeKind::Fix => {}
             }
+            LibrarianNodeKind::Doc | LibrarianNodeKind::Fix => {}
         }
 
         // Check for existing non-deprecated node with same locator
@@ -1320,5 +1329,52 @@ mod tests {
 
         let err = lib.index_node(node).await.unwrap_err();
         assert!(err.to_string().contains("unknown tag"));
+    }
+
+    // T7: init_schema must be idempotent and must tolerate pre-D6 rows
+    // (catalog_node rows without a `data` field). A user upgrading from
+    // a pre-D6 daemon8 must not see their librarian wiped or broken on
+    // the next `serve`.
+    #[tokio::test]
+    async fn init_schema_is_idempotent_with_existing_pre_d6_data() {
+        let store = SurrealStore::memory().await.unwrap();
+        let lib = store.librarian_store();
+        lib.init_schema().await.unwrap();
+
+        // Seed a doc node the normal way so we have something to read back.
+        let id = lib
+            .index_node(make_node(
+                LibrarianNodeKind::Doc,
+                "pre-d6 doc",
+                "/docs/old",
+                "legacy",
+            ))
+            .await
+            .unwrap();
+
+        // Run init_schema a second time. DEFINE FIELD IF NOT EXISTS and
+        // DEFINE INDEX IF NOT EXISTS must be no-ops here; any
+        // re-definition that breaks would surface as an error.
+        lib.init_schema().await.unwrap();
+
+        // The pre-D6 node must still load cleanly with data == None.
+        let fetched = lib.get_node(&id).await.unwrap().unwrap();
+        assert!(
+            fetched.data.is_none(),
+            "doc node should have no data payload after migration"
+        );
+
+        // And the librarian must keep accepting new writes after the
+        // second init_schema call.
+        let new_id = lib
+            .index_node(make_node(
+                LibrarianNodeKind::Doc,
+                "post-migration doc",
+                "/docs/new",
+                "legacy",
+            ))
+            .await
+            .unwrap();
+        assert!(!new_id.is_empty());
     }
 }

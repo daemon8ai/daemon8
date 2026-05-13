@@ -1002,7 +1002,8 @@ impl std::str::FromStr for TemplateConfidence {
 // Multi-tag by design: a single repo can be react-native + vega +
 // git-repo. The librarian's source_template lookups use these tags
 // with OR semantics (template applies if ANY tag matches).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub struct ProjectClassification {
     pub tags: Vec<String>,
     pub framework_versions: BTreeMap<String, String>,
@@ -1017,7 +1018,8 @@ pub struct ProjectClassification {
 // Cross-cutting fields (kind, locator, tags) live on LibrarianNode
 // itself for SurrealDB indexability; the per-kind fields live here
 // in `data` so the schema stays flexible.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub struct SourceTemplateData {
     pub project_types: Vec<String>,
     pub kind: SourceKind,
@@ -1040,7 +1042,8 @@ pub struct SourceTemplateData {
 }
 
 // Payload stored on a LibrarianNode with kind = project.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub struct ProjectNodeData {
     pub root_path: PathBuf,
     pub slug: String,
@@ -1502,5 +1505,111 @@ mod tests {
         assert!(!ObservationKindTag::JsException.is_dedup_exempt());
         assert!(!ObservationKindTag::StateSnapshot.is_dedup_exempt());
         assert!(!ObservationKindTag::Custom.is_dedup_exempt());
+    }
+
+    // T8: every public payload that crosses the MCP boundary must
+    // serialize as snake_case JSON so the agent-facing contract stays
+    // consistent with the rest of daemon8-types. Sniff-test the three
+    // D1+D6 payloads by serializing a fully-populated instance and
+    // checking the keys explicitly.
+    #[test]
+    fn librarian_payload_schema_serializes_snake_case() {
+        let classification = ProjectClassification {
+            tags: vec!["react-native".into()],
+            framework_versions: BTreeMap::new(),
+            root: PathBuf::from("/tmp/x"),
+            manifests: BTreeMap::new(),
+            platform: Platform::Macos,
+        };
+        let v = serde_json::to_value(&classification).unwrap();
+        let obj = v.as_object().unwrap();
+        for key in [
+            "tags",
+            "framework_versions",
+            "root",
+            "manifests",
+            "platform",
+        ] {
+            assert!(
+                obj.contains_key(key),
+                "ProjectClassification missing snake_case key {key}: {v}"
+            );
+        }
+        for key in obj.keys() {
+            assert!(
+                !key.chars().any(|c| c.is_ascii_uppercase()),
+                "ProjectClassification has non-snake_case key {key}"
+            );
+        }
+
+        let template = SourceTemplateData {
+            project_types: vec!["react-native".into()],
+            kind: SourceKind::Log,
+            locator_pattern: "~/x".into(),
+            platforms: vec![Platform::Macos],
+            parser_hint: Some("grok".into()),
+            default_tags: vec![],
+            description: "x".into(),
+            version_constraint: Some(">=1".into()),
+            discovered_by_session: Some("s".into()),
+            discovered_by_provider: Some("claude".into()),
+            discovered_at_ns: 1,
+            verified_count: 0,
+            last_verified_at_ns: 2,
+            confidence: TemplateConfidence::AgentDiscovered,
+        };
+        let v = serde_json::to_value(&template).unwrap();
+        let obj = v.as_object().unwrap();
+        for key in [
+            "project_types",
+            "kind",
+            "locator_pattern",
+            "platforms",
+            "parser_hint",
+            "default_tags",
+            "description",
+            "version_constraint",
+            "discovered_by_session",
+            "discovered_by_provider",
+            "discovered_at_ns",
+            "verified_count",
+            "last_verified_at_ns",
+            "confidence",
+        ] {
+            assert!(
+                obj.contains_key(key),
+                "SourceTemplateData missing snake_case key {key}: {v}"
+            );
+        }
+        // confidence variant must also be snake_case.
+        assert_eq!(obj["confidence"], serde_json::json!("agent_discovered"));
+
+        let project = ProjectNodeData {
+            root_path: PathBuf::from("/tmp/x"),
+            slug: "x".into(),
+            classification_tags: vec!["rust".into()],
+            framework_versions: BTreeMap::new(),
+            platform: Platform::Linux,
+            created_at_ns: 1,
+            last_serve_at_ns: 2,
+            skip_discovery: false,
+        };
+        let v = serde_json::to_value(&project).unwrap();
+        let obj = v.as_object().unwrap();
+        for key in [
+            "root_path",
+            "slug",
+            "classification_tags",
+            "framework_versions",
+            "platform",
+            "created_at_ns",
+            "last_serve_at_ns",
+            "skip_discovery",
+        ] {
+            assert!(
+                obj.contains_key(key),
+                "ProjectNodeData missing snake_case key {key}: {v}"
+            );
+        }
     }
 }

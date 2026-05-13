@@ -119,10 +119,11 @@ pub fn validate_project_node_data(data: &ProjectNodeData) -> Result<(), StoreErr
 
 // locator_pattern must be portable across machines: use `~` for the
 // user home, env-var references for OS-specific roots, or `<root>` for
-// project-relative paths. Absolute paths under `/Users/<name>/` or
-// `/home/<name>/` would silently break future export/sync and they pin
-// the template to one machine. Reject them with a clear message naming
-// the offending prefix.
+// project-relative paths. Absolute paths under `/Users/<name>/`,
+// `/home/<name>/`, any Windows drive `X:\Users\` or `X:/Users/`, or
+// UNC paths (`\\server\share`) would silently break future export/sync
+// and pin the template to one machine. Reject them with a clear
+// message naming the offending shape.
 fn validate_locator_pattern(pattern: &str) -> Result<(), StoreError> {
     let trimmed = pattern.trim();
     if trimmed.is_empty() {
@@ -138,14 +139,53 @@ fn validate_locator_pattern(pattern: &str) -> Result<(), StoreError> {
         )));
     }
 
-    if trimmed.starts_with("C:\\Users\\") || trimmed.starts_with("C:/Users/") {
+    if is_windows_user_path(trimmed) {
         return Err(StoreError::Other(format!(
             "source_template.locator_pattern '{trimmed}' is an absolute Windows user path; \
              use $LOCALAPPDATA or $USERPROFILE (portability requirement)"
         )));
     }
 
+    if is_unc_path(trimmed) {
+        return Err(StoreError::Other(format!(
+            "source_template.locator_pattern '{trimmed}' is a UNC network path; \
+             templates must not embed remote shares (portability requirement)"
+        )));
+    }
+
     Ok(())
+}
+
+// Matches `<drive>:\Users\…` or `<drive>:/Users/…` for any single
+// ASCII letter drive. Case-insensitive on the `Users` segment because
+// Windows is case-insensitive on paths.
+fn is_windows_user_path(pattern: &str) -> bool {
+    let bytes = pattern.as_bytes();
+    if bytes.len() < 9 {
+        return false;
+    }
+    if !bytes[0].is_ascii_alphabetic() || bytes[1] != b':' {
+        return false;
+    }
+    let sep = bytes[2];
+    if sep != b'\\' && sep != b'/' {
+        return false;
+    }
+    let tail = &pattern[3..];
+    let needle = if sep == b'\\' { "Users\\" } else { "Users/" };
+    tail.len() >= needle.len() && tail[..needle.len()].eq_ignore_ascii_case(needle)
+}
+
+// UNC: `\\server\share\…`. Two leading backslashes followed by a
+// non-separator character is enough to identify it; we don't try to
+// validate the full UNC grammar.
+fn is_unc_path(pattern: &str) -> bool {
+    let bytes = pattern.as_bytes();
+    bytes.len() >= 3
+        && bytes[0] == b'\\'
+        && bytes[1] == b'\\'
+        && bytes[2] != b'\\'
+        && bytes[2] != b'/'
 }
 
 #[cfg(test)]
@@ -218,6 +258,49 @@ mod tests {
         t.locator_pattern = "C:\\Users\\jhavens\\AppData\\example.log".into();
         let err = validate_source_template_data(&t).unwrap_err();
         assert!(err.to_string().contains("Windows user path"));
+    }
+
+    #[test]
+    fn rejects_d_drive_users_path() {
+        let mut t = good_template();
+        t.locator_pattern = "D:\\Users\\jhavens\\AppData\\example.log".into();
+        let err = validate_source_template_data(&t).unwrap_err();
+        assert!(err.to_string().contains("Windows user path"));
+    }
+
+    #[test]
+    fn rejects_capital_c_forward_slash_users_path() {
+        let mut t = good_template();
+        t.locator_pattern = "C:/Users/jhavens/AppData/example.log".into();
+        let err = validate_source_template_data(&t).unwrap_err();
+        assert!(err.to_string().contains("Windows user path"));
+    }
+
+    #[test]
+    fn rejects_lowercase_drive_letter_windows_user_path() {
+        let mut t = good_template();
+        t.locator_pattern = "e:\\users\\jhavens\\log.txt".into();
+        let err = validate_source_template_data(&t).unwrap_err();
+        assert!(err.to_string().contains("Windows user path"));
+    }
+
+    #[test]
+    fn rejects_unc_path() {
+        let mut t = good_template();
+        t.locator_pattern = "\\\\fileserver\\share\\app\\log.txt".into();
+        let err = validate_source_template_data(&t).unwrap_err();
+        assert!(err.to_string().contains("UNC network path"));
+    }
+
+    #[test]
+    fn accepts_non_user_windows_drive_path() {
+        // We only reject home-shaped Windows paths; arbitrary absolute
+        // drive paths (e.g. C:\ProgramData\…) still come through because
+        // they are sometimes the only portable answer on Windows.
+        let mut t = good_template();
+        t.locator_pattern = "C:\\ProgramData\\daemon8\\runtime.log".into();
+        t.platforms = vec![Platform::Windows];
+        validate_source_template_data(&t).unwrap();
     }
 
     #[test]

@@ -20,6 +20,7 @@ None.
   - parent_id: optional string. Place this node under an existing catalog node for hierarchy.
   - edge: optional object { kind: string, target_node_id: string }. Create a relationship edge at index time.
   - canonicalize: optional bool. Mark as authoritative reference — canonicalized nodes are never flagged as stale.
+  - data: optional kind-specific payload (snake_case JSON). For `source_template` pass a `SourceTemplateData` shape (project_types, kind, locator_pattern, platforms, …); for `project` pass a `ProjectNodeData` shape. `source_template` writes require this payload. Locator patterns must be portable — use `~`, `$VAR`, or `<root>`; absolute home paths like `/Users/<name>/…` are rejected by the validator.
 
 ## Returns
   result: {id, version}.

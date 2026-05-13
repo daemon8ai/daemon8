@@ -1506,12 +1506,14 @@ name = "daemon8-providers"
 version = "0.3.4"
 dependencies = [
  "anyhow",
+ "daemon8-store",
  "daemon8-types",
  "dirs",
  "serde",
  "serde_json",
  "tempfile",
  "toml 0.8.23",
+ "tracing",
 ]
 
 [[package]]
