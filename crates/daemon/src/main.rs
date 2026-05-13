@@ -75,6 +75,8 @@ enum Commands {
     /// Manage daemon8 CLI hooks across providers (Claude Code, Codex, Gemini)
     #[command(subcommand)]
     Hooks(cli::hooks::HooksSubcommand),
+    /// Signal the running daemon's discovery scanner (D3)
+    Discover(cli::discover::DiscoverArgs),
     /// Real-time alert relay for MCP clients (experimental)
     Channel,
     /// Diagnose common configuration and environment issues
@@ -163,6 +165,7 @@ async fn main() -> Result<()> {
             ServiceSubcommand::Uninstall => cli::service::cmd_uninstall(),
         },
         Commands::Hooks(sub) => cli::hooks::cmd_hooks(sub).await,
+        Commands::Discover(args) => cli::discover::cmd_discover(args).await,
         Commands::Channel => cli::channel::cmd_channel().await,
         Commands::Doctor { fix } => cli::doctor::cmd_doctor(cli.config, fix).await,
         Commands::CliHook(args) => cli::hook_handler::cmd_cli_hook(args),

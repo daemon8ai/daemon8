@@ -223,6 +223,19 @@ pub trait SourceActivator: Send + Sync {
     fn touch_matching(&self, filter: &Filter);
 }
 
+/// Out-of-band signals into the active discovery scanner (D3).
+///
+/// The scanner's wait loop watches these flags between poll ticks. The
+/// implementation lives in the daemon binary; this trait gives the HTTP
+/// API layer a way to flip the bits without importing daemon-internal
+/// types. `--complete` shortcuts the wait loop with whatever templates
+/// the librarian currently has; `--skip` writes the per-project skip
+/// marker and returns the unchanged plan.
+pub trait DiscoveryControl: Send + Sync {
+    fn signal_complete(&self);
+    fn signal_skip(&self);
+}
+
 impl fmt::Display for ObservationKindTag {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {

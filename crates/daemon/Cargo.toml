@@ -50,6 +50,7 @@ cliclack.workspace = true
 dirs.workspace = true
 notify.workspace = true
 glob.workspace = true
+semver.workspace = true
 rusqlite.workspace = true
 futures.workspace = true
 humantime = "2"

@@ -194,6 +194,7 @@ async fn start_server(
         )),
         memory_store: None,
         source_activator: None,
+        discovery_control: None,
     };
 
     let app =
@@ -1154,6 +1155,7 @@ async fn start_act_server() -> (
         lens: std::sync::Arc::new(daemon8_store::LensManager::new(stream_tx.subscribe(), None)),
         memory_store: None,
         source_activator: None,
+        discovery_control: None,
     };
     let app = daemon8_api::api_router(api_state);
 

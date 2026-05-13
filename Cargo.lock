@@ -1385,6 +1385,7 @@ dependencies = [
  "reqwest-eventsource",
  "rmcp",
  "rusqlite",
+ "semver",
  "serde",
  "serde_json",
  "tempfile",

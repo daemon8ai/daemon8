@@ -202,6 +202,56 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
         });
     }
 
+    // Project-aware discovery scanner (D3). Gated behind an opt-in env
+    // var until D4 ships first-run UX. The scanner produces a
+    // DiscoveryPlan; it does not register sources — that's D4.
+    let discovery_control: Option<Arc<dyn daemon8_types::DiscoveryControl>> =
+        if std::env::var(crate::discovery::scanner::DISCOVERY_GATE_ENV)
+            .ok()
+            .is_some_and(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))
+        {
+            let signals = crate::discovery::scanner::DiscoverySignals::new();
+            let lib = librarian_store.clone();
+            let tx = obs_tx.clone();
+            let user_sources: Vec<crate::config::SourceConfig> =
+                cfg.sources.values().cloned().collect();
+            let scan_cancel = cancel.child_token();
+            let signals_for_task = signals.clone();
+            tasks.spawn(async move {
+                let cwd = match std::env::current_dir() {
+                    Ok(p) => p,
+                    Err(e) => {
+                        tracing::warn!("discovery scanner: cannot read cwd: {e}");
+                        return;
+                    }
+                };
+                let result = crate::discovery::scanner::scan(
+                    &cwd,
+                    lib.as_ref(),
+                    &tx,
+                    user_sources,
+                    crate::discovery::scanner::ScannerConfig::default(),
+                    scan_cancel,
+                    Some(signals_for_task),
+                )
+                .await;
+                match result {
+                    Ok(plan) => tracing::info!(
+                        status = ?plan.librarian_status,
+                        resolved = plan.resolved_sources.len(),
+                        misses = plan.template_misses.len(),
+                        awaiting_agent = plan.awaiting_agent,
+                        cache_used = plan.cache_used,
+                        "discovery scan complete"
+                    ),
+                    Err(e) => tracing::warn!("discovery scan failed: {e}"),
+                }
+            });
+            Some(signals as Arc<dyn daemon8_types::DiscoveryControl>)
+        } else {
+            None
+        };
+
     let setup_tool_fn: daemon8_mcp::SetupToolFn = Arc::new(move |action| {
         let setup_config_path = setup_config_path.clone();
         Box::pin(async move {
@@ -331,6 +381,7 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
         lens: api_lens,
         memory_store: Some(memory_store.clone()),
         source_activator: source_activator.clone(),
+        discovery_control: discovery_control.clone(),
     };
     let port = cfg.server.port;
     let app = daemon8_ingest::ingest_router(obs_tx.clone())

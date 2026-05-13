@@ -8,14 +8,16 @@
 //! `daemon8-providers`), the D6 librarian schema (in `daemon8-store`),
 //! and the daemon's observation pipeline.
 //!
-//! Commit 2 lands the discovery-hint mechanism only — see [`hint`]. The
-//! scanner (D3), presentation (D4), conversation auto-detect (D5), and
-//! cache logic land in later commits.
+//! Layout:
 //!
-//! The hint API is `pub` but unused inside the bin until D3 wires it
-//! into the serve path. Unit and integration tests exercise it directly,
-//! so dead-code lints are suppressed module-wide.
-
-#![allow(dead_code)]
+//! - [`hint`] (D2) — emits `discovery_hint` observations when the
+//!   librarian has no template coverage for a project's tags.
+//! - [`scanner`] (D3) — orchestrator. Pulls classification, checks the
+//!   librarian, probes the filesystem, emits a hint when needed, and
+//!   returns a [`scanner::DiscoveryPlan`] for D4 to render.
+//!
+//! D4 (presentation), D5 (conversation auto-detect), and the post-plan
+//! source registration step land in later commits.
 
 pub mod hint;
+pub mod scanner;

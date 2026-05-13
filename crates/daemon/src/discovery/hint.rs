@@ -49,6 +49,13 @@ pub const DISCOVERY_HINT_CHANNEL: &str = "discovery_hint";
 /// A classification with no tags is degenerate (the universal `git-repo`
 /// tag should always be present once D1 has run) but we still return
 /// false rather than spamming hints.
+///
+/// The scanner uses [`crate::discovery::scanner::uncovered_tags`] for
+/// the live decision (per-tag coverage rather than a single count); this
+/// predicate stays as the simple, exhaustively-tested boolean form so
+/// downstream tools (doctor, setup) can reach for it without depending
+/// on the scanner's resolved-source view.
+#[allow(dead_code)]
 pub fn should_emit_hint(
     classification: &ProjectClassification,
     librarian_templates_matched: usize,

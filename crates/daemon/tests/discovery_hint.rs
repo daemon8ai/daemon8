@@ -152,6 +152,7 @@ async fn start_server(
         )),
         memory_store: None,
         source_activator: None,
+        discovery_control: None,
     };
 
     let app =
