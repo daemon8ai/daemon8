@@ -27,9 +27,11 @@
 //!   - an out-of-band signal flipped by `daemon8 discover --complete`
 //!     (see [`DiscoverySignals`]).
 //!
-//! `expand_locator_pattern` and `template_matches_versions` are pure
-//! helpers extracted so they can be exhaustively unit-tested without
-//! standing up a daemon.
+//! `template_matches_versions` is a pure helper extracted so it can be
+//! exhaustively unit-tested without standing up a daemon. Locator
+//! pattern expansion lives in [`crate::discovery::locator`] so the
+//! doctor command can reuse the exact same expansion semantics when
+//! diagnosing source drift.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -48,7 +50,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::SourceConfig;
-use crate::discovery::{conversation, hint};
+use crate::discovery::{conversation, hint, locator};
 
 /// Skip-marker path relative to the project root. Future `daemon8 serve`
 /// invocations honor this file and bypass the scanner entirely.
@@ -313,122 +315,6 @@ fn plan_from_outcome(
 }
 
 // ── Pure helpers (heavily tested below) ──────────────────────────────
-
-/// Expand `~`, `<root>`, and `$VAR`/`${VAR}` references in a locator
-/// pattern, then run glob expansion if the pattern contains glob
-/// metacharacters. Returns `Err(InvalidPattern)` for malformed patterns
-/// — callers fold the error into a [`TemplateMiss`] rather than aborting.
-pub fn expand_locator_pattern(
-    pattern: &str,
-    root: &Path,
-) -> Result<Vec<PathBuf>, TemplateMissReason> {
-    let trimmed = pattern.trim();
-    if trimmed.is_empty() {
-        return Err(TemplateMissReason::InvalidPattern(
-            "pattern is empty".into(),
-        ));
-    }
-
-    let after_home = expand_home(trimmed)?;
-    let after_root = after_home.replace("<root>", &root.to_string_lossy());
-    let after_env = expand_env_vars(&after_root)?;
-
-    if has_glob_chars(&after_env) {
-        let mut paths = Vec::new();
-        let entries = glob::glob(&after_env)
-            .map_err(|e| TemplateMissReason::InvalidPattern(format!("glob parse error: {e}")))?;
-        for entry in entries {
-            match entry {
-                Ok(p) => paths.push(p),
-                Err(e) => {
-                    tracing::warn!(
-                        pattern = %after_env,
-                        "glob entry error: {e}"
-                    );
-                }
-            }
-        }
-        Ok(paths)
-    } else {
-        Ok(vec![PathBuf::from(after_env)])
-    }
-}
-
-fn expand_home(pattern: &str) -> Result<String, TemplateMissReason> {
-    if let Some(rest) = pattern.strip_prefix("~/") {
-        let home = dirs::home_dir().ok_or_else(|| {
-            TemplateMissReason::InvalidPattern("home directory unavailable".into())
-        })?;
-        Ok(format!("{}/{rest}", home.display()))
-    } else if pattern == "~" {
-        let home = dirs::home_dir().ok_or_else(|| {
-            TemplateMissReason::InvalidPattern("home directory unavailable".into())
-        })?;
-        Ok(home.display().to_string())
-    } else {
-        Ok(pattern.to_string())
-    }
-}
-
-fn expand_env_vars(input: &str) -> Result<String, TemplateMissReason> {
-    let mut out = String::with_capacity(input.len());
-    let mut chars = input.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c != '$' {
-            out.push(c);
-            continue;
-        }
-        // ${VAR} form
-        if chars.peek() == Some(&'{') {
-            chars.next();
-            let mut name = String::new();
-            let mut closed = false;
-            for nc in chars.by_ref() {
-                if nc == '}' {
-                    closed = true;
-                    break;
-                }
-                name.push(nc);
-            }
-            if !closed {
-                return Err(TemplateMissReason::InvalidPattern(format!(
-                    "unterminated ${{}} reference near {name}"
-                )));
-            }
-            let value = std::env::var(&name).map_err(|_| {
-                TemplateMissReason::InvalidPattern(format!(
-                    "environment variable ${name} is not set"
-                ))
-            })?;
-            out.push_str(&value);
-            continue;
-        }
-        // $VAR form (alphanumeric + underscore)
-        let mut name = String::new();
-        while let Some(&nc) = chars.peek() {
-            if nc.is_ascii_alphanumeric() || nc == '_' {
-                name.push(nc);
-                chars.next();
-            } else {
-                break;
-            }
-        }
-        if name.is_empty() {
-            // Bare `$` with no name — keep literal.
-            out.push('$');
-            continue;
-        }
-        let value = std::env::var(&name).map_err(|_| {
-            TemplateMissReason::InvalidPattern(format!("environment variable ${name} is not set"))
-        })?;
-        out.push_str(&value);
-    }
-    Ok(out)
-}
-
-fn has_glob_chars(s: &str) -> bool {
-    s.chars().any(|c| matches!(c, '*' | '?' | '['))
-}
 
 /// Decide whether a template's `version_constraint` is compatible with
 /// the project's `framework_versions`. Returns true if:
@@ -740,12 +626,12 @@ async fn probe_templates_inner(
             continue;
         }
 
-        match expand_locator_pattern(&template.locator_pattern, &classification.root) {
-            Err(reason) => {
+        match locator::expand_locator_pattern(&template.locator_pattern, &classification.root) {
+            Err(msg) => {
                 misses.push(TemplateMiss {
                     template_id: template_id.clone(),
                     locator_pattern: template.locator_pattern.clone(),
-                    reason,
+                    reason: TemplateMissReason::InvalidPattern(msg),
                 });
             }
             Ok(paths) => {
@@ -943,94 +829,9 @@ mod tests {
         }
     }
 
-    // ── expand_locator_pattern ────────────────────────────────────────
-
-    #[test]
-    fn expand_home_tilde_slash() {
-        let expanded = expand_locator_pattern("~/example.log", Path::new("/tmp/root")).unwrap();
-        assert_eq!(expanded.len(), 1);
-        let s = expanded[0].to_string_lossy();
-        assert!(s.ends_with("/example.log"));
-        assert!(!s.starts_with('~'));
-    }
-
-    #[test]
-    fn expand_root_placeholder() {
-        let expanded =
-            expand_locator_pattern("<root>/logs/runtime.log", Path::new("/tmp/proj")).unwrap();
-        assert_eq!(expanded, vec![PathBuf::from("/tmp/proj/logs/runtime.log")]);
-    }
-
-    #[test]
-    fn expand_env_var_braced() {
-        // Safe to set in tests — we set and read in the same process.
-        unsafe { std::env::set_var("D8_DISCOVERY_TEST_VAR", "/var/tmp/d8") };
-        let expanded =
-            expand_locator_pattern("${D8_DISCOVERY_TEST_VAR}/x.log", Path::new("/")).unwrap();
-        assert_eq!(expanded, vec![PathBuf::from("/var/tmp/d8/x.log")]);
-        unsafe { std::env::remove_var("D8_DISCOVERY_TEST_VAR") };
-    }
-
-    #[test]
-    fn expand_env_var_bare() {
-        unsafe { std::env::set_var("D8_DISCOVERY_TEST_VAR2", "/srv/d8") };
-        let expanded =
-            expand_locator_pattern("$D8_DISCOVERY_TEST_VAR2/y.log", Path::new("/")).unwrap();
-        assert_eq!(expanded, vec![PathBuf::from("/srv/d8/y.log")]);
-        unsafe { std::env::remove_var("D8_DISCOVERY_TEST_VAR2") };
-    }
-
-    #[test]
-    fn expand_missing_env_var_is_invalid_pattern() {
-        unsafe { std::env::remove_var("D8_DISCOVERY_MISSING_VAR_XYZ") };
-        let err =
-            expand_locator_pattern("$D8_DISCOVERY_MISSING_VAR_XYZ/x", Path::new("/")).unwrap_err();
-        match err {
-            TemplateMissReason::InvalidPattern(msg) => {
-                assert!(msg.contains("D8_DISCOVERY_MISSING_VAR_XYZ"));
-            }
-            other => panic!("expected InvalidPattern, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn expand_empty_pattern_rejected() {
-        let err = expand_locator_pattern("   ", Path::new("/tmp")).unwrap_err();
-        match err {
-            TemplateMissReason::InvalidPattern(_) => {}
-            other => panic!("expected InvalidPattern, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn expand_glob_expands_against_filesystem() {
-        let tmp = tempfile::tempdir().unwrap();
-        std::fs::write(tmp.path().join("a.log"), "x").unwrap();
-        std::fs::write(tmp.path().join("b.log"), "y").unwrap();
-        std::fs::write(tmp.path().join("c.txt"), "z").unwrap();
-
-        let pattern = format!("{}/*.log", tmp.path().display());
-        let mut expanded = expand_locator_pattern(&pattern, Path::new("/")).unwrap();
-        expanded.sort();
-        assert_eq!(expanded.len(), 2);
-        assert!(
-            expanded
-                .iter()
-                .all(|p| p.extension().is_some_and(|e| e == "log"))
-        );
-    }
-
-    #[test]
-    fn expand_literal_no_glob_no_filesystem_check() {
-        // expand_locator_pattern does NOT verify existence — that's the
-        // caller's job. A non-existent literal path round-trips.
-        let expanded =
-            expand_locator_pattern("/this/path/does/not/exist.log", Path::new("/")).unwrap();
-        assert_eq!(
-            expanded,
-            vec![PathBuf::from("/this/path/does/not/exist.log")]
-        );
-    }
+    // Locator pattern expansion tests live in
+    // `discovery/locator.rs`; the scanner relies on that module for
+    // every `expand_locator_pattern` call.
 
     // ── template_matches_versions ─────────────────────────────────────
 

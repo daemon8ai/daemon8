@@ -5,13 +5,17 @@ use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
-use daemon8_store::StateModel;
+use daemon8_store::{LibrarianStore, StateModel, SurrealStore};
+use daemon8_types::ProjectClassification;
 
 use super::observe::{base_url, check_response};
 use crate::config::{self, SourceConfig};
+use crate::discovery::doctor_checks::{
+    self, ProjectNodeStatus, SourceDriftReport, SourceTemplatesStatus,
+};
 
 struct Check {
-    name: &'static str,
+    name: String,
     result: CheckResult,
 }
 
@@ -27,16 +31,44 @@ impl Check {
     fn is_failure(&self) -> bool {
         matches!(self.result, CheckResult::Err(_))
     }
+
+    fn ok(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            result: CheckResult::Ok,
+        }
+    }
+
+    fn ok_hint(name: impl Into<String>, msg: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            result: CheckResult::OkHint(msg.into()),
+        }
+    }
+
+    fn warn(name: impl Into<String>, msg: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            result: CheckResult::Warn(msg.into()),
+        }
+    }
+
+    fn err(name: impl Into<String>, msg: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            result: CheckResult::Err(msg.into()),
+        }
+    }
 }
 
 impl std::fmt::Display for Check {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.result {
             CheckResult::Ok => write!(f, "[ok]     {}", self.name),
-            CheckResult::OkHint(msg) => write!(f, "[ok]     {} ({})", self.name, msg),
-            CheckResult::Fixed(msg) => write!(f, "[fixed]  {} ({})", self.name, msg),
-            CheckResult::Warn(msg) => write!(f, "[WARN]   {} ({})", self.name, msg),
-            CheckResult::Err(msg) => write!(f, "[ERR]    {} ({})", self.name, msg),
+            CheckResult::OkHint(msg) => write!(f, "[ok]     {} ({msg})", self.name),
+            CheckResult::Fixed(msg) => write!(f, "[fixed]  {} ({msg})", self.name),
+            CheckResult::Warn(msg) => write!(f, "[WARN]   {} ({msg})", self.name),
+            CheckResult::Err(msg) => write!(f, "[ERR]    {} ({msg})", self.name),
         }
     }
 }
@@ -60,11 +92,25 @@ pub async fn cmd_doctor(config_path: Option<String>, fix: bool) -> Result<()> {
         check_network(),
         check_setup_state(&cfg),
         check_sources(&cfg),
-        check_store(&cfg, port).await,
     ];
+
+    // Open the store once and reuse for both the store health check
+    // and the project-aware onboarding checks. SurrealKV holds an
+    // exclusive lock, so opening twice in sequence races against
+    // file-lock release timing and produces spurious failures.
+    let (store_check, shared_store) = check_store_with_handle(&cfg, port).await;
+    checks.push(store_check);
 
     #[cfg(target_os = "macos")]
     checks.push(check_macos_launchd_state());
+
+    // Project-aware onboarding checks (D8). Doctor runs as a CLI
+    // separate from the running daemon, so we classify the cwd and
+    // query the librarian directly. Any failure here folds into a
+    // single advisory check rather than aborting the whole run —
+    // empty-librarian or unclassifiable directories are normal.
+    let project_checks = run_project_aware_checks(&cfg, shared_store.as_ref()).await;
+    checks.extend(project_checks);
 
     let has_failure = checks.iter().any(|c| c.is_failure());
     let has_warning = checks
@@ -94,14 +140,14 @@ pub async fn cmd_doctor(config_path: Option<String>, fix: bool) -> Result<()> {
 fn check_config_file(config_path: &std::path::Path, fix: bool) -> Check {
     if config_path.exists() {
         return Check {
-            name: "config file",
+            name: "config file".into(),
             result: CheckResult::Ok,
         };
     }
 
     if !fix {
         return Check {
-            name: "config file",
+            name: "config file".into(),
             result: CheckResult::Warn("missing (run doctor --fix to create)".into()),
         };
     }
@@ -111,7 +157,7 @@ fn check_config_file(config_path: &std::path::Path, fix: bool) -> Check {
         && let Err(e) = std::fs::create_dir_all(parent)
     {
         return Check {
-            name: "config file",
+            name: "config file".into(),
             result: CheckResult::Err(format!("could not create config dir: {e}")),
         };
     }
@@ -120,16 +166,16 @@ fn check_config_file(config_path: &std::path::Path, fix: bool) -> Check {
     match toml::to_string_pretty(&default_cfg) {
         Ok(content) => match std::fs::write(config_path, content) {
             Ok(()) => Check {
-                name: "config file",
+                name: "config file".into(),
                 result: CheckResult::Fixed("created with defaults".into()),
             },
             Err(e) => Check {
-                name: "config file",
+                name: "config file".into(),
                 result: CheckResult::Err(format!("write failed: {e}")),
             },
         },
         Err(e) => Check {
-            name: "config file",
+            name: "config file".into(),
             result: CheckResult::Err(format!("serialize failed: {e}")),
         },
     }
@@ -141,11 +187,11 @@ fn check_screenshot_dir(cfg: &config::Config, fix: bool) -> Check {
     if dir.exists() {
         return match is_writable(&dir) {
             true => Check {
-                name: "screenshot dir",
+                name: "screenshot dir".into(),
                 result: CheckResult::Ok,
             },
             false => Check {
-                name: "screenshot dir",
+                name: "screenshot dir".into(),
                 result: CheckResult::Err(format!("not writable: {}", dir.display())),
             },
         };
@@ -153,7 +199,7 @@ fn check_screenshot_dir(cfg: &config::Config, fix: bool) -> Check {
 
     if !fix {
         return Check {
-            name: "screenshot dir",
+            name: "screenshot dir".into(),
             result: CheckResult::Warn(format!(
                 "missing: {} (run doctor --fix to create)",
                 dir.display()
@@ -163,11 +209,11 @@ fn check_screenshot_dir(cfg: &config::Config, fix: bool) -> Check {
 
     match std::fs::create_dir_all(&dir) {
         Ok(()) => Check {
-            name: "screenshot dir",
+            name: "screenshot dir".into(),
             result: CheckResult::Fixed(format!("created {}", dir.display())),
         },
         Err(e) => Check {
-            name: "screenshot dir",
+            name: "screenshot dir".into(),
             result: CheckResult::Err(format!("could not create: {e}")),
         },
     }
@@ -182,7 +228,7 @@ fn check_data_dir(cfg: &config::Config, fix: bool) -> Check {
 
     if dir.exists() && is_writable(&dir) {
         return Check {
-            name: "data dir",
+            name: "data dir".into(),
             result: CheckResult::Ok,
         };
     }
@@ -191,48 +237,36 @@ fn check_data_dir(cfg: &config::Config, fix: bool) -> Check {
         if fix {
             return match std::fs::create_dir_all(&dir) {
                 Ok(()) => Check {
-                    name: "data dir",
+                    name: "data dir".into(),
                     result: CheckResult::Fixed(format!("created {}", dir.display())),
                 },
                 Err(e) => Check {
-                    name: "data dir",
+                    name: "data dir".into(),
                     result: CheckResult::Err(format!("could not create: {e}")),
                 },
             };
         }
         return Check {
-            name: "data dir",
+            name: "data dir".into(),
             result: CheckResult::Warn(format!("missing: {}", dir.display())),
         };
     }
 
     Check {
-        name: "data dir",
+        name: "data dir".into(),
         result: CheckResult::Err(format!("not writable: {}", dir.display())),
     }
 }
 
 fn check_port(port: u16) -> Check {
-    // Leak is intentional: doctor is a one-shot CLI command, runs once, exits.
-    let name: &'static str = Box::leak(format!("port {port}").into_boxed_str());
+    let name = format!("port {port}");
     match TcpListener::bind(format!("127.0.0.1:{port}")) {
-        Ok(_) => Check {
-            name,
-            result: CheckResult::Ok,
-        },
+        Ok(_) => Check::ok(name),
         Err(_) => {
             if probe_daemon_health(port) {
-                Check {
-                    name,
-                    result: CheckResult::Ok,
-                }
+                Check::ok(name)
             } else {
-                Check {
-                    name,
-                    result: CheckResult::Warn(
-                        "in use by another process (not a healthy daemon)".into(),
-                    ),
-                }
+                Check::warn(name, "in use by another process (not a healthy daemon)")
             }
         }
     }
@@ -277,7 +311,7 @@ fn check_network() -> Check {
         .is_some_and(|a| TcpStream::connect_timeout(&a, std::time::Duration::from_secs(3)).is_ok());
 
     Check {
-        name: "network reachable",
+        name: "network reachable".into(),
         result: if reachable {
             CheckResult::Ok
         } else {
@@ -289,7 +323,7 @@ fn check_network() -> Check {
 fn check_setup_state(cfg: &config::Config) -> Check {
     if cfg.setup.projects.is_empty() {
         return Check {
-            name: "setup state",
+            name: "setup state".into(),
             result: CheckResult::OkHint("no projects applied".into()),
         };
     }
@@ -313,12 +347,12 @@ fn check_setup_state(cfg: &config::Config) -> Check {
 
     if warnings.is_empty() {
         Check {
-            name: "setup state",
+            name: "setup state".into(),
             result: CheckResult::OkHint(format!("{} project(s) applied", cfg.setup.projects.len())),
         }
     } else {
         Check {
-            name: "setup state",
+            name: "setup state".into(),
             result: CheckResult::Warn(warnings.join("; ")),
         }
     }
@@ -327,7 +361,7 @@ fn check_setup_state(cfg: &config::Config) -> Check {
 fn check_sources(cfg: &config::Config) -> Check {
     if cfg.sources.is_empty() {
         return Check {
-            name: "sources",
+            name: "sources".into(),
             result: CheckResult::OkHint("none configured".into()),
         };
     }
@@ -374,55 +408,322 @@ fn check_sources(cfg: &config::Config) -> Check {
 
     if warnings.is_empty() {
         Check {
-            name: "sources",
+            name: "sources".into(),
             result: CheckResult::OkHint(format!("{} configured", cfg.sources.len())),
         }
     } else {
         Check {
-            name: "sources",
+            name: "sources".into(),
             result: CheckResult::Warn(warnings.join("; ")),
         }
     }
 }
 
-async fn check_store(cfg: &config::Config, port: u16) -> Check {
+/// Run the three project-aware onboarding checks (D8).
+///
+/// `shared_store` is `Some` when [`check_store_with_handle`] opened the
+/// DB directly, `None` when it answered via the daemon's HTTP API. In
+/// the API path the daemon owns the SurrealKV lock; we don't try to
+/// open the DB a second time — these checks are an offline diagnostic
+/// and the running daemon is already the authoritative reader of its
+/// own state.
+async fn run_project_aware_checks(
+    cfg: &config::Config,
+    shared_store: Option<&SurrealStore>,
+) -> Vec<Check> {
+    let mut out = Vec::new();
+
+    let cwd = match std::env::current_dir() {
+        Ok(p) => p,
+        Err(e) => {
+            out.push(Check::ok_hint(
+                "project awareness",
+                format!("cannot read current dir ({e})"),
+            ));
+            return out;
+        }
+    };
+
+    let classification = match daemon8_providers::classify(&cwd) {
+        Ok(mut c) => {
+            // The scanner canonicalizes the root; mirror that here so
+            // librarian lookups (which key by canonical string) match.
+            c.root = std::fs::canonicalize(&c.root).unwrap_or(c.root);
+            c
+        }
+        Err(_) => {
+            out.push(Check::ok_hint(
+                "project awareness",
+                format!("cwd {} is not a classifiable project root", cwd.display()),
+            ));
+            return out;
+        }
+    };
+
+    let db_path = config::resolve_db_path(cfg.storage.path.as_deref());
+    if !db_path.exists() {
+        out.push(Check::ok_hint(
+            "project awareness",
+            "librarian not initialized yet (first run will create it)",
+        ));
+        return out;
+    }
+
+    let Some(store) = shared_store else {
+        // Daemon is up and answering /api/summary — store check used
+        // the API path, so we never opened the DB. Skip rather than
+        // masquerade as an error.
+        out.push(Check::ok_hint(
+            "project awareness",
+            "skipped while daemon is running (SurrealKV lock held by the daemon). \
+             Run `daemon8 stop` then `daemon8 doctor` to inspect project node, source \
+             templates, and source drift.",
+        ));
+        return out;
+    };
+    let librarian = store.librarian_store();
+
+    out.push(render_project_node(&librarian, &classification).await);
+    out.push(render_source_templates(&librarian, &classification).await);
+    out.extend(render_source_drift(&librarian, &classification).await);
+    out
+}
+
+async fn render_project_node(
+    librarian: &dyn LibrarianStore,
+    classification: &ProjectClassification,
+) -> Check {
+    match doctor_checks::check_project_node(librarian, classification).await {
+        Ok(ProjectNodeStatus::Absent) => Check::ok_hint(
+            "project node",
+            "no project node yet — daemon8 has not onboarded this project; \
+             run `daemon8 setup apply` or restart `daemon8 serve` to trigger discovery",
+        ),
+        Ok(ProjectNodeStatus::SkipDiscovery { slug }) => Check::ok_hint(
+            "project node",
+            format!(
+                "{slug}: skip-discovery marker active; run `daemon8 discover --rescan` to re-enable"
+            ),
+        ),
+        Ok(ProjectNodeStatus::Present {
+            slug,
+            classification_tags,
+            framework_versions,
+            last_serve_age_secs,
+        }) => {
+            let tags = if classification_tags.is_empty() {
+                "no tags".to_string()
+            } else {
+                classification_tags.join(", ")
+            };
+            let versions = if framework_versions.is_empty() {
+                String::new()
+            } else {
+                let parts: Vec<String> = framework_versions
+                    .iter()
+                    .map(|(k, v)| format!("{k}={v}"))
+                    .collect();
+                format!(", versions {}", parts.join(", "))
+            };
+            let age = match last_serve_age_secs {
+                Some(secs) => format!(", last verified {} ago", doctor_checks::format_age(secs)),
+                None => String::new(),
+            };
+            Check::ok_hint(
+                "project node",
+                format!("{slug}: tags [{tags}]{versions}{age}"),
+            )
+        }
+        Ok(ProjectNodeStatus::Malformed) => Check::ok_hint(
+            "project node",
+            "project node predates the D6 schema (no payload) — \
+             run `daemon8 discover --rescan` to refresh",
+        ),
+        Err(e) => Check::warn("project node", format!("librarian lookup failed: {e}")),
+    }
+}
+
+async fn render_source_templates(
+    librarian: &dyn LibrarianStore,
+    classification: &ProjectClassification,
+) -> Check {
+    match doctor_checks::check_source_templates(librarian, classification).await {
+        Ok(SourceTemplatesStatus::None { matched_tags }) => {
+            let tags = if matched_tags.is_empty() {
+                "no tags detected".to_string()
+            } else {
+                matched_tags.join(", ")
+            };
+            Check::ok_hint(
+                "source templates",
+                format!(
+                    "no source_templates yet for this project type ({tags}) on this machine \
+                     — agent discovery will trigger on next serve if hints enabled"
+                ),
+            )
+        }
+        Ok(SourceTemplatesStatus::Some {
+            count,
+            matched_tags,
+        }) => {
+            let tags = matched_tags.join(", ");
+            Check::ok_hint(
+                "source templates",
+                format!("{count} source_template(s) known for project tags ({tags})"),
+            )
+        }
+        Err(e) => Check::warn("source templates", format!("librarian lookup failed: {e}")),
+    }
+}
+
+async fn render_source_drift(
+    librarian: &dyn LibrarianStore,
+    classification: &ProjectClassification,
+) -> Vec<Check> {
+    match doctor_checks::check_source_drift(librarian, classification).await {
+        Ok(reports) => reports.into_iter().map(report_to_check).collect(),
+        Err(e) => vec![Check::warn(
+            "source drift",
+            format!("librarian lookup failed: {e}"),
+        )],
+    }
+}
+
+fn report_to_check(report: SourceDriftReport) -> Check {
+    match report {
+        SourceDriftReport::Ok {
+            description,
+            path,
+            last_write_age_secs,
+        } => {
+            let name = format!("source: {description}");
+            let detail = match last_write_age_secs {
+                Some(secs) => format!(
+                    "{}: last write {} ago",
+                    path.display(),
+                    doctor_checks::format_age(secs)
+                ),
+                None => format!("{}: present", path.display()),
+            };
+            Check::ok_hint(name, detail)
+        }
+        SourceDriftReport::Stale {
+            description,
+            path,
+            last_write_age_secs,
+        } => Check::warn(
+            format!("source: {description}"),
+            format!(
+                "{}: file exists, last write {} ago — stale?",
+                path.display(),
+                doctor_checks::format_age(last_write_age_secs)
+            ),
+        ),
+        SourceDriftReport::MissingNoVersionChange { description, path } => Check::err(
+            format!("source: {description}"),
+            format!(
+                "{}: source path missing — possible causes: manual deletion, \
+                 OS update, project relocation. Run `daemon8 discover --rescan` to re-discover",
+                path.display()
+            ),
+        ),
+        SourceDriftReport::MissingWithVersionChange {
+            description,
+            path,
+            framework,
+            old_version,
+            new_version,
+        } => Check::err(
+            format!("source: {description}"),
+            format!(
+                "{}: source path missing. Diagnosis: framework version changed since template \
+                 registration. {framework} upgraded {old_version} -> {new_version}. \
+                 Likely cause: log location moved between versions. \
+                 Recommended: `daemon8 discover --rescan` to learn the new location.",
+                path.display()
+            ),
+        ),
+        SourceDriftReport::MissingPartialVersionChange {
+            description,
+            path,
+            changed_frameworks,
+        } => {
+            let changes: Vec<String> = changed_frameworks
+                .iter()
+                .map(|(f, o, n)| format!("{f} {o} -> {n}"))
+                .collect();
+            Check::err(
+                format!("source: {description}"),
+                format!(
+                    "{}: source path missing. Framework versions changed ({}), \
+                     but none directly tied to this source — less likely caused \
+                     by version change. Run `daemon8 discover --rescan` to investigate.",
+                    path.display(),
+                    changes.join(", ")
+                ),
+            )
+        }
+    }
+}
+
+/// Combined entry point: run the store health check AND hand back the
+/// opened `SurrealStore` so the project-aware checks below can reuse
+/// it. Returning the handle is what prevents the second open attempt
+/// from racing the first's lock release.
+async fn check_store_with_handle(cfg: &config::Config, port: u16) -> (Check, Option<SurrealStore>) {
     const NAME: &str = "store";
 
-    // Try API first
+    // Try API first — when the daemon is running it owns the DB lock
+    // and we can't open it ourselves anyway.
     let url = format!("{}/api/summary", base_url(port));
     if let Ok(resp) = reqwest::get(&url).await
         && let Ok(_) = check_response(resp).await
     {
-        return Check {
-            name: NAME,
-            result: CheckResult::Ok,
-        };
+        return (
+            Check {
+                name: NAME.into(),
+                result: CheckResult::Ok,
+            },
+            None,
+        );
     }
 
     let db_path = config::resolve_db_path(cfg.storage.path.as_deref());
 
     if !db_path.exists() {
-        return Check {
-            name: NAME,
-            result: CheckResult::OkHint("not yet created (first run will initialize)".into()),
-        };
+        return (
+            Check {
+                name: NAME.into(),
+                result: CheckResult::OkHint("not yet created (first run will initialize)".into()),
+            },
+            None,
+        );
     }
 
-    match daemon8_store::SurrealStore::open(&db_path).await {
+    match SurrealStore::open(&db_path).await {
         Ok(store) => match store.health_check().await {
-            Ok(()) => Check {
-                name: NAME,
-                result: CheckResult::Ok,
-            },
-            Err(e) => Check {
-                name: NAME,
-                result: CheckResult::Err(format!("health check failed: {e}")),
-            },
+            Ok(()) => (
+                Check {
+                    name: NAME.into(),
+                    result: CheckResult::Ok,
+                },
+                Some(store),
+            ),
+            Err(e) => (
+                Check {
+                    name: NAME.into(),
+                    result: CheckResult::Err(format!("health check failed: {e}")),
+                },
+                Some(store),
+            ),
         },
-        Err(e) => Check {
-            name: NAME,
-            result: CheckResult::Err(format!("could not open database: {e}")),
-        },
+        Err(e) => (
+            Check {
+                name: NAME.into(),
+                result: CheckResult::Err(format!("could not open database: {e}")),
+            },
+            None,
+        ),
     }
 }
 
@@ -473,7 +774,7 @@ fn check_macos_launchd_state() -> Check {
         Ok(o) => o,
         Err(_) => {
             return Check {
-                name: "launchd service",
+                name: "launchd service".into(),
                 result: CheckResult::Warn(
                     "launchctl unavailable — run `daemon8 install` to register".into(),
                 ),
@@ -483,7 +784,7 @@ fn check_macos_launchd_state() -> Check {
 
     if !output.status.success() {
         return Check {
-            name: "launchd service",
+            name: "launchd service".into(),
             result: CheckResult::Warn(
                 "not registered — run `daemon8 install` to set up the launchd agent".into(),
             ),
@@ -500,17 +801,17 @@ fn check_macos_launchd_state() -> Check {
 
     match state {
         "running" => Check {
-            name: "launchd service",
+            name: "launchd service".into(),
             result: CheckResult::Ok,
         },
         "not running" | "waiting" => Check {
-            name: "launchd service",
+            name: "launchd service".into(),
             result: CheckResult::Err(format!(
                 "state={state}: launchd registered but cannot start. Check (1) codesign identity — re-run `codesign --force --sign - ~/.cargo/bin/daemon8`, (2) App Management — open System Settings > Privacy & Security > App Management and toggle daemon8 on."
             )),
         },
         other => Check {
-            name: "launchd service",
+            name: "launchd service".into(),
             result: CheckResult::Warn(format!(
                 "state={other} — inspect `launchctl print {target}`"
             )),

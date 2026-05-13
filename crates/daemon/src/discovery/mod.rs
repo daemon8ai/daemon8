@@ -20,9 +20,15 @@
 //!   librarian and the SourceManager.
 //! - [`conversation`] (D5) — active session resolution + per-provider
 //!   first-run detection for conversation templates.
+//! - [`locator`] — shared pattern-expansion logic used by the scanner
+//!   to resolve templates and by `doctor` to diagnose source drift.
+//! - [`doctor_checks`] (D8) — pure check logic for project node,
+//!   source template inventory, and version-aware source drift.
 
 pub mod conversation;
+pub mod doctor_checks;
 pub mod hint;
+pub mod locator;
 pub mod presentation;
 pub mod registrar;
 pub mod scanner;
