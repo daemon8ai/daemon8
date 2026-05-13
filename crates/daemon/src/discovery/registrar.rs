@@ -23,8 +23,9 @@ use daemon8_types::{
     LibrarianEdgeKind, LibrarianNodeKind, LocatorKind, ProjectNodeData, SourceInstanceData,
 };
 
-use crate::config::{FileSourceConfig, SourceConfig};
+use crate::config::{ConversationSourceConfig, FileSourceConfig, SourceConfig};
 use crate::discovery::scanner::{DiscoveryPlan, ResolvedSource};
+use daemon8_types::SourceKind;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RegistrarError {
@@ -242,11 +243,20 @@ fn synth_source_name(source: &ResolvedSource, idx: usize) -> String {
 }
 
 fn synth_source_config(source: &ResolvedSource) -> SourceConfig {
-    // Discovery currently only resolves file-backed paths (D2 hint
-    // payload restricts kinds to log/config/conversation/cache/etc.,
-    // all of which surface as files on disk). Conversation watchers and
-    // SQLite sources are layered in later commits when the templates
-    // carry enough provenance to distinguish them.
+    // Conversation-kind sources route to the conversation watcher,
+    // which understands provider-specific transcript formats. The
+    // provider id is derived from the template's default_tags during
+    // scanning (see `provider_from_tags` in scanner.rs); a conversation
+    // source whose provider could not be identified falls back to a
+    // plain file watcher rather than failing the registration.
+    if source.kind == SourceKind::Conversation
+        && let Some(ref provider) = source.provider
+    {
+        return SourceConfig::Conversation(ConversationSourceConfig {
+            provider: provider.clone(),
+            tags: source.tags.clone(),
+        });
+    }
     SourceConfig::File(FileSourceConfig {
         path: source.resolved_path.to_string_lossy().to_string(),
         parser: source.parser.clone().unwrap_or_else(|| "line".into()),
@@ -320,6 +330,7 @@ mod tests {
             parser: Some("line".into()),
             tags: vec!["fixture".into()],
             version_constraint: None,
+            provider: None,
         }
     }
 
@@ -415,6 +426,34 @@ mod tests {
         match synth_source_config(&with) {
             SourceConfig::File(cfg) => assert_eq!(cfg.parser, "line"),
             _ => panic!("expected file source"),
+        }
+    }
+
+    #[test]
+    fn synth_source_config_emits_conversation_for_conversation_kind() {
+        let mut r = resolved("/tmp/claude/proj/session.jsonl", Some("template:1"));
+        r.kind = SourceKind::Conversation;
+        r.provider = Some("claude".into());
+        r.tags = vec!["claude".into(), "agent".into(), "conversation".into()];
+        match synth_source_config(&r) {
+            SourceConfig::Conversation(cfg) => {
+                assert_eq!(cfg.provider, "claude");
+                assert_eq!(cfg.tags, r.tags);
+            }
+            other => panic!("expected Conversation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn synth_source_config_falls_back_to_file_when_provider_unknown() {
+        let mut r = resolved("/tmp/some/file.jsonl", None);
+        r.kind = SourceKind::Conversation;
+        // provider field not set even though kind is conversation —
+        // could happen if an agent writes a template missing the
+        // provider tag. Degrade rather than fail.
+        match synth_source_config(&r) {
+            SourceConfig::File(_) => {}
+            other => panic!("expected File fallback, got {other:?}"),
         }
     }
 

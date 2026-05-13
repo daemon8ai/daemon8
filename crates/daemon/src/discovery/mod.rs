@@ -15,10 +15,13 @@
 //! - [`scanner`] (D3) — orchestrator. Pulls classification, checks the
 //!   librarian, probes the filesystem, emits a hint when needed, and
 //!   returns a [`scanner::DiscoveryPlan`] for D4 to render.
-//!
-//! D4 (presentation), D5 (conversation auto-detect), and the post-plan
-//! source registration step land in later commits.
+//! - [`presentation`] (D4) — renders the plan and prompts the user.
+//! - [`registrar`] (D4) — registers confirmed sources with the
+//!   librarian and the SourceManager.
+//! - [`conversation`] (D5) — active session resolution + per-provider
+//!   first-run detection for conversation templates.
 
+pub mod conversation;
 pub mod hint;
 pub mod presentation;
 pub mod registrar;

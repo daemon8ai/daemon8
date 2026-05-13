@@ -305,6 +305,7 @@ mod tests {
             parser: None,
             tags: tags.iter().map(|s| (*s).to_string()).collect(),
             version_constraint: None,
+            provider: None,
         }
     }
 

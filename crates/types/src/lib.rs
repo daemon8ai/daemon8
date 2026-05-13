@@ -1123,11 +1123,39 @@ pub struct DiscoveryHintPayload {
     pub missing_for_tags: Vec<String>,
     pub known_project_type_tags_ref: Vec<String>,
     pub instruction_text: String,
-    /// True only on the very first hint emitted on this machine (per D5).
-    /// Commit 5 populates this; this commit always leaves it `None`.
+    /// True when this hint carries at least one first-run provider entry
+    /// — i.e. some AI provider on this machine has no conversation
+    /// `source_template` yet and the agent is being asked to register one.
+    /// Computed from `first_run_providers.is_some()`; serialized only when
+    /// true so older hints round-trip identically.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub first_run: Option<bool>,
+    /// Per-provider first-run payloads. Populated by D5 when the
+    /// librarian has no conversation `source_template` for one or more
+    /// providers detectable on this machine. Each entry carries the
+    /// provider's filesystem layout (from the `AiProvider` trait) so
+    /// the agent can write a correctly-shaped template without probing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub first_run_providers: Option<Vec<FirstRunPayload>>,
     pub emitted_at_ns: u64,
+}
+
+// Per-provider conversation template bootstrap payload. Attached to a
+// `DiscoveryHintPayload` when daemon8 has never seen a conversation
+// `source_template` for this provider on this machine. The agent reads
+// the filesystem-layout hints and writes a `source_template` whose
+// `locator_pattern` is derived from `conversation_dir_hint` +
+// `conversation_file_glob_hint`. Subsequent projects on this machine
+// reuse that template instead of re-asking.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct FirstRunPayload {
+    pub provider_id: String,
+    pub provider_label: String,
+    pub conversation_dir_hint: String,
+    pub conversation_file_glob_hint: String,
+    pub session_id_env_vars: Vec<String>,
+    pub instruction_text: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1708,6 +1736,7 @@ mod tests {
             known_project_type_tags_ref: vec!["any".into(), "react-native".into()],
             instruction_text: "find runtime data for these tags".into(),
             first_run: None,
+            first_run_providers: None,
             emitted_at_ns: 1_700_000_000_000_000_000,
         };
 
@@ -1740,7 +1769,90 @@ mod tests {
             !obj.contains_key("first_run"),
             "first_run=None should be skipped: {v}"
         );
+        assert!(
+            !obj.contains_key("first_run_providers"),
+            "first_run_providers=None should be skipped: {v}"
+        );
 
+        let round_tripped: DiscoveryHintPayload = serde_json::from_value(v).unwrap();
+        assert_eq!(round_tripped, payload);
+    }
+
+    // D5: FirstRunPayload is the agent's contract for the per-provider
+    // conversation-bootstrap branch. Lock the shape and the round-trip.
+    #[test]
+    fn first_run_payload_round_trip_and_snake_case() {
+        let payload = FirstRunPayload {
+            provider_id: "claude".into(),
+            provider_label: "Claude Code".into(),
+            conversation_dir_hint: "~/.claude/projects".into(),
+            conversation_file_glob_hint: "**/*.jsonl".into(),
+            session_id_env_vars: vec!["CLAUDE_SESSION_ID".into()],
+            instruction_text: "write a conversation source_template...".into(),
+        };
+        let v = serde_json::to_value(&payload).unwrap();
+        let obj = v.as_object().unwrap();
+        for key in [
+            "provider_id",
+            "provider_label",
+            "conversation_dir_hint",
+            "conversation_file_glob_hint",
+            "session_id_env_vars",
+            "instruction_text",
+        ] {
+            assert!(
+                obj.contains_key(key),
+                "FirstRunPayload missing snake_case key {key}: {v}"
+            );
+        }
+        for key in obj.keys() {
+            assert!(
+                !key.chars().any(|c| c.is_ascii_uppercase()),
+                "FirstRunPayload has non-snake_case key {key}"
+            );
+        }
+        let round_tripped: FirstRunPayload = serde_json::from_value(v).unwrap();
+        assert_eq!(round_tripped, payload);
+    }
+
+    // When first_run_providers is populated, both `first_run` (bool) and
+    // `first_run_providers` (array) must appear in the serialized form so
+    // agents can branch on either signal.
+    #[test]
+    fn discovery_hint_payload_emits_first_run_fields_when_populated() {
+        let mut versions = BTreeMap::new();
+        versions.insert("react-native".into(), "0.74.5".into());
+        let fr = FirstRunPayload {
+            provider_id: "claude".into(),
+            provider_label: "Claude Code".into(),
+            conversation_dir_hint: "~/.claude/projects".into(),
+            conversation_file_glob_hint: "**/*.jsonl".into(),
+            session_id_env_vars: vec!["CLAUDE_SESSION_ID".into()],
+            instruction_text: "...".into(),
+        };
+        let payload = DiscoveryHintPayload {
+            project_root: PathBuf::from("/tmp/proj"),
+            classification_tags: vec!["react-native".into()],
+            framework_versions: versions,
+            platform: Platform::Macos,
+            known_templates_matched: 0,
+            missing_for_tags: vec!["react-native".into()],
+            known_project_type_tags_ref: vec!["react-native".into()],
+            instruction_text: "...".into(),
+            first_run: Some(true),
+            first_run_providers: Some(vec![fr]),
+            emitted_at_ns: 1_700_000_000_000_000_000,
+        };
+        let v = serde_json::to_value(&payload).unwrap();
+        let obj = v.as_object().unwrap();
+        assert_eq!(obj.get("first_run").and_then(|x| x.as_bool()), Some(true));
+        assert!(
+            obj.get("first_run_providers")
+                .and_then(|x| x.as_array())
+                .map(|a| a.len())
+                == Some(1),
+            "expected first_run_providers array of length 1: {v}"
+        );
         let round_tripped: DiscoveryHintPayload = serde_json::from_value(v).unwrap();
         assert_eq!(round_tripped, payload);
     }

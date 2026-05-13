@@ -25,8 +25,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use daemon8_store::librarian_validators::KNOWN_PROJECT_TYPE_TAGS;
 use daemon8_types::{
-    AppName, DiscoveryHintPayload, Observation, ObservationKind, Origin, ProjectClassification,
-    Severity, SourceTemplateData,
+    AppName, DiscoveryHintPayload, FirstRunPayload, Observation, ObservationKind, Origin,
+    ProjectClassification, Severity, SourceTemplateData,
 };
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -70,10 +70,16 @@ pub fn should_emit_hint(
 /// returned for this classification; `missing_for_tags` is the subset of
 /// classification tags with no template coverage (typically the full
 /// classification tag list when the librarian is empty for these tags).
+///
+/// `first_run_providers` is the D5 per-provider bootstrap list. Empty
+/// vec means no first-run branch fires — the payload's `first_run`
+/// boolean and `first_run_providers` field both stay `None` so older
+/// hints round-trip identically.
 pub fn build_payload(
     classification: &ProjectClassification,
     matched_templates: &[SourceTemplateData],
     missing_for_tags: &[String],
+    first_run_providers: Vec<FirstRunPayload>,
 ) -> DiscoveryHintPayload {
     let known_project_type_tags_ref: Vec<String> = KNOWN_PROJECT_TYPE_TAGS
         .iter()
@@ -84,7 +90,14 @@ pub fn build_payload(
         &classification.tags,
         &known_project_type_tags_ref,
         missing_for_tags,
+        &first_run_providers,
     );
+
+    let (first_run, first_run_providers) = if first_run_providers.is_empty() {
+        (None, None)
+    } else {
+        (Some(true), Some(first_run_providers))
+    };
 
     DiscoveryHintPayload {
         project_root: classification.root.clone(),
@@ -95,7 +108,8 @@ pub fn build_payload(
         missing_for_tags: missing_for_tags.to_vec(),
         known_project_type_tags_ref,
         instruction_text,
-        first_run: None,
+        first_run,
+        first_run_providers,
         emitted_at_ns: now_ns(),
     }
 }
@@ -161,6 +175,7 @@ fn render_instruction_text(
     classification_tags: &[String],
     known_project_type_tags_ref: &[String],
     missing_for_tags: &[String],
+    first_run_providers: &[FirstRunPayload],
 ) -> String {
     let tags_list = classification_tags.join(", ");
     let known_tags_list = known_project_type_tags_ref.join(", ");
@@ -168,6 +183,20 @@ fn render_instruction_text(
         "(none — all classification tags lack coverage)".to_string()
     } else {
         missing_for_tags.join(", ")
+    };
+    let first_run_section = if first_run_providers.is_empty() {
+        String::new()
+    } else {
+        let mut s = String::from(
+            "\n\nFirst-run provider templates:\n\
+This machine has no conversation source_template entries for one or more AI providers detected on it. In addition to the project-classification work above, please register a conversation template for each provider below. Subsequent projects on this machine reuse these templates automatically.\n",
+        );
+        for p in first_run_providers {
+            s.push('\n');
+            s.push_str(&p.instruction_text);
+            s.push('\n');
+        }
+        s
     };
 
     format!(
@@ -201,7 +230,7 @@ Portability rules (enforced by validator, rejection returns actionable error):\n
   - project_types MUST be a subset of: [{known_tags_list}]\n\
   - platforms MUST NOT be empty\n\
 \n\
-When you have written all the templates you can confidently identify, call this hint complete. If unsure about a location, omit it rather than guess. If multiple version-specific paths exist for the same source kind, write multiple templates with appropriate version_constraint values."
+When you have written all the templates you can confidently identify, call this hint complete. If unsure about a location, omit it rather than guess. If multiple version-specific paths exist for the same source kind, write multiple templates with appropriate version_constraint values.{first_run_section}"
     )
 }
 
@@ -230,7 +259,7 @@ mod tests {
     #[test]
     fn build_payload_includes_known_tags_reference() {
         let c = classification();
-        let payload = build_payload(&c, &[], &c.tags);
+        let payload = build_payload(&c, &[], &c.tags, Vec::new());
         assert_eq!(
             payload.known_project_type_tags_ref.len(),
             KNOWN_PROJECT_TYPE_TAGS.len(),
@@ -247,7 +276,7 @@ mod tests {
     #[test]
     fn build_payload_handles_empty_missing_tags() {
         let c = classification();
-        let payload = build_payload(&c, &[], &[]);
+        let payload = build_payload(&c, &[], &[], Vec::new());
         assert!(payload.missing_for_tags.is_empty());
         assert!(
             payload
@@ -279,7 +308,7 @@ mod tests {
     #[test]
     fn instruction_text_includes_classification_tags() {
         let c = classification();
-        let payload = build_payload(&c, &[], &c.tags);
+        let payload = build_payload(&c, &[], &c.tags, Vec::new());
         assert!(payload.instruction_text.contains("react-native"));
         assert!(payload.instruction_text.contains("vega"));
     }
@@ -287,7 +316,7 @@ mod tests {
     #[test]
     fn instruction_text_includes_portability_rules() {
         let c = classification();
-        let payload = build_payload(&c, &[], &c.tags);
+        let payload = build_payload(&c, &[], &c.tags, Vec::new());
         assert!(payload.instruction_text.contains("Portability rules"));
         assert!(payload.instruction_text.contains("~ for home"));
         assert!(payload.instruction_text.contains("UNC"));
@@ -297,7 +326,7 @@ mod tests {
     #[test]
     fn instruction_text_lists_known_tags() {
         let c = classification();
-        let payload = build_payload(&c, &[], &c.tags);
+        let payload = build_payload(&c, &[], &c.tags, Vec::new());
         for tag in KNOWN_PROJECT_TYPE_TAGS {
             assert!(
                 payload.instruction_text.contains(tag),
@@ -309,15 +338,66 @@ mod tests {
     #[test]
     fn first_run_field_defaults_to_none() {
         let c = classification();
-        let payload = build_payload(&c, &[], &c.tags);
+        let payload = build_payload(&c, &[], &c.tags, Vec::new());
         assert!(payload.first_run.is_none());
+        assert!(payload.first_run_providers.is_none());
+    }
+
+    fn first_run_payload(provider_id: &str) -> FirstRunPayload {
+        FirstRunPayload {
+            provider_id: provider_id.into(),
+            provider_label: format!("{provider_id} Label"),
+            conversation_dir_hint: format!("~/.{provider_id}/projects"),
+            conversation_file_glob_hint: "**/*.jsonl".into(),
+            session_id_env_vars: vec![format!("{}_SESSION_ID", provider_id.to_uppercase())],
+            instruction_text: format!("(instruction snippet for {provider_id})"),
+        }
+    }
+
+    #[test]
+    fn build_payload_includes_first_run_providers_when_provided() {
+        let c = classification();
+        let fr = vec![first_run_payload("claude"), first_run_payload("codex")];
+        let payload = build_payload(&c, &[], &c.tags, fr.clone());
+        assert_eq!(payload.first_run, Some(true));
+        let stored = payload.first_run_providers.as_ref().expect("populated");
+        assert_eq!(stored.len(), 2);
+        assert_eq!(stored[0].provider_id, "claude");
+        assert_eq!(stored[1].provider_id, "codex");
+    }
+
+    #[test]
+    fn instruction_text_lists_first_run_providers() {
+        let c = classification();
+        let fr = vec![first_run_payload("claude"), first_run_payload("codex")];
+        let payload = build_payload(&c, &[], &c.tags, fr);
+        let text = &payload.instruction_text;
+        assert!(
+            text.contains("First-run provider templates"),
+            "instruction missing first-run section: {text}"
+        );
+        assert!(text.contains("(instruction snippet for claude)"));
+        assert!(text.contains("(instruction snippet for codex)"));
+    }
+
+    #[test]
+    fn instruction_text_omits_first_run_section_when_empty() {
+        let c = classification();
+        let payload = build_payload(&c, &[], &c.tags, Vec::new());
+        assert!(
+            !payload
+                .instruction_text
+                .contains("First-run provider templates"),
+            "empty first-run vec must not produce the section: {}",
+            payload.instruction_text
+        );
     }
 
     #[tokio::test]
     async fn emit_discovery_hint_pushes_custom_observation_on_channel() {
         let (tx, mut rx) = mpsc::unbounded_channel::<Observation>();
         let c = classification();
-        let payload = build_payload(&c, &[], &c.tags);
+        let payload = build_payload(&c, &[], &c.tags, Vec::new());
 
         emit_discovery_hint(&tx, payload.clone()).unwrap();
 
@@ -349,7 +429,7 @@ mod tests {
         drop(rx);
 
         let c = classification();
-        let payload = build_payload(&c, &[], &c.tags);
+        let payload = build_payload(&c, &[], &c.tags, Vec::new());
         let err = emit_discovery_hint(&tx, payload).unwrap_err();
         assert!(matches!(err, DiscoveryHintError::ChannelClosed));
     }

@@ -243,6 +243,7 @@ async fn render_then_register_produces_consistent_outcome() {
             parser: Some("line".into()),
             tags: vec!["fixture".into()],
             version_constraint: None,
+            provider: None,
         }],
         template_misses: Vec::new(),
         user_overrides: Vec::new(),

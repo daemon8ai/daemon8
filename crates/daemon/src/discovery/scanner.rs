@@ -48,7 +48,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::SourceConfig;
-use crate::discovery::hint;
+use crate::discovery::{conversation, hint};
 
 /// Skip-marker path relative to the project root. Future `daemon8 serve`
 /// invocations honor this file and bypass the scanner entirely.
@@ -122,6 +122,14 @@ pub struct ResolvedSource {
     pub tags: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version_constraint: Option<String>,
+    /// AI provider id for conversation-kind sources. Derived from the
+    /// underlying source_template's `default_tags` — agents are
+    /// instructed to include the provider id when writing a conversation
+    /// template, and the first-run check keys on that same tag.
+    /// `None` for non-conversation sources or when no recognized
+    /// provider tag was found.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -243,16 +251,22 @@ pub async fn scan(
         classification_tags_uncovered(&classification.tags, &outcome.tags_with_resolved_template);
     let mut plan = plan_from_outcome(outcome, &classification, user_overrides.clone());
 
-    if uncovered.is_empty() {
-        // Every classification tag has at least one template that
-        // resolved on this filesystem — no agent involvement needed.
+    // D5: every serve checks whether each AI provider on this machine
+    // already has a conversation source_template. A first-run provider
+    // adds its bootstrap payload to the hint even when classification
+    // coverage is otherwise complete.
+    let first_run_providers = collect_first_run_providers(librarian).await?;
+
+    if uncovered.is_empty() && first_run_providers.is_empty() {
+        // Coverage complete and every provider already has a template:
+        // no agent involvement needed.
         return Ok(plan);
     }
 
     // Emit the hint and enter the wait loop. The agent reads the hint
     // via query_observations, writes source_template entries via
     // librarian_index, and (optionally) signals --complete.
-    let payload = hint::build_payload(&classification, &[], &uncovered);
+    let payload = hint::build_payload(&classification, &[], &uncovered, first_run_providers);
     if let Err(e) = hint::emit_discovery_hint(obs_tx, payload) {
         // Channel closure during emission means the daemon is shutting
         // down. Return what we have rather than continuing to wait.
@@ -592,13 +606,20 @@ async fn build_cached_plan(
             drift = true;
             continue;
         }
+        let kind = source_kind_from_tag_or_default(&node.tags);
+        let provider = if kind == SourceKind::Conversation {
+            provider_from_tags(&node.tags)
+        } else {
+            None
+        };
         resolved.push(ResolvedSource {
             template_id: None,
-            kind: source_kind_from_tag_or_default(&node.tags),
+            kind,
             resolved_path: path,
             parser: extract_parser_from_data(&node.data),
             tags: node.tags.clone(),
             version_constraint: None,
+            provider,
         });
     }
 
@@ -618,6 +639,25 @@ async fn build_cached_plan(
         cache_used: !drift,
         cache_age_secs: cache_age,
     })
+}
+
+/// Identify the AI provider id encoded in a tag set, if any. Used to
+/// classify conversation-kind sources so the registrar can synthesize a
+/// `SourceConfig::Conversation` with the correct provider field.
+///
+/// Match logic: walk [`daemon8_providers::ALL_PROVIDERS`] and return
+/// the first provider whose `id()` appears in the tags. Returning
+/// `None` when no provider tag is present is a feature — the registrar
+/// degrades to a file-watcher in that case rather than failing.
+fn provider_from_tags(tags: &[String]) -> Option<String> {
+    use daemon8_providers::ALL_PROVIDERS;
+    for &p in ALL_PROVIDERS {
+        let id = p.as_provider().id();
+        if tags.iter().any(|t| t == id) {
+            return Some(id.to_string());
+        }
+    }
+    None
 }
 
 fn source_kind_from_tag_or_default(tags: &[String]) -> SourceKind {
@@ -721,6 +761,11 @@ async fn probe_templates_inner(
                 for tag in &tag_overlap {
                     tags_with_resolved_template.insert(tag.clone());
                 }
+                let provider = if template.kind == SourceKind::Conversation {
+                    provider_from_tags(&template.default_tags)
+                } else {
+                    None
+                };
                 for path in existing {
                     resolved.push(ResolvedSource {
                         template_id: Some(template_id.clone()),
@@ -729,6 +774,7 @@ async fn probe_templates_inner(
                         parser: template.parser_hint.clone(),
                         tags: template.default_tags.clone(),
                         version_constraint: template.version_constraint.clone(),
+                        provider: provider.clone(),
                     });
                 }
             }
@@ -823,13 +869,42 @@ async fn wait_for_agent(
             &classification.tags,
             &outcome.tags_with_resolved_template,
         );
+        let pending_first_run = collect_first_run_providers(librarian).await?;
         current = plan_from_outcome(outcome, classification, user_overrides.clone());
-        if uncovered.is_empty() {
+        if uncovered.is_empty() && pending_first_run.is_empty() {
             current.awaiting_agent = false;
             return Ok(current);
         }
         current.awaiting_agent = true;
     }
+}
+
+/// Collect a [`FirstRunPayload`] for every AI provider that lacks a
+/// conversation `source_template` in the librarian. Empty vec means all
+/// known providers are already represented — no bootstrap branch fires.
+async fn collect_first_run_providers(
+    librarian: &dyn LibrarianStore,
+) -> Result<Vec<daemon8_types::FirstRunPayload>, ScannerError> {
+    use daemon8_providers::{ALL_PROVIDERS, dirs_home};
+    let home = dirs_home();
+    let mut out = Vec::new();
+    for &p in ALL_PROVIDERS {
+        let provider = p.as_provider();
+        // Skip providers that don't expose a conversation directory at
+        // all — a first-run hint would carry an empty locator and would
+        // not produce a useful template.
+        if provider.conversation_dir(&home).is_none() || provider.conversation_file_glob().is_none()
+        {
+            continue;
+        }
+        let first_run = conversation::is_first_run_for_provider(librarian, provider.id())
+            .await
+            .map_err(ScannerError::Librarian)?;
+        if first_run {
+            out.push(conversation::build_first_run_payload(provider, &home));
+        }
+    }
+    Ok(out)
 }
 
 fn write_skip_marker(root: &Path) -> std::io::Result<()> {

@@ -86,6 +86,7 @@ fn build_payload(classification: &ProjectClassification) -> DiscoveryHintPayload
         known_project_type_tags_ref: vec!["any".into(), "react-native".into(), "vega".into()],
         instruction_text: "daemon8 discovery hint: investigate and call librarian_index.".into(),
         first_run: None,
+        first_run_providers: None,
         emitted_at_ns: now_ns(),
     }
 }
