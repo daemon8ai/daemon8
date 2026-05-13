@@ -18,6 +18,7 @@ tracing.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
+dirs.workspace = true
 
 [features]
 # Surface test-only helpers (e.g. `DaemonMcp::set_subscription`) for

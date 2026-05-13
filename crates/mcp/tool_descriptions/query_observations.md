@@ -24,6 +24,7 @@ None. Observations are live; re-call to refresh.
 ## Returns
   result: {observations: [...], total, lens_observations?, lens_count?, browser_state?}.
   daemon8.active_debug_session: present if a debug session is active (and stamping new obs).
+  daemon8.hints: present when an observation references a reusable runtime-data path (e.g. /tmp/*.log, ~/Library/Logs/...) that no librarian source_template covers for the active project's tags. Each entry is a directive nudge — call `librarian_index` with a `source_template` to register the path so future sessions reuse it.
 
 ## Errors
   - query_failed: db query error. hint: check daemon logs.

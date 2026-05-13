@@ -10,20 +10,31 @@ use std::time::{Duration, Instant};
 use daemon8_store::{
     ActiveSessionState, DebugSessionStore, LensManager, LibrarianStore, MemoryStore, StateModel,
 };
-use daemon8_types::{Checkpoint, DevicePlatform, Filter, Observation, SourceActivator};
+use daemon8_types::{
+    Checkpoint, DevicePlatform, Filter, Observation, ProjectClassification, SourceActivator,
+};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{Implementation, ServerCapabilities, ServerInfo, Tool};
 use rmcp::schemars::{self, JsonSchema};
 use rmcp::{RoleServer, ServerHandler, tool, tool_router};
 use serde::Deserialize;
+use tokio::sync::RwLock;
 use tokio::sync::broadcast;
 use tracing::Instrument;
 
 pub mod envelope;
 pub mod help;
+pub mod hints;
 use envelope::{ActiveSessionEcho, DaemonMeta};
 use help::FeatureGate;
+
+/// Shared handle to the daemon's most recently classified project. The
+/// scanner (D3) writes here on every serve; MCP handlers read from it
+/// to scope librarian-aware hints. None means no project has been
+/// classified this run (CI/non-project use; first invocation before
+/// the scanner finishes).
+pub type ActiveProjectHandle = Arc<RwLock<Option<ProjectClassification>>>;
 
 const INSTRUCTIONS: &str = include_str!("../tool_descriptions/instructions.md");
 static MCP_SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -56,7 +67,7 @@ pub enum ChromeCommand {
     Action(daemon8_chrome::BrowserAction),
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct ObserveParams {
     #[schemars(
         description = "Filter by observation kind: log, query, http_exchange, exception, js_exception, lifecycle, state_snapshot, metric, custom, tool_call. Browser console output is 'log', browser JS errors are 'js_exception', page load events are 'lifecycle', network requests are 'http_exchange'. Observations with kind=custom and channel='discovery_hint' are project-onboarding hints; see librarian_index for the response shape expected."
@@ -580,6 +591,10 @@ pub struct DaemonMcp {
     /// uses a child token so daemon shutdown propagates cleanly.
     cancel: tokio_util::sync::CancellationToken,
     enabled_features: Vec<FeatureGate>,
+    /// Shared with the discovery scanner — read by `query_observations`
+    /// to scope librarian-aware path hints. `None` when no project has
+    /// been classified this run.
+    active_project: ActiveProjectHandle,
     tool_router: ToolRouter<Self>,
 }
 
@@ -602,6 +617,10 @@ pub struct DaemonMcpConfig {
     /// Parent cancellation token. Use the daemon-wide token; the MCP push task
     /// derives a child from it so daemon shutdown stops per-session work.
     pub cancel: tokio_util::sync::CancellationToken,
+    /// Shared with the discovery scanner. The daemon constructs one
+    /// `Arc<RwLock<Option<ProjectClassification>>>` and hands clones
+    /// to both the scanner (writer) and every MCP session (reader).
+    pub active_project: ActiveProjectHandle,
 }
 
 #[tool_router(vis = "pub")]
@@ -663,6 +682,7 @@ impl DaemonMcp {
             source_activator: cfg.source_activator,
             cancel: cfg.cancel,
             enabled_features,
+            active_project: cfg.active_project,
             tool_router: router,
         }
     }
@@ -693,6 +713,16 @@ impl DaemonMcp {
     #[cfg(feature = "test-util")]
     pub fn help_index_body(&self) -> String {
         help::build_dynamic_index(&self.enabled_features, self.librarian_store.is_some())
+    }
+
+    /// Drive `query_observations` with empty parameters. Exposed for
+    /// integration tests that need to inspect the rendered envelope
+    /// (e.g. asserting that `daemon8.hints` is set when a path-pattern
+    /// matches and absent otherwise).
+    #[cfg(feature = "test-util")]
+    pub async fn query_observations_for_tests(&self) -> String {
+        self.query_observations(Parameters(ObserveParams::default()))
+            .await
     }
 
     #[cfg(feature = "test-util")]
@@ -820,10 +850,38 @@ impl DaemonMcp {
                     result["lens_count"] = serde_json::json!(lens_obs.len());
                 }
 
+                let path_hint = self.compute_path_hint(&slice.observations).await;
+                if let Some(hint) = path_hint {
+                    let mut meta = self.current_meta();
+                    meta.hints.push(hint.hint_text);
+                    return envelope::ok_value(result, meta);
+                }
+
                 self.ok(result)
             }
             Err(e) => self.err("query_failed", &e.to_string(), None, None),
         }
+    }
+
+    async fn compute_path_hint(
+        &self,
+        observations: &[Observation],
+    ) -> Option<hints::PathPatternHint> {
+        let (project_tags, project_root) = match self.active_project.read().await.as_ref() {
+            Some(c) => (c.tags.clone(), c.root.to_str().map(|s| s.to_string())),
+            None => (Vec::new(), None),
+        };
+        let obs_values: Vec<serde_json::Value> = observations
+            .iter()
+            .filter_map(|o| serde_json::to_value(o).ok())
+            .collect();
+        hints::maybe_emit_path_hint(
+            &obs_values,
+            self.librarian_store.as_ref(),
+            &project_tags,
+            project_root.as_deref(),
+        )
+        .await
     }
 
     #[doc = include_str!("../tool_descriptions/status.md")]
@@ -2990,6 +3048,7 @@ mod logging_tests {
             hooks_tool_fn: None,
             source_activator: None,
             cancel: tokio_util::sync::CancellationToken::new(),
+            active_project: Arc::new(RwLock::new(None)),
         })
     }
 
@@ -3291,6 +3350,7 @@ mod logging_tests {
                 hooks_tool_fn: None,
                 source_activator: None,
                 cancel: tokio_util::sync::CancellationToken::new(),
+                active_project: Arc::new(RwLock::new(None)),
             })
         };
 

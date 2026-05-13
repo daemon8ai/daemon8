@@ -202,6 +202,11 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
         });
     }
 
+    // Active project handle, shared with every MCP session so path-hint
+    // injection (D7) can scope librarian lookups to the project's tags.
+    // Populated by the discovery scanner below.
+    let active_project: daemon8_mcp::ActiveProjectHandle = Arc::new(tokio::sync::RwLock::new(None));
+
     // Project-aware discovery scanner (D3) + first-run presentation (D4).
     // Runs by default: the scanner produces a DiscoveryPlan, presentation
     // renders it, the user confirms (or the non-interactive path
@@ -215,6 +220,7 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
             cfg.sources.values().cloned().collect();
         let scan_cancel = cancel.child_token();
         let signals_for_task = signals.clone();
+        let active_project_writer = active_project.clone();
         tasks.spawn(async move {
             let cwd = match std::env::current_dir() {
                 Ok(p) => p,
@@ -231,6 +237,7 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
                 scan_cancel,
                 Some(signals_for_task),
                 crate::discovery::presentation::detect_mode,
+                Some(active_project_writer),
             )
             .await;
         });
@@ -279,6 +286,7 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
             hooks_tool_fn: Some(hooks_tool_fn.clone()),
             cancel: cancel.clone(),
             source_activator: source_activator.clone(),
+            active_project: active_project.clone(),
         });
         let cancel_on_eof = cancel.clone();
         tasks.spawn(async move {
@@ -318,6 +326,7 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
     // `on_initialized`, so daemon shutdown propagates while a single session
     // ending does not affect siblings.
     let mcp_root_cancel = cancel.clone();
+    let mcp_active_project = active_project.clone();
 
     let mcp_http = rmcp::transport::streamable_http_server::StreamableHttpService::new(
         move || {
@@ -341,6 +350,7 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
                 hooks_tool_fn: Some(hooks_tool_fn.clone()),
                 cancel: mcp_root_cancel.clone(),
                 source_activator: mcp_source_activator.clone(),
+                active_project: mcp_active_project.clone(),
             }))
         },
         Arc::new({
@@ -1424,6 +1434,7 @@ mod chrome_handler_tests {
 /// Errors are downgraded to `tracing::warn!` because discovery is a
 /// best-effort augmentation of the daemon's normal source pipeline.
 /// Failing the scan must not prevent the daemon from serving.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_discovery_flow(
     cwd: &std::path::Path,
     librarian: &dyn daemon8_store::LibrarianStore,
@@ -1432,8 +1443,19 @@ pub(crate) async fn run_discovery_flow(
     cancel: CancellationToken,
     signals: Option<Arc<crate::discovery::scanner::DiscoverySignals>>,
     tty_check: fn() -> crate::discovery::presentation::PresentationMode,
+    active_project: Option<daemon8_mcp::ActiveProjectHandle>,
 ) {
     use crate::discovery::{presentation, registrar, scanner};
+
+    // Publish the classification to the shared handle before the scanner
+    // enters its (potentially long) wait loop. MCP path-hint injection
+    // reads this on every `query_observations`, and the agent's first
+    // such call almost always lands inside the wait window.
+    if let Some(handle) = active_project.as_ref()
+        && let Ok(classification) = daemon8_providers::classify(cwd)
+    {
+        *handle.write().await = Some(classification);
+    }
 
     let plan = match scanner::scan(
         cwd,
@@ -1452,6 +1474,10 @@ pub(crate) async fn run_discovery_flow(
             return;
         }
     };
+
+    if let Some(handle) = active_project.as_ref() {
+        *handle.write().await = Some(plan.classification.clone());
+    }
 
     tracing::info!(
         status = ?plan.librarian_status,

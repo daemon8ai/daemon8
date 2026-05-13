@@ -83,6 +83,7 @@ async fn make_mcp_with_cancel(cancel: CancellationToken) -> DaemonMcp {
         hooks_tool_fn: None,
         source_activator: None,
         cancel,
+        active_project: Arc::new(tokio::sync::RwLock::new(None)),
     })
 }
 
@@ -291,6 +292,7 @@ async fn make_mcp_minimal() -> DaemonMcp {
         hooks_tool_fn: None,
         source_activator: None,
         cancel: CancellationToken::new(),
+        active_project: Arc::new(tokio::sync::RwLock::new(None)),
     })
 }
 

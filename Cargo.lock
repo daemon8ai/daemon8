@@ -1477,6 +1477,7 @@ dependencies = [
  "daemon8-mcp",
  "daemon8-store",
  "daemon8-types",
+ "dirs",
  "rmcp",
  "serde",
  "serde_json",

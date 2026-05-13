@@ -112,6 +112,7 @@ async fn run_setup_discovery_report(config_path: Option<&str>, cwd: &Path) {
         // Force Interactive: explicit `daemon8 setup` is always a
         // deliberate user request, so prompt even with stdio redirected.
         || crate::discovery::presentation::PresentationMode::Interactive,
+        None,
     )
     .await;
 }
