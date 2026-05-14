@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Havy.tech, LLC
 
 pub mod active_session;
+pub mod awareness;
 pub mod debug_session;
 pub mod error_hash;
 pub mod hash_cache;
@@ -12,6 +13,7 @@ pub mod memory;
 mod surreal;
 
 pub use active_session::{ActiveDebugSession, ActiveSessionState};
+pub use awareness::SurrealAwarenessStore;
 pub use debug_session::SurrealDebugSessionStore;
 pub use hash_cache::ObservationHashCache;
 pub use lens::{LensManager, LensStatus};
@@ -20,8 +22,10 @@ pub use memory::SurrealMemoryStore;
 pub use surreal::SurrealStore;
 
 use daemon8_types::{
-    Checkpoint, DebugSessionOutcome, DebugSessionStatus, Filter, LibrarianEdgeKind,
-    LibrarianNodeKind, LocatorKind, MemoryKind, Observation, RuntimeSummary, StateSlice,
+    AwarenessAuthority, AwarenessEdgeKind, AwarenessNodeKind, AwarenessNodeState,
+    AwarenessOperation, Checkpoint, DebugSessionOutcome, DebugSessionStatus, Filter,
+    LibrarianEdgeKind, LibrarianNodeKind, LocatorKind, MemoryKind, Observation, RuntimeSummary,
+    StateSlice,
 };
 use serde::{Deserialize, Serialize};
 
@@ -158,6 +162,148 @@ pub trait DebugSessionStore: Send + Sync {
         &self,
         debug_session_id: &str,
     ) -> Result<Vec<DebugCheckpoint>, StoreError>;
+}
+
+// ── Awareness Tree ───────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AwarenessNode {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub project_slug: String,
+    pub path: String,
+    pub kind: AwarenessNodeKind,
+    pub state: AwarenessNodeState,
+    pub authority: AwarenessAuthority,
+    pub confidence: f64,
+    pub summary: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub redex: Option<String>,
+    pub tags: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub debug_session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checkpoint_id: Option<String>,
+    #[serde(default)]
+    pub debug_session_ids: Vec<String>,
+    #[serde(default)]
+    pub checkpoint_ids: Vec<String>,
+    pub observation_ids: Vec<u64>,
+    pub librarian_node_ids: Vec<String>,
+    pub created_at: u64,
+    pub updated_at: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolved_at: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retired_at: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stale_at: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AwarenessEdge {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub kind: AwarenessEdgeKind,
+    pub from_node: String,
+    pub to_node: String,
+    pub created_at: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AwarenessEvidence {
+    pub observation_ids: Vec<u64>,
+    pub debug_session_ids: Vec<String>,
+    pub checkpoint_ids: Vec<String>,
+    pub librarian_node_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AwarenessSync {
+    pub operation: AwarenessOperation,
+    pub project_slug: String,
+    pub path: String,
+    pub kind: AwarenessNodeKind,
+    pub authority: Option<AwarenessAuthority>,
+    pub confidence: Option<f64>,
+    pub summary: Option<String>,
+    pub note: Option<String>,
+    pub redex: Option<String>,
+    pub tags: Vec<String>,
+    pub debug_session_id: Option<String>,
+    pub checkpoint_id: Option<String>,
+    pub evidence: AwarenessEvidence,
+    pub target_node_id: Option<String>,
+    pub supersedes: Vec<String>,
+    pub answers: Vec<String>,
+    pub contradicts: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct AwarenessFilter {
+    pub project_slug: String,
+    pub include_inactive: bool,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AwarenessTraversalFilter {
+    pub project_slug: String,
+    pub focus_path: String,
+    pub depth: usize,
+    pub include_inactive: bool,
+    pub include_notes: bool,
+    pub include_evidence: bool,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AwarenessManifest {
+    pub project_slug: String,
+    pub counts_by_kind: std::collections::BTreeMap<String, usize>,
+    pub active_objectives: Vec<AwarenessNode>,
+    pub open_questions: Vec<AwarenessNode>,
+    pub active_hypotheses: Vec<AwarenessNode>,
+    pub stale_risk_count: usize,
+    pub conflict_count: usize,
+    pub suggested_focus_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AwarenessTree {
+    pub project_slug: String,
+    pub focus_path: String,
+    pub nodes: Vec<AwarenessNode>,
+    pub edges: Vec<AwarenessEdge>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AwarenessConflict {
+    pub reason: String,
+    pub incoming_path: String,
+    pub existing_nodes: Vec<AwarenessNode>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AwarenessSyncResult {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub node: Option<AwarenessNode>,
+    pub edges: Vec<AwarenessEdge>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conflict: Option<AwarenessConflict>,
+}
+
+#[async_trait::async_trait]
+pub trait AwarenessStore: Send + Sync {
+    async fn sync_node(&self, input: AwarenessSync) -> Result<AwarenessSyncResult, StoreError>;
+    async fn get_node(&self, id: &str) -> Result<Option<AwarenessNode>, StoreError>;
+    async fn manifest(&self, filter: &AwarenessFilter) -> Result<AwarenessManifest, StoreError>;
+    async fn traverse(
+        &self,
+        filter: &AwarenessTraversalFilter,
+    ) -> Result<AwarenessTree, StoreError>;
 }
 
 // ── Librarian catalog ────────────────────────────────────────────────

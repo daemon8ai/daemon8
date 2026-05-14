@@ -56,6 +56,8 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
         Arc::new(surreal_store.debug_session_store());
     let librarian_store: Arc<dyn daemon8_store::LibrarianStore> =
         Arc::new(surreal_store.librarian_store());
+    let awareness_store: Arc<dyn daemon8_store::AwarenessStore> =
+        Arc::new(surreal_store.awareness_store());
     let store: Arc<dyn StateModel> = surreal_store.clone();
 
     // Unbounded channel — deliberate policy.  The daemon captures observations
@@ -270,6 +272,7 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
             memory_store: Some(memory_store.clone()),
             debug_session_store: Some(debug_session_store.clone()),
             librarian_store: Some(librarian_store.clone()),
+            awareness_store: Some(awareness_store.clone()),
             obs_tx: obs_tx.clone(),
             chrome_tx: chrome_cmd_tx.clone(),
             chrome_state: chrome_state_rx.clone(),
@@ -307,6 +310,7 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
     let mcp_memory_store = memory_store.clone();
     let mcp_debug_session_store = debug_session_store.clone();
     let mcp_librarian_store = librarian_store.clone();
+    let mcp_awareness_store = awareness_store.clone();
     let mcp_obs_tx = obs_tx.clone();
     let mcp_chrome_tx = chrome_cmd_tx.clone();
     let mcp_state_rx = chrome_state_rx.clone();
@@ -330,6 +334,7 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
                 memory_store: Some(mcp_memory_store.clone()),
                 debug_session_store: Some(mcp_debug_session_store.clone()),
                 librarian_store: Some(mcp_librarian_store.clone()),
+                awareness_store: Some(mcp_awareness_store.clone()),
                 obs_tx: mcp_obs_tx.clone(),
                 chrome_tx: mcp_chrome_tx.clone(),
                 chrome_state: mcp_state_rx.clone(),

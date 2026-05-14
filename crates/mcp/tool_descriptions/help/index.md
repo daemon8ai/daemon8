@@ -9,8 +9,8 @@ Available topics (call `daemon8_help(topic="<name>")`):
 - `observations` — querying, filtering, subscribing to runtime telemetry
 - `envelope` — the standard `{result, daemon8, error}` response shape
 - `checkpoint` — bookmarking moments in the observation stream
+- `awareness` — source posture, project-state manifest, and focused awareness traversal
 - `lens` — buffering matching observations between queries
 - `debug_session` — protocol for opening/closing debugging investigations
-- `setup` — first-time configuration and provider enrollment
-- `memory` — persisting long-lived insights across sessions
+- `setup` — first-time configuration and provider MCP registration
 - `librarian` — graph-based reference catalog for documentation, configs, fixes

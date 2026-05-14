@@ -769,6 +769,213 @@ impl std::str::FromStr for DebugSessionOutcome {
     }
 }
 
+// ── Awareness Tree enums ──────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AwarenessNodeKind {
+    Objective,
+    Question,
+    Hypothesis,
+    Fact,
+    Decision,
+    Constraint,
+    Risk,
+    Blocker,
+}
+
+impl fmt::Display for AwarenessNodeKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            Self::Objective => "objective",
+            Self::Question => "question",
+            Self::Hypothesis => "hypothesis",
+            Self::Fact => "fact",
+            Self::Decision => "decision",
+            Self::Constraint => "constraint",
+            Self::Risk => "risk",
+            Self::Blocker => "blocker",
+        };
+        f.write_str(s)
+    }
+}
+
+impl std::str::FromStr for AwarenessNodeKind {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "objective" => Ok(Self::Objective),
+            "question" => Ok(Self::Question),
+            "hypothesis" => Ok(Self::Hypothesis),
+            "fact" => Ok(Self::Fact),
+            "decision" => Ok(Self::Decision),
+            "constraint" => Ok(Self::Constraint),
+            "risk" => Ok(Self::Risk),
+            "blocker" => Ok(Self::Blocker),
+            other => Err(format!("unknown awareness node kind: {other}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AwarenessAuthority {
+    Verified,
+    Accepted,
+    Inferred,
+    Hypothesis,
+    Question,
+}
+
+impl fmt::Display for AwarenessAuthority {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            Self::Verified => "verified",
+            Self::Accepted => "accepted",
+            Self::Inferred => "inferred",
+            Self::Hypothesis => "hypothesis",
+            Self::Question => "question",
+        };
+        f.write_str(s)
+    }
+}
+
+impl std::str::FromStr for AwarenessAuthority {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "verified" => Ok(Self::Verified),
+            "accepted" => Ok(Self::Accepted),
+            "inferred" => Ok(Self::Inferred),
+            "hypothesis" => Ok(Self::Hypothesis),
+            "question" => Ok(Self::Question),
+            other => Err(format!("unknown awareness authority: {other}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AwarenessNodeState {
+    Active,
+    Resolved,
+    Retired,
+    Stale,
+    Conflicted,
+}
+
+impl fmt::Display for AwarenessNodeState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            Self::Active => "active",
+            Self::Resolved => "resolved",
+            Self::Retired => "retired",
+            Self::Stale => "stale",
+            Self::Conflicted => "conflicted",
+        };
+        f.write_str(s)
+    }
+}
+
+impl std::str::FromStr for AwarenessNodeState {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "active" => Ok(Self::Active),
+            "resolved" => Ok(Self::Resolved),
+            "retired" => Ok(Self::Retired),
+            "stale" => Ok(Self::Stale),
+            "conflicted" => Ok(Self::Conflicted),
+            other => Err(format!("unknown awareness node state: {other}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AwarenessEdgeKind {
+    Supports,
+    Contradicts,
+    Answers,
+    DerivedFrom,
+    Supersedes,
+    AppliesTo,
+}
+
+impl fmt::Display for AwarenessEdgeKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            Self::Supports => "supports",
+            Self::Contradicts => "contradicts",
+            Self::Answers => "answers",
+            Self::DerivedFrom => "derived_from",
+            Self::Supersedes => "supersedes",
+            Self::AppliesTo => "applies_to",
+        };
+        f.write_str(s)
+    }
+}
+
+impl std::str::FromStr for AwarenessEdgeKind {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "supports" => Ok(Self::Supports),
+            "contradicts" => Ok(Self::Contradicts),
+            "answers" => Ok(Self::Answers),
+            "derived_from" => Ok(Self::DerivedFrom),
+            "supersedes" => Ok(Self::Supersedes),
+            "applies_to" => Ok(Self::AppliesTo),
+            other => Err(format!("unknown awareness edge kind: {other}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AwarenessOperation {
+    Capture,
+    Update,
+    Question,
+    Resolve,
+    Verify,
+    Retire,
+}
+
+impl fmt::Display for AwarenessOperation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            Self::Capture => "capture",
+            Self::Update => "update",
+            Self::Question => "question",
+            Self::Resolve => "resolve",
+            Self::Verify => "verify",
+            Self::Retire => "retire",
+        };
+        f.write_str(s)
+    }
+}
+
+impl std::str::FromStr for AwarenessOperation {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "capture" => Ok(Self::Capture),
+            "update" => Ok(Self::Update),
+            "question" => Ok(Self::Question),
+            "resolve" => Ok(Self::Resolve),
+            "verify" => Ok(Self::Verify),
+            "retire" => Ok(Self::Retire),
+            other => Err(format!("unknown awareness operation: {other}")),
+        }
+    }
+}
+
 // ── Librarian catalog enums ──────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

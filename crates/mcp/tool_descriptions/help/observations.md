@@ -25,7 +25,7 @@ Observations are the raw runtime telemetry stream — logs, queries, exceptions,
 
 ## Per-observation linkage
 
-While an active debug session exists, every ingested observation gets `debug_session_id` and (if a checkpoint is set) `checkpoint_id` stamped automatically. Error observations also get `error_hash` computed and (first-sight) promoted to a memory ErrorSignature.
+While an active debug session exists, every ingested observation gets `debug_session_id` and (if a checkpoint is set) `checkpoint_id` stamped automatically. Error observations also get `error_hash` computed and first-sight promotion to an internal error signature record.
 
 ## Search
 

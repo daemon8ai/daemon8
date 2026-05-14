@@ -31,7 +31,7 @@ None. Observations are live; re-call to refresh.
 
 ## Next
 
-create_checkpoint before testing a fix; use `awareness_status` when a debug session begins so missing or drifted sources are visible before you trust the delta.
+create_checkpoint before testing a fix. If the returned evidence verifies, answers, contradicts, or retires current project state, call `awareness_sync`; otherwise continue with the next checkpoint.
 
 ## Discovery hints
 

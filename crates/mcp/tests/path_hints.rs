@@ -45,6 +45,7 @@ async fn build_mcp(
         memory_store: Some(Arc::new(memory_store)),
         debug_session_store: None,
         librarian_store: Some(librarian),
+        awareness_store: None,
         obs_tx,
         chrome_tx,
         chrome_state: chrome_state_rx,

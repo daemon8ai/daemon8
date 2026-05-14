@@ -82,10 +82,10 @@ For best results, add a directive to your agent's instruction file (`~/.claude/C
 
 ## How It Works
 
-The core loop is three calls:
+The core loop is small but state-aware:
 
 ```
-awareness_status --> create_checkpoint --> make a change --> query_observations(since_checkpoint=<id>)
+awareness_status --> awareness_sync when state changes --> create_checkpoint --> query_observations(since_checkpoint=<id>)
 ```
 
 Wrap that in a debug session and the investigation — the source coverage, observations consulted, root cause identified, and fix applied — persists as a typed session artifact. Each resolved investigation makes the next one faster.
@@ -153,7 +153,7 @@ Windows absolute user paths (`C:\Users\...`) and UNC paths (`\\server\share`) ar
 ## Reference
 
 <details>
-<summary>MCP Tools (29 tools)</summary>
+<summary>MCP Tools</summary>
 
 Every tool returns the standard envelope (`{result, daemon8, error}`) with optional `next_actions` and `hint` fields. Call `daemon8_help(topic="envelope")` for the full response format. Destructive operations require explicit confirmation.
 
@@ -162,7 +162,8 @@ Every tool returns the standard envelope (`{result, daemon8, error}`) with optio
 | **Observation** | |
 | `query_observations` | Filter by kind, severity, origin, text, tags, checkpoint. |
 | `status` | Health snapshot: error rate, sources, observation count, version. |
-| `awareness_status` | Report whether a debug session has `unknown`, `limited`, `partial`, or `optimal` awareness. |
+| `awareness_status` | Report source posture plus compact project-state awareness. |
+| `awareness_sync` | Capture, update, resolve, verify, or retire awareness nodes. |
 | `list_connections` | Active sources and browser connection state. |
 | `subscribe_observations` | Register a real-time alert filter pushed as MCP notifications. |
 | `ingest_observation` | Record an observation from inside an agent loop. |

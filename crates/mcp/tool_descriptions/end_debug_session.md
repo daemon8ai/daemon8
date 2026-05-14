@@ -4,7 +4,7 @@ Close the active debug session WITHOUT a fix. Use when investigation stalls, sco
 
 ## When
 
-You're stopping investigation but you don't have a captured fix worth indexing for future retrieval. If you DO have a fix (root cause + diff + commands), call resolve_debug_session instead — it produces a richer, retrievable SessionSummary memory.
+You're stopping investigation but you don't have a captured fix worth indexing for future retrieval. If you DO have a fix (root cause + diff + commands), call resolve_debug_session instead — it produces a richer, retrievable SessionSummary.
 
 ## Prereq
 
@@ -15,7 +15,7 @@ A debug session must be active. Call start_debug_session first if not.
 
 ## Returns
   result.debug_session_id: id of the session that was just closed.
-  result.summary_memory_id: id of the thin SessionSummary memory written for this session (always written, even on abandon, so the session never silently disappears).
+  result.summary_memory_id: id of the thin SessionSummary written for this session (always written, even on abandon, so the session never silently disappears).
   daemon8.active_debug_session: null after this call.
 
 ## Errors
@@ -24,4 +24,4 @@ A debug session must be active. Call start_debug_session first if not.
 
 ## Next
 
-start_debug_session for a fresh investigation, or list_debug_sessions to review past sessions.
+Call `awareness_sync` if unresolved blockers/questions should survive the handoff. Then start_debug_session for a fresh investigation, or list_debug_sessions to review past sessions.

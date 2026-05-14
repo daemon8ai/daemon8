@@ -5,14 +5,15 @@ use std::sync::Arc;
 
 use daemon8_chrome::ConnectionState;
 use daemon8_mcp::{DaemonMcp, DaemonMcpConfig};
-use daemon8_store::{LibrarianStore, SurrealStore};
+use daemon8_store::{AwarenessStore, LibrarianStore, SurrealStore};
 use daemon8_types::Filter;
 use tokio_util::sync::CancellationToken;
 
-const EXPECTED_TOOLS: [&str; 19] = [
+const EXPECTED_TOOLS: [&str; 20] = [
     "query_observations",
     "status",
     "awareness_status",
+    "awareness_sync",
     "create_checkpoint",
     "list_connections",
     "ingest_observation",
@@ -56,11 +57,13 @@ async fn make_mcp_with_cancel(cancel: CancellationToken) -> DaemonMcp {
         None,
     ));
     let librarian_store: Arc<dyn LibrarianStore> = Arc::new(store.librarian_store());
+    let awareness_store: Arc<dyn AwarenessStore> = Arc::new(store.awareness_store());
     DaemonMcp::new(DaemonMcpConfig {
         store,
         memory_store: Some(Arc::new(memory_store)),
         debug_session_store: None,
         librarian_store: Some(librarian_store),
+        awareness_store: Some(awareness_store),
         obs_tx,
         chrome_tx,
         chrome_state: chrome_state_rx,
@@ -89,6 +92,7 @@ fn composed_router_has_full_tool_surface() {
     let router = DaemonMcp::tool_router()
         + DaemonMcp::action_tool_router()
         + DaemonMcp::lens_tool_router()
+        + DaemonMcp::awareness_tool_router()
         + DaemonMcp::setup_tool_router()
         + DaemonMcp::librarian_tool_router();
     let names = tool_names(&router);
@@ -276,6 +280,7 @@ async fn make_mcp_minimal() -> DaemonMcp {
         memory_store: None,
         debug_session_store: None,
         librarian_store: None,
+        awareness_store: None,
         obs_tx,
         chrome_tx,
         chrome_state: chrome_state_rx,

@@ -23,4 +23,4 @@ None.
 
 ## Next
 
-get_memory(id=<summary_memory_id>) to read the rich SessionSummary for any completed/abandoned session. start_debug_session if you find overlapping work and want to coordinate.
+Use the returned session metadata to decide whether to resume context, open a new debug session, or inspect related observations. start_debug_session if you find overlapping work and want to coordinate.
