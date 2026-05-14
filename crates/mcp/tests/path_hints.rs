@@ -15,13 +15,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use daemon8_chrome::ConnectionState;
-use daemon8_mcp::{ActiveProjectHandle, DaemonMcp, DaemonMcpConfig};
+use daemon8_mcp::{DaemonMcp, DaemonMcpConfig, ObserveParams, ProjectContextResolverFn};
 use daemon8_store::{LibrarianNode, LibrarianStore, StateModel, SurrealStore};
 use daemon8_types::{
     LibrarianNodeKind, LocatorKind, Observation, ObservationKind, Origin, Platform,
     ProjectClassification, Severity, SourceKind, SourceTemplateData, TemplateConfidence,
 };
-use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
 async fn build_mcp(
@@ -39,7 +38,13 @@ async fn build_mcp(
         broadcast_tx.subscribe(),
         None,
     ));
-    let active_project: ActiveProjectHandle = Arc::new(RwLock::new(classification));
+    let project_context_resolver: Option<ProjectContextResolverFn> = classification.map(|c| {
+        let resolver: ProjectContextResolverFn = Arc::new(move |_root: String| {
+            let c = c.clone();
+            Box::pin(async move { Ok(c) })
+        });
+        resolver
+    });
     DaemonMcp::new(DaemonMcpConfig {
         store: store.clone(),
         memory_store: Some(Arc::new(memory_store)),
@@ -55,9 +60,10 @@ async fn build_mcp(
         broadcast_tx,
         lens,
         setup_tool_fn: None,
+        project_discovery_fn: None,
+        project_context_resolver,
         source_activator: None,
         cancel: CancellationToken::new(),
-        active_project,
     })
 }
 
@@ -137,7 +143,12 @@ async fn query_observations_emits_hint_when_template_missing() {
     )
     .await;
 
-    let rendered = mcp.query_observations_for_tests().await;
+    let rendered = mcp
+        .query_observations_for_tests_with(ObserveParams {
+            project_root: Some("/tmp/fake-project".into()),
+            ..ObserveParams::default()
+        })
+        .await;
     let envelope: serde_json::Value =
         serde_json::from_str(&rendered).expect("envelope JSON parse failed");
     let hints = envelope["daemon8"]["hints"]
@@ -178,7 +189,12 @@ async fn query_observations_suppresses_hint_when_template_covers_path() {
     )
     .await;
 
-    let rendered = mcp.query_observations_for_tests().await;
+    let rendered = mcp
+        .query_observations_for_tests_with(ObserveParams {
+            project_root: Some("/tmp/fake-project".into()),
+            ..ObserveParams::default()
+        })
+        .await;
     let envelope: serde_json::Value =
         serde_json::from_str(&rendered).expect("envelope JSON parse failed");
     let hints = envelope["daemon8"]["hints"]

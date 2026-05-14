@@ -51,11 +51,7 @@ pub async fn cmd_setup(_config_path: Option<String>, args: SetupArgs) -> Result<
 }
 
 pub async fn cmd_setup_mcp(action: SetupToolAction, _config_path: Option<&str>) -> String {
-    let cwd = action
-        .cwd
-        .as_deref()
-        .map(PathBuf::from)
-        .or_else(|| std::env::current_dir().ok());
+    let cwd = action.cwd.as_deref().map(PathBuf::from);
 
     let result = match action.action.as_str() {
         "status" | "plan" => {

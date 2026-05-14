@@ -32,12 +32,17 @@ pub mod hints;
 use envelope::{ActiveSessionEcho, DaemonMeta};
 use help::FeatureGate;
 
-/// Shared handle to the daemon's most recently classified project. The
-/// scanner (D3) writes here on every serve; MCP handlers read from it
-/// to scope librarian-aware hints. None means no project has been
-/// classified this run (CI/non-project use; first invocation before
-/// the scanner finishes).
-pub type ActiveProjectHandle = Arc<RwLock<Option<ProjectClassification>>>;
+/// Per-MCP-session project context. Calls that include an explicit
+/// `project_root` classify and cache the project for later reads from the
+/// same session; sibling MCP sessions never share this state.
+pub type SessionProjectHandle = Arc<RwLock<Option<ProjectClassification>>>;
+pub type ProjectContextResolverFn = Arc<
+    dyn Fn(String) -> Pin<Box<dyn Future<Output = Result<ProjectClassification, String>> + Send>>
+        + Send
+        + Sync,
+>;
+pub type ProjectDiscoveryFn =
+    Arc<dyn Fn(String) -> Pin<Box<dyn Future<Output = String> + Send>> + Send + Sync>;
 
 const INSTRUCTIONS: &str = include_str!("../tool_descriptions/instructions.md");
 static MCP_SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -105,6 +110,11 @@ pub struct ObserveParams {
         description = "Include system/infrastructure observations (tagged '_system'). These are excluded by default to reduce noise from internal tooling."
     )]
     pub include_system: Option<bool>,
+
+    #[schemars(
+        description = "Explicit project root for project-aware path hints. When omitted, daemon8 uses this MCP session's cached project context or active debug session."
+    )]
+    pub project_root: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -385,6 +395,10 @@ pub struct HelpParams {
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct AwarenessStatusParams {
+    #[schemars(
+        description = "Explicit project root for this awareness read. Use this at session start or after compaction so daemon8 does not infer from daemon cwd."
+    )]
+    pub project_root: Option<String>,
     #[schemars(description = "Optional awareness path to inspect. Omit for a compact manifest.")]
     pub focus_path: Option<String>,
     #[schemars(description = "Traversal depth for focused reads. Default 1, max 5.")]
@@ -615,7 +629,9 @@ pub struct ListDebugSessionsParams {
 pub struct SetupToolAction {
     #[schemars(description = "Setup action: status or apply.")]
     pub action: String,
-    #[schemars(description = "Project working directory. Defaults to daemon current directory.")]
+    #[schemars(
+        description = "Project working directory for provider config context. Omit only when provider setup is global."
+    )]
     pub cwd: Option<String>,
     #[schemars(description = "Required to confirm mutating setup_apply.")]
     pub yes: Option<bool>,
@@ -627,19 +643,25 @@ pub struct SetupToolAction {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SetupStatusParams {
-    #[schemars(description = "Project working directory. Defaults to daemon current directory.")]
+    #[schemars(
+        description = "Project working directory for provider config context. Omit only when provider setup is global."
+    )]
     pub cwd: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SetupPlanParams {
-    #[schemars(description = "Project working directory. Defaults to daemon current directory.")]
+    #[schemars(
+        description = "Project working directory for provider config context. Omit only when provider setup is global."
+    )]
     pub cwd: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SetupApplyParams {
-    #[schemars(description = "Project working directory. Defaults to daemon current directory.")]
+    #[schemars(
+        description = "Project working directory for provider config context. Omit only when provider setup is global."
+    )]
     pub cwd: Option<String>,
     #[schemars(description = "Required to confirm setup_apply writes.")]
     pub yes: bool,
@@ -647,6 +669,12 @@ pub struct SetupApplyParams {
         description = "Comma-separated providers to configure (e.g. \"claude-code,gemini,codex\"). Omit for auto-detection."
     )]
     pub providers: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DiscoverProjectParams {
+    #[schemars(description = "Explicit project root to classify and scan for source coverage.")]
+    pub project_root: String,
 }
 
 pub type SetupToolFn =
@@ -673,15 +701,16 @@ pub struct DaemonMcp {
     broadcast_tx: broadcast::Sender<(Arc<Observation>, Arc<str>)>,
     lens: Arc<LensManager>,
     setup_tool_fn: Option<SetupToolFn>,
+    project_discovery_fn: Option<ProjectDiscoveryFn>,
+    project_context_resolver: Option<ProjectContextResolverFn>,
     source_activator: Option<Arc<dyn SourceActivator>>,
     /// Parent cancellation token. The push task spawned in `on_initialized`
     /// uses a child token so daemon shutdown propagates cleanly.
     cancel: tokio_util::sync::CancellationToken,
     enabled_features: Vec<FeatureGate>,
-    /// Shared with the discovery scanner — read by `query_observations`
-    /// to scope librarian-aware path hints. `None` when no project has
-    /// been classified this run.
-    active_project: ActiveProjectHandle,
+    /// Per-MCP-session project context. Explicit project roots on tool calls
+    /// refresh this value; it is never shared across concurrent sessions.
+    project_context: SessionProjectHandle,
     tool_router: ToolRouter<Self>,
 }
 
@@ -700,14 +729,12 @@ pub struct DaemonMcpConfig {
     pub broadcast_tx: broadcast::Sender<(Arc<Observation>, Arc<str>)>,
     pub lens: Arc<LensManager>,
     pub setup_tool_fn: Option<SetupToolFn>,
+    pub project_discovery_fn: Option<ProjectDiscoveryFn>,
+    pub project_context_resolver: Option<ProjectContextResolverFn>,
     pub source_activator: Option<Arc<dyn SourceActivator>>,
     /// Parent cancellation token. Use the daemon-wide token; the MCP push task
     /// derives a child from it so daemon shutdown stops per-session work.
     pub cancel: tokio_util::sync::CancellationToken,
-    /// Shared with the discovery scanner. The daemon constructs one
-    /// `Arc<RwLock<Option<ProjectClassification>>>` and hands clones
-    /// to both the scanner (writer) and every MCP session (reader).
-    pub active_project: ActiveProjectHandle,
 }
 
 #[tool_router(vis = "pub")]
@@ -757,10 +784,12 @@ impl DaemonMcp {
             broadcast_tx: cfg.broadcast_tx,
             lens: cfg.lens,
             setup_tool_fn: cfg.setup_tool_fn,
+            project_discovery_fn: cfg.project_discovery_fn,
+            project_context_resolver: cfg.project_context_resolver,
             source_activator: cfg.source_activator,
             cancel: cfg.cancel,
             enabled_features,
-            active_project: cfg.active_project,
+            project_context: Arc::new(RwLock::new(None)),
             tool_router: router,
         }
     }
@@ -801,6 +830,11 @@ impl DaemonMcp {
     pub async fn query_observations_for_tests(&self) -> String {
         self.query_observations(Parameters(ObserveParams::default()))
             .await
+    }
+
+    #[cfg(feature = "test-util")]
+    pub async fn query_observations_for_tests_with(&self, params: ObserveParams) -> String {
+        self.query_observations(Parameters(params)).await
     }
 
     #[cfg(feature = "test-util")]
@@ -873,6 +907,14 @@ impl DaemonMcp {
     #[doc = include_str!("../tool_descriptions/query_observations.md")]
     #[tool(name = "query_observations")]
     async fn query_observations(&self, Parameters(params): Parameters<ObserveParams>) -> String {
+        let project_context = match self
+            .resolve_project_context(params.project_root.as_deref())
+            .await
+        {
+            Ok(context) => context,
+            Err(e) => return self.err("project_context_failed", &e, None, None),
+        };
+
         // If the caller wants browser observations, ensure Chrome is connected.
         let wants_browser = params
             .origins
@@ -928,7 +970,9 @@ impl DaemonMcp {
                     result["lens_count"] = serde_json::json!(lens_obs.len());
                 }
 
-                let path_hint = self.compute_path_hint(&slice.observations).await;
+                let path_hint = self
+                    .compute_path_hint(project_context.as_ref(), &slice.observations)
+                    .await;
                 let warned_since_checkpoint = filter.since.is_some()
                     && slice
                         .observations
@@ -966,9 +1010,10 @@ impl DaemonMcp {
 
     async fn compute_path_hint(
         &self,
+        project_context: Option<&ProjectClassification>,
         observations: &[Observation],
     ) -> Option<hints::PathPatternHint> {
-        let (project_tags, project_root) = match self.active_project.read().await.as_ref() {
+        let (project_tags, project_root) = match project_context {
             Some(c) => (c.tags.clone(), c.root.to_str().map(|s| s.to_string())),
             None => (Vec::new(), None),
         };
@@ -1012,7 +1057,13 @@ impl DaemonMcp {
         Parameters(params): Parameters<AwarenessStatusParams>,
     ) -> String {
         let active_session = self.active_state.current_session();
-        let project = self.active_project.read().await.clone();
+        let project = match self
+            .resolve_project_context(params.project_root.as_deref())
+            .await
+        {
+            Ok(project) => project,
+            Err(e) => return self.err("project_context_failed", &e, None, None),
+        };
         let project_slug = active_session
             .as_ref()
             .map(|s| s.project_slug.to_string())
@@ -1239,12 +1290,30 @@ impl DaemonMcp {
             .map(|s| s.project_slug.to_string())
             .filter(|s| s != "unknown")
             .or_else(|| {
-                self.active_project.try_read().ok().and_then(|project| {
+                self.project_context.try_read().ok().and_then(|project| {
                     project
                         .as_ref()
                         .and_then(|p| derive_slug_from_root(&p.root))
                 })
             })
+    }
+
+    async fn resolve_project_context(
+        &self,
+        project_root: Option<&str>,
+    ) -> Result<Option<ProjectClassification>, String> {
+        let Some(root) = project_root.map(str::trim).filter(|root| !root.is_empty()) else {
+            return Ok(self.project_context.read().await.clone());
+        };
+        let Some(resolver) = &self.project_context_resolver else {
+            return Err(
+                "project_root was provided, but daemon8 has no project context resolver configured"
+                    .into(),
+            );
+        };
+        let classification = resolver(root.to_string()).await?;
+        *self.project_context.write().await = Some(classification.clone());
+        Ok(Some(classification))
     }
 
     async fn source_awareness(
@@ -2140,6 +2209,33 @@ impl DaemonMcp {
                 providers: params.providers,
             })
             .await;
+        wrap_inner_result(self, &inner)
+    }
+
+    #[doc = include_str!("../tool_descriptions/discover_project.md")]
+    #[tool(name = "discover_project")]
+    async fn discover_project(
+        &self,
+        Parameters(params): Parameters<DiscoverProjectParams>,
+    ) -> String {
+        let Some(discover) = &self.project_discovery_fn else {
+            return self.err(
+                "project_discovery_unavailable",
+                "project discovery is not configured",
+                Some("use librarian_lookup and broad observation queries until daemon project discovery is available"),
+                None,
+            );
+        };
+        let root = params.project_root.trim();
+        if root.is_empty() {
+            return self.err(
+                "missing_project_root",
+                "discover_project requires a non-empty project_root",
+                Some("pass the repository or app root explicitly; daemon8 does not infer from daemon cwd"),
+                None,
+            );
+        }
+        let inner = discover(root.to_string()).await;
         wrap_inner_result(self, &inner)
     }
 }
@@ -3676,10 +3772,68 @@ mod logging_tests {
             broadcast_tx,
             lens,
             setup_tool_fn: None,
+            project_discovery_fn: None,
+            project_context_resolver: None,
             source_activator: None,
             cancel: tokio_util::sync::CancellationToken::new(),
-            active_project: Arc::new(RwLock::new(None)),
         })
+    }
+
+    async fn build_mcp_with_project_resolver(project_name: &'static str) -> DaemonMcp {
+        let mut mcp = build_mcp_with_debug_session().await;
+        let resolver: ProjectContextResolverFn = Arc::new(move |root: String| {
+            Box::pin(async move {
+                let root = std::path::PathBuf::from(root);
+                Ok(ProjectClassification {
+                    tags: vec![format!("{project_name}-tag")],
+                    framework_versions: std::collections::BTreeMap::new(),
+                    root,
+                    manifests: std::collections::BTreeMap::new(),
+                    platform: daemon8_types::Platform::current(),
+                })
+            })
+        });
+        mcp.project_context_resolver = Some(resolver);
+        mcp
+    }
+
+    #[tokio::test]
+    async fn project_context_is_scoped_per_mcp_session() {
+        let a = build_mcp_with_project_resolver("alpha").await;
+        let b = build_mcp_with_project_resolver("beta").await;
+
+        let a_status = a
+            .awareness_status(Parameters(AwarenessStatusParams {
+                project_root: Some("/tmp/alpha-app".into()),
+                ..AwarenessStatusParams::default()
+            }))
+            .await;
+        let a_json: serde_json::Value = serde_json::from_str(&a_status).unwrap();
+        assert_eq!(a_json["result"]["project_slug"], "alpha-app");
+
+        let b_initial = b
+            .awareness_status(Parameters(AwarenessStatusParams::default()))
+            .await;
+        let b_initial_json: serde_json::Value = serde_json::from_str(&b_initial).unwrap();
+        assert_eq!(
+            b_initial_json["result"]["project_slug"],
+            serde_json::Value::Null
+        );
+
+        let b_status = b
+            .awareness_status(Parameters(AwarenessStatusParams {
+                project_root: Some("/tmp/beta-app".into()),
+                ..AwarenessStatusParams::default()
+            }))
+            .await;
+        let b_json: serde_json::Value = serde_json::from_str(&b_status).unwrap();
+        assert_eq!(b_json["result"]["project_slug"], "beta-app");
+
+        let a_cached = a
+            .awareness_status(Parameters(AwarenessStatusParams::default()))
+            .await;
+        let a_cached_json: serde_json::Value = serde_json::from_str(&a_cached).unwrap();
+        assert_eq!(a_cached_json["result"]["project_slug"], "alpha-app");
     }
 
     #[tokio::test]
@@ -3751,6 +3905,7 @@ mod logging_tests {
 
         let status = mcp
             .awareness_status(Parameters(AwarenessStatusParams {
+                project_root: None,
                 focus_path: None,
                 depth: None,
                 include_notes: None,
@@ -3831,6 +3986,7 @@ mod logging_tests {
 
         let status = mcp
             .awareness_status(Parameters(AwarenessStatusParams {
+                project_root: None,
                 focus_path: None,
                 depth: None,
                 include_notes: None,
@@ -4153,9 +4309,10 @@ mod logging_tests {
                 broadcast_tx,
                 lens,
                 setup_tool_fn: None,
+                project_discovery_fn: None,
+                project_context_resolver: None,
                 source_activator: None,
                 cancel: tokio_util::sync::CancellationToken::new(),
-                active_project: Arc::new(RwLock::new(None)),
             })
         };
 

@@ -100,29 +100,29 @@ Wrap that in a debug session and the investigation — the source coverage, obse
 
 Daemon8 ships with zero hardcoded knowledge of where any framework's logs live. The librarian is the learning store, populated by agents over time.
 
-### What happens on `daemon8 serve`
+### What happens on `discover_project`
 
-1. **Classify.** Daemon8 reads root manifests and emits tags: `react-native`, `vega`, `kepler`, `nextjs`, `vite`, `tanstack-start`, `rust`, `rust-workspace`, `laravel`, `symfony`, `python`, `django`, `flask`, `fastapi`, `go`, `rails`, `expo`, plus the universal `git-repo` tag. Framework versions are extracted from `package.json`, `composer.json`, `Gemfile.lock`, and `pyproject.toml` where present.
+1. **Classify.** The agent passes an explicit project root. Daemon8 reads root manifests and emits tags: `react-native`, `vega`, `kepler`, `nextjs`, `vite`, `tanstack-start`, `rust`, `rust-workspace`, `laravel`, `symfony`, `python`, `django`, `flask`, `fastapi`, `go`, `rails`, `expo`, plus the universal `git-repo` tag. Framework versions are extracted from `package.json`, `composer.json`, `Gemfile.lock`, and `pyproject.toml` where present.
 
 2. **Lookup.** Daemon8 queries the librarian for `source_template` entries whose `project_types` intersect the classification tags, whose `platforms` match the current OS, and whose `version_constraint` accepts the project's framework versions.
 
 3. **Probe.** Each matched template's `locator_pattern` is expanded against `~`, env vars, `<root>`, and globs. Paths that resolve become candidate sources.
 
-4. **Present.** Daemon8 prints the plan and prompts once to register. Confirm registers the sources and writes a `project` node plus `has_source` edges so the next run uses the cached topology.
+4. **Present.** Daemon8 returns the plan to the agent. Reusable source knowledge is persisted through `librarian_index`; the daemon does not infer a project from its own launch directory.
 
 5. **Ask the agent if needed.** When the librarian has no templates for a project type, daemon8 emits a `discovery_hint` observation. The agent in your session reads the hint via `query_observations`, investigates with shell tools, and calls `librarian_index` with `source_template` entries. Daemon8 then re-enters the scan.
 
 ### Discovery escape hatches
 
 ```bash
-daemon8 discover --complete     # stop waiting for the agent and use what's been written
-daemon8 discover --skip         # write .daemon8/skip-discovery; future serves bypass the scan
-daemon8 discover --rescan       # remove the skip marker; next serve re-runs discovery
+daemon8 discover --complete              # stop an in-flight scan and use what's been written
+daemon8 discover --skip --root <path>    # write .daemon8/skip-discovery for a project
+daemon8 discover --rescan --root <path>  # remove the skip marker; explicit discovery can run again
 ```
 
 ### Drift detection
 
-`daemon8 doctor` walks the registered sources, flags any whose paths no longer resolve, and compares the project's current framework versions against the versions captured at registration. When versions differ, the diagnosis names the upgrade as the likely cause and suggests `daemon8 discover --rescan`.
+`daemon8 doctor` walks the registered sources, flags any whose paths no longer resolve, and compares the project's current framework versions against the versions captured at registration. When versions differ, the diagnosis names the upgrade as the likely cause and suggests `daemon8 discover --rescan --root <path>` followed by `discover_project`.
 
 ## The Librarian
 
@@ -188,6 +188,7 @@ Every tool returns the standard envelope (`{result, daemon8, error}`) with optio
 | `setup_status` | Current setup state for the project. |
 | `setup_plan` | Preview the action plan. |
 | `setup_apply` | Apply the plan (requires confirmation). |
+| `discover_project` | Classify an explicit project root and report source coverage gaps. |
 | **Help** | |
 | `daemon8_help` | Topic-specific docs: awareness, checkpoint, debug_session, envelope, lens, librarian, observations, setup. |
 
@@ -238,7 +239,7 @@ UDP listener on port 8889 accepts the same JSON shapes for fire-and-forget telem
 | `daemon8 service uninstall` | Remove the system service. |
 | `daemon8 discover --complete` | Stop waiting for the agent; use what's been written. |
 | `daemon8 discover --skip` | Bypass the discovery scan for this project. |
-| `daemon8 discover --rescan` | Re-run the discovery scan on next serve. |
+| `daemon8 discover --rescan` | Remove the skip marker so explicit discovery can run again. |
 | `daemon8 channel` | Real-time alert relay for MCP clients (experimental). |
 | `daemon8 doctor` | Diagnose project state and source drift (`--fix` to auto-repair). |
 

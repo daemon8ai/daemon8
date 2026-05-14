@@ -11,7 +11,7 @@ Previewing what providers are detected before calling setup_apply.
 None.
 
 ## Args
-  - cwd: optional string. Project working directory. Defaults to the daemon's cwd.
+  - cwd: optional string. Project working directory for provider config context. Omit only when provider setup is global.
 
 ## Returns
   result: same shape as setup_status.

@@ -69,7 +69,7 @@ enum Commands {
     /// Manage daemon8 system service (install/uninstall)
     #[command(subcommand)]
     Service(ServiceSubcommand),
-    /// Signal the running daemon's discovery scanner (D3)
+    /// Manage per-project discovery skip/rescan signals
     Discover(cli::discover::DiscoverArgs),
     /// Real-time alert relay for MCP clients (experimental)
     Channel,

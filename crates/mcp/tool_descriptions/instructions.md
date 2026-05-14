@@ -15,6 +15,7 @@ Tool selection:
 - See console output, network traffic, device logs, or app telemetry: `query_observations` (use `since_checkpoint` for incremental polling).
 - Run JavaScript in the browser: `issue_command` with action="eval_js".
 - Snapshot daemon health and connected sources: `status`.
+- At session start or after compaction: `awareness_status(project_root=...)`. If source coverage is unknown, call `discover_project(project_root=...)`.
 - Before relying on a debug session: `awareness_status`. The target is `optimal` source awareness; `partial`, `limited`, or `unknown` means source coverage needs attention before you trust checkpoint deltas.
 - Take screenshots, inject CSS, navigate, manipulate storage, set viewport, throttle network: `issue_command`.
 - Write a note, emit a metric, or message another agent: `ingest_observation`.

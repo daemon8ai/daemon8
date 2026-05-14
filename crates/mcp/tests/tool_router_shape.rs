@@ -9,7 +9,7 @@ use daemon8_store::{AwarenessStore, LibrarianStore, SurrealStore};
 use daemon8_types::Filter;
 use tokio_util::sync::CancellationToken;
 
-const EXPECTED_TOOLS: [&str; 20] = [
+const EXPECTED_TOOLS: [&str; 21] = [
     "query_observations",
     "status",
     "awareness_status",
@@ -26,6 +26,7 @@ const EXPECTED_TOOLS: [&str; 20] = [
     "setup_status",
     "setup_plan",
     "setup_apply",
+    "discover_project",
     "daemon8_help",
     "librarian_index",
     "librarian_lookup",
@@ -81,9 +82,18 @@ async fn make_mcp_with_cancel(cancel: CancellationToken) -> DaemonMcp {
                 .unwrap()
             })
         })),
+        project_discovery_fn: Some(Arc::new(|root| {
+            Box::pin(async move {
+                serde_json::to_string(&serde_json::json!({
+                    "root": root,
+                    "ok": true
+                }))
+                .unwrap()
+            })
+        })),
+        project_context_resolver: None,
         source_activator: None,
         cancel,
-        active_project: Arc::new(tokio::sync::RwLock::new(None)),
     })
 }
 
@@ -290,9 +300,10 @@ async fn make_mcp_minimal() -> DaemonMcp {
         broadcast_tx,
         lens,
         setup_tool_fn: None,
+        project_discovery_fn: None,
+        project_context_resolver: None,
         source_activator: None,
         cancel: CancellationToken::new(),
-        active_project: Arc::new(tokio::sync::RwLock::new(None)),
     })
 }
 

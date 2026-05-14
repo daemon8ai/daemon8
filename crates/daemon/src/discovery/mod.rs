@@ -29,6 +29,8 @@ pub mod conversation;
 pub mod doctor_checks;
 pub mod hint;
 pub mod locator;
+#[allow(dead_code)]
 pub mod presentation;
+#[allow(dead_code)]
 pub mod registrar;
 pub mod scanner;

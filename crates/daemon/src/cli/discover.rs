@@ -9,15 +9,14 @@
 //!   endpoint. The daemon's scanner short-circuits its wait loop on the
 //!   next poll tick and returns with whatever templates are present.
 //! - `--skip` writes `.daemon8/skip-discovery` under the project root.
-//!   Future `daemon8 serve` invocations honor the marker and bypass
+//!   Future explicit discovery scans honor the marker and bypass
 //!   discovery entirely. Also POSTs to the running daemon (if any) so
 //!   an in-flight scan returns immediately.
 //! - `--rescan` removes the per-project skip marker so the next
-//!   `daemon8 serve` re-runs the scanner and re-presents the plan.
-//!   Pure local operation — the running daemon caches the project
-//!   node, so restart-on-rescan is the simplest contract.
+//!   explicit `discover_project`/discovery scan can re-present the plan.
 
 use anyhow::{Context, Result};
+use std::path::PathBuf;
 
 use crate::cli::observe::{ClientArgs, base_url, check_response, handle_reqwest_error};
 use crate::discovery::scanner::SKIP_MARKER_REL_PATH;
@@ -35,10 +34,13 @@ pub struct DiscoverArgs {
     #[arg(long, conflicts_with_all = ["complete", "rescan"])]
     pub skip: bool,
 
-    /// Remove the per-project skip marker so the next `daemon8 serve`
-    /// re-runs the discovery scanner.
+    /// Remove the per-project skip marker so explicit discovery can run again.
     #[arg(long, conflicts_with_all = ["complete", "skip"])]
     pub rescan: bool,
+
+    /// Project root for --skip/--rescan. Defaults to the CLI cwd.
+    #[arg(long)]
+    pub root: Option<PathBuf>,
 
     #[command(flatten)]
     pub client: ClientArgs,
@@ -46,7 +48,7 @@ pub struct DiscoverArgs {
 
 pub async fn cmd_discover(args: DiscoverArgs) -> Result<()> {
     if args.skip {
-        let root = std::env::current_dir().context("reading current directory")?;
+        let root = project_root(args.root.as_ref())?;
         let marker = root.join(SKIP_MARKER_REL_PATH);
         if let Some(parent) = marker.parent() {
             std::fs::create_dir_all(parent).with_context(|| {
@@ -63,7 +65,7 @@ pub async fn cmd_discover(args: DiscoverArgs) -> Result<()> {
     }
 
     if args.rescan {
-        let root = std::env::current_dir().context("reading current directory")?;
+        let root = project_root(args.root.as_ref())?;
         let marker = root.join(SKIP_MARKER_REL_PATH);
         if marker.exists() {
             std::fs::remove_file(&marker)
@@ -72,7 +74,7 @@ pub async fn cmd_discover(args: DiscoverArgs) -> Result<()> {
         } else {
             println!("no skip marker to remove at {}", marker.display());
         }
-        println!("restart `daemon8 serve` to re-run discovery for this project");
+        println!("call discover_project with this project_root to re-run discovery");
         return Ok(());
     }
 
@@ -84,6 +86,12 @@ pub async fn cmd_discover(args: DiscoverArgs) -> Result<()> {
 
     println!("daemon8 discover: nothing to do. Pass --complete, --skip, or --rescan.");
     Ok(())
+}
+
+fn project_root(root: Option<&PathBuf>) -> Result<PathBuf> {
+    root.cloned()
+        .or_else(|| std::env::current_dir().ok())
+        .context("reading project root")
 }
 
 async fn post_signal(client_args: &ClientArgs, kind: &str) -> Result<()> {

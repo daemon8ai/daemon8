@@ -31,7 +31,7 @@ None. Observations are live; re-call to refresh.
 
 ## Next
 
-create_checkpoint before testing a fix. Treat returned observations as runtime signals only. Promote awareness only after you have an interpreted durable conclusion, usually through `resolve_debug_session`, accepted research, a user decision, or a source verification.
+create_checkpoint before testing a fix. Pass `project_root` when you want project-aware path/source hints and no debug session is active. Treat returned observations as runtime signals only. Promote awareness only after you have an interpreted durable conclusion, usually through `resolve_debug_session`, accepted research, a user decision, or a source verification.
 
 ## Discovery hints
 

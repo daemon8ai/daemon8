@@ -1,6 +1,7 @@
 # Awareness
 
-Use awareness tools to keep the agent oriented without creating a generic memory bank.
+Use awareness tools to keep the agent oriented through project-aware source,
+context, and reasoning state.
 
 `awareness_status` is the read tool. It returns three layers: source awareness, context awareness, and reasoning awareness. Focused traversal is opt-in with `focus_path`; notes and refs are omitted unless requested.
 

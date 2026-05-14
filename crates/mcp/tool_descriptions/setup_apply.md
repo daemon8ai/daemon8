@@ -12,7 +12,7 @@ None.
 
 ## Args
   - yes: required boolean. MUST be true to confirm the mutation.
-  - cwd: optional string. Project working directory.
+  - cwd: optional string. Project working directory for provider config context. Omit only when provider setup is global.
   - providers: optional string. Comma-separated providers to configure (e.g. "claude-code,gemini,codex"). Omit for auto-detection.
 
 ## Returns
@@ -23,4 +23,4 @@ None.
 
 ## Next
 
-setup_status to confirm; use `daemon8 setup init` for explicit project source overrides.
+setup_status to confirm. Use `discover_project(project_root=...)` for project source coverage, and `daemon8 setup init` only for explicit source overrides.

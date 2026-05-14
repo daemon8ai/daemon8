@@ -36,7 +36,7 @@ pub static ALL_HELP_TOPICS: &[HelpTopic] = &[
     },
     HelpTopic {
         name: "awareness",
-        one_liner: "checking source coverage before trusting debug deltas",
+        one_liner: "source, context, and reasoning awareness for a project",
         body: include_str!("../tool_descriptions/help/awareness.md"),
         requires: None,
     },

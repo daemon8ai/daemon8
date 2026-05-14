@@ -11,7 +11,7 @@ Checking whether daemon8 is wired into your AI tools. Confirming a setup_apply l
 None.
 
 ## Args
-  - cwd: optional string. Project working directory. Defaults to the daemon's cwd.
+  - cwd: optional string. Project working directory for provider config context. Omit only when provider setup is global.
 
 ## Returns
   result: {providers: [{name, config_path, was_configured, action}], daemon_running, issues}.

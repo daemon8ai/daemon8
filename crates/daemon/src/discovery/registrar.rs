@@ -63,8 +63,8 @@ where
     let mut outcome = RegistrationOutcome::default();
 
     if plan.resolved_sources.is_empty() {
-        // Still upsert the project node so the cache path activates on
-        // the next serve, recording the empty-but-acknowledged state.
+        // Still upsert the project node so future explicit discovery calls
+        // can see the empty-but-acknowledged state.
         let project_id = upsert_project_node(plan, librarian, now, false).await?;
         outcome.project_node_id = Some(project_id);
         return Ok(outcome);

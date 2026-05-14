@@ -497,12 +497,12 @@ async fn render_project_node(
         Ok(ProjectNodeStatus::Absent) => Check::ok_hint(
             "project node",
             "no project node yet — daemon8 has not onboarded this project; \
-             run `daemon8 setup apply` or restart `daemon8 serve` to trigger discovery",
+             call `discover_project` with the explicit project root to inspect source coverage",
         ),
         Ok(ProjectNodeStatus::SkipDiscovery { slug }) => Check::ok_hint(
             "project node",
             format!(
-                "{slug}: skip-discovery marker active; run `daemon8 discover --rescan` to re-enable"
+                "{slug}: skip-discovery marker active; run `daemon8 discover --rescan --root <project>` to re-enable"
             ),
         ),
         Ok(ProjectNodeStatus::Present {
@@ -537,7 +537,7 @@ async fn render_project_node(
         Ok(ProjectNodeStatus::Malformed) => Check::ok_hint(
             "project node",
             "project node predates the D6 schema (no payload) — \
-             run `daemon8 discover --rescan` to refresh",
+             run `daemon8 discover --rescan --root <project>` then call `discover_project` to refresh",
         ),
         Err(e) => Check::warn("project node", format!("librarian lookup failed: {e}")),
     }
@@ -558,7 +558,7 @@ async fn render_source_templates(
                 "source templates",
                 format!(
                     "no source_templates yet for this project type ({tags}) on this machine \
-                     — agent discovery will trigger on next serve if hints enabled"
+                     — call `discover_project` so the agent can inspect and register reusable sources"
                 ),
             )
         }
@@ -623,7 +623,7 @@ fn report_to_check(report: SourceDriftReport) -> Check {
             format!("source: {description}"),
             format!(
                 "{}: source path missing — possible causes: manual deletion, \
-                 OS update, project relocation. Run `daemon8 discover --rescan` to re-discover",
+                 OS update, project relocation. Run `daemon8 discover --rescan --root <project>` then call `discover_project` to re-discover",
                 path.display()
             ),
         ),
@@ -639,7 +639,7 @@ fn report_to_check(report: SourceDriftReport) -> Check {
                 "{}: source path missing. Diagnosis: framework version changed since template \
                  registration. {framework} upgraded {old_version} -> {new_version}. \
                  Likely cause: log location moved between versions. \
-                 Recommended: `daemon8 discover --rescan` to learn the new location.",
+                 Recommended: `daemon8 discover --rescan --root <project>` then `discover_project` to learn the new location.",
                 path.display()
             ),
         ),
@@ -657,7 +657,7 @@ fn report_to_check(report: SourceDriftReport) -> Check {
                 format!(
                     "{}: source path missing. Framework versions changed ({}), \
                      but none directly tied to this source — less likely caused \
-                     by version change. Run `daemon8 discover --rescan` to investigate.",
+                     by version change. Run `daemon8 discover --rescan --root <project>` then `discover_project` to investigate.",
                     path.display(),
                     changes.join(", ")
                 ),
