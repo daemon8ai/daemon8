@@ -4,10 +4,8 @@
 //! Integration tests for `daemon8 init`.
 //!
 //! Exercise the compiled binary end-to-end: clap parsing, dispatch,
-//! `.daemon8.toml` generation, and hook registration into
-//! `.claude/settings.{local.,}json` / `~/.claude/settings.json` (via fake HOME).
+//! `.daemon8.toml` generation, and provider MCP registration (via fake HOME).
 
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -81,33 +79,6 @@ fn run_daemon8_with_env(
     cmd.output().expect("spawn daemon8")
 }
 
-fn run_cli_hook_with_stdin(
-    dir: &Path,
-    fake_home: &Path,
-    args: &[&str],
-    stdin: &str,
-) -> std::process::Output {
-    let mut child = Command::new(binary())
-        .arg("cli-hook")
-        .args(args)
-        .current_dir(dir)
-        .env("HOME", fake_home)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn daemon8 cli-hook");
-
-    child
-        .stdin
-        .as_mut()
-        .expect("cli-hook stdin")
-        .write_all(stdin.as_bytes())
-        .expect("write cli-hook stdin");
-
-    child.wait_with_output().expect("wait daemon8 cli-hook")
-}
-
 fn run_setup(
     dir: &Path,
     fake_home: &Path,
@@ -128,33 +99,6 @@ fn run_setup(
         .expect("spawn daemon8 setup apply")
 }
 
-fn read_json(path: &Path) -> Value {
-    let text = std::fs::read_to_string(path).expect("read target json");
-    serde_json::from_str(&text).expect("parse target json")
-}
-
-fn hooks_for<'a>(root: &'a Value, event: &str) -> &'a Vec<Value> {
-    root.get("hooks")
-        .and_then(|h| h.get(event))
-        .and_then(|e| e.as_array())
-        .unwrap_or_else(|| panic!("missing hooks.{event}"))
-}
-
-fn commands_under(root: &Value, event: &str) -> Vec<String> {
-    hooks_for(root, event)
-        .iter()
-        .filter_map(|group| {
-            group
-                .get("hooks")
-                .and_then(|h| h.as_array())
-                .and_then(|arr| arr.first())
-                .and_then(|h| h.get("command"))
-                .and_then(|c| c.as_str())
-                .map(|s| s.to_string())
-        })
-        .collect()
-}
-
 fn setup_dirs() -> (tempfile::TempDir, PathBuf, PathBuf) {
     let tmp = tempfile::tempdir().expect("mk tempdir");
     let workdir = tmp.path().join("work");
@@ -162,10 +106,6 @@ fn setup_dirs() -> (tempfile::TempDir, PathBuf, PathBuf) {
     std::fs::create_dir_all(&workdir).unwrap();
     std::fs::create_dir_all(&fake_home).unwrap();
     (tmp, workdir, fake_home)
-}
-
-fn codex_hooks_path(home: &Path) -> PathBuf {
-    home.join(".codex").join("hooks.json")
 }
 
 fn codex_config_path(home: &Path) -> PathBuf {
@@ -187,9 +127,11 @@ fn cli_yes_writes_toml_only() {
     assert!(work.join(".daemon8.toml").exists());
     let toml = std::fs::read_to_string(work.join(".daemon8.toml")).unwrap();
     assert!(!toml.contains("role_default"));
+    assert!(!toml.contains("[enrollment]"));
+    assert!(!toml.contains("cli-hook"));
     assert!(
         !work.join(".claude").exists(),
-        ".claude must NOT be created without --install-hooks"
+        ".claude must NOT be created by init"
     );
     assert!(
         !work.join(".codex").exists(),
@@ -225,48 +167,14 @@ fn config_env_nested_override_applies() {
 }
 
 #[test]
-fn cli_yes_with_install_hooks_local_writes_both() {
+fn cli_install_hooks_flag_is_removed() {
     let (_tmp, work, home) = setup_dirs();
     let out = run_init(&work, &home, &["--yes", "--install-hooks", "local"]);
+    assert!(!out.status.success(), "hook install flag must be removed");
+    let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        out.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-
-    assert!(work.join(".daemon8.toml").exists());
-    let settings = work.join(".claude").join("settings.local.json");
-    assert!(settings.exists(), "local settings file missing");
-
-    let parsed = read_json(&settings);
-    // All 7 default events registered.
-    let events = parsed
-        .get("hooks")
-        .and_then(|h| h.as_object())
-        .expect("hooks obj");
-    for expected in [
-        "SessionStart",
-        "SessionEnd",
-        "UserPromptSubmit",
-        "PreToolUse",
-        "PermissionRequest",
-        "PostToolUse",
-        "PreCompact",
-        "Stop",
-    ] {
-        assert!(events.contains_key(expected), "missing event {expected}");
-    }
-
-    // Command is absolute, quoted for paths with spaces, and ends with ` cli-hook`.
-    let cmds = commands_under(&parsed, "SessionStart");
-    assert_eq!(cmds.len(), 1);
-    let cmd = &cmds[0];
-    assert!(cmd.starts_with('"'), "expected quoted binary path: {cmd}");
-    assert!(cmd.ends_with(" cli-hook"), "actual: {cmd}");
-    let binary = cmd.split(' ').next().unwrap().trim_matches('"');
-    assert!(
-        Path::new(binary).is_absolute(),
-        "expected absolute binary path, got {cmd}"
+        stderr.contains("unexpected argument") || stderr.contains("unrecognized"),
+        "stderr: {stderr}"
     );
 }
 
@@ -283,45 +191,7 @@ fn cli_agent_command_is_removed() {
 }
 
 #[test]
-fn cli_yes_install_hooks_shared_writes_project_settings_json() {
-    let (_tmp, work, home) = setup_dirs();
-    let out = run_init(&work, &home, &["--yes", "--install-hooks", "shared"]);
-    assert!(
-        out.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-
-    let shared = work.join(".claude").join("settings.json");
-    let local = work.join(".claude").join("settings.local.json");
-    assert!(shared.exists(), "shared settings must exist");
-    assert!(
-        !local.exists(),
-        "local settings must NOT exist under --install-hooks=shared"
-    );
-}
-
-#[test]
-fn cli_yes_install_hooks_global_targets_fake_home() {
-    let (_tmp, work, home) = setup_dirs();
-    let out = run_init(&work, &home, &["--yes", "--install-hooks", "global"]);
-    assert!(
-        out.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-
-    let global = home.join(".claude").join("settings.json");
-    assert!(global.exists(), "global settings in fake home must exist");
-    // Project .claude must NOT have been touched at all.
-    assert!(
-        !work.join(".claude").exists(),
-        "project .claude must not exist for global scope"
-    );
-}
-
-#[test]
-fn cli_yes_with_codex_provider_writes_codex_config_and_hooks() {
+fn cli_yes_with_codex_provider_writes_codex_config_without_hooks() {
     let (_tmp, work, home) = setup_dirs();
     let out = run_init(&work, &home, &["--yes", "--providers", "codex-cli"]);
     assert!(
@@ -331,56 +201,19 @@ fn cli_yes_with_codex_provider_writes_codex_config_and_hooks() {
     );
 
     let config = codex_config_path(&home);
-    let hooks = codex_hooks_path(&home);
     assert!(config.exists(), "codex config missing");
-    assert!(hooks.exists(), "codex hooks missing");
+    assert!(!home.join(".codex").join("hooks.json").exists());
 
     let config_toml = std::fs::read_to_string(&config).unwrap();
     let config_parsed: toml::Value = toml::from_str(&config_toml).unwrap();
     assert_eq!(
-        config_parsed["features"]["codex_hooks"].as_bool(),
-        Some(true)
+        config_parsed["mcp_servers"]["daemon8"]["name"].as_str(),
+        Some("Daemon8")
     );
-
-    let parsed = read_json(&hooks);
-    let events = parsed
-        .get("hooks")
-        .and_then(|h| h.as_object())
-        .expect("hooks obj");
-    for expected in [
-        "SessionStart",
-        "UserPromptSubmit",
-        "PreToolUse",
-        "PermissionRequest",
-        "PostToolUse",
-        "Stop",
-    ] {
-        assert!(events.contains_key(expected), "missing event {expected}");
-    }
-    let session = &hooks_for(&parsed, "SessionStart")[0];
-    assert_eq!(
-        session.get("matcher").and_then(Value::as_str),
-        Some("startup|resume|clear")
-    );
-    for event in ["PreToolUse", "PermissionRequest", "PostToolUse"] {
-        let tool_group = hooks_for(&parsed, event)
-            .iter()
-            .find(|group| {
-                group
-                    .get("matcher")
-                    .and_then(Value::as_str)
-                    .is_some_and(|matcher| matcher.contains("apply_patch"))
-            })
-            .unwrap_or_else(|| panic!("{event} must capture file edit tools"));
-        assert_eq!(
-            tool_group.get("matcher").and_then(Value::as_str),
-            Some("Bash|apply_patch|Edit|Write")
-        );
-    }
 }
 
 #[test]
-fn cli_yes_with_codex_provider_preserves_codex_hook_feature() {
+fn cli_yes_with_codex_provider_preserves_existing_codex_hook_feature() {
     let (_tmp, work, home) = setup_dirs();
     let config = codex_config_path(&home);
     std::fs::create_dir_all(config.parent().unwrap()).unwrap();
@@ -422,70 +255,6 @@ args = ["mcp"]
     assert!(
         parsed["mcp_servers"]["daemon8"].get("args").is_none(),
         "stale stdio args must be removed when rewriting codex MCP config"
-    );
-}
-
-#[test]
-fn cli_hook_verbose_reports_missing_project_config_and_exits_zero() {
-    let (_tmp, work, home) = setup_dirs();
-    let input = serde_json::json!({
-        "hook_event_name": "SessionStart",
-        "session_id": "test-session",
-        "cwd": work,
-    })
-    .to_string();
-
-    let out = run_cli_hook_with_stdin(&work, &home, &["--verbose"], &input);
-
-    assert!(out.status.success());
-    assert!(out.stdout.is_empty(), "stdout must stay machine-safe");
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("no project .daemon8.toml"),
-        "stderr should explain skipped hook: {stderr}"
-    );
-}
-
-#[test]
-fn cli_hook_verbose_reports_disabled_enrollment_and_exits_zero() {
-    let (_tmp, work, home) = setup_dirs();
-    std::fs::write(
-        work.join(".daemon8.toml"),
-        r#"
-[project]
-slug = "daemon8-test"
-"#,
-    )
-    .unwrap();
-    let input = serde_json::json!({
-        "hook_event_name": "SessionStart",
-        "session_id": "test-session",
-        "cwd": work,
-    })
-    .to_string();
-
-    let out = run_cli_hook_with_stdin(&work, &home, &["--verbose"], &input);
-
-    assert!(out.status.success());
-    assert!(out.stdout.is_empty(), "stdout must stay machine-safe");
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("enrollment disabled"),
-        "stderr should explain skipped hook: {stderr}"
-    );
-}
-
-#[test]
-fn cli_hook_verbose_soft_fails_malformed_stdin_with_zero_exit() {
-    let (_tmp, work, home) = setup_dirs();
-    let out = run_cli_hook_with_stdin(&work, &home, &["--verbose"], "not json");
-
-    assert!(out.status.success());
-    assert!(out.stdout.is_empty(), "stdout must stay machine-safe");
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("soft-failed"),
-        "stderr should explain soft failure: {stderr}"
     );
 }
 
@@ -571,254 +340,5 @@ fn cli_force_overwrites_existing_toml() {
     assert!(
         content.contains("[project]"),
         "template should replace the pre-existing stub"
-    );
-}
-
-#[test]
-fn cli_install_hooks_preserves_existing_user_hook() {
-    let (_tmp, work, home) = setup_dirs();
-    // Pre-populate .claude/settings.local.json with an unrelated user hook +
-    // permissions key we want preserved.
-    let claude_dir = work.join(".claude");
-    std::fs::create_dir_all(&claude_dir).unwrap();
-    let existing = serde_json::json!({
-        "permissions": { "allow": ["Bash(ls)"] },
-        "hooks": {
-            "PreToolUse": [
-                { "hooks": [{ "type": "command", "command": "my-formatter" }] }
-            ]
-        }
-    });
-    std::fs::write(
-        claude_dir.join("settings.local.json"),
-        serde_json::to_string_pretty(&existing).unwrap(),
-    )
-    .unwrap();
-
-    let out = run_init(&work, &home, &["--yes", "--install-hooks", "local"]);
-    assert!(
-        out.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-
-    let parsed = read_json(&claude_dir.join("settings.local.json"));
-    // permissions untouched
-    assert_eq!(
-        parsed
-            .get("permissions")
-            .unwrap()
-            .get("allow")
-            .unwrap()
-            .get(0)
-            .unwrap(),
-        "Bash(ls)"
-    );
-    // PreToolUse has both the user's hook AND the daemon8 entry
-    let pre = commands_under(&parsed, "PreToolUse");
-    assert!(
-        pre.contains(&"my-formatter".to_string()),
-        "user's formatter hook must survive: {pre:?}"
-    );
-    assert!(
-        pre.iter().any(|c| c.contains("cli-hook")),
-        "daemon8 entry must be added: {pre:?}"
-    );
-    assert_eq!(pre.len(), 2, "exactly 2 PreToolUse entries expected");
-}
-
-#[test]
-fn cli_install_hooks_rejects_malformed_target_file() {
-    let (_tmp, work, home) = setup_dirs();
-    let claude_dir = work.join(".claude");
-    std::fs::create_dir_all(&claude_dir).unwrap();
-    let settings = claude_dir.join("settings.local.json");
-    std::fs::write(&settings, "not valid json{").unwrap();
-
-    let out = run_init(&work, &home, &["--yes", "--install-hooks", "local"]);
-    assert!(!out.status.success(), "expected non-zero exit");
-
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("settings.local.json"),
-        "stderr must name the malformed file; got: {stderr}"
-    );
-    // File contents unchanged.
-    assert_eq!(
-        std::fs::read_to_string(&settings).unwrap(),
-        "not valid json{"
-    );
-}
-
-#[test]
-fn cli_install_codex_hooks_rejects_malformed_target_file() {
-    let (_tmp, work, home) = setup_dirs();
-    let codex_dir = home.join(".codex");
-    std::fs::create_dir_all(&codex_dir).unwrap();
-    let hooks = codex_dir.join("hooks.json");
-    std::fs::write(&hooks, "not valid json{").unwrap();
-
-    let out = run_init(&work, &home, &["--yes", "--providers", "codex-cli"]);
-    assert!(!out.status.success(), "expected non-zero exit");
-
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("hooks.json"),
-        "stderr must name the malformed file; got: {stderr}"
-    );
-    assert_eq!(std::fs::read_to_string(&hooks).unwrap(), "not valid json{");
-}
-
-#[test]
-fn cli_rerun_with_force_hooks_replaces_stale_entry() {
-    let (_tmp, work, home) = setup_dirs();
-    let claude_dir = work.join(".claude");
-    std::fs::create_dir_all(&claude_dir).unwrap();
-    // Stale daemon8 entry pointing at a nonexistent binary path.
-    let existing = serde_json::json!({
-        "hooks": {
-            "SessionStart": [
-                { "hooks": [{ "type": "command", "command": "user-hook" }] },
-                { "hooks": [{ "type": "command", "command": "/old/daemon8 cli-hook" }] },
-                { "hooks": [{ "type": "command", "command": "/older/daemon8 cli-hook" }] }
-            ]
-        }
-    });
-    std::fs::write(
-        claude_dir.join("settings.local.json"),
-        serde_json::to_string_pretty(&existing).unwrap(),
-    )
-    .unwrap();
-
-    let out = run_init(
-        &work,
-        &home,
-        &["--yes", "--install-hooks", "local", "--force-hooks"],
-    );
-    assert!(
-        out.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-
-    let parsed = read_json(&claude_dir.join("settings.local.json"));
-    let cmds = commands_under(&parsed, "SessionStart");
-    assert_eq!(
-        cmds.len(),
-        2,
-        "expected user hook plus one replacement entry"
-    );
-    assert!(
-        cmds.iter()
-            .all(|command| !command.starts_with("/old/daemon8")
-                && !command.starts_with("/older/daemon8")),
-        "stale entries must be replaced; got: {cmds:?}"
-    );
-    assert!(cmds.contains(&"user-hook".to_string()));
-    assert_eq!(
-        cmds.iter()
-            .filter(|command| command.contains("cli-hook"))
-            .count(),
-        1
-    );
-}
-
-#[test]
-fn cli_install_codex_hooks_preserves_existing_user_hook() {
-    let (_tmp, work, home) = setup_dirs();
-    let codex_dir = home.join(".codex");
-    std::fs::create_dir_all(&codex_dir).unwrap();
-    let existing = serde_json::json!({
-        "hooks": {
-            "PreToolUse": [
-                {
-                    "matcher": "Bash",
-                    "hooks": [{ "type": "command", "command": "my-codex-formatter" }]
-                }
-            ]
-        }
-    });
-    std::fs::write(
-        codex_dir.join("hooks.json"),
-        serde_json::to_string_pretty(&existing).unwrap(),
-    )
-    .unwrap();
-
-    let out = run_init(&work, &home, &["--yes", "--providers", "codex-cli"]);
-    assert!(
-        out.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-
-    let parsed = read_json(&codex_dir.join("hooks.json"));
-    let pre = commands_under(&parsed, "PreToolUse");
-    assert!(
-        pre.contains(&"my-codex-formatter".to_string()),
-        "user hook must survive: {pre:?}"
-    );
-    assert!(
-        pre.iter()
-            .any(|c| c.contains("daemon8") && c.contains("cli-hook --tool codex-cli")),
-        "daemon8 codex hook must be added: {pre:?}"
-    );
-    assert_eq!(pre.len(), 2, "exactly 2 PreToolUse entries expected");
-}
-
-#[test]
-fn cli_rerun_with_force_hooks_replaces_stale_codex_entry() {
-    let (_tmp, work, home) = setup_dirs();
-    let codex_dir = home.join(".codex");
-    std::fs::create_dir_all(&codex_dir).unwrap();
-    let existing = serde_json::json!({
-        "hooks": {
-            "SessionStart": [
-                {
-                    "matcher": "startup",
-                    "hooks": [{ "type": "command", "command": "user-codex-hook" }]
-                },
-                {
-                    "matcher": "startup|resume",
-                    "hooks": [{ "type": "command", "command": "/old/daemon8 cli-hook --tool codex-cli" }]
-                },
-                {
-                    "matcher": "startup|resume",
-                    "hooks": [{ "type": "command", "command": "/older/daemon8 cli-hook --tool codex-cli" }]
-                }
-            ]
-        }
-    });
-    std::fs::write(
-        codex_dir.join("hooks.json"),
-        serde_json::to_string_pretty(&existing).unwrap(),
-    )
-    .unwrap();
-
-    let out = run_init(
-        &work,
-        &home,
-        &["--yes", "--providers", "codex-cli", "--force-hooks"],
-    );
-    assert!(
-        out.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-
-    let parsed = read_json(&codex_dir.join("hooks.json"));
-    let cmds = commands_under(&parsed, "SessionStart");
-    assert_eq!(cmds.len(), 2, "expected user hook plus one replacement");
-    assert!(
-        cmds.iter()
-            .all(|command| !command.starts_with("/old/daemon8")
-                && !command.starts_with("/older/daemon8")),
-        "stale codex entries must be replaced; got: {cmds:?}"
-    );
-    assert!(cmds.contains(&"user-codex-hook".to_string()));
-    assert_eq!(
-        cmds.iter()
-            .filter(|command| command.contains("cli-hook --tool codex-cli"))
-            .count(),
-        1
     );
 }

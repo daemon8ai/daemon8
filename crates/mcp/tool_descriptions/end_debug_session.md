@@ -24,4 +24,4 @@ A debug session must be active. Call start_debug_session first if not.
 
 ## Next
 
-start_debug_session for a fresh investigation, or query_memory(kinds=["session_summary"]) to review past sessions.
+start_debug_session for a fresh investigation, or list_debug_sessions to review past sessions.

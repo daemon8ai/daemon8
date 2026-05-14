@@ -49,9 +49,6 @@ enum Commands {
     /// Manage per-session observation lens (filter + ring buffer)
     #[command(subcommand)]
     Lens(cli::lens::LensSubcommand),
-    /// Export memory query results
-    #[command(subcommand)]
-    Memory(cli::memory::MemorySubcommand),
     /// Show log file location or tail logs
     Logs {
         /// Follow the log file (like tail -f)
@@ -72,9 +69,6 @@ enum Commands {
     /// Manage daemon8 system service (install/uninstall)
     #[command(subcommand)]
     Service(ServiceSubcommand),
-    /// Manage daemon8 CLI hooks across providers (Claude Code, Codex, Gemini)
-    #[command(subcommand)]
-    Hooks(cli::hooks::HooksSubcommand),
     /// Signal the running daemon's discovery scanner (D3)
     Discover(cli::discover::DiscoverArgs),
     /// Real-time alert relay for MCP clients (experimental)
@@ -85,10 +79,6 @@ enum Commands {
         #[arg(long)]
         fix: bool,
     },
-    /// Universal CLI hook handler (invoked by AI coding agents)
-    #[command(name = "cli-hook", hide = true)]
-    CliHook(cli::hook_handler::CliHookArgs),
-
     // Hidden aliases for backward compatibility
     #[command(hide = true)]
     Install,
@@ -104,7 +94,7 @@ enum Commands {
 enum SetupSubcommand {
     /// Register MCP with detected agents, then run the project-aware discovery scan
     Apply(cli::setup::SetupArgs),
-    /// Enable optional features interactively (hooks, project init)
+    /// Enable optional features interactively
     Features(cli::features::FeaturesArgs),
     /// Write a `.daemon8.toml` override file for explicit source configuration
     Init(cli::init::InitArgs),
@@ -148,7 +138,6 @@ async fn main() -> Result<()> {
         Commands::Connections(args) => cli::observe::connections::cmd_connections(args).await,
         Commands::Browser(sub) => cli::browser::cmd_chrome(sub).await,
         Commands::Lens(sub) => cli::lens::cmd_lens(sub).await,
-        Commands::Memory(sub) => cli::memory::cmd_memory(cli.config, sub).await,
         Commands::Logs { follow } => cli::logs::cmd_logs(cli.config, follow),
         Commands::Config(sub) => cli::config_cmd::cmd_config(cli.config, sub),
         Commands::Completions { shell } => {
@@ -164,12 +153,9 @@ async fn main() -> Result<()> {
             ServiceSubcommand::Install => cli::service::cmd_install(),
             ServiceSubcommand::Uninstall => cli::service::cmd_uninstall(),
         },
-        Commands::Hooks(sub) => cli::hooks::cmd_hooks(sub).await,
         Commands::Discover(args) => cli::discover::cmd_discover(args).await,
         Commands::Channel => cli::channel::cmd_channel().await,
         Commands::Doctor { fix } => cli::doctor::cmd_doctor(cli.config, fix).await,
-        Commands::CliHook(args) => cli::hook_handler::cmd_cli_hook(args),
-
         // Hidden backward-compat aliases
         Commands::Install => cli::service::cmd_install(),
         Commands::Uninstall => cli::service::cmd_uninstall(),

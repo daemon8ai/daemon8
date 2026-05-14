@@ -9,9 +9,10 @@ use daemon8_store::{LibrarianStore, SurrealStore};
 use daemon8_types::Filter;
 use tokio_util::sync::CancellationToken;
 
-const EXPECTED_TOOLS: [&str; 21] = [
+const EXPECTED_TOOLS: [&str; 19] = [
     "query_observations",
     "status",
+    "awareness_status",
     "create_checkpoint",
     "list_connections",
     "ingest_observation",
@@ -21,9 +22,6 @@ const EXPECTED_TOOLS: [&str; 21] = [
     "set_lens",
     "clear_lens",
     "lens_status",
-    "save_memory",
-    "query_memory",
-    "forget_memory",
     "setup_status",
     "setup_plan",
     "setup_apply",
@@ -80,7 +78,6 @@ async fn make_mcp_with_cancel(cancel: CancellationToken) -> DaemonMcp {
                 .unwrap()
             })
         })),
-        hooks_tool_fn: None,
         source_activator: None,
         cancel,
         active_project: Arc::new(tokio::sync::RwLock::new(None)),
@@ -92,7 +89,6 @@ fn composed_router_has_full_tool_surface() {
     let router = DaemonMcp::tool_router()
         + DaemonMcp::action_tool_router()
         + DaemonMcp::lens_tool_router()
-        + DaemonMcp::memory_tool_router()
         + DaemonMcp::setup_tool_router()
         + DaemonMcp::librarian_tool_router();
     let names = tool_names(&router);
@@ -289,7 +285,6 @@ async fn make_mcp_minimal() -> DaemonMcp {
         broadcast_tx,
         lens,
         setup_tool_fn: None,
-        hooks_tool_fn: None,
         source_activator: None,
         cancel: CancellationToken::new(),
         active_project: Arc::new(tokio::sync::RwLock::new(None)),
@@ -330,10 +325,7 @@ async fn help_index_includes_enabled_features() {
         index.contains("librarian"),
         "index must mention librarian when enabled"
     );
-    assert!(
-        index.contains("memory"),
-        "index must mention memory when enabled"
-    );
+    assert!(index.contains("awareness"), "index must mention awareness");
     assert!(
         index.contains("observations"),
         "index must mention observations"

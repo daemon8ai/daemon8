@@ -37,5 +37,5 @@ Every session records an `agent_id` in format `:host/tool+role>`. This conventio
 Find past sessions:
 - `list_debug_sessions(status=?)` — by lifecycle status
 - `list_debug_sessions(feature="auth")` — discover overlapping work
-- `query_memory(kinds=["session_summary"], tags=["project:<slug>"])` — by project
-- `query_memory(tags=["hash:<error_hash>"])` — find which fix resolved a given error signature
+- `list_debug_sessions(project=<slug>)` — review recent sessions by project
+- `resolve_debug_session(related_errors=[...])` — link a verified fix to error signatures

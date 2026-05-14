@@ -62,13 +62,12 @@ Pin a version by exporting `DAEMON8_VERSION=v0.3.4` before the curl command. The
 ```bash
 daemon8 install                 # install as a system service
 cd /path/to/your/project
-daemon8 setup apply             # register MCP, run discovery scan
+daemon8 setup apply             # register MCP with detected agents
 ```
 
-`daemon8 setup apply` does two things:
+`daemon8 setup apply` registers the daemon8 MCP server with detected AI coding agents (Claude Code, Codex, Gemini CLI).
 
-1. Registers the daemon8 MCP server with detected AI coding agents (Claude Code, Codex, Gemini CLI).
-2. Runs a project-aware discovery scan: classifies the project, looks up source templates the librarian has learned, presents the matched sources, and prompts once.
+`daemon8 serve` runs the project-aware discovery scan: classifies the project, looks up source templates the librarian has learned, presents the matched sources, and prompts once.
 
 If the librarian already has templates for this project type, the prompt is a single confirmation. If not, daemon8 asks the agent in your session to investigate and report back via `librarian_index` — a one-time learning step per framework per machine.
 
@@ -86,14 +85,14 @@ For best results, add a directive to your agent's instruction file (`~/.claude/C
 The core loop is three calls:
 
 ```
-create_checkpoint --> make a change --> query_observations(since_checkpoint=<id>)
+awareness_status --> create_checkpoint --> make a change --> query_observations(since_checkpoint=<id>)
 ```
 
-Wrap that in a debug session and the investigation — the observations consulted, the root cause identified, the fix applied — persists as searchable memory. Each resolved investigation makes the next one faster.
+Wrap that in a debug session and the investigation — the source coverage, observations consulted, root cause identified, and fix applied — persists as a typed session artifact. Each resolved investigation makes the next one faster.
 
 **Always-on stream.** Every connected source writes into one append-only stream, persisted locally in SurrealDB. HTTP, UDP, Unix socket, MCP, browser CDP, and ADB all normalize to the same `Observation` shape and arrive in the same query surface.
 
-**Opt-in for everything else.** The stream is the foundation. Browser CDP, ADB logcat, file sources, CLI hooks, and project-aware discovery activate explicitly. No surprise data collection.
+**Opt-in for everything else.** The stream is the foundation. Browser CDP, ADB logcat, file sources, and project-aware discovery activate explicitly. No surprise data collection.
 
 **Agent-native help.** Every tool response carries optional `next_actions` and `hint` fields that steer agents toward productive follow-up calls without burning conversation turns. `daemon8_help(topic=...)` returns small, topic-specific docs sized for LLM context windows.
 
@@ -101,7 +100,7 @@ Wrap that in a debug session and the investigation — the observations consulte
 
 Daemon8 ships with zero hardcoded knowledge of where any framework's logs live. The librarian is the learning store, populated by agents over time.
 
-### What happens on `daemon8 setup apply`
+### What happens on `daemon8 serve`
 
 1. **Classify.** Daemon8 reads root manifests and emits tags: `react-native`, `vega`, `kepler`, `nextjs`, `vite`, `tanstack-start`, `rust`, `rust-workspace`, `laravel`, `symfony`, `python`, `django`, `flask`, `fastapi`, `go`, `rails`, `expo`, plus the universal `git-repo` tag. Framework versions are extracted from `package.json`, `composer.json`, `Gemfile.lock`, and `pyproject.toml` where present.
 
@@ -127,7 +126,7 @@ daemon8 discover --rescan       # remove the skip marker; next serve re-runs dis
 
 ## The Librarian
 
-The librarian is daemon8's primary memory of project topology. It is a relational graph of typed nodes — `source_template`, `source_instance`, `project`, `doc`, `fix` — connected by typed edges (`has_source`, `derived_from`, `supersedes`).
+The librarian is daemon8's primary record of project topology. It is a relational graph of typed nodes — `source_template`, `source_instance`, `project`, `doc`, `fix` — connected by typed edges (`has_source`, `derived_from`, `supersedes`).
 
 Agents teach the librarian what they discover. The first React Native project a Claude session sees on this machine: the agent investigates, writes `source_template` entries for Metro, the Kepler bridge log, the Expo cache. The second React Native project on this machine: daemon8 reads those templates and applies them without asking the agent anything. The librarian gets richer with use. Daemon8 itself stays thin.
 
@@ -163,6 +162,7 @@ Every tool returns the standard envelope (`{result, daemon8, error}`) with optio
 | **Observation** | |
 | `query_observations` | Filter by kind, severity, origin, text, tags, checkpoint. |
 | `status` | Health snapshot: error rate, sources, observation count, version. |
+| `awareness_status` | Report whether a debug session has `unknown`, `limited`, `partial`, or `optimal` awareness. |
 | `list_connections` | Active sources and browser connection state. |
 | `subscribe_observations` | Register a real-time alert filter pushed as MCP notifications. |
 | `ingest_observation` | Record an observation from inside an agent loop. |
@@ -179,10 +179,6 @@ Every tool returns the standard envelope (`{result, daemon8, error}`) with optio
 | `set_lens` | Install a focused filter that buffers matches (max 1000). |
 | `lens_status` | Inspect active filter and buffer depth. |
 | `clear_lens` | Remove the active lens. |
-| **Memory** | |
-| `save_memory` | Store a pattern, decision, error signature, session summary, or user-flagged note. |
-| `query_memory` | Search by kind, tags, project, or text. |
-| `forget_memory` | Delete by id (requires confirmation). |
 | **Librarian** | |
 | `librarian_index` | Catalog a reference node with tags and edges. |
 | `librarian_lookup` | Query the catalog by kind, tags, project, text, or hierarchy. |
@@ -191,13 +187,8 @@ Every tool returns the standard envelope (`{result, daemon8, error}`) with optio
 | `setup_status` | Current setup state for the project. |
 | `setup_plan` | Preview the action plan. |
 | `setup_apply` | Apply the plan (requires confirmation). |
-| **Hooks** | |
-| `hooks_list` | Enumerate installed hooks across providers and scopes. |
-| `hooks_remove` | Uninstall daemon8 hooks from a provider. |
-| `hooks_update` | Reinstall hooks (fixes drift after binary moves). |
-| `hooks_repair` | Detect drift and reinstall only stale hooks. |
 | **Help** | |
-| `daemon8_help` | Topic-specific docs: checkpoint, debug_session, envelope, hooks, lens, librarian, memory, observations, setup. |
+| `daemon8_help` | Topic-specific docs: awareness, checkpoint, debug_session, envelope, lens, librarian, observations, setup. |
 
 </details>
 
@@ -214,8 +205,6 @@ Every tool returns the standard envelope (`{result, daemon8, error}`) with optio
 | GET | `/api/stream` | SSE observation stream with reconnection support. |
 | GET / PUT / DELETE | `/api/lens` | Inspect, set, or clear the active lens. |
 | POST | `/api/browser/act` | Browser actions (same surface as `issue_command`). |
-| GET / POST | `/api/memory` | Query or save memory. |
-| POST | `/api/memory/export` | Stream memory export as NDJSON. |
 | POST | `/api/discover/complete` | Signal the running scanner to stop waiting. |
 | POST | `/api/discover/skip` | Signal the running scanner to abort discovery. |
 | POST | `/ingest` | Single observation ingest. |
@@ -238,16 +227,14 @@ UDP listener on port 8889 accepts the same JSON shapes for fire-and-forget telem
 | `daemon8 connections` | List active data sources. |
 | `daemon8 browser` | Browser DevTools commands. |
 | `daemon8 lens` | Manage observation lens. |
-| `daemon8 memory` | Export memory query results. |
 | `daemon8 logs` | Show log location or tail logs. |
 | `daemon8 config` | Show or modify configuration. |
 | `daemon8 completions` | Generate shell completions. |
-| `daemon8 setup apply` | Register MCP with detected agents, run discovery scan. |
+| `daemon8 setup apply` | Register MCP with detected agents. |
 | `daemon8 setup features` | Enable optional features interactively. |
 | `daemon8 setup init` | Write `.daemon8.toml` for explicit source overrides. |
 | `daemon8 service install` | Install daemon8 as a system service. |
 | `daemon8 service uninstall` | Remove the system service. |
-| `daemon8 hooks` | Manage CLI hooks (`list`, `remove`, `update`, `repair`). |
 | `daemon8 discover --complete` | Stop waiting for the agent; use what's been written. |
 | `daemon8 discover --skip` | Bypass the discovery scan for this project. |
 | `daemon8 discover --rescan` | Re-run the discovery scan on next serve. |
@@ -292,17 +279,6 @@ Three source types are supported: `file` (tails any log with built-in parsers fo
 
 ADB device monitoring is opt-in. Set `[adb] enabled = true` in `~/.config/daemon8/config.toml`. With ADB enabled, daemon8 streams logcat from connected Android devices into the observation stream.
 
-### CLI hooks
-
-Hooks record agent tool calls as `tool_call` observations linked via `correlation_id`. They are useful when you want a full audit trail of what an agent did and when, independent of the conversation file.
-
-```bash
-daemon8 setup apply --install-hooks local    # project-level
-daemon8 setup apply --install-hooks global   # machine-level
-daemon8 hooks list
-daemon8 hooks repair
-```
-
 ## Architecture
 
 ```
@@ -311,7 +287,7 @@ Sources (inputs)                          Agents (outputs)
 Browser (CDP)   ---\                       /--  Codex
 Applications    ---->  daemon8            ----> Claude Code
 Devices (ADB)   ---/   [localhost:8888]    \--> Gemini CLI
-CLI hooks       --/
+Conversation    --/
 ```
 
 Cargo workspace:
@@ -320,9 +296,9 @@ Cargo workspace:
 |-------|------|
 | `daemon` | CLI binary, command dispatch, runtime wiring (the published `daemon8` binary). |
 | `types` | Shared types: `Observation`, `Filter`, `Severity`, librarian and discovery types. |
-| `store` | SurrealDB backend: observation store, librarian, debug sessions, memory, lens manager. |
+| `store` | SurrealDB backend: observation store, librarian, debug sessions, typed internal summaries, lens manager. |
 | `api` | Axum HTTP routes for observation query, SSE, and health. |
-| `mcp` | MCP server with the 29 tools listed above. |
+| `mcp` | MCP server with the 23 tools listed above. |
 | `ingest` | HTTP, UDP, and Unix socket ingestion endpoints. |
 | `chrome` | Chrome DevTools Protocol bridge. |
 | `adb` | Android Debug Bridge transport. |

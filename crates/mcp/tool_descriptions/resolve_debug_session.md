@@ -20,7 +20,7 @@ A debug session must be active. Call start_debug_session first if not.
 
 ## Returns
   result.debug_session_id: id of the session that was just resolved.
-  result.summary_memory_id: id of the SessionSummary memory written. Pass to get_memory or query_memory.
+  result.summary_memory_id: id of the internal typed SessionSummary record written for future error/session recall.
   result.checkpoint_count: number of checkpoints rolled into the summary's source_observations.
   daemon8.active_debug_session: null after this call.
 
@@ -30,4 +30,4 @@ A debug session must be active. Call start_debug_session first if not.
 
 ## Next
 
-query_memory(kinds=["session_summary"], tags=[<topic>]) confirms the summary landed retrievably. Then start_debug_session for the next investigation.
+list_debug_sessions confirms the session closed. Then start_debug_session for the next investigation.

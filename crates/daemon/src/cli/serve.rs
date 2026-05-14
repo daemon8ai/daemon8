@@ -251,10 +251,6 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
         })
     });
 
-    let hooks_tool_fn: daemon8_mcp::HooksToolFn = Arc::new(move |action| {
-        Box::pin(async move { crate::cli::hooks::cmd_hooks_mcp(action).await })
-    });
-
     // Only start MCP stdio when stdin is a real FIFO from an MCP client.
     // A plain "not a TTY" check is insufficient: launchd, nohup, and shell
     // backgrounding all attach /dev/null (a character device) to stdin.
@@ -283,7 +279,6 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
             broadcast_tx: broadcast_tx.clone(),
             lens,
             setup_tool_fn: Some(setup_tool_fn.clone()),
-            hooks_tool_fn: Some(hooks_tool_fn.clone()),
             cancel: cancel.clone(),
             source_activator: source_activator.clone(),
             active_project: active_project.clone(),
@@ -347,7 +342,6 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
                     mcp_source_activator.clone(),
                 )),
                 setup_tool_fn: Some(setup_tool_fn.clone()),
-                hooks_tool_fn: Some(hooks_tool_fn.clone()),
                 cancel: mcp_root_cancel.clone(),
                 source_activator: mcp_source_activator.clone(),
                 active_project: mcp_active_project.clone(),
@@ -374,7 +368,6 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
         chrome_state: chrome_state_rx.clone(),
         chrome_endpoint: chrome_endpoint.clone(),
         lens: api_lens,
-        memory_store: Some(memory_store.clone()),
         source_activator: source_activator.clone(),
         discovery_control: discovery_control.clone(),
     };

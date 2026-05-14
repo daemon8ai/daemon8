@@ -291,9 +291,6 @@ fn write_codex_toml_config(
     entry_table.insert("url".to_string(), toml::Value::String(mcp_url.to_string()));
     mcp_servers.insert(service.name.to_string(), toml::Value::Table(entry_table));
 
-    let features = get_or_insert_table(root_table, "features")?;
-    features.insert("codex_hooks".to_string(), toml::Value::Boolean(true));
-
     if let Some(project_dir) = project_dir {
         let projects = get_or_insert_table(root_table, "projects")?;
         let key = project_dir.to_string_lossy().to_string();

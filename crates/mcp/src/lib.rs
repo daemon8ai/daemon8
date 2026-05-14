@@ -8,10 +8,12 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use daemon8_store::{
-    ActiveSessionState, DebugSessionStore, LensManager, LibrarianStore, MemoryStore, StateModel,
+    ActiveSessionState, DebugSessionStore, LensManager, LibrarianFilter, LibrarianStore,
+    MemoryStore, StateModel,
 };
 use daemon8_types::{
-    Checkpoint, DevicePlatform, Filter, Observation, ProjectClassification, SourceActivator,
+    Checkpoint, DevicePlatform, Filter, LibrarianNodeKind, LocatorKind, Observation,
+    ProjectClassification, SourceActivator,
 };
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
@@ -98,7 +100,7 @@ pub struct ObserveParams {
     pub tags: Option<Vec<String>>,
 
     #[schemars(
-        description = "Include system/infrastructure observations (tagged '_system'). These are excluded by default to reduce noise from CLI hooks and internal tooling."
+        description = "Include system/infrastructure observations (tagged '_system'). These are excluded by default to reduce noise from internal tooling."
     )]
     pub include_system: Option<bool>,
 }
@@ -374,7 +376,7 @@ pub struct ForgetMemoryParams {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct HelpParams {
     #[schemars(
-        description = "Help topic: index, debug_session, checkpoint, setup, hooks, lens, memory, observations, envelope, librarian. Omit for index."
+        description = "Help topic: index, awareness, debug_session, checkpoint, setup, lens, observations, envelope, librarian. Omit for index."
     )]
     pub topic: Option<String>,
 }
@@ -552,19 +554,6 @@ pub struct SetupApplyParams {
 pub type SetupToolFn =
     Arc<dyn Fn(SetupToolAction) -> Pin<Box<dyn Future<Output = String> + Send>> + Send + Sync>;
 
-#[derive(Debug, Clone, Deserialize, JsonSchema)]
-pub struct HooksToolAction {
-    #[schemars(description = "Action: list, remove, update, repair.")]
-    pub action: String,
-    #[schemars(description = "Provider for remove/update: claude or codex.")]
-    pub provider: Option<String>,
-    #[schemars(description = "Scope for remove/update (claude only): local, shared, or global.")]
-    pub scope: Option<String>,
-}
-
-pub type HooksToolFn =
-    Arc<dyn Fn(HooksToolAction) -> Pin<Box<dyn Future<Output = String> + Send>> + Send + Sync>;
-
 pub struct DaemonMcp {
     store: Arc<dyn StateModel>,
     memory_store: Option<Arc<dyn MemoryStore>>,
@@ -585,7 +574,6 @@ pub struct DaemonMcp {
     broadcast_tx: broadcast::Sender<(Arc<Observation>, Arc<str>)>,
     lens: Arc<LensManager>,
     setup_tool_fn: Option<SetupToolFn>,
-    hooks_tool_fn: Option<HooksToolFn>,
     source_activator: Option<Arc<dyn SourceActivator>>,
     /// Parent cancellation token. The push task spawned in `on_initialized`
     /// uses a child token so daemon shutdown propagates cleanly.
@@ -612,7 +600,6 @@ pub struct DaemonMcpConfig {
     pub broadcast_tx: broadcast::Sender<(Arc<Observation>, Arc<str>)>,
     pub lens: Arc<LensManager>,
     pub setup_tool_fn: Option<SetupToolFn>,
-    pub hooks_tool_fn: Option<HooksToolFn>,
     pub source_activator: Option<Arc<dyn SourceActivator>>,
     /// Parent cancellation token. Use the daemon-wide token; the MCP push task
     /// derives a child from it so daemon shutdown stops per-session work.
@@ -629,33 +616,21 @@ impl DaemonMcp {
         let mut router = Self::tool_router();
         router += Self::action_tool_router();
         router += Self::lens_tool_router();
-        if cfg.memory_store.is_some() {
-            router += Self::memory_tool_router();
-        }
         if cfg.debug_session_store.is_some() && cfg.memory_store.is_some() {
             router += Self::debug_session_tool_router();
         }
         if cfg.setup_tool_fn.is_some() {
             router += Self::setup_tool_router();
         }
-        if cfg.hooks_tool_fn.is_some() {
-            router += Self::hooks_tool_router();
-        }
         if cfg.librarian_store.is_some() {
             router += Self::librarian_tool_router();
         }
         let mut enabled_features = Vec::new();
-        if cfg.memory_store.is_some() {
-            enabled_features.push(FeatureGate::Memory);
-        }
         if cfg.debug_session_store.is_some() && cfg.memory_store.is_some() {
             enabled_features.push(FeatureGate::DebugSession);
         }
         if cfg.setup_tool_fn.is_some() {
             enabled_features.push(FeatureGate::Setup);
-        }
-        if cfg.hooks_tool_fn.is_some() {
-            enabled_features.push(FeatureGate::Hooks);
         }
         if cfg.librarian_store.is_some() {
             enabled_features.push(FeatureGate::Librarian);
@@ -678,7 +653,6 @@ impl DaemonMcp {
             broadcast_tx: cfg.broadcast_tx,
             lens: cfg.lens,
             setup_tool_fn: cfg.setup_tool_fn,
-            hooks_tool_fn: cfg.hooks_tool_fn,
             source_activator: cfg.source_activator,
             cancel: cfg.cancel,
             enabled_features,
@@ -905,6 +879,132 @@ impl DaemonMcp {
     }
 
     #[tool(
+        name = "awareness_status",
+        description = "Report whether the active debug session has optimal, partial, limited, or unknown source awareness before relying on checkpoint deltas."
+    )]
+    async fn awareness_status(&self) -> String {
+        let Some(lib_store) = &self.librarian_store else {
+            return self.ok_with(
+                serde_json::json!({
+                    "level": "limited",
+                    "reason": "librarian unavailable",
+                    "known_source_templates": 0,
+                    "known_source_instances": 0,
+                    "accessible_source_instances": 0,
+                    "inaccessible_source_instances": 0,
+                }),
+                vec!["librarian_lookup", "query_observations"],
+                Some("limited awareness: librarian topology is unavailable, so use broad observation queries and register reusable sources when found"),
+            );
+        };
+
+        let active_session = self.active_state.current_session();
+        let project = self.active_project.read().await.clone();
+        let project_slug = active_session
+            .as_ref()
+            .map(|s| s.project_slug.to_string())
+            .filter(|s| s != "unknown");
+
+        let Some(classification) = project.as_ref() else {
+            return self.ok_with(
+                serde_json::json!({
+                    "level": "unknown",
+                    "reason": "no active project classification",
+                    "project_slug": project_slug,
+                    "known_source_templates": 0,
+                    "known_source_instances": 0,
+                    "accessible_source_instances": 0,
+                    "inaccessible_source_instances": 0,
+                }),
+                vec!["librarian_lookup", "query_observations"],
+                Some("unknown awareness: check the project sitrep/librarian before trusting debug-session deltas"),
+            );
+        };
+
+        let templates = match lib_store
+            .lookup(&LibrarianFilter {
+                kinds: Some(vec![LibrarianNodeKind::SourceTemplate]),
+                limit: Some(500),
+                ..Default::default()
+            })
+            .await
+        {
+            Ok(nodes) => nodes
+                .into_iter()
+                .filter(|node| source_template_matches(node.data.as_ref(), classification))
+                .collect::<Vec<_>>(),
+            Err(e) => return self.err("awareness_lookup_failed", &e.to_string(), None, None),
+        };
+
+        let instances = if let Some(ref slug) = project_slug {
+            match lib_store
+                .lookup(&LibrarianFilter {
+                    kinds: Some(vec![LibrarianNodeKind::SourceInstance]),
+                    project_slug: Some(slug.clone()),
+                    limit: Some(500),
+                    ..Default::default()
+                })
+                .await
+            {
+                Ok(nodes) => nodes,
+                Err(e) => return self.err("awareness_lookup_failed", &e.to_string(), None, None),
+            }
+        } else {
+            Vec::new()
+        };
+
+        let inaccessible = instances
+            .iter()
+            .filter(|node| {
+                node.locator_kind == LocatorKind::File
+                    && !std::path::Path::new(&node.locator).exists()
+            })
+            .count();
+        let accessible = instances.len().saturating_sub(inaccessible);
+
+        let (level, reason, hint) = if !instances.is_empty() && inaccessible == 0 {
+            (
+                "optimal",
+                "all librarian-known project source instances are accessible",
+                "optimal awareness: create a checkpoint, run the action, then query observations since the checkpoint",
+            )
+        } else if !instances.is_empty() || !templates.is_empty() {
+            (
+                "partial",
+                "librarian knows relevant sources, but coverage is not fully accessible for this session",
+                "partial awareness: inspect source drift and activate/query relevant source tags before relying on checkpoint deltas",
+            )
+        } else {
+            (
+                "limited",
+                "no matching librarian source templates or project source instances were found",
+                "limited awareness: use broad observation queries and teach reusable source locations with librarian_index when discovered",
+            )
+        };
+
+        self.ok_with(
+            serde_json::json!({
+                "level": level,
+                "reason": reason,
+                "project_slug": project_slug,
+                "classification_tags": classification.tags,
+                "platform": classification.platform,
+                "known_source_templates": templates.len(),
+                "known_source_instances": instances.len(),
+                "accessible_source_instances": accessible,
+                "inaccessible_source_instances": inaccessible,
+                "cursor_status": "checkpoint_seq_available; durable source cursor ledger pending",
+            }),
+            vec![
+                "create_checkpoint",
+                "query_observations",
+                "librarian_lookup",
+            ],
+            Some(hint),
+        )
+    }
+
+    #[tool(
         name = "daemon8_help",
         description = "Narrative documentation for daemon8 protocols. Pass topic='index' (or omit) for the topic list. Returns markdown."
     )]
@@ -983,8 +1083,8 @@ impl DaemonMcp {
                 "seq_at_creation": seq.0,
                 "created_at": now
             }),
-            vec!["query_observations"],
-            Some("checkpoint set; query_observations(since_checkpoint=...) shows what comes next"),
+            vec!["awareness_status", "query_observations"],
+            Some("checkpoint set; awareness must be optimal or intentionally accepted before trusting query_observations(since_checkpoint=...)"),
         )
     }
 
@@ -1181,86 +1281,6 @@ impl DaemonMcp {
     }
 }
 
-#[tool_router(router = memory_tool_router, vis = "pub")]
-impl DaemonMcp {
-    #[doc = include_str!("../tool_descriptions/save_memory.md")]
-    #[tool(name = "save_memory")]
-    async fn save_memory(&self, Parameters(params): Parameters<SaveMemoryParams>) -> String {
-        let mem_store = match &self.memory_store {
-            Some(s) => s,
-            None => {
-                return self.err(
-                    "memory_store_unavailable",
-                    "memory store not available",
-                    None,
-                    None,
-                );
-            }
-        };
-        let hint = if self.librarian_store.is_some() {
-            detect_librarian_hint(&params.content)
-        } else {
-            None
-        };
-        let inner = save_memory_inner(mem_store.as_ref(), params).await;
-        match hint {
-            Some(h) => match serde_json::from_str::<serde_json::Value>(&inner) {
-                Ok(v) if v.get("error").is_none() => self.ok_with(v, vec![], Some(&h)),
-                _ => wrap_inner_result(self, &inner),
-            },
-            None => wrap_inner_result(self, &inner),
-        }
-    }
-
-    #[doc = include_str!("../tool_descriptions/query_memory.md")]
-    #[tool(name = "query_memory")]
-    async fn query_memory(&self, Parameters(params): Parameters<QueryMemoryParams>) -> String {
-        let mem_store = match &self.memory_store {
-            Some(s) => s,
-            None => {
-                return self.err(
-                    "memory_store_unavailable",
-                    "memory store not available",
-                    None,
-                    None,
-                );
-            }
-        };
-        let inner = query_memory_inner(mem_store.as_ref(), params).await;
-        wrap_inner_result(self, &inner)
-    }
-
-    #[doc = include_str!("../tool_descriptions/forget_memory.md")]
-    #[tool(name = "forget_memory")]
-    async fn forget_memory(&self, Parameters(params): Parameters<ForgetMemoryParams>) -> String {
-        if let Err(msg) = check_forget_memory_confirm(params.confirm) {
-            return self.err(
-                "missing_confirm",
-                &msg,
-                Some("pass confirm=true to acknowledge deletion"),
-                None,
-            );
-        }
-
-        let mem_store = match &self.memory_store {
-            Some(s) => s,
-            None => {
-                return self.err(
-                    "memory_store_unavailable",
-                    "memory store not available",
-                    None,
-                    None,
-                );
-            }
-        };
-
-        match mem_store.forget_memory(&params.id).await {
-            Ok(existed) => self.ok(serde_json::json!({ "deleted": existed })),
-            Err(e) => self.err("forget_memory_failed", &e.to_string(), None, None),
-        }
-    }
-}
-
 /// Wrap a JSON string from an inner helper (no envelope) into the standard
 /// envelope shape. Pure best-effort: malformed JSON falls back to a string
 /// payload so the LLM still gets *something* readable instead of an opaque
@@ -1292,6 +1312,7 @@ fn wrap_inner_result(daemon: &DaemonMcp, raw: &str) -> String {
 // MVP-12-A1: confirmation gate parallel to setup_apply's `yes=true` requirement.
 // Without this, an MCP client that misroutes a delete intent (or hallucinates a
 // memory id) silently destroys data. The gate forces an explicit boolean.
+#[cfg(test)]
 fn check_forget_memory_confirm(confirm: Option<bool>) -> Result<(), String> {
     match confirm {
         Some(true) => Ok(()),
@@ -1396,8 +1417,8 @@ impl DaemonMcp {
                         "debug_session_id": id,
                         "started_at": now,
                     }),
-                    vec!["create_checkpoint", "query_observations"],
-                    Some("debug session opened; checkpoint before any change you might want to roll back through"),
+                    vec!["awareness_status", "create_checkpoint", "query_observations"],
+                    Some("debug session opened; establish awareness_status first, then checkpoint before any change you might want to compare"),
                 )
             }
             Err(e) => self.err("start_debug_session_failed", &e.to_string(), None, None),
@@ -1545,7 +1566,7 @@ async fn end_or_resolve_inner(daemon: &DaemonMcp, intent: EndIntent) -> String {
             if let Some(extra) = &params.tags {
                 tags.extend(extra.iter().cloned());
             }
-            // Add error_hash tags so query_memory(tags=["hash:abc"]) finds
+            // Add error_hash tags so typed session/error lookup can find
             // the resolution alongside the ErrorSignature memory.
             if let Some(errs) = &params.related_errors {
                 tags.extend(errs.iter().map(|h| format!("hash:{h}")));
@@ -1644,7 +1665,7 @@ async fn end_or_resolve_inner(daemon: &DaemonMcp, intent: EndIntent) -> String {
             "summary_memory_id": summary_memory_id,
             "checkpoint_count": checkpoints.len(),
         }),
-        vec!["start_debug_session", "query_memory"],
+        vec!["start_debug_session", "list_debug_sessions"],
         Some("session closed; start_debug_session for the next investigation"),
     )
 }
@@ -1752,61 +1773,6 @@ impl DaemonMcp {
                 cwd: params.cwd,
                 yes: Some(params.yes),
                 providers: params.providers,
-            })
-            .await;
-        wrap_inner_result(self, &inner)
-    }
-}
-
-#[tool_router(router = hooks_tool_router, vis = "pub")]
-impl DaemonMcp {
-    #[doc = include_str!("../tool_descriptions/hooks_list.md")]
-    #[tool(name = "hooks_list")]
-    async fn hooks_list(&self) -> String {
-        let inner = self
-            .call_hooks_tool(HooksToolAction {
-                action: "list".into(),
-                provider: None,
-                scope: None,
-            })
-            .await;
-        wrap_inner_result(self, &inner)
-    }
-
-    #[doc = include_str!("../tool_descriptions/hooks_remove.md")]
-    #[tool(name = "hooks_remove")]
-    async fn hooks_remove(&self, Parameters(params): Parameters<HooksToolAction>) -> String {
-        let inner = self
-            .call_hooks_tool(HooksToolAction {
-                action: "remove".into(),
-                provider: params.provider,
-                scope: params.scope,
-            })
-            .await;
-        wrap_inner_result(self, &inner)
-    }
-
-    #[doc = include_str!("../tool_descriptions/hooks_update.md")]
-    #[tool(name = "hooks_update")]
-    async fn hooks_update(&self, Parameters(params): Parameters<HooksToolAction>) -> String {
-        let inner = self
-            .call_hooks_tool(HooksToolAction {
-                action: "update".into(),
-                provider: params.provider,
-                scope: params.scope,
-            })
-            .await;
-        wrap_inner_result(self, &inner)
-    }
-
-    #[doc = include_str!("../tool_descriptions/hooks_repair.md")]
-    #[tool(name = "hooks_repair")]
-    async fn hooks_repair(&self) -> String {
-        let inner = self
-            .call_hooks_tool(HooksToolAction {
-                action: "repair".into(),
-                provider: None,
-                scope: None,
             })
             .await;
         wrap_inner_result(self, &inner)
@@ -1967,13 +1933,6 @@ impl DaemonMcp {
         match &self.setup_tool_fn {
             Some(f) => f(action).await,
             None => error_json("setup tools not available"),
-        }
-    }
-
-    async fn call_hooks_tool(&self, action: HooksToolAction) -> String {
-        match &self.hooks_tool_fn {
-            Some(f) => f(action).await,
-            None => error_json("hooks tools not available"),
         }
     }
 
@@ -2487,22 +2446,24 @@ fn error_json(msg: &str) -> String {
     )
 }
 
-fn detect_librarian_hint(content: &str) -> Option<String> {
-    let lower = content.to_ascii_lowercase();
-    if lower.contains("documentation")
-        || lower.contains("config template")
-        || lower.contains("source config")
-        || lower.contains("log source")
-    {
-        Some("This memory describes a reference — consider also indexing it with librarian_index(kind=\"doc\" or \"source_template\") for graph-based retrieval.".into())
-    } else if lower.contains("fix for")
-        || lower.contains("fixed by")
-        || lower.contains("workaround")
-    {
-        Some("This memory describes a fix — consider also indexing it with librarian_index(kind=\"fix\") to link it to the error it resolves.".into())
-    } else {
-        None
+fn source_template_matches(
+    data: Option<&serde_json::Value>,
+    classification: &ProjectClassification,
+) -> bool {
+    let Some(data) = data else {
+        return false;
+    };
+    let Ok(template) = serde_json::from_value::<daemon8_types::SourceTemplateData>(data.clone())
+    else {
+        return false;
+    };
+    if !template.platforms.contains(&classification.platform) {
+        return false;
     }
+    template
+        .project_types
+        .iter()
+        .any(|project_type| classification.tags.contains(project_type))
 }
 
 impl DaemonMcp {
@@ -2718,7 +2679,7 @@ impl ServerHandler for DaemonMcp {
     }
 }
 
-/// Pure handler for `save_memory`. Extracted so tests can drive it
+/// Internal handler for typed persistence. Extracted so API/tests can drive it
 /// against an in-memory `MemoryStore` without spinning up DaemonMcp.
 pub async fn save_memory_inner(mem_store: &dyn MemoryStore, params: SaveMemoryParams) -> String {
     let kind = params
@@ -2752,7 +2713,7 @@ pub async fn save_memory_inner(mem_store: &dyn MemoryStore, params: SaveMemoryPa
     }
 }
 
-/// Pure handler for `query_memory`. Extracted so tests can drive it
+/// Internal handler for typed persistence lookup. Extracted so API/tests can drive it
 /// against an in-memory `MemoryStore` without spinning up DaemonMcp.
 pub async fn query_memory_inner(mem_store: &dyn MemoryStore, params: QueryMemoryParams) -> String {
     let kinds = params.kinds.map(|v| {
@@ -3045,7 +3006,6 @@ mod logging_tests {
             broadcast_tx,
             lens,
             setup_tool_fn: None,
-            hooks_tool_fn: None,
             source_activator: None,
             cancel: tokio_util::sync::CancellationToken::new(),
             active_project: Arc::new(RwLock::new(None)),
@@ -3347,7 +3307,6 @@ mod logging_tests {
                 broadcast_tx,
                 lens,
                 setup_tool_fn: None,
-                hooks_tool_fn: None,
                 source_activator: None,
                 cancel: tokio_util::sync::CancellationToken::new(),
                 active_project: Arc::new(RwLock::new(None)),

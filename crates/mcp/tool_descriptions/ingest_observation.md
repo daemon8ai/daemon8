@@ -27,4 +27,4 @@ None.
 
 ## Next
 
-query_observations to confirm the row landed; if severity=error, check query_memory(tags=["hash:..."]) for prior fixes.
+query_observations to confirm the row landed; if severity=error, resolve or link it through the active debug session when the root cause is known.

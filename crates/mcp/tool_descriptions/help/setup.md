@@ -12,6 +12,6 @@ Supported providers: Claude Code, Codex, Gemini CLI, OpenCode.
 
 ## After setup
 
-For additional features (CLI hooks, project init), use `daemon8 features` interactively or the `hooks_*` MCP tools.
+For project-local source overrides, use `daemon8 features` interactively or `daemon8 setup init`.
 
 The agent should call `start_debug_session` when investigating something specific — that scopes observations and tool calls into a retrievable artifact.

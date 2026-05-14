@@ -12,6 +12,5 @@ Available topics (call `daemon8_help(topic="<name>")`):
 - `lens` — buffering matching observations between queries
 - `debug_session` — protocol for opening/closing debugging investigations
 - `setup` — first-time configuration and provider enrollment
-- `hooks` — managing CLI provider hooks (Claude Code, Codex)
 - `memory` — persisting long-lived insights across sessions
 - `librarian` — graph-based reference catalog for documentation, configs, fixes

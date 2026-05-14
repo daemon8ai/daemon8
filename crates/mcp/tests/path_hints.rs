@@ -54,7 +54,6 @@ async fn build_mcp(
         broadcast_tx,
         lens,
         setup_tool_fn: None,
-        hooks_tool_fn: None,
         source_activator: None,
         cancel: CancellationToken::new(),
         active_project,

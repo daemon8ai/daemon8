@@ -2,6 +2,8 @@
 
 Open a daemon8 debug investigation. Required before create_checkpoint or resolve_debug_session can be used.
 
+Opening a session is not enough by itself. The next step is to establish the session's awareness posture with `awareness_status`; aim for `optimal` awareness before trusting checkpoint deltas.
+
 ## When
 
 At the start of any non-trivial debugging task. Errors observed, tests failing, "this isn't behaving" -- open a session, then work inside it. The session is the persistent artifact future-you (or another agent) will retrieve when a similar issue resurfaces.
@@ -28,4 +30,4 @@ No other debug session is currently active IN THIS MCP SESSION. Other agents/con
 
 ## Next
 
-create_checkpoint right before any action you may want to roll back through, then query_observations(since_checkpoint=...) after.
+Call `awareness_status` first. If awareness is `optimal`, create_checkpoint right before any action you may want to compare. If awareness is `partial`, `limited`, or `unknown`, inspect librarian/source coverage before trusting the debug stream.

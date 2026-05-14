@@ -171,9 +171,6 @@ pub fn cmd_uninstall() -> Result<()> {
         remove_provider_entry(provider, &home);
     }
 
-    // 6. Remove hook entries from provider hook config files
-    remove_cli_hooks(&home, &cwd);
-
     println!();
     println!("Daemon8 fully uninstalled.");
     Ok(())
@@ -206,27 +203,6 @@ fn remove_provider_entry(provider: Provider, home: &std::path::Path) {
         Ok(true) => println!("  [ok] removed daemon8 from {}", config_path.display()),
         Ok(false) => {}
         Err(e) => println!("  [!!] {}: {e}", config_path.display()),
-    }
-}
-
-fn remove_cli_hooks(home: &std::path::Path, cwd: &std::path::Path) {
-    for &provider in daemon8_providers::HOOK_PROVIDERS {
-        let hp = provider.as_hook_provider().unwrap();
-        for &scope in hp.supported_scopes() {
-            for dir in [cwd, home] {
-                let path = hp.hooks_path(scope, dir, home);
-                if !path.exists() {
-                    continue;
-                }
-                match hp.remove_hooks(scope, dir, home, &crate::cli_config::SERVICE) {
-                    Ok(Some(p)) => {
-                        println!("  [ok] removed daemon8 hooks from {}", p.display())
-                    }
-                    Ok(None) => {}
-                    Err(e) => println!("  [!!] hooks {}: {e}", path.display()),
-                }
-            }
-        }
     }
 }
 
@@ -649,92 +625,4 @@ fn uninstall_schtasks() -> Result<()> {
         anyhow::bail!("schtasks /Delete failed: {stderr}");
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn read_json(path: &std::path::Path) -> serde_json::Value {
-        let text = std::fs::read_to_string(path).expect("read hook config");
-        serde_json::from_str(&text).expect("parse hook config")
-    }
-
-    #[test]
-    fn remove_cli_hooks_removes_nested_daemon8_groups_and_preserves_user_hooks() {
-        let tmp = tempfile::tempdir().unwrap();
-        let home = tmp.path();
-        let claude_dir = home.join(".claude");
-        let codex_dir = home.join(".codex");
-        std::fs::create_dir_all(&claude_dir).unwrap();
-        std::fs::create_dir_all(&codex_dir).unwrap();
-
-        let hook_config = serde_json::json!({
-            "hooks": {
-                "PreToolUse": [
-                    {
-                        "matcher": "Bash",
-                        "hooks": [{ "type": "command", "command": "user-hook" }]
-                    },
-                    {
-                        "matcher": "Bash",
-                        "hooks": [{ "type": "command", "command": "daemon8 status" }]
-                    },
-                    {
-                        "matcher": "Bash",
-                        "hooks": [
-                            { "type": "command", "command": "/bin/daemon8 cli-hook" },
-                            { "type": "command", "command": "mixed-user-hook" }
-                        ]
-                    },
-                    {
-                        "matcher": "Bash",
-                        "hooks": [{ "type": "command", "command": "/bin/daemon8 cli-hook" }]
-                    }
-                ]
-            }
-        });
-        std::fs::write(
-            claude_dir.join("settings.local.json"),
-            serde_json::to_string_pretty(&hook_config).unwrap(),
-        )
-        .unwrap();
-        std::fs::write(
-            codex_dir.join("hooks.json"),
-            serde_json::to_string_pretty(&hook_config).unwrap(),
-        )
-        .unwrap();
-
-        let project = tmp.path().join("project");
-        let project_claude_dir = project.join(".claude");
-        std::fs::create_dir_all(&project_claude_dir).unwrap();
-        std::fs::write(
-            project_claude_dir.join("settings.local.json"),
-            serde_json::to_string_pretty(&hook_config).unwrap(),
-        )
-        .unwrap();
-
-        remove_cli_hooks(home, &project);
-
-        for path in [
-            claude_dir.join("settings.local.json"),
-            codex_dir.join("hooks.json"),
-            project_claude_dir.join("settings.local.json"),
-        ] {
-            let parsed = read_json(&path);
-            let groups = parsed["hooks"]["PreToolUse"].as_array().unwrap();
-            assert_eq!(groups.len(), 3, "{path:?}");
-            assert_eq!(groups[0]["hooks"][0]["command"].as_str(), Some("user-hook"));
-            assert_eq!(
-                groups[1]["hooks"][0]["command"].as_str(),
-                Some("daemon8 status"),
-                "unmanaged daemon8 commands must be preserved"
-            );
-            assert_eq!(
-                groups[2]["hooks"][0]["command"].as_str(),
-                Some("mixed-user-hook"),
-                "user hooks sharing a group with daemon8 cli-hook must be preserved"
-            );
-        }
-    }
 }

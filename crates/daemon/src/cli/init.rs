@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Havy.tech, LLC
 
 //! `daemon8 init` -- scaffold `.daemon8.toml` at cwd and optionally
-//! bootstrap provider configs / hook settings.
+//! bootstrap provider configs.
 
 use std::env;
 use std::io::IsTerminal;
@@ -12,26 +12,9 @@ use anyhow::{Context, Result};
 
 use crate::cli_config::PROJECT_CONFIG_FILENAME;
 use daemon8_providers::{
-    HookScope, Provider, ProviderWriteSummary, dirs_home, install_hooks_for_provider,
-    is_non_interactive, parse_provider_list, summarize_restarts, write_provider_config,
+    Provider, ProviderWriteSummary, dirs_home, is_non_interactive, parse_provider_list,
+    summarize_restarts, write_provider_config,
 };
-
-#[derive(clap::ValueEnum, Clone, Debug)]
-pub enum HookInstallScope {
-    Local,
-    Shared,
-    Global,
-}
-
-impl From<HookInstallScope> for HookScope {
-    fn from(value: HookInstallScope) -> Self {
-        match value {
-            HookInstallScope::Local => HookScope::Local,
-            HookInstallScope::Shared => HookScope::Shared,
-            HookInstallScope::Global => HookScope::Global,
-        }
-    }
-}
 
 #[derive(clap::Args, Default)]
 pub struct InitArgs {
@@ -52,14 +35,6 @@ pub struct InitArgs {
     /// Example: `claude-code,codex-cli`.
     #[arg(long)]
     pub providers: Option<String>,
-
-    /// Register CLI hooks at the given scope.
-    #[arg(long, value_enum)]
-    pub install_hooks: Option<HookInstallScope>,
-
-    /// Replace an existing daemon8 hook entry without prompting.
-    #[arg(long)]
-    pub force_hooks: bool,
 }
 
 pub fn cmd_init(args: InitArgs) -> Result<()> {
@@ -87,7 +62,6 @@ pub fn cmd_init(args: InitArgs) -> Result<()> {
     let port = crate::config::load(None).unwrap_or_default().server.port;
     let mcp_url = format!("http://127.0.0.1:{port}/mcp");
 
-    let home = dirs_home();
     for provider in resolve_providers(&args, non_interactive)? {
         let config_path = provider.config_path(&dirs_home());
         write_provider_config(
@@ -99,39 +73,6 @@ pub fn cmd_init(args: InitArgs) -> Result<()> {
         )?;
         summary.provider_files.push(config_path);
         summary.note_restart(provider);
-
-        if let Some(hp) = provider.as_hook_provider() {
-            let scopes = hp.supported_scopes();
-            let scope = if scopes.len() == 1 {
-                scopes[0]
-            } else if scopes.contains(&HookScope::Global) {
-                HookScope::Global
-            } else {
-                scopes[0]
-            };
-            let hook_path = install_hooks_for_provider(
-                provider,
-                scope,
-                &cwd,
-                &home,
-                args.force_hooks,
-                &crate::cli_config::SERVICE,
-            )?;
-            summary.hook_files.push(hook_path);
-        }
-    }
-
-    if let Some(scope) = resolve_hook_scope(&args, non_interactive)? {
-        let path = install_hooks_for_provider(
-            Provider::ClaudeCode,
-            scope,
-            &cwd,
-            &home,
-            args.force_hooks,
-            &crate::cli_config::SERVICE,
-        )?;
-        summary.hook_files.push(path);
-        summary.note_restart(Provider::ClaudeCode);
     }
 
     println!("wrote {}", target.display());
@@ -143,14 +84,6 @@ pub fn cmd_init(args: InitArgs) -> Result<()> {
             println!("  {}", path.display());
         }
     }
-    if !summary.hook_files.is_empty() {
-        println!();
-        println!("hook settings:");
-        for path in &summary.hook_files {
-            println!("  {}", path.display());
-        }
-    }
-
     let restart_messages = summarize_restarts(&summary);
     if !restart_messages.is_empty() {
         println!();
@@ -180,35 +113,6 @@ fn resolve_providers(args: &InitArgs, non_interactive: bool) -> Result<Vec<Provi
         .required(false)
         .items(&items)
         .interact()?)
-}
-
-fn resolve_hook_scope(args: &InitArgs, non_interactive: bool) -> Result<Option<HookScope>> {
-    if let Some(scope) = args.install_hooks.clone() {
-        return Ok(Some(scope.into()));
-    }
-    if non_interactive {
-        return Ok(None);
-    }
-
-    let should_install = cliclack::confirm("Install CLI hooks for this project?")
-        .initial_value(false)
-        .interact()?;
-    if !should_install {
-        return Ok(None);
-    }
-
-    let hp = Provider::ClaudeCode.as_hook_provider().unwrap();
-    let cwd = env::current_dir().unwrap_or_default();
-    let home = dirs_home();
-    let mut select = cliclack::select("Choose the hook settings target");
-    for &s in hp.supported_scopes() {
-        select = select.item(
-            s,
-            daemon8_providers::hook_management::scope_label(s),
-            hp.scope_display_hint(s, &cwd, &home),
-        );
-    }
-    Ok(Some(select.interact()?))
 }
 
 fn derive_slug(cwd: &Path) -> String {
@@ -294,15 +198,11 @@ fn sources_example(project_type: ProjectType) -> &'static str {
 fn render_template(slug: &str, project_type: ProjectType) -> String {
     let sources = sources_example(project_type);
     format!(
-        r##"# Daemon8 CLI telemetry configuration.
-# Schema reference: https://daemon8.ai/docs/cli-hook-config
+        r##"# Daemon8 project configuration.
+# Runtime sources can be registered explicitly here or discovered with the librarian.
 
 [project]
 slug = "{slug}"
-
-[enrollment]
-enabled = true
-scope = []
 {sources}"##
     )
 }

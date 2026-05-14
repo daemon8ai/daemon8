@@ -151,7 +151,6 @@ async fn start_server(
             broadcast_tx.subscribe(),
             None,
         )),
-        memory_store: None,
         source_activator: None,
         discovery_control: None,
     };

@@ -3,10 +3,8 @@
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FeatureGate {
-    Memory,
     DebugSession,
     Setup,
-    Hooks,
     Librarian,
 }
 
@@ -37,6 +35,12 @@ pub static ALL_HELP_TOPICS: &[HelpTopic] = &[
         requires: None,
     },
     HelpTopic {
+        name: "awareness",
+        one_liner: "checking source coverage before trusting debug deltas",
+        body: include_str!("../tool_descriptions/help/awareness.md"),
+        requires: None,
+    },
+    HelpTopic {
         name: "lens",
         one_liner: "buffering matching observations between queries",
         body: include_str!("../tool_descriptions/help/lens.md"),
@@ -50,21 +54,9 @@ pub static ALL_HELP_TOPICS: &[HelpTopic] = &[
     },
     HelpTopic {
         name: "setup",
-        one_liner: "first-time configuration and provider enrollment",
+        one_liner: "first-time configuration and provider MCP registration",
         body: include_str!("../tool_descriptions/help/setup.md"),
         requires: Some(FeatureGate::Setup),
-    },
-    HelpTopic {
-        name: "hooks",
-        one_liner: "managing CLI provider hooks (Claude Code, Codex)",
-        body: include_str!("../tool_descriptions/help/hooks.md"),
-        requires: Some(FeatureGate::Hooks),
-    },
-    HelpTopic {
-        name: "memory",
-        one_liner: "persisting long-lived insights across sessions",
-        body: include_str!("../tool_descriptions/help/memory.md"),
-        requires: Some(FeatureGate::Memory),
     },
     HelpTopic {
         name: "librarian",

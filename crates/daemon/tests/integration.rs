@@ -14,8 +14,8 @@ use tokio::sync::{broadcast, mpsc};
 
 use daemon8_chrome::BrowserAction;
 use daemon8_mcp::ChromeCommand;
-use daemon8_store::{Memory, MemoryStore, StateModel, SurrealStore};
-use daemon8_types::{MemoryKind, Observation};
+use daemon8_store::{StateModel, SurrealStore};
+use daemon8_types::Observation;
 
 type StreamFrame = (Arc<Observation>, Arc<str>);
 
@@ -192,7 +192,6 @@ async fn start_server(
             broadcast_tx.subscribe(),
             None,
         )),
-        memory_store: None,
         source_activator: None,
         discovery_control: None,
     };
@@ -426,81 +425,6 @@ async fn checkpoint_pagination() {
         .unwrap();
     let obs = resp["observations"].as_array().unwrap();
     assert_eq!(obs.len(), 1, "expected 1 new observation after checkpoint");
-}
-
-#[tokio::test]
-async fn memory_export_endpoint_streams_paged_ndjson_for_memory_rows() {
-    let store = SurrealStore::memory().await.unwrap();
-    let memory_store = store.memory_store();
-    for (idx, content) in ["one", "two", "three"].iter().enumerate() {
-        memory_store
-            .save_memory(Memory {
-                id: None,
-                created_at: (idx + 1) as u64,
-                updated_at: (idx + 1) as u64,
-                kind: MemoryKind::Pattern,
-                content: (*content).into(),
-                source_observations: Vec::new(),
-                tags: vec!["project:daemon8".into()],
-                project_slug: "daemon8".into(),
-                session_id: None,
-                confidence: 1.0,
-                data: None,
-            })
-            .await
-            .unwrap();
-    }
-
-    let (base, _tx, _handle) = start_server(Arc::new(store)).await;
-    let client = reqwest::Client::new();
-    let resp = client
-        .post(format!("{base}/api/memory/export"))
-        .json(&json!({
-            "query": "SELECT * FROM memory ORDER BY created_at ASC",
-            "page_size": 2
-        }))
-        .send()
-        .await
-        .unwrap();
-
-    assert_eq!(resp.status(), reqwest::StatusCode::OK);
-    assert!(
-        resp.headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .is_some_and(|value| value.starts_with("application/x-ndjson"))
-    );
-    let text = resp.text().await.unwrap();
-    let rows: Vec<Value> = text
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
-        .collect();
-    assert_eq!(rows.len(), 3);
-    assert_eq!(rows[0]["content"], "one");
-    assert_eq!(rows[1]["content"], "two");
-    assert_eq!(rows[2]["content"], "three");
-
-    let resp = client
-        .post(format!("{base}/api/memory/export"))
-        .json(&json!({
-            "query": "SELECT * FROM observation ORDER BY seq ASC",
-            "page_size": 2
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
-
-    let resp = client
-        .post(format!("{base}/api/memory/export"))
-        .json(&json!({
-            "query": "SELECT * FROM memory ORDER BY created_at ASC",
-            "page_size": 0
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
 }
 
 // -----------------------------------------------------------------------
@@ -1153,7 +1077,6 @@ async fn start_act_server() -> (
         chrome_state: chrome_state_rx,
         chrome_endpoint: std::sync::Arc::new(std::sync::Mutex::new(None)),
         lens: std::sync::Arc::new(daemon8_store::LensManager::new(stream_tx.subscribe(), None)),
-        memory_store: None,
         source_activator: None,
         discovery_control: None,
     };

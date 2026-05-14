@@ -23,4 +23,4 @@ None.
 
 ## Next
 
-setup_status to confirm; use `daemon8 features` CLI for hooks and project init.
+setup_status to confirm; use `daemon8 setup init` for explicit project source overrides.

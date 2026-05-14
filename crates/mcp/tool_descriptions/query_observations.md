@@ -31,9 +31,8 @@ None. Observations are live; re-call to refresh.
 
 ## Next
 
-create_checkpoint before testing a fix; query_memory(tags=["hash:<error_hash>"]) on any error obs to find prior fixes.
+create_checkpoint before testing a fix; use `awareness_status` when a debug session begins so missing or drifted sources are visible before you trust the delta.
 
 ## Discovery hints
 
 Observations with `kind=custom` and `channel=discovery_hint` are project-onboarding hints emitted when daemon8 classifies a project but finds no `source_template` entries covering its tags. The `data` field carries a `DiscoveryHintPayload` (project_root, classification_tags, framework_versions, platform, known_project_type_tags_ref, instruction_text, ...). When you see one, follow the `instruction_text` and call `librarian_index` with one or more `source_template` nodes for the locations you discover.
-
