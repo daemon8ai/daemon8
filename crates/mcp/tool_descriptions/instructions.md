@@ -15,7 +15,7 @@ Tool selection:
 - See console output, network traffic, device logs, or app telemetry: `query_observations` (use `since_checkpoint` for incremental polling).
 - Run JavaScript in the browser: `issue_command` with action="eval_js".
 - Snapshot daemon health and connected sources: `status`.
-- Before relying on a debug session: `awareness_status`. The target is `optimal` awareness; `partial`, `limited`, or `unknown` means source coverage needs attention before you trust checkpoint deltas.
+- Before relying on a debug session: `awareness_status`. The target is `optimal` source awareness; `partial`, `limited`, or `unknown` means source coverage needs attention before you trust checkpoint deltas.
 - Take screenshots, inject CSS, navigate, manipulate storage, set viewport, throttle network: `issue_command`.
 - Write a note, emit a metric, or message another agent: `ingest_observation`.
 - Watch for specific events in real-time: `subscribe_observations` (live alerts pushed into the session).
@@ -34,5 +34,6 @@ Application telemetry: applications can send observations directly via HTTP POST
 Durable capture:
 - Use `librarian_index` for reusable project/source topology and reference pointers.
 - Use `resolve_debug_session` for verified root causes and fixes at the end of a debugging effort.
+- Use `awareness_sync` only for durable semantic changes. Observations and checkpoints are signals, not durable evidence.
 
 Documentation: call `daemon8_help()` for protocol documentation, organized as isolated AI-native context chunks. Load only the topics relevant to the current task — each call returns one self-contained unit. The librarian extends this with a graph-based index of project-specific references.

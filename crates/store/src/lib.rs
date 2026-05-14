@@ -181,6 +181,8 @@ pub struct AwarenessNode {
     pub note: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub redex: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redex_derived: Option<AwarenessRedex>,
     pub tags: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub debug_session_id: Option<String>,
@@ -190,7 +192,13 @@ pub struct AwarenessNode {
     pub debug_session_ids: Vec<String>,
     #[serde(default)]
     pub checkpoint_ids: Vec<String>,
+    #[serde(default)]
+    pub evidence_refs: Vec<AwarenessRef>,
+    #[serde(default)]
+    pub signal_refs: Vec<AwarenessRef>,
+    #[serde(default)]
     pub observation_ids: Vec<u64>,
+    #[serde(default)]
     pub librarian_node_ids: Vec<String>,
     pub created_at: u64,
     pub updated_at: u64,
@@ -213,11 +221,29 @@ pub struct AwarenessEdge {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct AwarenessEvidence {
-    pub observation_ids: Vec<u64>,
-    pub debug_session_ids: Vec<String>,
-    pub checkpoint_ids: Vec<String>,
-    pub librarian_node_ids: Vec<String>,
+pub struct AwarenessRef {
+    pub kind: String,
+    pub id: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AwarenessRefs {
+    pub evidence_refs: Vec<AwarenessRef>,
+    pub signal_refs: Vec<AwarenessRef>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AwarenessRedex {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recovery: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub implication: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temporal: Option<String>,
+    pub persistent: bool,
+    pub conflict: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -234,7 +260,7 @@ pub struct AwarenessSync {
     pub tags: Vec<String>,
     pub debug_session_id: Option<String>,
     pub checkpoint_id: Option<String>,
-    pub evidence: AwarenessEvidence,
+    pub refs: AwarenessRefs,
     pub target_node_id: Option<String>,
     pub supersedes: Vec<String>,
     pub answers: Vec<String>,
@@ -272,6 +298,37 @@ pub struct AwarenessManifest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AwarenessSignal {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub project_slug: String,
+    pub signal_kind: String,
+    #[serde(default)]
+    pub signal_key: String,
+    pub severity: String,
+    pub summary: String,
+    pub signal_refs: Vec<AwarenessRef>,
+    pub related_awareness_node_ids: Vec<String>,
+    pub score: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub surfaced_at: Option<u64>,
+    pub expires_at: u64,
+    pub created_at: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct AwarenessSignalInput {
+    pub project_slug: String,
+    pub signal_kind: String,
+    pub severity: String,
+    pub summary: String,
+    pub signal_refs: Vec<AwarenessRef>,
+    pub related_awareness_node_ids: Vec<String>,
+    pub score: f64,
+    pub expires_at: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AwarenessTree {
     pub project_slug: String,
     pub focus_path: String,
@@ -300,6 +357,16 @@ pub trait AwarenessStore: Send + Sync {
     async fn sync_node(&self, input: AwarenessSync) -> Result<AwarenessSyncResult, StoreError>;
     async fn get_node(&self, id: &str) -> Result<Option<AwarenessNode>, StoreError>;
     async fn manifest(&self, filter: &AwarenessFilter) -> Result<AwarenessManifest, StoreError>;
+    async fn record_signal(
+        &self,
+        input: AwarenessSignalInput,
+    ) -> Result<AwarenessSignal, StoreError>;
+    async fn active_signals(
+        &self,
+        project_slug: &str,
+        limit: usize,
+    ) -> Result<Vec<AwarenessSignal>, StoreError>;
+    async fn prune_expired_signals(&self, now: u64) -> Result<u64, StoreError>;
     async fn traverse(
         &self,
         filter: &AwarenessTraversalFilter,

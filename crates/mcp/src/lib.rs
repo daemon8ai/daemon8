@@ -8,9 +8,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use daemon8_store::{
-    ActiveSessionState, AwarenessEvidence, AwarenessFilter, AwarenessStore, AwarenessSync,
-    AwarenessTraversalFilter, DebugSessionStore, LensManager, LibrarianFilter, LibrarianStore,
-    MemoryStore, StateModel,
+    ActiveSessionState, AwarenessFilter, AwarenessRef, AwarenessRefs, AwarenessSignalInput,
+    AwarenessStore, AwarenessSync, AwarenessTraversalFilter, DebugSessionStore, LensManager,
+    LibrarianFilter, LibrarianStore, MemoryFilter, MemoryStore, StateModel,
 };
 use daemon8_types::{
     AwarenessAuthority, AwarenessNodeKind, AwarenessOperation, Checkpoint, DevicePlatform, Filter,
@@ -41,6 +41,7 @@ pub type ActiveProjectHandle = Arc<RwLock<Option<ProjectClassification>>>;
 
 const INSTRUCTIONS: &str = include_str!("../tool_descriptions/instructions.md");
 static MCP_SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
+const AWARENESS_SIGNAL_TTL_NS: u64 = 30 * 60 * 1_000_000_000;
 
 fn next_mcp_session_id() -> String {
     let id = MCP_SESSION_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -395,14 +396,28 @@ pub struct AwarenessStatusParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct AwarenessRefParams {
+    #[schemars(
+        description = "Reference kind. evidence_refs accept durable kinds; signal_refs accept ephemeral runtime kinds."
+    )]
+    pub kind: String,
+    #[schemars(description = "Reference id. Observation refs use the sequence id as a string.")]
+    pub id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct AwarenessEvidenceParams {
-    #[schemars(description = "Observation sequence ids that support this awareness update.")]
+    #[schemars(description = "Durable typed evidence refs for this awareness update.")]
+    pub refs: Option<Vec<AwarenessRefParams>>,
+    #[schemars(description = "Deprecated: observation ids are converted to signal_refs.")]
     pub observation_ids: Option<Vec<u64>>,
-    #[schemars(description = "Debug session ids related to this awareness update.")]
+    #[schemars(description = "Deprecated: active debug-session ids are converted to signal_refs.")]
     pub debug_session_ids: Option<Vec<String>>,
-    #[schemars(description = "Checkpoint ids related to this awareness update.")]
+    #[schemars(description = "Deprecated: checkpoint ids are converted to signal_refs.")]
     pub checkpoint_ids: Option<Vec<String>>,
-    #[schemars(description = "Librarian node ids related to this awareness update.")]
+    #[schemars(
+        description = "Deprecated: librarian node ids are converted to durable evidence_refs."
+    )]
     pub librarian_node_ids: Option<Vec<String>>,
 }
 
@@ -436,11 +451,23 @@ pub struct AwarenessSyncParams {
     pub redex: Option<String>,
     #[schemars(description = "Free-form tags for focused retrieval.")]
     pub tags: Option<Vec<String>>,
-    #[schemars(description = "Debug session id. Defaults to active debug session when omitted.")]
+    #[schemars(
+        description = "Debug session id. Stored as a signal ref; defaults to active debug session when omitted."
+    )]
     pub debug_session_id: Option<String>,
-    #[schemars(description = "Checkpoint id connected to this update.")]
+    #[schemars(description = "Checkpoint id connected as a signal ref, not durable evidence.")]
     pub checkpoint_id: Option<String>,
-    #[schemars(description = "Evidence references for this awareness update.")]
+    #[schemars(
+        description = "Durable evidence refs. Use persistent conclusions or accepted records only."
+    )]
+    pub evidence_refs: Option<Vec<AwarenessRefParams>>,
+    #[schemars(
+        description = "Ephemeral signal refs. Use observations/checkpoints/logs/tool/browser/device refs only."
+    )]
+    pub signal_refs: Option<Vec<AwarenessRefParams>>,
+    #[schemars(
+        description = "Deprecated compatibility wrapper. Raw observation/checkpoint fields become signal_refs."
+    )]
     pub evidence: Option<AwarenessEvidenceParams>,
     #[schemars(description = "Existing awareness node id for update/resolve/verify/retire.")]
     pub target_node_id: Option<String>,
@@ -902,32 +929,32 @@ impl DaemonMcp {
                 }
 
                 let path_hint = self.compute_path_hint(&slice.observations).await;
+                let warned_since_checkpoint = filter.since.is_some()
+                    && slice
+                        .observations
+                        .iter()
+                        .any(|obs| obs.severity.level() >= daemon8_types::Severity::Warn.level());
+                if warned_since_checkpoint {
+                    self.record_runtime_signal(&slice.observations).await;
+                }
                 if let Some(hint) = path_hint {
                     let mut meta = self.current_meta();
                     meta.hints.push(hint.hint_text);
-                    if self.awareness_store.is_some()
-                        && filter.since.is_some()
-                        && slice.observations.iter().any(|obs| {
-                            obs.severity.level() >= daemon8_types::Severity::Warn.level()
-                        })
-                    {
-                        meta.next_actions = Some(vec!["awareness_sync".into()]);
-                        meta.hint = Some("meaningful checkpoint evidence found; verify/refine/retire the related awareness node if this changes the investigation state".into());
+                    if warned_since_checkpoint {
+                        meta.next_actions = Some(vec![
+                            "query_observations".into(),
+                            "resolve_debug_session".into(),
+                        ]);
+                        meta.hint = Some("runtime signal found; treat raw observations as signal, then promote only the interpreted conclusion from a resolved session or accepted analysis".into());
                     }
                     return envelope::ok_value(result, meta);
                 }
 
-                if self.awareness_store.is_some()
-                    && filter.since.is_some()
-                    && slice
-                        .observations
-                        .iter()
-                        .any(|obs| obs.severity.level() >= daemon8_types::Severity::Warn.level())
-                {
+                if warned_since_checkpoint {
                     return self.ok_with(
                         result,
-                        vec!["awareness_sync"],
-                        Some("meaningful checkpoint evidence found; verify/refine/retire the related awareness node if this changes the investigation state"),
+                        vec!["query_observations", "resolve_debug_session"],
+                        Some("runtime signal found; raw observations are signal refs only, so promote awareness from the interpreted conclusion, not the log rows"),
                     );
                 }
 
@@ -1004,7 +1031,15 @@ impl DaemonMcp {
             Err(e) => return self.err("awareness_lookup_failed", &e.to_string(), None, None),
         };
 
-        let project_awareness = match (&self.awareness_store, project_slug.as_deref()) {
+        let context_awareness = match project_slug.as_deref() {
+            None => serde_json::json!({
+                "available": false,
+                "reason": "project slug unavailable",
+            }),
+            Some(slug) => self.context_awareness(slug).await,
+        };
+
+        let reasoning_awareness = match (&self.awareness_store, project_slug.as_deref()) {
             (None, _) => serde_json::json!({
                 "available": false,
                 "reason": "awareness store unavailable",
@@ -1053,7 +1088,7 @@ impl DaemonMcp {
                         Ok(manifest) => serde_json::json!({
                             "available": true,
                             "mode": "manifest",
-                            "manifest": manifest,
+                            "manifest": compact_manifest_json(&manifest),
                         }),
                         Err(e) => {
                             return self.err(
@@ -1067,23 +1102,149 @@ impl DaemonMcp {
                 }
             }
         };
-
-        let next_actions = match (&self.awareness_store, params.focus_path.is_some()) {
-            (Some(_), true) => vec!["awareness_sync", "create_checkpoint"],
-            (Some(_), false) => vec!["awareness_sync", "create_checkpoint", "librarian_lookup"],
-            (None, true) => vec!["create_checkpoint"],
-            (None, false) => vec!["create_checkpoint", "librarian_lookup"],
+        let signals = match (&self.awareness_store, project_slug.as_deref()) {
+            (Some(store), Some(slug)) => match store.active_signals(slug, 8).await {
+                Ok(signals) => serde_json::json!(signals),
+                Err(e) => serde_json::json!({
+                    "available": false,
+                    "reason": e.to_string(),
+                }),
+            },
+            _ => serde_json::json!([]),
         };
+
+        let hint = if source_hint.contains("optimal awareness") {
+            source_hint
+        } else if self.awareness_store.is_some() {
+            format!(
+                "{source_hint}; call awareness_sync only if a durable objective, question, fact, decision, hypothesis, risk, or blocker changed"
+            )
+        } else {
+            source_hint
+        };
+
+        let next_actions = awareness_status_next_actions(
+            active_session.is_some(),
+            params.focus_path.is_some(),
+            &source_awareness,
+        );
 
         self.ok_with(
             serde_json::json!({
                 "project_slug": project_slug,
                 "source_awareness": source_awareness,
-                "project_awareness": project_awareness,
+                "context_awareness": context_awareness,
+                "reasoning_awareness": reasoning_awareness,
+                "signals": signals,
             }),
             next_actions,
-            Some(source_hint.as_str()),
+            Some(hint.as_str()),
         )
+    }
+
+    async fn context_awareness(&self, project_slug: &str) -> serde_json::Value {
+        let librarian_counts = match &self.librarian_store {
+            Some(store) => {
+                let nodes = match store
+                    .lookup(&LibrarianFilter {
+                        project_slug: Some(project_slug.to_string()),
+                        limit: Some(500),
+                        ..Default::default()
+                    })
+                    .await
+                {
+                    Ok(nodes) => nodes,
+                    Err(e) => {
+                        return serde_json::json!({
+                            "available": true,
+                            "librarian": {
+                                "available": false,
+                                "reason": e.to_string(),
+                            },
+                            "durable_records": durable_records_json(self.memory_store.as_ref(), project_slug).await,
+                        });
+                    }
+                };
+                let mut counts = std::collections::BTreeMap::new();
+                for node in nodes {
+                    *counts.entry(node.kind.to_string()).or_insert(0usize) += 1;
+                }
+                serde_json::json!({
+                    "available": true,
+                    "counts_by_kind": counts,
+                })
+            }
+            None => serde_json::json!({
+                "available": false,
+                "reason": "librarian unavailable",
+            }),
+        };
+        let durable_records = durable_records_json(self.memory_store.as_ref(), project_slug).await;
+        serde_json::json!({
+            "available": true,
+            "librarian": librarian_counts,
+            "durable_records": durable_records,
+        })
+    }
+
+    async fn record_runtime_signal(&self, observations: &[Observation]) {
+        let Some(store) = &self.awareness_store else {
+            return;
+        };
+        let Some(project_slug) = self.current_project_slug().await else {
+            return;
+        };
+        let mut signal_refs = Vec::new();
+        for obs in observations
+            .iter()
+            .filter(|obs| obs.severity.level() >= daemon8_types::Severity::Warn.level())
+            .take(10)
+        {
+            push_ref(&mut signal_refs, "observation", obs.id.to_string());
+            if let Some(checkpoint_id) = &obs.checkpoint_id {
+                push_ref(&mut signal_refs, "checkpoint", checkpoint_id.to_string());
+            }
+            if let Some(debug_session_id) = &obs.debug_session_id {
+                push_ref(
+                    &mut signal_refs,
+                    "debug_session",
+                    debug_session_id.to_string(),
+                );
+            }
+        }
+        if signal_refs.is_empty() {
+            return;
+        }
+        let now = current_ns();
+        if let Err(e) = store
+            .record_signal(AwarenessSignalInput {
+                project_slug,
+                signal_kind: "runtime_warning".into(),
+                severity: "warn".into(),
+                summary: "warning or error observations appeared after the checkpoint".into(),
+                signal_refs,
+                related_awareness_node_ids: Vec::new(),
+                score: 0.8,
+                expires_at: now.saturating_add(AWARENESS_SIGNAL_TTL_NS),
+            })
+            .await
+        {
+            tracing::warn!("failed to record runtime awareness signal: {e}");
+        }
+    }
+
+    async fn current_project_slug(&self) -> Option<String> {
+        self.active_state
+            .current_session()
+            .map(|s| s.project_slug.to_string())
+            .filter(|s| s != "unknown")
+            .or_else(|| {
+                self.active_project.try_read().ok().and_then(|project| {
+                    project
+                        .as_ref()
+                        .and_then(|p| derive_slug_from_root(&p.root))
+                })
+            })
     }
 
     async fn source_awareness(
@@ -1244,10 +1405,6 @@ impl DaemonMcp {
 
         let seq = self.store.checkpoint().await;
         let now = current_ns();
-        let checkpoint_has_semantic_anchor = params
-            .description
-            .as_deref()
-            .is_some_and(|desc| !desc.trim().is_empty());
         let cp = daemon8_store::DebugCheckpoint {
             id: None,
             debug_session_id: active.id.to_string(),
@@ -1266,17 +1423,6 @@ impl DaemonMcp {
             .last_checkpoint
             .lock()
             .expect("last_checkpoint mutex poisoned") = seq;
-        let next_actions = if checkpoint_has_semantic_anchor && self.awareness_store.is_some() {
-            vec!["awareness_sync", "query_observations"]
-        } else {
-            vec!["query_observations"]
-        };
-        let hint = if checkpoint_has_semantic_anchor && self.awareness_store.is_some() {
-            "checkpoint set; if this checkpoint tests an active question/hypothesis, link it with awareness_sync before querying observations"
-        } else {
-            "checkpoint set; query_observations(since_checkpoint=...) shows what comes next"
-        };
-
         self.ok_with(
             serde_json::json!({
                 "checkpoint_id": cp_id,
@@ -1284,8 +1430,8 @@ impl DaemonMcp {
                 "seq_at_creation": seq.0,
                 "created_at": now
             }),
-            next_actions,
-            Some(hint),
+            vec!["query_observations"],
+            Some("checkpoint set; query_observations(since_checkpoint=...) returns signals, not durable awareness evidence"),
         )
     }
 
@@ -1618,8 +1764,8 @@ impl DaemonMcp {
                         "debug_session_id": id,
                         "started_at": now,
                     }),
-                    vec!["awareness_status", "awareness_sync", "create_checkpoint"],
-                    Some("debug session opened; check source posture and capture the objective/open questions/hypotheses if they are not already clear"),
+                    vec!["awareness_status"],
+                    Some("debug session opened; check source/context/reasoning awareness first, then capture objectives or open questions only if durable state changed"),
                 )
             }
             Err(e) => self.err("start_debug_session_failed", &e.to_string(), None, None),
@@ -1730,14 +1876,11 @@ async fn end_or_resolve_inner(daemon: &DaemonMcp, intent: EndIntent) -> String {
     };
     let now = current_ns();
 
-    // Gather source observations from this session's checkpoints. Falls back
-    // to the bare seq range from start..now if checkpoint listing fails.
     let checkpoints = ds_store
         .list_checkpoints(active.id.as_ref())
         .await
         .unwrap_or_default();
-    let mut source_observations: Vec<u64> =
-        checkpoints.iter().map(|cp| cp.seq_at_creation).collect();
+    let source_observations: Vec<u64> = Vec::new();
 
     let (outcome, summary_text, tags, data_blob) = match intent {
         EndIntent::Abandon { outcome_str } => {
@@ -1790,6 +1933,15 @@ async fn end_or_resolve_inner(daemon: &DaemonMcp, intent: EndIntent) -> String {
                 serde_json::json!(checkpoints.len()),
             );
             data.insert(
+                "checkpoint_seq_refs".into(),
+                serde_json::json!(
+                    checkpoints
+                        .iter()
+                        .map(|cp| cp.seq_at_creation)
+                        .collect::<Vec<_>>()
+                ),
+            );
+            data.insert(
                 "started_at_ns".into(),
                 serde_json::json!(active.started_at_ns),
             );
@@ -1802,12 +1954,6 @@ async fn end_or_resolve_inner(daemon: &DaemonMcp, intent: EndIntent) -> String {
             )
         }
     };
-
-    // Cap source_observations to the most recent 50 to avoid unbounded blobs.
-    if source_observations.len() > 50 {
-        let drop = source_observations.len() - 50;
-        source_observations.drain(0..drop);
-    }
 
     let mem = daemon8_store::Memory {
         id: None,
@@ -1860,10 +2006,14 @@ async fn end_or_resolve_inner(daemon: &DaemonMcp, intent: EndIntent) -> String {
 
     daemon.active_state.clear();
 
+    let evidence_ref = serde_json::json!({
+        "kind": "session_summary",
+        "id": summary_memory_id.clone(),
+    });
     let (next_actions, hint) = if daemon.awareness_store.is_some() {
         (
             vec!["awareness_sync", "start_debug_session"],
-            "session closed; use awareness_sync to close questions, verify facts, or preserve unresolved blockers before starting the next investigation",
+            "session closed; use awareness_sync with the returned project_slug and evidence_ref only if this durable session summary changes reasoning awareness",
         )
     } else {
         (
@@ -1876,6 +2026,8 @@ async fn end_or_resolve_inner(daemon: &DaemonMcp, intent: EndIntent) -> String {
         serde_json::json!({
             "debug_session_id": active.id.as_ref(),
             "summary_memory_id": summary_memory_id,
+            "project_slug": active.project_slug.as_ref(),
+            "evidence_ref": evidence_ref,
             "checkpoint_count": checkpoints.len(),
         }),
         next_actions,
@@ -2034,14 +2186,17 @@ impl DaemonMcp {
                 Some("start_debug_session"),
             );
         };
-        let evidence = params
-            .evidence
-            .map_or_else(AwarenessEvidence::default, |e| AwarenessEvidence {
-                observation_ids: e.observation_ids.unwrap_or_default(),
-                debug_session_ids: e.debug_session_ids.unwrap_or_default(),
-                checkpoint_ids: e.checkpoint_ids.unwrap_or_default(),
-                librarian_node_ids: e.librarian_node_ids.unwrap_or_default(),
-            });
+        let debug_session_id = params
+            .debug_session_id
+            .or_else(|| active.as_ref().map(|s| s.id.to_string()));
+        let checkpoint_id = params.checkpoint_id;
+        let refs = awareness_refs_from_params(
+            params.evidence_refs,
+            params.signal_refs,
+            params.evidence,
+            debug_session_id.as_deref(),
+            checkpoint_id.as_deref(),
+        );
 
         let input = AwarenessSync {
             operation,
@@ -2054,11 +2209,9 @@ impl DaemonMcp {
             note: params.note,
             redex: params.redex,
             tags: params.tags.unwrap_or_default(),
-            debug_session_id: params
-                .debug_session_id
-                .or_else(|| active.as_ref().map(|s| s.id.to_string())),
-            checkpoint_id: params.checkpoint_id,
-            evidence,
+            debug_session_id,
+            checkpoint_id,
+            refs,
             target_node_id: params.target_node_id,
             supersedes: params.supersedes.unwrap_or_default(),
             answers: params.answers.unwrap_or_default(),
@@ -2779,6 +2932,183 @@ fn source_template_matches(
         .any(|project_type| classification.tags.contains(project_type))
 }
 
+async fn durable_records_json(
+    memory_store: Option<&Arc<dyn MemoryStore>>,
+    project_slug: &str,
+) -> serde_json::Value {
+    let Some(store) = memory_store else {
+        return serde_json::json!({
+            "available": false,
+            "reason": "memory store unavailable",
+        });
+    };
+    match store
+        .query_memory(&MemoryFilter {
+            project_slug: Some(project_slug.to_string()),
+            limit: Some(500),
+            ..Default::default()
+        })
+        .await
+    {
+        Ok(memories) => {
+            let mut counts = std::collections::BTreeMap::new();
+            for memory in memories {
+                *counts.entry(memory.kind.to_string()).or_insert(0usize) += 1;
+            }
+            serde_json::json!({
+                "available": true,
+                "counts_by_kind": counts,
+            })
+        }
+        Err(e) => serde_json::json!({
+            "available": false,
+            "reason": e.to_string(),
+        }),
+    }
+}
+
+fn compact_manifest_json(manifest: &daemon8_store::AwarenessManifest) -> serde_json::Value {
+    serde_json::json!({
+        "project_slug": &manifest.project_slug,
+        "counts_by_kind": &manifest.counts_by_kind,
+        "active_objectives": compact_nodes_json(&manifest.active_objectives),
+        "open_questions": compact_nodes_json(&manifest.open_questions),
+        "active_hypotheses": compact_nodes_json(&manifest.active_hypotheses),
+        "stale_risk_count": manifest.stale_risk_count,
+        "conflict_count": manifest.conflict_count,
+        "suggested_focus_paths": &manifest.suggested_focus_paths,
+    })
+}
+
+fn compact_nodes_json(nodes: &[daemon8_store::AwarenessNode]) -> Vec<serde_json::Value> {
+    nodes
+        .iter()
+        .map(|node| {
+            serde_json::json!({
+                "id": &node.id,
+                "path": &node.path,
+                "kind": node.kind,
+                "state": node.state,
+                "authority": node.authority,
+                "confidence": node.confidence,
+                "summary": &node.summary,
+                "tags": &node.tags,
+                "updated_at": node.updated_at,
+            })
+        })
+        .collect()
+}
+
+fn awareness_status_next_actions(
+    has_active_session: bool,
+    focused: bool,
+    source_awareness: &serde_json::Value,
+) -> Vec<&'static str> {
+    if !has_active_session {
+        return if focused {
+            vec!["start_debug_session"]
+        } else {
+            vec!["start_debug_session", "librarian_lookup"]
+        };
+    }
+
+    match source_awareness.get("level").and_then(|v| v.as_str()) {
+        Some("optimal") => vec!["create_checkpoint"],
+        _ if focused => vec!["librarian_lookup"],
+        _ => vec!["librarian_lookup", "list_connections"],
+    }
+}
+
+fn ref_params_to_refs(params: Option<Vec<AwarenessRefParams>>) -> Vec<AwarenessRef> {
+    params
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|r| !r.kind.trim().is_empty() && !r.id.trim().is_empty())
+        .map(|r| AwarenessRef {
+            kind: r.kind.trim().to_ascii_lowercase(),
+            id: r.id.trim().to_string(),
+        })
+        .collect()
+}
+
+fn push_ref(refs: &mut Vec<AwarenessRef>, kind: &str, id: impl Into<String>) {
+    let id = id.into().trim().to_string();
+    if id.is_empty() || refs.iter().any(|r| r.kind == kind && r.id == id) {
+        return;
+    }
+    refs.push(AwarenessRef {
+        kind: kind.trim().to_ascii_lowercase(),
+        id,
+    });
+}
+
+fn push_ref_by_role(refs: &mut AwarenessRefs, item: AwarenessRef) {
+    if is_ephemeral_ref_kind(&item.kind) {
+        push_ref(&mut refs.signal_refs, &item.kind, item.id);
+    } else {
+        push_ref(&mut refs.evidence_refs, &item.kind, item.id);
+    }
+}
+
+fn is_ephemeral_ref_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "observation"
+            | "checkpoint"
+            | "debug_session"
+            | "log_row"
+            | "browser_event"
+            | "device_event"
+            | "tool_output"
+            | "tool_call"
+            | "http_exchange"
+            | "js_exception"
+            | "console"
+            | "network"
+            | "event"
+    )
+}
+
+fn awareness_refs_from_params(
+    evidence_refs: Option<Vec<AwarenessRefParams>>,
+    signal_refs: Option<Vec<AwarenessRefParams>>,
+    legacy: Option<AwarenessEvidenceParams>,
+    debug_session_id: Option<&str>,
+    checkpoint_id: Option<&str>,
+) -> AwarenessRefs {
+    let mut refs = AwarenessRefs::default();
+    for item in ref_params_to_refs(evidence_refs) {
+        push_ref_by_role(&mut refs, item);
+    }
+    for item in ref_params_to_refs(signal_refs) {
+        push_ref(&mut refs.signal_refs, &item.kind, item.id);
+    }
+    if let Some(debug_session_id) = debug_session_id {
+        push_ref(&mut refs.signal_refs, "debug_session", debug_session_id);
+    }
+    if let Some(checkpoint_id) = checkpoint_id {
+        push_ref(&mut refs.signal_refs, "checkpoint", checkpoint_id);
+    }
+    if let Some(legacy) = legacy {
+        for r in ref_params_to_refs(legacy.refs) {
+            push_ref_by_role(&mut refs, r);
+        }
+        for id in legacy.observation_ids.unwrap_or_default() {
+            push_ref(&mut refs.signal_refs, "observation", id.to_string());
+        }
+        for id in legacy.debug_session_ids.unwrap_or_default() {
+            push_ref(&mut refs.signal_refs, "debug_session", id);
+        }
+        for id in legacy.checkpoint_ids.unwrap_or_default() {
+            push_ref(&mut refs.signal_refs, "checkpoint", id);
+        }
+        for id in legacy.librarian_node_ids.unwrap_or_default() {
+            push_ref(&mut refs.evidence_refs, "librarian_node", id);
+        }
+    }
+    refs
+}
+
 fn derive_slug_from_root(root: &std::path::Path) -> Option<String> {
     root.file_name().and_then(|name| name.to_str()).map(|raw| {
         let slug = raw
@@ -3355,7 +3685,7 @@ mod logging_tests {
     #[tokio::test]
     async fn awareness_sync_populates_status_manifest() {
         let mcp = build_mcp_with_debug_session().await;
-        let _ = mcp
+        let start_res = mcp
             .start_debug_session(Parameters(StartDebugSessionParams {
                 project: Some("daemon8".into()),
                 description: Some("awareness tree alpha".into()),
@@ -3363,6 +3693,11 @@ mod logging_tests {
                 feature: Some("awareness".into()),
             }))
             .await;
+        let start: serde_json::Value = serde_json::from_str(&start_res).unwrap();
+        assert_eq!(
+            start["daemon8"]["next_actions"],
+            serde_json::json!(["awareness_status"])
+        );
 
         let synced = mcp
             .awareness_sync(Parameters(AwarenessSyncParams {
@@ -3372,12 +3707,23 @@ mod logging_tests {
                 authority: Some("accepted".into()),
                 confidence: Some(0.8),
                 summary: Some("Keep debug-session state visible without flooding context.".into()),
-                note: None,
-                redex: None,
+                note: Some("internal objective note".into()),
+                redex: Some("objective! @now $".into()),
                 tags: Some(vec!["alpha".into(), "cadence".into()]),
                 project_slug: None,
                 debug_session_id: None,
                 checkpoint_id: None,
+                evidence_refs: Some(vec![
+                    AwarenessRefParams {
+                        kind: "session_summary".into(),
+                        id: "session-summary-1".into(),
+                    },
+                    AwarenessRefParams {
+                        kind: "observation".into(),
+                        id: "42".into(),
+                    },
+                ]),
+                signal_refs: None,
                 evidence: None,
                 target_node_id: None,
                 supersedes: None,
@@ -3387,6 +3733,21 @@ mod logging_tests {
             .await;
         let synced: serde_json::Value = serde_json::from_str(&synced).unwrap();
         assert_eq!(synced["result"]["status"], "synced");
+        let node = &synced["result"]["result"]["node"];
+        assert!(
+            node["evidence_refs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|r| r["kind"] == "session_summary" && r["id"] == "session-summary-1")
+        );
+        assert!(
+            node["signal_refs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|r| r["kind"] == "observation" && r["id"] == "42")
+        );
 
         let status = mcp
             .awareness_status(Parameters(AwarenessStatusParams {
@@ -3397,18 +3758,96 @@ mod logging_tests {
             }))
             .await;
         let status: serde_json::Value = serde_json::from_str(&status).unwrap();
-        let objectives = status["result"]["project_awareness"]["manifest"]["active_objectives"]
+        assert!(status["result"]["source_awareness"].is_object());
+        assert!(status["result"]["context_awareness"].is_object());
+        assert!(status["result"]["signals"].is_array());
+        let objectives = status["result"]["reasoning_awareness"]["manifest"]["active_objectives"]
             .as_array()
             .expect("manifest must include active objectives");
         assert_eq!(objectives.len(), 1);
         assert_eq!(objectives[0]["path"], "alpha.awareness.objective");
+        assert!(objectives[0].get("note").is_none());
+        assert!(objectives[0].get("redex").is_none());
+        assert!(objectives[0].get("redex_derived").is_none());
+        assert!(objectives[0].get("evidence_refs").is_none());
+        assert!(objectives[0].get("signal_refs").is_none());
+        assert!(objectives[0].get("observation_ids").is_none());
         assert!(
             status["daemon8"]["next_actions"]
                 .as_array()
                 .unwrap()
                 .iter()
-                .any(|v| v == "awareness_sync"),
-            "status should suggest awareness_sync when the graph is writable"
+                .all(|v| v != "awareness_sync"),
+            "status reads must not nudge durable writes unless state changes"
+        );
+    }
+
+    #[tokio::test]
+    async fn warning_observations_create_signals_not_awareness_sync_nudges() {
+        let mcp = build_mcp_with_debug_session().await;
+        let _ = mcp
+            .start_debug_session(Parameters(StartDebugSessionParams {
+                project: Some("daemon8".into()),
+                description: Some("runtime signal test".into()),
+                agent_id: ":test/codex+runtime-agent>".into(),
+                feature: Some("awareness".into()),
+            }))
+            .await;
+        let checkpoint = mcp
+            .create_checkpoint(Parameters(CreateCheckpointParams {
+                description: Some("before warning".into()),
+            }))
+            .await;
+        let checkpoint: serde_json::Value = serde_json::from_str(&checkpoint).unwrap();
+        let seq = checkpoint["result"]["seq_at_creation"].as_u64().unwrap();
+
+        let obs = Observation::new(
+            Origin::Application {
+                name: "test-app".into(),
+            },
+            ObservationKind::Log,
+            serde_json::json!({"message": "runtime warning"}),
+            Severity::Warn,
+            None,
+        );
+        let inserted_id = mcp.store.insert(obs).await.unwrap();
+
+        let queried = mcp
+            .query_observations(Parameters(ObserveParams {
+                since_checkpoint: Some(seq),
+                ..Default::default()
+            }))
+            .await;
+        let queried: serde_json::Value = serde_json::from_str(&queried).unwrap();
+        let next_actions = queried["daemon8"]["next_actions"].as_array().unwrap();
+        assert!(
+            !next_actions.iter().any(|v| v == "awareness_sync"),
+            "raw warning rows must not directly nudge durable awareness sync"
+        );
+        assert!(
+            next_actions.iter().any(|v| v == "resolve_debug_session"),
+            "runtime signals should nudge toward interpreted durable conclusions"
+        );
+
+        let status = mcp
+            .awareness_status(Parameters(AwarenessStatusParams {
+                focus_path: None,
+                depth: None,
+                include_notes: None,
+                include_evidence: None,
+            }))
+            .await;
+        let status: serde_json::Value = serde_json::from_str(&status).unwrap();
+        let signals = status["result"]["signals"].as_array().unwrap();
+        assert_eq!(signals.len(), 1);
+        assert_eq!(signals[0]["signal_kind"], "runtime_warning");
+        let inserted_id = inserted_id.to_string();
+        assert!(
+            signals[0]["signal_refs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|r| r["kind"] == "observation" && r["id"] == inserted_id)
         );
     }
 
@@ -3447,7 +3886,13 @@ mod logging_tests {
             .await;
         let resolved: serde_json::Value = serde_json::from_str(&resolve_res).unwrap();
         assert_eq!(resolved["result"]["debug_session_id"], session_id);
+        assert_eq!(resolved["result"]["project_slug"], "daemon8");
         let memory_id = resolved["result"]["summary_memory_id"].as_str().unwrap();
+        assert_eq!(
+            resolved["result"]["evidence_ref"]["kind"],
+            "session_summary"
+        );
+        assert_eq!(resolved["result"]["evidence_ref"]["id"], memory_id);
 
         // active state cleared
         assert!(mcp.active_state.current_session().is_none());

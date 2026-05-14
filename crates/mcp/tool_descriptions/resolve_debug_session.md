@@ -21,7 +21,9 @@ A debug session must be active. Call start_debug_session first if not.
 ## Returns
   result.debug_session_id: id of the session that was just resolved.
   result.summary_memory_id: id of the internal typed SessionSummary record written for future error/session recall.
-  result.checkpoint_count: number of checkpoints rolled into the summary's source_observations.
+  result.project_slug: project slug to use if a follow-up awareness_sync is needed after the session closes.
+  result.evidence_ref: durable `{kind:"session_summary", id}` ref for follow-up awareness_sync calls.
+  result.checkpoint_count: number of checkpoints considered while writing the durable session summary.
   daemon8.active_debug_session: null after this call.
 
 ## Errors
@@ -30,4 +32,4 @@ A debug session must be active. Call start_debug_session first if not.
 
 ## Next
 
-Call `awareness_sync` if the resolution verifies facts, answers questions, retires hypotheses, or preserves unresolved blockers. Then `list_debug_sessions` confirms the session closed.
+Call `awareness_sync` only if the resolution verifies facts, answers questions, retires hypotheses, or preserves unresolved blockers. Pass the returned `project_slug` and `evidence_ref`; do not use raw checkpoint or observation ids as durable evidence. Then `list_debug_sessions` confirms the session closed.

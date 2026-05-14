@@ -2,9 +2,11 @@
 
 Use awareness tools to keep the agent oriented without creating a generic memory bank.
 
-`awareness_status` is the read tool. It returns source posture plus a compact project-state manifest. Focused traversal is opt-in with `focus_path`; notes and evidence are omitted unless requested.
+`awareness_status` is the read tool. It returns three layers: source awareness, context awareness, and reasoning awareness. Focused traversal is opt-in with `focus_path`; notes and refs are omitted unless requested.
 
-`awareness_sync` is the write tool. It captures durable semantic state changes: objectives, questions, hypotheses, facts, decisions, constraints, risks, and blockers.
+`awareness_sync` is the write tool when the awareness store is enabled. It captures durable semantic state changes: objectives, questions, hypotheses, facts, decisions, constraints, risks, and blockers.
+
+Raw observations, checkpoints, log rows, browser/device events, and tool output are signals. Durable evidence comes from interpreted persistent records: resolved debug sessions, accepted research, plan changes, decisions, fixed bugs, lessons, business rules, source verifications, user confirmations, and librarian refs.
 
 Source posture levels:
 
@@ -21,7 +23,7 @@ Cadence:
 4. `create_checkpoint`
 5. Run the action/test.
 6. `query_observations(since_checkpoint=...)`
-7. `awareness_sync` if evidence verifies, refines, answers, or retires a node.
+7. `awareness_sync` only if the interpreted conclusion verifies, refines, answers, or retires a node.
 8. `resolve_debug_session` once the root cause is verified.
 
 Do not sync every tool call. Sync only when the state of the work changes.

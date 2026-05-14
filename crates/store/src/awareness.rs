@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Havy.tech, LLC
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::hash::{Hash, Hasher};
 
 use surrealdb::Surreal;
 use surrealdb::engine::local::Db;
@@ -13,8 +14,8 @@ use daemon8_types::{
 
 use crate::{
     AwarenessConflict, AwarenessEdge, AwarenessFilter, AwarenessManifest, AwarenessNode,
-    AwarenessStore, AwarenessSync, AwarenessSyncResult, AwarenessTraversalFilter, AwarenessTree,
-    StoreError,
+    AwarenessRedex, AwarenessRef, AwarenessSignal, AwarenessSignalInput, AwarenessStore,
+    AwarenessSync, AwarenessSyncResult, AwarenessTraversalFilter, AwarenessTree, StoreError,
 };
 
 const NAMESPACE: &str = "daemon8";
@@ -48,11 +49,24 @@ impl SurrealAwarenessStore {
                  DEFINE FIELD IF NOT EXISTS summary            ON awareness_node TYPE string;
                  DEFINE FIELD IF NOT EXISTS note               ON awareness_node TYPE option<string>;
                  DEFINE FIELD IF NOT EXISTS redex              ON awareness_node TYPE option<string>;
+                 DEFINE FIELD IF NOT EXISTS redex_derived      ON awareness_node TYPE option<object>;
+                 DEFINE FIELD IF NOT EXISTS redex_derived.state      ON awareness_node TYPE option<string>;
+                 DEFINE FIELD IF NOT EXISTS redex_derived.recovery   ON awareness_node TYPE option<string>;
+                 DEFINE FIELD IF NOT EXISTS redex_derived.implication ON awareness_node TYPE option<string>;
+                 DEFINE FIELD IF NOT EXISTS redex_derived.temporal   ON awareness_node TYPE option<string>;
+                 DEFINE FIELD IF NOT EXISTS redex_derived.persistent ON awareness_node TYPE option<bool>;
+                 DEFINE FIELD IF NOT EXISTS redex_derived.conflict   ON awareness_node TYPE option<bool>;
                  DEFINE FIELD IF NOT EXISTS tags               ON awareness_node TYPE array<string>;
                  DEFINE FIELD IF NOT EXISTS debug_session_id   ON awareness_node TYPE option<string>;
                  DEFINE FIELD IF NOT EXISTS checkpoint_id      ON awareness_node TYPE option<string>;
                  DEFINE FIELD IF NOT EXISTS debug_session_ids  ON awareness_node TYPE array<string>;
                  DEFINE FIELD IF NOT EXISTS checkpoint_ids     ON awareness_node TYPE array<string>;
+                 DEFINE FIELD IF NOT EXISTS evidence_refs      ON awareness_node TYPE array<any>;
+                 DEFINE FIELD IF NOT EXISTS evidence_refs.*.kind ON awareness_node TYPE string;
+                 DEFINE FIELD IF NOT EXISTS evidence_refs.*.id   ON awareness_node TYPE string;
+                 DEFINE FIELD IF NOT EXISTS signal_refs        ON awareness_node TYPE array<any>;
+                 DEFINE FIELD IF NOT EXISTS signal_refs.*.kind ON awareness_node TYPE string;
+                 DEFINE FIELD IF NOT EXISTS signal_refs.*.id   ON awareness_node TYPE string;
                  DEFINE FIELD IF NOT EXISTS observation_ids    ON awareness_node TYPE array<int>;
                  DEFINE FIELD IF NOT EXISTS librarian_node_ids ON awareness_node TYPE array<string>;
                  DEFINE FIELD IF NOT EXISTS created_at         ON awareness_node TYPE int;
@@ -73,7 +87,26 @@ impl SurrealAwarenessStore {
                    FROM awareness_node TO awareness_node;
                  DEFINE FIELD IF NOT EXISTS kind       ON awareness_edge TYPE string;
                  DEFINE FIELD IF NOT EXISTS created_at ON awareness_edge TYPE int;
-                 DEFINE INDEX IF NOT EXISTS idx_ae_kind ON awareness_edge FIELDS kind;",
+                 DEFINE INDEX IF NOT EXISTS idx_ae_kind ON awareness_edge FIELDS kind;
+
+                 DEFINE TABLE IF NOT EXISTS awareness_signal SCHEMAFULL;
+                 DEFINE FIELD IF NOT EXISTS project_slug               ON awareness_signal TYPE string;
+                 DEFINE FIELD IF NOT EXISTS signal_kind                ON awareness_signal TYPE string;
+                 DEFINE FIELD IF NOT EXISTS signal_key                 ON awareness_signal TYPE string;
+                 DEFINE FIELD IF NOT EXISTS severity                   ON awareness_signal TYPE string;
+                 DEFINE FIELD IF NOT EXISTS summary                    ON awareness_signal TYPE string;
+                 DEFINE FIELD IF NOT EXISTS signal_refs                ON awareness_signal TYPE array<any>;
+                 DEFINE FIELD IF NOT EXISTS signal_refs.*.kind         ON awareness_signal TYPE string;
+                 DEFINE FIELD IF NOT EXISTS signal_refs.*.id           ON awareness_signal TYPE string;
+                 DEFINE FIELD IF NOT EXISTS related_awareness_node_ids ON awareness_signal TYPE array<string>;
+                 DEFINE FIELD IF NOT EXISTS score                      ON awareness_signal TYPE float;
+                 DEFINE FIELD IF NOT EXISTS surfaced_at                ON awareness_signal TYPE option<int>;
+                 DEFINE FIELD IF NOT EXISTS expires_at                 ON awareness_signal TYPE int;
+                 DEFINE FIELD IF NOT EXISTS created_at                 ON awareness_signal TYPE int;
+                 DEFINE INDEX IF NOT EXISTS idx_as_project ON awareness_signal FIELDS project_slug;
+                 DEFINE INDEX IF NOT EXISTS idx_as_key     ON awareness_signal FIELDS project_slug, signal_kind, signal_key;
+                 DEFINE INDEX IF NOT EXISTS idx_as_expires ON awareness_signal FIELDS expires_at;
+                 DEFINE INDEX IF NOT EXISTS idx_as_score   ON awareness_signal FIELDS score;",
             )
             .await
             .map_err(|e| StoreError::Db(format!("awareness schema init: {e}")))?
@@ -231,12 +264,39 @@ impl SurrealAwarenessStore {
         }
         Ok(edges)
     }
+
+    async fn validate_edge_targets(&self, input: &AwarenessSync) -> Result<(), StoreError> {
+        let mut ids = BTreeSet::new();
+        ids.extend(input.supersedes.iter().map(String::as_str));
+        ids.extend(input.answers.iter().map(String::as_str));
+        ids.extend(input.contradicts.iter().map(String::as_str));
+
+        for id in ids {
+            validate_record_key(id)?;
+            if self.get_node(id).await?.is_none() {
+                return Err(StoreError::Other(format!(
+                    "awareness edge target does not exist: {id}"
+                )));
+            }
+        }
+
+        Ok(())
+    }
 }
 
 #[async_trait::async_trait]
 impl AwarenessStore for SurrealAwarenessStore {
     async fn sync_node(&self, input: AwarenessSync) -> Result<AwarenessSyncResult, StoreError> {
+        let input = normalize_sync(input)?;
+        if input.operation == AwarenessOperation::Verify && input.refs.evidence_refs.is_empty() {
+            return Err(StoreError::Other(
+                "awareness verify requires at least one durable evidence_ref".into(),
+            ));
+        }
+        self.validate_edge_targets(&input).await?;
+
         let now = current_ns();
+        let mut conflict = None;
         if input.operation == AwarenessOperation::Capture && !input.contradicts.is_empty() {
             let existing = self
                 .active_nodes_for_path(&input.project_slug, &input.path)
@@ -252,16 +312,12 @@ impl AwarenessStore for SurrealAwarenessStore {
                 })
                 .collect::<Vec<_>>();
             if !conflicts.is_empty() {
-                return Ok(AwarenessSyncResult {
-                    node: None,
-                    edges: Vec::new(),
-                    conflict: Some(AwarenessConflict {
-                        reason:
-                            "incoming node explicitly contradicts active awareness on the same path"
-                                .into(),
-                        incoming_path: input.path,
-                        existing_nodes: conflicts,
-                    }),
+                conflict = Some(AwarenessConflict {
+                    reason:
+                        "incoming node explicitly contradicts active awareness on the same path"
+                            .into(),
+                    incoming_path: input.path.clone(),
+                    existing_nodes: conflicts,
                 });
             }
         }
@@ -269,6 +325,9 @@ impl AwarenessStore for SurrealAwarenessStore {
         let node = match input.operation {
             AwarenessOperation::Capture | AwarenessOperation::Question => {
                 let mut node = new_node_from_input(&input, now);
+                if conflict.is_some() {
+                    node.state = AwarenessNodeState::Conflicted;
+                }
                 if input.operation == AwarenessOperation::Question {
                     node.kind = AwarenessNodeKind::Question;
                     node.authority = AwarenessAuthority::Question;
@@ -301,7 +360,7 @@ impl AwarenessStore for SurrealAwarenessStore {
         Ok(AwarenessSyncResult {
             node: Some(node),
             edges,
-            conflict: None,
+            conflict,
         })
     }
 
@@ -392,6 +451,88 @@ impl AwarenessStore for SurrealAwarenessStore {
         })
     }
 
+    async fn record_signal(
+        &self,
+        input: AwarenessSignalInput,
+    ) -> Result<AwarenessSignal, StoreError> {
+        let signal_refs = normalize_refs(input.signal_refs, RefRole::Signal)?;
+        if signal_refs.is_empty() {
+            return Err(StoreError::Other(
+                "awareness signal requires at least one signal_ref".into(),
+            ));
+        }
+        let signal_key = refs_key_string(&signal_refs);
+        let id = signal_record_id(&input.project_slug, &input.signal_kind, &signal_key);
+        let signal = AwarenessSignal {
+            id: Some(id.clone()),
+            project_slug: input.project_slug,
+            signal_kind: input.signal_kind,
+            signal_key,
+            severity: input.severity,
+            summary: input.summary,
+            signal_refs,
+            related_awareness_node_ids: input.related_awareness_node_ids,
+            score: input.score.clamp(0.0, 1.0),
+            surfaced_at: None,
+            expires_at: input.expires_at,
+            created_at: current_ns(),
+        };
+        let mut result = self
+            .db
+            .query("UPSERT type::record('awareness_signal', $id) CONTENT $content")
+            .bind(("id", serde_json::json!(id)))
+            .bind(("content", serde_json::to_value(&signal)?))
+            .await
+            .map_err(|e| StoreError::Db(format!("upsert awareness signal: {e}")))?;
+        let row: Option<serde_json::Value> = result
+            .take(0)
+            .map_err(|e| StoreError::Db(format!("upsert awareness signal read: {e}")))?;
+        row.map(parse_signal)
+            .transpose()?
+            .ok_or_else(|| StoreError::Db("upsert awareness signal: no row returned".into()))
+    }
+
+    async fn active_signals(
+        &self,
+        project_slug: &str,
+        limit: usize,
+    ) -> Result<Vec<AwarenessSignal>, StoreError> {
+        self.prune_expired_signals(current_ns()).await?;
+
+        let mut result = self
+            .db
+            .query(
+                "SELECT * FROM awareness_signal
+                 WHERE project_slug = $project_slug AND expires_at > $now
+                 ORDER BY score DESC, created_at DESC
+                 LIMIT $limit",
+            )
+            .bind(("project_slug", serde_json::json!(project_slug)))
+            .bind(("now", serde_json::json!(current_ns())))
+            .bind(("limit", serde_json::json!(limit)))
+            .await
+            .map_err(|e| StoreError::Db(format!("query awareness signals: {e}")))?;
+        let rows: Vec<serde_json::Value> = result
+            .take(0)
+            .map_err(|e| StoreError::Db(format!("query awareness signals read: {e}")))?;
+        rows.into_iter().map(parse_signal).collect()
+    }
+
+    async fn prune_expired_signals(&self, now: u64) -> Result<u64, StoreError> {
+        let mut result = self
+            .db
+            .query("DELETE awareness_signal WHERE expires_at <= $now RETURN BEFORE")
+            .bind(("now", serde_json::json!(now)))
+            .await
+            .map_err(|e| StoreError::Db(format!("delete expired awareness signals: {e}")))?;
+
+        let rows: Vec<serde_json::Value> = result
+            .take(0)
+            .map_err(|e| StoreError::Db(format!("delete expired awareness signals read: {e}")))?;
+
+        Ok(rows.len() as u64)
+    }
+
     async fn traverse(
         &self,
         filter: &AwarenessTraversalFilter,
@@ -414,6 +555,7 @@ impl AwarenessStore for SurrealAwarenessStore {
             for node in &mut nodes {
                 node.note = None;
                 node.redex = None;
+                node.redex_derived = None;
             }
         }
         if !filter.include_evidence {
@@ -422,6 +564,8 @@ impl AwarenessStore for SurrealAwarenessStore {
                 node.librarian_node_ids.clear();
                 node.debug_session_ids.clear();
                 node.checkpoint_ids.clear();
+                node.evidence_refs.clear();
+                node.signal_refs.clear();
                 node.debug_session_id = None;
                 node.checkpoint_id = None;
             }
@@ -446,6 +590,7 @@ impl AwarenessStore for SurrealAwarenessStore {
 }
 
 fn new_node_from_input(input: &AwarenessSync, now: u64) -> AwarenessNode {
+    let signal_refs = awareness_signal_refs(input);
     AwarenessNode {
         id: None,
         project_slug: input.project_slug.clone(),
@@ -459,19 +604,16 @@ fn new_node_from_input(input: &AwarenessSync, now: u64) -> AwarenessNode {
         summary: input.summary.clone().unwrap_or_else(|| input.path.clone()),
         note: input.note.clone(),
         redex: input.redex.clone(),
+        redex_derived: input.redex.as_deref().map(derive_redex),
         tags: input.tags.clone(),
         debug_session_id: input.debug_session_id.clone(),
         checkpoint_id: input.checkpoint_id.clone(),
-        debug_session_ids: collect_primary_and_evidence(
-            input.debug_session_id.as_deref(),
-            &input.evidence.debug_session_ids,
-        ),
-        checkpoint_ids: collect_primary_and_evidence(
-            input.checkpoint_id.as_deref(),
-            &input.evidence.checkpoint_ids,
-        ),
-        observation_ids: input.evidence.observation_ids.clone(),
-        librarian_node_ids: input.evidence.librarian_node_ids.clone(),
+        debug_session_ids: legacy_ref_ids(&signal_refs, "debug_session"),
+        checkpoint_ids: legacy_ref_ids(&signal_refs, "checkpoint"),
+        evidence_refs: input.refs.evidence_refs.clone(),
+        signal_refs: signal_refs.clone(),
+        observation_ids: legacy_observation_ids(&signal_refs),
+        librarian_node_ids: legacy_ref_ids(&input.refs.evidence_refs, "librarian_node"),
         created_at: now,
         updated_at: now,
         resolved_at: None,
@@ -495,26 +637,27 @@ fn apply_input_to_node(node: &mut AwarenessNode, input: &AwarenessSync, now: u64
     }
     if input.redex.is_some() {
         node.redex = input.redex.clone();
+        node.redex_derived = input.redex.as_deref().map(derive_redex);
     }
+    let signal_refs = awareness_signal_refs(input);
     extend_unique(&mut node.tags, &input.tags);
-    extend_unique_u64(&mut node.observation_ids, &input.evidence.observation_ids);
+    extend_unique_refs(&mut node.evidence_refs, &input.refs.evidence_refs);
+    extend_unique_refs(&mut node.signal_refs, &signal_refs);
+    extend_unique_u64(
+        &mut node.observation_ids,
+        &legacy_observation_ids(&signal_refs),
+    );
     extend_unique(
         &mut node.debug_session_ids,
-        &collect_primary_and_evidence(
-            input.debug_session_id.as_deref(),
-            &input.evidence.debug_session_ids,
-        ),
+        &legacy_ref_ids(&signal_refs, "debug_session"),
     );
     extend_unique(
         &mut node.checkpoint_ids,
-        &collect_primary_and_evidence(
-            input.checkpoint_id.as_deref(),
-            &input.evidence.checkpoint_ids,
-        ),
+        &legacy_ref_ids(&signal_refs, "checkpoint"),
     );
     extend_unique(
         &mut node.librarian_node_ids,
-        &input.evidence.librarian_node_ids,
+        &legacy_ref_ids(&input.refs.evidence_refs, "librarian_node"),
     );
     if node.debug_session_id.is_none() {
         node.debug_session_id = input.debug_session_id.clone();
@@ -638,6 +781,15 @@ fn parse_edge(mut val: serde_json::Value) -> Result<AwarenessEdge, StoreError> {
     serde_json::from_value(val).map_err(StoreError::from)
 }
 
+fn parse_signal(mut val: serde_json::Value) -> Result<AwarenessSignal, StoreError> {
+    if let Some(id_val) = val.get("id")
+        && let Some(bare) = extract_record_id(id_val, "awareness_signal")
+    {
+        val["id"] = serde_json::Value::String(bare);
+    }
+    serde_json::from_value(val).map_err(StoreError::from)
+}
+
 fn extract_record_id(val: &serde_json::Value, table: &str) -> Option<String> {
     let prefix = format!("{table}:");
     match val {
@@ -689,13 +841,187 @@ fn extend_unique(target: &mut Vec<String>, incoming: &[String]) {
     }
 }
 
-fn collect_primary_and_evidence(primary: Option<&str>, evidence: &[String]) -> Vec<String> {
-    let mut refs = Vec::new();
-    if let Some(primary) = primary {
-        refs.push(primary.to_string());
+fn extend_unique_refs(target: &mut Vec<AwarenessRef>, incoming: &[AwarenessRef]) {
+    let mut seen = target
+        .iter()
+        .map(|r| (r.kind.clone(), r.id.clone()))
+        .collect::<BTreeSet<_>>();
+    for item in incoming {
+        if seen.insert((item.kind.clone(), item.id.clone())) {
+            target.push(item.clone());
+        }
     }
-    extend_unique(&mut refs, evidence);
+}
+
+#[derive(Debug, Clone, Copy)]
+enum RefRole {
+    Evidence,
+    Signal,
+}
+
+fn normalize_sync(mut input: AwarenessSync) -> Result<AwarenessSync, StoreError> {
+    let signal_refs = awareness_signal_refs(&input);
+    input.refs.evidence_refs = normalize_refs(input.refs.evidence_refs, RefRole::Evidence)?;
+    input.refs.signal_refs = normalize_refs(signal_refs, RefRole::Signal)?;
+    Ok(input)
+}
+
+fn normalize_refs(refs: Vec<AwarenessRef>, role: RefRole) -> Result<Vec<AwarenessRef>, StoreError> {
+    let mut unique = BTreeSet::new();
+    let mut normalized = Vec::new();
+    for item in refs {
+        let kind = item.kind.trim().to_ascii_lowercase();
+        let id = item.id.trim().to_string();
+        if kind.is_empty() || id.is_empty() {
+            return Err(StoreError::Other(
+                "awareness refs require non-empty kind and id".into(),
+            ));
+        }
+        match role {
+            RefRole::Evidence if !is_durable_ref_kind(&kind) => {
+                return Err(StoreError::Other(format!(
+                    "awareness evidence_ref kind is not durable: {kind}"
+                )));
+            }
+            RefRole::Signal if !is_signal_ref_kind(&kind) => {
+                return Err(StoreError::Other(format!(
+                    "awareness signal_ref kind is not ephemeral: {kind}"
+                )));
+            }
+            _ => {}
+        }
+        if unique.insert((kind.clone(), id.clone())) {
+            normalized.push(AwarenessRef { kind, id });
+        }
+    }
+    Ok(normalized)
+}
+
+fn is_durable_ref_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "session_summary"
+            | "librarian_node"
+            | "source_verification"
+            | "accepted_research"
+            | "research_note"
+            | "plan_item"
+            | "decision"
+            | "fixed_bug"
+            | "lesson"
+            | "business_rule"
+            | "user_confirmation"
+            | "memory"
+            | "error_signature"
+            | "debug_resolution"
+    )
+}
+
+fn is_signal_ref_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "observation"
+            | "checkpoint"
+            | "debug_session"
+            | "log_row"
+            | "browser_event"
+            | "device_event"
+            | "tool_output"
+            | "tool_call"
+            | "http_exchange"
+            | "js_exception"
+            | "console"
+            | "network"
+            | "event"
+    )
+}
+
+fn refs_key_string(refs: &[AwarenessRef]) -> String {
+    let mut key = refs
+        .iter()
+        .map(|r| (r.kind.as_str(), r.id.as_str()))
+        .collect::<Vec<_>>();
+    key.sort();
+    serde_json::to_string(&key).unwrap_or_else(|_| "[]".into())
+}
+
+fn signal_record_id(project_slug: &str, signal_kind: &str, signal_key: &str) -> String {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    project_slug.hash(&mut hasher);
+    signal_kind.hash(&mut hasher);
+    signal_key.hash(&mut hasher);
+    format!("sig_{:016x}", hasher.finish())
+}
+
+fn awareness_signal_refs(input: &AwarenessSync) -> Vec<AwarenessRef> {
+    let mut refs = input.refs.signal_refs.clone();
+    if let Some(debug_session_id) = &input.debug_session_id {
+        extend_unique_refs(
+            &mut refs,
+            &[AwarenessRef {
+                kind: "debug_session".into(),
+                id: debug_session_id.clone(),
+            }],
+        );
+    }
+    if let Some(checkpoint_id) = &input.checkpoint_id {
+        extend_unique_refs(
+            &mut refs,
+            &[AwarenessRef {
+                kind: "checkpoint".into(),
+                id: checkpoint_id.clone(),
+            }],
+        );
+    }
     refs
+}
+
+fn legacy_ref_ids(refs: &[AwarenessRef], kind: &str) -> Vec<String> {
+    refs.iter()
+        .filter(|r| r.kind == kind)
+        .map(|r| r.id.clone())
+        .collect()
+}
+
+fn legacy_observation_ids(refs: &[AwarenessRef]) -> Vec<u64> {
+    refs.iter()
+        .filter(|r| r.kind == "observation")
+        .filter_map(|r| r.id.parse::<u64>().ok())
+        .collect()
+}
+
+fn derive_redex(redex: &str) -> AwarenessRedex {
+    let state = if redex.contains("!!") {
+        Some("conflict".into())
+    } else if redex.contains('!') {
+        Some("accepted".into())
+    } else if redex.contains('?') {
+        Some("question".into())
+    } else if redex.contains('~') {
+        Some("stale".into())
+    } else if redex.contains('_') {
+        Some("missing".into())
+    } else {
+        None
+    };
+    AwarenessRedex {
+        state,
+        recovery: token_after(redex, "_>"),
+        implication: token_after(redex, "=>"),
+        temporal: token_after(redex, "@"),
+        persistent: redex.contains('$'),
+        conflict: redex.contains("!!"),
+    }
+}
+
+fn token_after(redex: &str, marker: &str) -> Option<String> {
+    let (_, rest) = redex.split_once(marker)?;
+    let token = rest
+        .trim()
+        .split(|ch: char| ch.is_whitespace() || ch == ';' || ch == ',')
+        .next()
+        .unwrap_or_default();
+    (!token.is_empty()).then(|| token.to_string())
 }
 
 fn extend_unique_u64(target: &mut Vec<u64>, incoming: &[u64]) {
@@ -753,11 +1079,25 @@ mod tests {
             tags: vec!["domain:awareness".into()],
             debug_session_id: Some("debug-1".into()),
             checkpoint_id: Some("checkpoint-1".into()),
-            evidence: crate::AwarenessEvidence {
-                observation_ids: vec![42],
-                debug_session_ids: vec!["debug-1".into()],
-                checkpoint_ids: vec!["checkpoint-1".into()],
-                librarian_node_ids: vec!["catalog-1".into()],
+            refs: crate::AwarenessRefs {
+                evidence_refs: vec![AwarenessRef {
+                    kind: "librarian_node".into(),
+                    id: "catalog-1".into(),
+                }],
+                signal_refs: vec![
+                    AwarenessRef {
+                        kind: "observation".into(),
+                        id: "42".into(),
+                    },
+                    AwarenessRef {
+                        kind: "debug_session".into(),
+                        id: "debug-1".into(),
+                    },
+                    AwarenessRef {
+                        kind: "checkpoint".into(),
+                        id: "checkpoint-1".into(),
+                    },
+                ],
             },
             target_node_id: None,
             supersedes: Vec::new(),
@@ -783,6 +1123,8 @@ mod tests {
         assert_eq!(fetched.kind, AwarenessNodeKind::Hypothesis);
         assert_eq!(fetched.state, AwarenessNodeState::Active);
         assert_eq!(fetched.observation_ids, vec![42]);
+        assert_eq!(fetched.signal_refs.len(), 3);
+        assert_eq!(fetched.evidence_refs.len(), 1);
     }
 
     #[tokio::test]
@@ -860,11 +1202,97 @@ mod tests {
         verify.operation = AwarenessOperation::Verify;
         verify.target_node_id = fact.id.clone();
         verify.confidence = Some(0.95);
-        verify.evidence.observation_ids = vec![43, 44];
+        verify.refs.evidence_refs = vec![AwarenessRef {
+            kind: "session_summary".into(),
+            id: "session-summary-1".into(),
+        }];
         let verified = awareness.sync_node(verify).await.unwrap().node.unwrap();
         assert_eq!(verified.authority, AwarenessAuthority::Verified);
         assert_eq!(verified.confidence, 0.95);
-        assert_eq!(verified.observation_ids, vec![42, 43, 44]);
+        assert!(
+            verified
+                .evidence_refs
+                .iter()
+                .any(|r| r.kind == "session_summary" && r.id == "session-summary-1")
+        );
+    }
+
+    #[tokio::test]
+    async fn verify_requires_durable_evidence_refs() {
+        let (_store, awareness) = setup().await;
+        let fact = awareness
+            .sync_node(sync(
+                "debug/frontend/fact-without-evidence",
+                AwarenessNodeKind::Fact,
+                "Frontend route shell mounts first",
+            ))
+            .await
+            .unwrap()
+            .node
+            .unwrap();
+        let mut verify = sync(
+            "debug/frontend/fact-without-evidence",
+            AwarenessNodeKind::Fact,
+            "Frontend route shell mounts first",
+        );
+        verify.operation = AwarenessOperation::Verify;
+        verify.target_node_id = fact.id;
+        verify.refs.evidence_refs.clear();
+        verify.refs.signal_refs = vec![AwarenessRef {
+            kind: "observation".into(),
+            id: "43".into(),
+        }];
+
+        let err = awareness.sync_node(verify).await.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("verify requires at least one durable evidence_ref")
+        );
+    }
+
+    #[tokio::test]
+    async fn ephemeral_refs_are_rejected_as_durable_evidence() {
+        let (_store, awareness) = setup().await;
+        let mut input = sync(
+            "debug/frontend/bad-evidence-ref",
+            AwarenessNodeKind::Fact,
+            "Observation rows are not durable evidence",
+        );
+        input.refs.evidence_refs = vec![AwarenessRef {
+            kind: "observation".into(),
+            id: "43".into(),
+        }];
+
+        let err = awareness.sync_node(input).await.unwrap_err();
+        assert!(err.to_string().contains("evidence_ref kind is not durable"));
+    }
+
+    #[tokio::test]
+    async fn bad_edge_target_does_not_persist_node() {
+        let (_store, awareness) = setup().await;
+        let mut input = sync(
+            "debug/frontend/bad-edge",
+            AwarenessNodeKind::Fact,
+            "Bad relation target should not write a fact",
+        );
+        input.answers = vec!["missing-target".into()];
+
+        let err = awareness.sync_node(input).await.unwrap_err();
+        assert!(err.to_string().contains("edge target does not exist"));
+
+        let tree = awareness
+            .traverse(&AwarenessTraversalFilter {
+                project_slug: "daemon8".into(),
+                include_inactive: true,
+                focus_path: "debug/frontend/bad-edge".into(),
+                depth: 0,
+                include_notes: true,
+                include_evidence: true,
+                limit: None,
+            })
+            .await
+            .unwrap();
+        assert!(tree.nodes.is_empty());
     }
 
     #[tokio::test]
@@ -932,6 +1360,145 @@ mod tests {
         contradiction.contradicts = vec![first.id.unwrap()];
         let result = awareness.sync_node(contradiction).await.unwrap();
         assert!(result.conflict.is_some());
-        assert!(result.node.is_none());
+        let node = result.node.unwrap();
+        assert_eq!(node.state, AwarenessNodeState::Conflicted);
+    }
+
+    #[tokio::test]
+    async fn signals_round_trip_and_expire() {
+        let (_store, awareness) = setup().await;
+        let now = current_ns();
+        let input = AwarenessSignalInput {
+            project_slug: "daemon8".into(),
+            signal_kind: "runtime_warning".into(),
+            severity: "warn".into(),
+            summary: "test warning".into(),
+            signal_refs: vec![
+                AwarenessRef {
+                    kind: "observation".into(),
+                    id: "101".into(),
+                },
+                AwarenessRef {
+                    kind: "observation".into(),
+                    id: "101".into(),
+                },
+            ],
+            related_awareness_node_ids: Vec::new(),
+            score: 0.8,
+            expires_at: now + 60_000_000_000,
+        };
+        let created = awareness.record_signal(input.clone()).await.unwrap();
+        assert!(created.id.is_some());
+        let updated = awareness.record_signal(input).await.unwrap();
+        assert_eq!(updated.id, created.id);
+
+        let signals = awareness.active_signals("daemon8", 10).await.unwrap();
+        assert_eq!(signals.len(), 1);
+        assert_eq!(signals[0].signal_kind, "runtime_warning");
+        assert_eq!(signals[0].signal_refs.len(), 1);
+
+        let deleted = awareness
+            .prune_expired_signals(now + 120_000_000_000)
+            .await
+            .unwrap();
+        assert_eq!(deleted, 1);
+        assert!(
+            awareness
+                .active_signals("daemon8", 10)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn signal_refs_must_be_present_and_ephemeral() {
+        let (_store, awareness) = setup().await;
+        let now = current_ns();
+        let empty = awareness
+            .record_signal(AwarenessSignalInput {
+                project_slug: "daemon8".into(),
+                signal_kind: "runtime_warning".into(),
+                severity: "warn".into(),
+                summary: "empty signal".into(),
+                signal_refs: Vec::new(),
+                related_awareness_node_ids: Vec::new(),
+                score: 0.8,
+                expires_at: now + 60_000_000_000,
+            })
+            .await
+            .unwrap_err();
+        assert!(
+            empty
+                .to_string()
+                .contains("requires at least one signal_ref")
+        );
+
+        let durable = awareness
+            .record_signal(AwarenessSignalInput {
+                project_slug: "daemon8".into(),
+                signal_kind: "runtime_warning".into(),
+                severity: "warn".into(),
+                summary: "durable signal".into(),
+                signal_refs: vec![AwarenessRef {
+                    kind: "session_summary".into(),
+                    id: "summary-1".into(),
+                }],
+                related_awareness_node_ids: Vec::new(),
+                score: 0.8,
+                expires_at: now + 60_000_000_000,
+            })
+            .await
+            .unwrap_err();
+        assert!(
+            durable
+                .to_string()
+                .contains("signal_ref kind is not ephemeral")
+        );
+    }
+
+    #[tokio::test]
+    async fn signal_dedupe_is_keyed_beyond_recent_scan_limits() {
+        let (_store, awareness) = setup().await;
+        let now = current_ns();
+        for idx in 0..60 {
+            awareness
+                .record_signal(AwarenessSignalInput {
+                    project_slug: "daemon8".into(),
+                    signal_kind: "runtime_warning".into(),
+                    severity: "warn".into(),
+                    summary: format!("warning {idx}"),
+                    signal_refs: vec![AwarenessRef {
+                        kind: "observation".into(),
+                        id: idx.to_string(),
+                    }],
+                    related_awareness_node_ids: Vec::new(),
+                    score: 0.5,
+                    expires_at: now + 60_000_000_000,
+                })
+                .await
+                .unwrap();
+        }
+
+        let updated = awareness
+            .record_signal(AwarenessSignalInput {
+                project_slug: "daemon8".into(),
+                signal_kind: "runtime_warning".into(),
+                severity: "error".into(),
+                summary: "warning 0 updated".into(),
+                signal_refs: vec![AwarenessRef {
+                    kind: "observation".into(),
+                    id: "0".into(),
+                }],
+                related_awareness_node_ids: Vec::new(),
+                score: 0.9,
+                expires_at: now + 60_000_000_000,
+            })
+            .await
+            .unwrap();
+
+        let signals = awareness.active_signals("daemon8", 100).await.unwrap();
+        assert_eq!(signals.len(), 60);
+        assert_eq!(updated.summary, "warning 0 updated");
     }
 }

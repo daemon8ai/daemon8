@@ -162,7 +162,7 @@ Every tool returns the standard envelope (`{result, daemon8, error}`) with optio
 | **Observation** | |
 | `query_observations` | Filter by kind, severity, origin, text, tags, checkpoint. |
 | `status` | Health snapshot: error rate, sources, observation count, version. |
-| `awareness_status` | Report source posture plus compact project-state awareness. |
+| `awareness_status` | Report source, context, and reasoning awareness with bounded runtime signals. |
 | `awareness_sync` | Capture, update, resolve, verify, or retire awareness nodes. |
 | `list_connections` | Active sources and browser connection state. |
 | `subscribe_observations` | Register a real-time alert filter pushed as MCP notifications. |
