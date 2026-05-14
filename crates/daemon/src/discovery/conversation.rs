@@ -295,7 +295,7 @@ Please write a source_template via librarian_index with:\n\
 \u{20}\u{20}\u{20}\u{20}confidence: \"agent_discovered\"\n\
 \u{20}\u{20}}}\n\
 \n\
-The default_tags list MUST include \"{provider_id}\" — daemon8's first-run check uses that tag to recognize the template on subsequent serves."
+The default_tags list MUST include \"{provider_id}\" — daemon8's first-run check uses that tag to recognize the template on subsequent discovery scans."
     )
 }
 

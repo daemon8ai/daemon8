@@ -5,9 +5,9 @@
 //!
 //! Three escape hatches:
 //!
-//! - `--complete` POSTs to the running daemon's `/api/discover/complete`
-//!   endpoint. The daemon's scanner short-circuits its wait loop on the
-//!   next poll tick and returns with whatever templates are present.
+//! - `--complete` POSTs to `/api/discover/complete`. Any in-flight
+//!   discovery scanner short-circuits its wait loop on the next poll tick
+//!   and returns with whatever templates are present.
 //! - `--skip` writes `.daemon8/skip-discovery` under the project root.
 //!   Future explicit discovery scans honor the marker and bypass
 //!   discovery entirely. Also POSTs to the running daemon (if any) so
@@ -23,13 +23,13 @@ use crate::discovery::scanner::SKIP_MARKER_REL_PATH;
 
 #[derive(clap::Args, Debug)]
 pub struct DiscoverArgs {
-    /// Tell the running daemon's scanner to stop waiting and return
+    /// Tell any in-flight discovery scanner to stop waiting and return
     /// with whatever templates the librarian currently has.
     #[arg(long, conflicts_with_all = ["skip", "rescan"])]
     pub complete: bool,
 
-    /// Write the per-project skip marker so future `daemon8 serve`
-    /// runs do not invoke the scanner. Also signals any in-flight
+    /// Write the per-project skip marker so future explicit discovery
+    /// calls do not invoke the scanner. Also signals any in-flight
     /// scanner to abort its wait loop.
     #[arg(long, conflicts_with_all = ["complete", "rescan"])]
     pub skip: bool,

@@ -19,7 +19,9 @@
 //! 5. Returns a [`DiscoveryPlan`] — the input to D4 presentation.
 //!
 //! The scanner never registers sources or writes to the SourceManager.
-//! Plan -> register is a D4 concern, gated on explicit user confirmation.
+//! It returns a plan so the MCP caller can decide whether to inspect,
+//! teach missing `source_template` refs, or ask the user before writing
+//! durable librarian state.
 //!
 //! The wait loop is cancellable from three directions:
 //!   - the per-scan timeout (configurable, default 60s);
@@ -52,8 +54,8 @@ use tokio_util::sync::CancellationToken;
 use crate::config::SourceConfig;
 use crate::discovery::{conversation, hint, locator};
 
-/// Skip-marker path relative to the project root. Future `daemon8 serve`
-/// invocations honor this file and bypass the scanner entirely.
+/// Skip-marker path relative to the project root. Future explicit
+/// discovery scans honor this file and bypass the scanner entirely.
 pub const SKIP_MARKER_REL_PATH: &str = ".daemon8/skip-discovery";
 
 /// Environment variable that overrides the wait-loop timeout.
@@ -253,7 +255,7 @@ pub async fn scan(
         classification_tags_uncovered(&classification.tags, &outcome.tags_with_resolved_template);
     let mut plan = plan_from_outcome(outcome, &classification, user_overrides.clone());
 
-    // D5: every serve checks whether each AI provider on this machine
+    // D5: every discovery scan checks whether each AI provider on this machine
     // already has a conversation source_template. A first-run provider
     // adds its bootstrap payload to the hint even when classification
     // coverage is otherwise complete.

@@ -67,9 +67,9 @@ daemon8 setup apply             # register MCP with detected agents
 
 `daemon8 setup apply` registers the daemon8 MCP server with detected AI coding agents (Claude Code, Codex, Gemini CLI).
 
-`daemon8 serve` runs the project-aware discovery scan: classifies the project, looks up source templates the librarian has learned, presents the matched sources, and prompts once.
+`daemon8 serve` starts the local observation bus. Project awareness begins when the agent calls `awareness_status(project_root=...)` or `discover_project(project_root=...)` with the repository or application root.
 
-If the librarian already has templates for this project type, the prompt is a single confirmation. If not, daemon8 asks the agent in your session to investigate and report back via `librarian_index` — a one-time learning step per framework per machine.
+If the librarian already has templates for this project type, discovery reports the matched sources. If not, daemon8 asks the agent in your session to investigate and report back via `librarian_index` — a one-time learning step per framework per machine.
 
 Verify:
 
@@ -300,7 +300,7 @@ Cargo workspace:
 | `types` | Shared types: `Observation`, `Filter`, `Severity`, librarian and discovery types. |
 | `store` | SurrealDB backend: observation store, librarian, debug sessions, typed internal summaries, lens manager. |
 | `api` | Axum HTTP routes for observation query, SSE, and health. |
-| `mcp` | MCP server with the 23 tools listed above. |
+| `mcp` | MCP server and project-awareness tool surface. |
 | `ingest` | HTTP, UDP, and Unix socket ingestion endpoints. |
 | `chrome` | Chrome DevTools Protocol bridge. |
 | `adb` | Android Debug Bridge transport. |

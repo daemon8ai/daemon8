@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: LicenseRef-FCL-1.0-ALv2
 // Copyright (c) 2026 Havy.tech, LLC
 
-//! First-run presentation (D4).
+//! Discovery presentation (D4).
 //!
-//! The scanner (D3) produces a [`DiscoveryPlan`]. This module turns that
-//! plan into either an interactive Y/n prompt or a structured log entry,
-//! depending on whether stdout/stdin look like a real terminal.
+//! The scanner (D3) produces a [`DiscoveryPlan`]. This module renders that
+//! plan into compact text for the MCP caller. The older prompt helpers are
+//! retained for a future explicit confirmation flow, but alpha discovery
+//! does not prompt or auto-register from `daemon8 serve`.
 //!
 //! Public surface intentionally narrow:
 //!
@@ -14,7 +15,7 @@
 //!   nohup'd processes all fall to [`PresentationMode::NonInteractive`].
 //! - [`render_plan`] writes the human-facing report to any
 //!   [`std::io::Write`]. Tests assert against the rendered string; the
-//!   serve loop writes to stdout.
+//!   MCP `discover_project` tool returns it in the response envelope.
 //! - [`prompt_confirm`] reads a single line from stdin in interactive
 //!   mode and returns a [`PromptOutcome`]. Non-interactive mode returns
 //!   [`PromptOutcome::NonInteractiveAutoConfirm`] after logging a warn
@@ -29,10 +30,9 @@ use std::time::Duration;
 
 use crate::discovery::scanner::{DiscoveryPlan, LibrarianStatus, ResolvedSource, TemplateMiss};
 
-/// Inactivity timeout on the interactive Y/n prompt. After this elapses
-/// without input, the caller treats the prompt as Declined and writes
-/// the skip marker — daemon8 will not hang forever waiting for
-/// keystrokes from a forgotten foreground daemon.
+/// Inactivity timeout for the retained interactive confirmation helper.
+/// After this elapses without input, the caller treats the prompt as
+/// Declined and writes the skip marker.
 pub const PROMPT_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,7 +114,7 @@ fn render_case_a(plan: &DiscoveryPlan, writer: &mut dyn Write) -> std::io::Resul
         )?;
         writeln!(
             writer,
-            "Re-register sources and persist project topology? [Y/n]"
+            "Next: inspect source drift, then register confirmed source refs with librarian_index."
         )?;
         return Ok(());
     }
@@ -140,7 +140,7 @@ fn render_case_a(plan: &DiscoveryPlan, writer: &mut dyn Write) -> std::io::Resul
     writeln!(writer)?;
     writeln!(
         writer,
-        "Register these and persist project topology for next time? [Y/n]"
+        "Next: verify the matched paths, then register confirmed source refs with librarian_index."
     )?;
     Ok(())
 }
@@ -160,7 +160,7 @@ fn render_case_b(plan: &DiscoveryPlan, writer: &mut dyn Write) -> std::io::Resul
         writeln!(writer)?;
         writeln!(
             writer,
-            "Nothing to register yet. Continue serving without auto-sources? [Y/n]"
+            "Next: inspect the project/framework docs and register reusable source templates with librarian_index."
         )?;
         return Ok(());
     }
@@ -190,7 +190,7 @@ fn render_case_b(plan: &DiscoveryPlan, writer: &mut dyn Write) -> std::io::Resul
     writeln!(writer)?;
     writeln!(
         writer,
-        "Register these and persist learnings to librarian for future projects? [Y/n]"
+        "Next: verify these paths, then persist reusable learnings to the librarian with librarian_index."
     )?;
     Ok(())
 }
@@ -223,9 +223,8 @@ fn render_miss(miss: &TemplateMiss, writer: &mut dyn Write) -> std::io::Result<(
 /// Prompt the user. `tty_check` lets tests inject a deterministic mode.
 /// In production, callers pass [`detect_mode`].
 ///
-/// Non-interactive mode is loud: a `tracing::warn!` records the
-/// auto-confirm decision and the plan summary so CI logs surface what
-/// was just learned by accident.
+/// Non-interactive mode is loud: a `tracing::warn!` records the decision
+/// and the plan summary so CI logs surface what would be accepted.
 pub fn prompt_confirm(
     plan: &DiscoveryPlan,
     tty_check: fn() -> PresentationMode,
@@ -237,7 +236,7 @@ pub fn prompt_confirm(
                 resolved = plan.resolved_sources.len(),
                 misses = plan.template_misses.len(),
                 root = %plan.classification.root.display(),
-                "non-interactive discovery: auto-confirming registration without user prompt"
+                "non-interactive discovery: confirmation helper accepted without user prompt"
             );
             Ok(PromptOutcome::NonInteractiveAutoConfirm)
         }
@@ -247,7 +246,7 @@ pub fn prompt_confirm(
     }
 }
 
-/// Read a single Y/n response from the provided reader. Pulled out of
+/// Read a single confirmation response from the provided reader. Pulled out of
 /// [`prompt_confirm`] so tests can drive it with a `Cursor`.
 pub fn prompt_confirm_interactive(
     reader: &mut dyn BufRead,
@@ -260,7 +259,7 @@ pub fn prompt_confirm_interactive(
     let read = reader.read_line(&mut buf)?;
     if read == 0 {
         // EOF before any input — treat as decline. Caller writes the
-        // skip marker so future serves do not re-prompt.
+        // skip marker so future discovery calls do not re-prompt.
         return Ok(PromptOutcome::Declined);
     }
 
@@ -353,7 +352,7 @@ mod tests {
         assert!(out.contains("Applied 2 source templates"));
         assert!(out.contains("/tmp/fixture/runtime.log"));
         assert!(out.contains("/tmp/fixture/metro.log"));
-        assert!(out.contains("Register these and persist project topology"));
+        assert!(out.contains("verify the matched paths"));
     }
 
     #[test]
@@ -377,7 +376,7 @@ mod tests {
         let plan = base_plan(LibrarianStatus::TemplatesMissing);
         let out = render(&plan);
         assert!(out.contains("No source templates matched these tags"));
-        assert!(out.contains("Nothing to register yet"));
+        assert!(out.contains("register reusable source templates"));
     }
 
     #[test]
@@ -388,7 +387,7 @@ mod tests {
         let out = render(&plan);
         assert!(out.contains("Agent discovered 1 source instance(s)"));
         assert!(out.contains("/tmp/fixture/agent-found.log"));
-        assert!(out.contains("Register these and persist learnings to librarian"));
+        assert!(out.contains("persist reusable learnings"));
     }
 
     #[test]
@@ -396,7 +395,7 @@ mod tests {
         let plan = base_plan(LibrarianStatus::CacheHit);
         let out = render(&plan);
         assert!(out.contains("Cached project topology found but no source paths still resolve"));
-        assert!(out.contains("Re-register sources"));
+        assert!(out.contains("inspect source drift"));
     }
 
     #[test]

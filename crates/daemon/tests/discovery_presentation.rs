@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: LicenseRef-FCL-1.0-ALv2
 // Copyright (c) 2026 Havy.tech, LLC
 
-//! End-to-end tests for the D4 first-run presentation flow.
+//! End-to-end tests for the D4 discovery presentation/registration helpers.
 //!
-//! Covers the post-scan path: render the plan, call the registrar
-//! (auto-confirmed because the test harness is non-TTY), and assert
-//! librarian state. The skip path also runs through `mark_skip` and
-//! checks that the on-disk marker is written.
+//! Covers the post-scan path: render the plan, call the registrar with
+//! explicit confirmation, and assert librarian state. The skip path also
+//! runs through `mark_skip` and checks that the on-disk marker is written.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;

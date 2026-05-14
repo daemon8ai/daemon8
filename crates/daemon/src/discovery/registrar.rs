@@ -1,14 +1,13 @@
 // SPDX-License-Identifier: LicenseRef-FCL-1.0-ALv2
 // Copyright (c) 2026 Havy.tech, LLC
 
-//! Post-confirmation source registration (D4).
+//! Source registration (D4).
 //!
-//! Once the user (or the non-interactive auto-confirm path) has agreed
-//! to a [`DiscoveryPlan`], this module turns the plan into librarian
-//! state: one source_instance node per resolved path, plus the
-//! `has_source` and `derived_from` edges, plus a refreshed project
-//! node. The hook into [`crate::sources::SourceManager`] also runs here
-//! so the daemon starts watching the new paths immediately.
+//! Once a caller has explicitly accepted a [`DiscoveryPlan`], this module
+//! turns the plan into librarian state: one source_instance node per
+//! resolved path, plus the `has_source` and `derived_from` edges, plus a
+//! refreshed project node. The hook into [`crate::sources::SourceManager`]
+//! also runs here so the daemon starts watching the new paths immediately.
 //!
 //! [`register_plan`] is the only public entry point. It is idempotent
 //! at the librarian level — the underlying `index_node` upserts by
@@ -119,8 +118,8 @@ where
 }
 
 /// Idempotent project-node upsert. `skip_discovery` is set true only by
-/// [`mark_skip`] (the decline path); confirmed serves always write
-/// false so a later serve picks up newly classified tags.
+/// [`mark_skip`]; confirmed registrations always write false so a later
+/// discovery call picks up newly classified tags.
 async fn upsert_project_node(
     plan: &DiscoveryPlan,
     librarian: &dyn LibrarianStore,
@@ -152,8 +151,8 @@ async fn upsert_project_node(
         .map_err(RegistrarError::Librarian)
 }
 
-/// Decline path: persist the project node with `skip_discovery: true`
-/// so future serves bypass the prompt without re-running the scanner.
+/// Skip path: persist the project node with `skip_discovery: true`
+/// so future explicit discovery calls bypass the scanner.
 /// Also writes the on-disk skip marker.
 pub async fn mark_skip(
     plan: &DiscoveryPlan,

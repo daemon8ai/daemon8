@@ -2235,6 +2235,9 @@ impl DaemonMcp {
                 None,
             );
         }
+        if let Err(e) = self.resolve_project_context(Some(root)).await {
+            return self.err("project_context_failed", &e, None, None);
+        }
         let inner = discover(root.to_string()).await;
         wrap_inner_result(self, &inner)
     }
@@ -3797,6 +3800,26 @@ mod logging_tests {
         mcp
     }
 
+    async fn build_mcp_with_project_resolver_and_discovery(
+        project_name: &'static str,
+    ) -> DaemonMcp {
+        let mut mcp = build_mcp_with_project_resolver(project_name).await;
+        let discovery: ProjectDiscoveryFn = Arc::new(|_root: String| {
+            Box::pin(async move {
+                serde_json::json!({
+                    "plan": {
+                        "ok": true,
+                    },
+                    "report": "test discovery report",
+                    "next_actions": ["awareness_status"],
+                })
+                .to_string()
+            })
+        });
+        mcp.project_discovery_fn = Some(discovery);
+        mcp
+    }
+
     #[tokio::test]
     async fn project_context_is_scoped_per_mcp_session() {
         let a = build_mcp_with_project_resolver("alpha").await;
@@ -3834,6 +3857,25 @@ mod logging_tests {
             .await;
         let a_cached_json: serde_json::Value = serde_json::from_str(&a_cached).unwrap();
         assert_eq!(a_cached_json["result"]["project_slug"], "alpha-app");
+    }
+
+    #[tokio::test]
+    async fn discover_project_establishes_session_project_context() {
+        let mcp = build_mcp_with_project_resolver_and_discovery("gamma").await;
+
+        let discovered = mcp
+            .discover_project(Parameters(DiscoverProjectParams {
+                project_root: "/tmp/gamma-app".into(),
+            }))
+            .await;
+        let discovered_json: serde_json::Value = serde_json::from_str(&discovered).unwrap();
+        assert_eq!(discovered_json["result"]["report"], "test discovery report");
+
+        let status = mcp
+            .awareness_status(Parameters(AwarenessStatusParams::default()))
+            .await;
+        let status_json: serde_json::Value = serde_json::from_str(&status).unwrap();
+        assert_eq!(status_json["result"]["project_slug"], "gamma-app");
     }
 
     #[tokio::test]

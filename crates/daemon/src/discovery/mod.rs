@@ -15,9 +15,11 @@
 //! - [`scanner`] (D3) — orchestrator. Pulls classification, checks the
 //!   librarian, probes the filesystem, emits a hint when needed, and
 //!   returns a [`scanner::DiscoveryPlan`] for D4 to render.
-//! - [`presentation`] (D4) — renders the plan and prompts the user.
+//! - [`presentation`] (D4) — renders the plan for an MCP caller or a
+//!   future interactive confirmation flow.
 //! - [`registrar`] (D4) — registers confirmed sources with the
-//!   librarian and the SourceManager.
+//!   librarian and the SourceManager. This is retained for the
+//!   confirmation path, but alpha MCP discovery does not auto-register.
 //! - [`conversation`] (D5) — active session resolution + per-provider
 //!   first-run detection for conversation templates.
 //! - [`locator`] — shared pattern-expansion logic used by the scanner
