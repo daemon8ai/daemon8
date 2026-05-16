@@ -21,9 +21,16 @@ use crate::{
     memory::SurrealMemoryStore,
 };
 
+pub const SCHEMA_VERSION: &str = "0.4.0-alpha";
+
 const NAMESPACE: &str = "daemon8";
 const DATABASE: &str = "observations";
 const BACKFILL_PAGE_SIZE: u64 = 500;
+
+#[derive(Debug)]
+pub struct ResetReport {
+    pub observations_dropped: usize,
+}
 
 #[derive(Serialize, Deserialize)]
 struct ObsRecord {
@@ -185,6 +192,50 @@ impl SurrealStore {
         SurrealDebugSessionStore::new(self.db.clone())
     }
 
+    pub async fn schema_version(&self) -> Option<String> {
+        let mut result = self
+            .db
+            .query("SELECT value FROM _meta:schema_version")
+            .await
+            .ok()?;
+        let row: Option<serde_json::Value> = result.take(0).ok()?;
+        row.and_then(|v| v.get("value").and_then(|s| s.as_str()).map(String::from))
+    }
+
+    pub async fn reset(&self) -> Result<ResetReport, StoreError> {
+        let obs_count: Option<usize> = self
+            .db
+            .query("SELECT count() FROM observation GROUP ALL")
+            .await
+            .ok()
+            .and_then(|mut r| {
+                let v: Option<serde_json::Value> = r.take(0).ok()?;
+                v.and_then(|v| v.get("count").and_then(|c| c.as_u64()).map(|c| c as usize))
+            });
+
+        self.db
+            .query(
+                "REMOVE TABLE IF EXISTS observation;
+                 REMOVE TABLE IF EXISTS memory;
+                 REMOVE TABLE IF EXISTS debug_session;
+                 REMOVE TABLE IF EXISTS debug_checkpoint;
+                 REMOVE TABLE IF EXISTS _meta;",
+            )
+            .await
+            .map_err(|e| StoreError::Db(format!("reset drop tables: {e}")))?
+            .check()
+            .map_err(|e| StoreError::Db(format!("reset drop check: {e}")))?;
+
+        self.next_id.store(1, Ordering::SeqCst);
+        self.init_schema().await?;
+        self.memory_store().init_schema().await?;
+        self.debug_session_store().init_schema().await?;
+
+        Ok(ResetReport {
+            observations_dropped: obs_count.unwrap_or(0),
+        })
+    }
+
     async fn init_schema(&self) -> Result<(), StoreError> {
         self.db
             .use_ns(NAMESPACE)
@@ -248,6 +299,20 @@ impl SurrealStore {
             .map_err(|e| StoreError::Db(format!("schema init check: {e}")))?;
 
         self.backfill_observation_query_fields().await?;
+
+        self.db
+            .query(
+                "DEFINE TABLE IF NOT EXISTS _meta SCHEMAFULL;
+                 DEFINE FIELD IF NOT EXISTS key ON _meta TYPE string;
+                 DEFINE FIELD IF NOT EXISTS value ON _meta TYPE string;
+                 DEFINE INDEX IF NOT EXISTS idx_meta_key ON _meta FIELDS key UNIQUE;
+                 UPSERT _meta:schema_version SET key = 'schema_version', value = $version;",
+            )
+            .bind(("version", SCHEMA_VERSION))
+            .await
+            .map_err(|e| StoreError::Db(format!("meta schema init: {e}")))?
+            .check()
+            .map_err(|e| StoreError::Db(format!("meta schema init check: {e}")))?;
 
         Ok(())
     }

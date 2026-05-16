@@ -11,6 +11,7 @@ pub(crate) mod init;
 pub(crate) mod lens;
 pub(crate) mod logs;
 pub(crate) mod observe;
+pub(crate) mod reset;
 pub(crate) mod serve;
 pub(crate) mod service;
 pub(crate) mod setup;

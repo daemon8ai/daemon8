@@ -68,6 +68,8 @@ enum Commands {
     /// Manage daemon8 system service (install/uninstall)
     #[command(subcommand)]
     Service(ServiceSubcommand),
+    /// Wipe all daemon8 state and reinitialize the database
+    Reset(cli::reset::ResetArgs),
     /// Real-time alert relay for MCP clients (experimental)
     Channel,
     /// Diagnose common configuration and environment issues
@@ -150,6 +152,7 @@ async fn main() -> Result<()> {
             ServiceSubcommand::Install => cli::service::cmd_install(),
             ServiceSubcommand::Uninstall => cli::service::cmd_uninstall(),
         },
+        Commands::Reset(args) => cli::reset::cmd_reset(cli.config, args).await,
         Commands::Channel => cli::channel::cmd_channel().await,
         Commands::Doctor { fix } => cli::doctor::cmd_doctor(cli.config, fix).await,
         // Hidden backward-compat aliases

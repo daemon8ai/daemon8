@@ -14,7 +14,7 @@ pub use debug_session::SurrealDebugSessionStore;
 pub use hash_cache::ObservationHashCache;
 pub use lens::{LensManager, LensStatus};
 pub use memory::SurrealMemoryStore;
-pub use surreal::SurrealStore;
+pub use surreal::{ResetReport, SCHEMA_VERSION, SurrealStore};
 
 use daemon8_types::{
     Checkpoint, DebugSessionOutcome, DebugSessionStatus, Filter, MemoryKind, Observation,
