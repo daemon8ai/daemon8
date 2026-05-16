@@ -5,19 +5,16 @@ use std::sync::Arc;
 
 use daemon8_chrome::ConnectionState;
 use daemon8_mcp::{DaemonMcp, DaemonMcpConfig};
-use daemon8_store::{AwarenessStore, LibrarianStore, SurrealStore};
 use daemon8_types::Filter;
 use tokio_util::sync::CancellationToken;
 
-const EXPECTED_TOOLS: [&str; 21] = [
-    "query_observations",
+const EXPECTED_TOOLS: [&str; 15] = [
+    "read_live_feed",
     "status",
-    "awareness_status",
-    "awareness_sync",
     "create_checkpoint",
     "list_connections",
-    "ingest_observation",
-    "subscribe_observations",
+    "write_to_live_feed",
+    "watch_live_feed",
     "issue_command",
     "connect_browser",
     "set_lens",
@@ -26,11 +23,7 @@ const EXPECTED_TOOLS: [&str; 21] = [
     "setup_status",
     "setup_plan",
     "setup_apply",
-    "discover_project",
     "daemon8_help",
-    "librarian_index",
-    "librarian_lookup",
-    "librarian_forget",
 ];
 
 fn tool_names(router: &rmcp::handler::server::router::tool::ToolRouter<DaemonMcp>) -> Vec<String> {
@@ -57,14 +50,10 @@ async fn make_mcp_with_cancel(cancel: CancellationToken) -> DaemonMcp {
         broadcast_tx.subscribe(),
         None,
     ));
-    let librarian_store: Arc<dyn LibrarianStore> = Arc::new(store.librarian_store());
-    let awareness_store: Arc<dyn AwarenessStore> = Arc::new(store.awareness_store());
     DaemonMcp::new(DaemonMcpConfig {
         store,
         memory_store: Some(Arc::new(memory_store)),
         debug_session_store: None,
-        librarian_store: Some(librarian_store),
-        awareness_store: Some(awareness_store),
         obs_tx,
         chrome_tx,
         chrome_state: chrome_state_rx,
@@ -82,29 +71,19 @@ async fn make_mcp_with_cancel(cancel: CancellationToken) -> DaemonMcp {
                 .unwrap()
             })
         })),
-        project_discovery_fn: Some(Arc::new(|root| {
-            Box::pin(async move {
-                serde_json::to_string(&serde_json::json!({
-                    "root": root,
-                    "ok": true
-                }))
-                .unwrap()
-            })
-        })),
-        project_context_resolver: None,
         source_activator: None,
         cancel,
     })
 }
+
+use daemon8_store::SurrealStore;
 
 #[test]
 fn composed_router_has_full_tool_surface() {
     let router = DaemonMcp::tool_router()
         + DaemonMcp::action_tool_router()
         + DaemonMcp::lens_tool_router()
-        + DaemonMcp::awareness_tool_router()
-        + DaemonMcp::setup_tool_router()
-        + DaemonMcp::librarian_tool_router();
+        + DaemonMcp::setup_tool_router();
     let names = tool_names(&router);
 
     assert_eq!(
@@ -154,18 +133,18 @@ async fn live_mcp_exposes_full_tool_surface() {
 }
 
 #[tokio::test]
-async fn query_observations_description_mentions_full_surface() {
+async fn read_live_feed_description_mentions_full_surface() {
     let mcp = make_mcp().await;
     let tools = mcp.tools_for_client();
     let observe = tools
         .iter()
-        .find(|t| t.name == "query_observations")
-        .expect("query_observations must be present in tools_for_client()");
+        .find(|t| t.name == "read_live_feed")
+        .expect("read_live_feed must be present in tools_for_client()");
     let desc = observe.description.as_deref().unwrap_or("");
     for term in ["browser", "device", "js_exception"] {
         assert!(
             desc.contains(term),
-            "query_observations description must contain '{term}'. Got: {:?}",
+            "read_live_feed description must contain '{term}'. Got: {:?}",
             &desc[..desc.len().min(300)]
         );
     }
@@ -197,11 +176,6 @@ async fn server_instructions_mention_action_surface() {
 
 #[tokio::test]
 async fn parent_cancel_propagates_to_session_child_token() {
-    // Locks the daemon-shutdown contract: cancelling the daemon-wide token
-    // (passed via `DaemonMcpConfig.cancel`) must cancel any per-session
-    // child tokens derived from it. The push task in `on_initialized` uses
-    // exactly this child-of-stored-parent pattern to break out of its
-    // select! loop on shutdown.
     let parent = CancellationToken::new();
     let mcp = make_mcp_with_cancel(parent.clone()).await;
     let session = mcp.child_cancel_token();
@@ -239,8 +213,6 @@ async fn subscription_filters_are_per_session() {
     let mut rx_a = mcp_a.subscription_rx();
     let mut rx_b = mcp_b.subscription_rx();
 
-    // Both sessions start with the default `None` filter; mark each receiver
-    // as seen so subsequent `has_changed` calls only fire on real writes.
     let _ = rx_a.borrow_and_update();
     let _ = rx_b.borrow_and_update();
 
@@ -253,9 +225,6 @@ async fn subscription_filters_are_per_session() {
         ..Filter::default()
     };
 
-    // Write only to session A first; session B's receiver must not observe
-    // a change. This is the load-bearing isolation invariant — earlier the
-    // sessions shared one channel, so mcp_a writes would tickle rx_b.
     mcp_a.set_subscription(Some(filter_a.clone()));
     assert!(
         rx_a.has_changed().expect("rx_a still alive"),
@@ -266,7 +235,6 @@ async fn subscription_filters_are_per_session() {
         "session A write must not perturb session B"
     );
 
-    // Now session B writes; session A should not see B's filter.
     mcp_b.set_subscription(Some(filter_b));
     let a = rx_a.borrow_and_update().clone().expect("session A filter");
     let b = rx_b.borrow_and_update().clone().expect("session B filter");
@@ -289,8 +257,6 @@ async fn make_mcp_minimal() -> DaemonMcp {
         store,
         memory_store: None,
         debug_session_store: None,
-        librarian_store: None,
-        awareness_store: None,
         obs_tx,
         chrome_tx,
         chrome_state: chrome_state_rx,
@@ -300,29 +266,15 @@ async fn make_mcp_minimal() -> DaemonMcp {
         broadcast_tx,
         lens,
         setup_tool_fn: None,
-        project_discovery_fn: None,
-        project_context_resolver: None,
         source_activator: None,
         cancel: CancellationToken::new(),
     })
 }
 
 #[tokio::test]
-async fn help_index_omits_disabled_features() {
-    let mcp = make_mcp_minimal().await;
+async fn help_index_includes_core_topics() {
+    let mcp = make_mcp().await;
     let index = mcp.help_index_body();
-    assert!(
-        !index.contains("librarian"),
-        "index must not mention librarian when disabled"
-    );
-    assert!(
-        !index.contains("memory"),
-        "index must not mention memory when disabled"
-    );
-    assert!(
-        !index.contains("hooks"),
-        "index must not mention hooks when disabled"
-    );
     assert!(
         index.contains("observations"),
         "index must always contain observations"
@@ -330,25 +282,6 @@ async fn help_index_omits_disabled_features() {
     assert!(
         index.contains("envelope"),
         "index must always contain envelope"
-    );
-}
-
-#[tokio::test]
-async fn help_index_includes_enabled_features() {
-    let mcp = make_mcp().await;
-    let index = mcp.help_index_body();
-    assert!(
-        index.contains("librarian"),
-        "index must mention librarian when enabled"
-    );
-    assert!(index.contains("awareness"), "index must mention awareness");
-    assert!(
-        index.contains("observations"),
-        "index must mention observations"
-    );
-    assert!(
-        index.contains("Knowledge graph"),
-        "index must have knowledge graph section when librarian enabled"
     );
 }
 

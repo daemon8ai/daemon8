@@ -17,11 +17,11 @@ Observations are the raw runtime telemetry stream — logs, queries, exceptions,
 
 ## Querying
 
-`query_observations(kinds?, severity_min?, origins?, text_match?, since_checkpoint?, limit?, correlation_id?, tags?, include_system?)`. Most filters are AND-ed.
+`read_live_feed(kinds?, severity_min?, origins?, text_match?, since_checkpoint?, limit?, correlation_id?, tags?, include_system?)`. Most filters are AND-ed.
 
 ## Subscribing
 
-`subscribe_observations(filter)` for live push (one filter per session). Default subscribes to `severity >= warn`.
+`watch_live_feed(filter)` for live push (one filter per session). Default subscribes to `severity >= warn`.
 
 ## Per-observation linkage
 

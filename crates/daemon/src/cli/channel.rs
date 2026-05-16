@@ -43,7 +43,7 @@ impl ServerHandler for ChannelMcp {
             .with_instructions(
                 "Real-time observation relay from Daemon8. \
                  High-severity observations (warn/error) are pushed into your session automatically. \
-                 Use the daemon8 MCP server for tools (query_observations, issue_command, etc.)."
+                 Use the daemon8 MCP server for tools (read_live_feed, issue_command, etc.)."
             )
     }
 }

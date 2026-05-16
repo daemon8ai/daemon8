@@ -7,7 +7,7 @@ Every daemon8 MCP tool response has the same shape:
   "result": <tool-specific payload>,
   "daemon8": {
     "active_debug_session": {"id": "...", "project_slug": "...", "started_at_ns": ...} | absent,
-    "next_actions": ["create_checkpoint", "query_observations"] | absent,
+    "next_actions": ["create_checkpoint", "read_live_feed"] | absent,
     "hint": "free-form one-liner about what to do next" | absent
   },
   "error": {"code": "...", "message": "...", "hint": "..." | absent, "fix": {"tool": "..."} | absent} | absent

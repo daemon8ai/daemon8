@@ -11,7 +11,7 @@ Watching for a specific failure pattern, monitoring a particular app, listening 
 None.
 
 ## Args
-  - kinds: optional list. (See query_observations.)
+  - kinds: optional list. (See read_live_feed.)
   - severity_min: optional string.
   - origins: optional list.
   - text_match: optional string.

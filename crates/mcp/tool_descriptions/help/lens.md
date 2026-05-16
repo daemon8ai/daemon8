@@ -1,6 +1,6 @@
 # Lens
 
-A lens is a daemon-side filter that buffers matching observations between query calls. Useful when the observation stream is high-volume but you only care about a narrow slice — set the lens once, then `query_observations` returns a `lens_observations` array of new matches alongside the regular query result.
+A lens is a daemon-side filter that buffers matching observations between query calls. Useful when the observation stream is high-volume but you only care about a narrow slice — set the lens once, then `read_live_feed` returns a `lens_observations` array of new matches alongside the regular query result.
 
 ## Lifecycle
 
@@ -10,8 +10,8 @@ A lens is a daemon-side filter that buffers matching observations between query 
 
 ## Filter shape
 
-Same shape as `query_observations`: `kinds`, `severity_min`, `origins`, `text_match`, `correlation_id`, `tags`, `include_system`. NOT supported: `since`, `limit`.
+Same shape as `read_live_feed`: `kinds`, `severity_min`, `origins`, `text_match`, `correlation_id`, `tags`, `include_system`. NOT supported: `since`, `limit`.
 
 ## Why
 
-Lens is push-side filtering against the live broadcast. Querying with the same filter is pull-side. Use lens when you want continuous capture of "everything matching X" without burning round trips on `query_observations(text_match="X")` between every action.
+Lens is push-side filtering against the live broadcast. Querying with the same filter is pull-side. Use lens when you want continuous capture of "everything matching X" without burning round trips on `read_live_feed(text_match="X")` between every action.

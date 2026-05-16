@@ -15,7 +15,7 @@ A debug session must be active. Call start_debug_session first if not.
   - root_cause: optional one-sentence "the real reason this broke" — distinguishes the fix from the symptom. Worth filling in.
   - fix_diff: optional unified-diff or short patch string. Even partial is valuable.
   - commands_used: optional array of CLI commands that were part of the investigation or fix (e.g. ["pg_dump …", "rg 'TimeoutError'"]). Conversation/tool observation sources capture tool activity; this field is the curated subset that mattered.
-  - related_errors: optional array of error_hash strings from query_observations that this fix resolves. Lets future occurrences of those errors surface this session.
+  - related_errors: optional array of error_hash strings from read_live_feed that this fix resolves. Lets future occurrences of those errors surface this session.
   - tags: optional array of additional tags ("auth", "race-condition", "flaky-test"). These join automatic tags ("kind:debug_session_summary", project_slug) on the SessionSummary.
 
 ## Returns

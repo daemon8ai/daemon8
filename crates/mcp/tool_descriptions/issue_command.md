@@ -26,4 +26,4 @@ A connected browser. Auto-discovers localhost:9222; use `connect_browser` for no
 
 ## Next
 
-query_observations(origins=["browser"]) to see browser console activity triggered by your action.
+read_live_feed(origins=["browser"]) to see browser console activity triggered by your action.

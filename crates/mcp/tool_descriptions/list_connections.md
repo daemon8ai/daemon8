@@ -24,4 +24,4 @@ none expected (read-only).
 
 ## Next
 
-connect_browser if the browser endpoint shows disconnected; query_observations(origins=["app:<name>"]) once a source is confirmed.
+connect_browser if the browser endpoint shows disconnected; read_live_feed(origins=["app:<name>"]) once a source is confirmed.

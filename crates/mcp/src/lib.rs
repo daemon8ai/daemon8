@@ -569,7 +569,7 @@ impl DaemonMcp {
     }
 
     /// Set this session's subscription filter directly. Equivalent to invoking
-    /// the `subscribe_observations` tool — exposed for integration tests that
+    /// the `watch_live_feed` tool — exposed for integration tests that
     /// need to verify per-session subscription scoping without driving the
     /// rmcp tool router. Gated behind the `test-util` feature so it does not
     /// appear in the public API of release builds.
@@ -588,19 +588,15 @@ impl DaemonMcp {
     }
 
 
-    /// Drive `query_observations` with empty parameters. Exposed for
-    /// integration tests that need to inspect the rendered envelope
-    /// (e.g. asserting that `daemon8.hints` is set when a path-pattern
-    /// matches and absent otherwise).
     #[cfg(feature = "test-util")]
-    pub async fn query_observations_for_tests(&self) -> String {
-        self.query_observations(Parameters(ObserveParams::default()))
+    pub async fn read_live_feed_for_tests(&self) -> String {
+        self.read_live_feed(Parameters(ObserveParams::default()))
             .await
     }
 
     #[cfg(feature = "test-util")]
-    pub async fn query_observations_for_tests_with(&self, params: ObserveParams) -> String {
-        self.query_observations(Parameters(params)).await
+    pub async fn read_live_feed_for_tests_with(&self, params: ObserveParams) -> String {
+        self.read_live_feed(Parameters(params)).await
     }
 
     #[cfg(feature = "test-util")]
@@ -670,9 +666,9 @@ impl DaemonMcp {
         }
     }
 
-    #[doc = include_str!("../tool_descriptions/query_observations.md")]
-    #[tool(name = "query_observations")]
-    async fn query_observations(&self, Parameters(params): Parameters<ObserveParams>) -> String {
+    #[doc = include_str!("../tool_descriptions/read_live_feed.md")]
+    #[tool(name = "read_live_feed")]
+    async fn read_live_feed(&self, Parameters(params): Parameters<ObserveParams>) -> String {
         // If the caller wants browser observations, ensure Chrome is connected.
         let wants_browser = params
             .origins
@@ -736,7 +732,7 @@ impl DaemonMcp {
                 if warned_since_checkpoint {
                     return self.ok_with(
                         result,
-                        vec!["query_observations", "resolve_debug_session"],
+                        vec!["read_live_feed", "resolve_debug_session"],
                         Some("runtime signal found; raw observations are signal refs only, so promote awareness from the interpreted conclusion, not the log rows"),
                     );
                 }
@@ -849,8 +845,8 @@ impl DaemonMcp {
                 "seq_at_creation": seq.0,
                 "created_at": now
             }),
-            vec!["query_observations"],
-            Some("checkpoint set; query_observations(since_checkpoint=...) returns signals, not durable awareness evidence"),
+            vec!["read_live_feed"],
+            Some("checkpoint set; read_live_feed(since_checkpoint=...) returns new entries since this point"),
         )
     }
 
@@ -860,9 +856,9 @@ impl DaemonMcp {
         wrap_inner_result(self, &self.connections_json().await)
     }
 
-    #[doc = include_str!("../tool_descriptions/ingest_observation.md")]
-    #[tool(name = "ingest_observation")]
-    async fn ingest_observation(&self, Parameters(params): Parameters<IngestParams>) -> String {
+    #[doc = include_str!("../tool_descriptions/write_to_live_feed.md")]
+    #[tool(name = "write_to_live_feed")]
+    async fn write_to_live_feed(&self, Parameters(params): Parameters<IngestParams>) -> String {
         let mut body = serde_json::Map::new();
         if let Some(app) = params.app {
             body.insert("app".into(), serde_json::Value::String(app));
@@ -938,9 +934,9 @@ impl DaemonMcp {
         self.ok(serde_json::json!({"ok": true}))
     }
 
-    #[doc = include_str!("../tool_descriptions/subscribe_observations.md")]
-    #[tool(name = "subscribe_observations")]
-    async fn subscribe_observations(
+    #[doc = include_str!("../tool_descriptions/watch_live_feed.md")]
+    #[tool(name = "watch_live_feed")]
+    async fn watch_live_feed(
         &self,
         Parameters(params): Parameters<SubscribeParams>,
     ) -> String {
@@ -2737,7 +2733,7 @@ mod logging_tests {
         let shared_mem: Arc<dyn MemoryStore> = Arc::new(shared_store.memory_store());
         let shared_ds: Arc<dyn DebugSessionStore> = Arc::new(shared_store.debug_session_store());
 
-        // Keep receivers alive so observations sent via ingest_observation
+        // Keep receivers alive so observations sent via write_to_live_feed
         // actually reach the store through the drain tasks.
         let (shared_obs_tx, mut shared_obs_rx) = tokio::sync::mpsc::unbounded_channel();
 
@@ -2849,7 +2845,7 @@ mod logging_tests {
         assert_ne!(a_sid, b_sid, "each agent must get a distinct session id");
 
         // Each ingests an observation through their own MCP instance
-        a.ingest_observation(Parameters(IngestParams {
+        a.write_to_live_feed(Parameters(IngestParams {
             kind: Some("log".into()),
             severity: Some("info".into()),
             app: Some("test-a".into()),
@@ -2863,7 +2859,7 @@ mod logging_tests {
         }))
         .await;
 
-        b.ingest_observation(Parameters(IngestParams {
+        b.write_to_live_feed(Parameters(IngestParams {
             kind: Some("log".into()),
             severity: Some("info".into()),
             app: Some("test-b".into()),

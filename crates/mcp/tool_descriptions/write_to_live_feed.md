@@ -27,4 +27,4 @@ None.
 
 ## Next
 
-query_observations to confirm the row landed; if severity=error, resolve or link it through the active debug session when the root cause is known.
+read_live_feed to confirm the row landed; if severity=error, resolve or link it through the active debug session when the root cause is known.

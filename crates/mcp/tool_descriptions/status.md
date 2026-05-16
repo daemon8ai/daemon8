@@ -23,4 +23,4 @@ none.
 
 ## Next
 
-query_observations to see the current stream; start_debug_session if you're about to investigate something specific.
+read_live_feed to see the current stream; start_debug_session if you're about to investigate something specific.

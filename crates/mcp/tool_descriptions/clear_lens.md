@@ -23,4 +23,4 @@ none expected.
 
 ## Next
 
-set_lens with a new filter, or query_observations directly without the lens.
+set_lens with a new filter, or read_live_feed directly without the lens.

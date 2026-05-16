@@ -9,7 +9,7 @@ Right before any change you might want to compare against:
 ```
 create_checkpoint(description="before applying retry patch")
 # ... apply patch, run test ...
-query_observations(since_checkpoint=<id from above>)
+read_live_feed(since_checkpoint=<id from above>)
 ```
 
 Returns only what arrived after the checkpoint — typically the relevant error/log delta.
@@ -31,4 +31,4 @@ Returns only what arrived after the checkpoint — typically the relevant error/
 }
 ```
 
-The envelope's `daemon8.next_actions` will hint `query_observations` as the natural follow-up.
+The envelope's `daemon8.next_actions` will hint `read_live_feed` as the natural follow-up.
