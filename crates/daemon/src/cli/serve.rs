@@ -54,10 +54,6 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
     let memory_store: Arc<dyn daemon8_store::MemoryStore> = Arc::new(surreal_store.memory_store());
     let debug_session_store: Arc<dyn daemon8_store::DebugSessionStore> =
         Arc::new(surreal_store.debug_session_store());
-    let librarian_store: Arc<dyn daemon8_store::LibrarianStore> =
-        Arc::new(surreal_store.librarian_store());
-    let awareness_store: Arc<dyn daemon8_store::AwarenessStore> =
-        Arc::new(surreal_store.awareness_store());
     let store: Arc<dyn StateModel> = surreal_store.clone();
 
     // Unbounded channel — deliberate policy.  The daemon captures observations
@@ -197,54 +193,12 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
             None
         };
 
-    {
-        let lib = librarian_store.clone();
-        tasks.spawn(async move {
-            register_provider_projects(lib).await;
-        });
-    }
-
-    // Project-aware discovery is on-demand in alpha. A global daemon may be
-    // launched from `/` or another meaningless cwd, so the scanner must not run
-    // at serve startup. MCP/CLI callers provide the project root explicitly.
-    let discovery_control: Option<Arc<dyn daemon8_types::DiscoveryControl>> = {
-        let signals = crate::discovery::scanner::DiscoverySignals::new();
-        Some(signals as Arc<dyn daemon8_types::DiscoveryControl>)
-    };
-
     let setup_tool_fn: daemon8_mcp::SetupToolFn = Arc::new(move |action| {
         let setup_config_path = setup_config_path.clone();
         Box::pin(async move {
             crate::cli::setup::cmd_setup_mcp(action, setup_config_path.as_deref()).await
         })
     });
-    let project_context_resolver: daemon8_mcp::ProjectContextResolverFn = Arc::new(|root| {
-        Box::pin(async move { classify_project_root(std::path::PathBuf::from(root)).await })
-    });
-    let project_discovery_fn: daemon8_mcp::ProjectDiscoveryFn = {
-        let lib = librarian_store.clone();
-        let tx = obs_tx.clone();
-        let cancel = cancel.clone();
-        let user_sources: Vec<crate::config::SourceConfig> =
-            cfg.sources.values().cloned().collect();
-        Arc::new(move |root| {
-            let lib = lib.clone();
-            let tx = tx.clone();
-            let cancel = cancel.child_token();
-            let user_sources = user_sources.clone();
-            Box::pin(async move {
-                run_discovery_plan_json(
-                    &std::path::PathBuf::from(root),
-                    lib.as_ref(),
-                    &tx,
-                    user_sources,
-                    cancel,
-                )
-                .await
-            })
-        })
-    };
-
     // Only start MCP stdio when stdin is a real FIFO from an MCP client.
     // A plain "not a TTY" check is insufficient: launchd, nohup, and shell
     // backgrounding all attach /dev/null (a character device) to stdin.
@@ -263,8 +217,6 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
             store: store.clone(),
             memory_store: Some(memory_store.clone()),
             debug_session_store: Some(debug_session_store.clone()),
-            librarian_store: Some(librarian_store.clone()),
-            awareness_store: Some(awareness_store.clone()),
             obs_tx: obs_tx.clone(),
             chrome_tx: chrome_cmd_tx.clone(),
             chrome_state: chrome_state_rx.clone(),
@@ -274,8 +226,6 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
             broadcast_tx: broadcast_tx.clone(),
             lens,
             setup_tool_fn: Some(setup_tool_fn.clone()),
-            project_discovery_fn: Some(project_discovery_fn.clone()),
-            project_context_resolver: Some(project_context_resolver.clone()),
             cancel: cancel.clone(),
             source_activator: source_activator.clone(),
         });
@@ -302,8 +252,6 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
     let mcp_store = store.clone();
     let mcp_memory_store = memory_store.clone();
     let mcp_debug_session_store = debug_session_store.clone();
-    let mcp_librarian_store = librarian_store.clone();
-    let mcp_awareness_store = awareness_store.clone();
     let mcp_obs_tx = obs_tx.clone();
     let mcp_chrome_tx = chrome_cmd_tx.clone();
     let mcp_state_rx = chrome_state_rx.clone();
@@ -325,8 +273,6 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
                 store: mcp_store.clone(),
                 memory_store: Some(mcp_memory_store.clone()),
                 debug_session_store: Some(mcp_debug_session_store.clone()),
-                librarian_store: Some(mcp_librarian_store.clone()),
-                awareness_store: Some(mcp_awareness_store.clone()),
                 obs_tx: mcp_obs_tx.clone(),
                 chrome_tx: mcp_chrome_tx.clone(),
                 chrome_state: mcp_state_rx.clone(),
@@ -339,8 +285,6 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
                     mcp_source_activator.clone(),
                 )),
                 setup_tool_fn: Some(setup_tool_fn.clone()),
-                project_discovery_fn: Some(project_discovery_fn.clone()),
-                project_context_resolver: Some(project_context_resolver.clone()),
                 cancel: mcp_root_cancel.clone(),
                 source_activator: mcp_source_activator.clone(),
             }))
@@ -367,7 +311,6 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
         chrome_endpoint: chrome_endpoint.clone(),
         lens: api_lens,
         source_activator: source_activator.clone(),
-        discovery_control: discovery_control.clone(),
     };
     let port = cfg.server.port;
     let app = daemon8_ingest::ingest_router(obs_tx.clone())
@@ -1410,120 +1353,6 @@ mod chrome_handler_tests {
         assert_eq!(
             decide_connect_action(true, ConnectionState::Disconnected, false),
             ConnectDecision::AbortAndSpawn
-        );
-    }
-}
-
-async fn classify_project_root(
-    root: std::path::PathBuf,
-) -> Result<daemon8_types::ProjectClassification, String> {
-    daemon8_providers::classify(&root)
-        .map(|mut classification| {
-            classification.root =
-                std::fs::canonicalize(&classification.root).unwrap_or(classification.root);
-            classification
-        })
-        .map_err(|e| e.to_string())
-}
-
-async fn run_discovery_plan_json(
-    root: &std::path::Path,
-    librarian: &dyn daemon8_store::LibrarianStore,
-    obs_tx: &mpsc::UnboundedSender<Observation>,
-    user_overrides: Vec<crate::config::SourceConfig>,
-    cancel: CancellationToken,
-) -> String {
-    use crate::discovery::{presentation, scanner};
-
-    let config = scanner::ScannerConfig {
-        wait_timeout: Duration::from_secs(0),
-        poll_interval: Duration::from_secs(1),
-        ..scanner::ScannerConfig::default()
-    };
-    let plan = match scanner::scan(
-        root,
-        librarian,
-        obs_tx,
-        user_overrides,
-        config,
-        cancel,
-        None,
-    )
-    .await
-    {
-        Ok(plan) => plan,
-        Err(e) => {
-            return serde_json::json!({
-                "error": {
-                    "code": "discovery_scan_failed",
-                    "message": e.to_string(),
-                }
-            })
-            .to_string();
-        }
-    };
-
-    let mut rendered = Vec::new();
-    if let Err(e) = presentation::render_plan(&plan, &mut rendered) {
-        return serde_json::json!({
-            "error": {
-                "code": "discovery_render_failed",
-                "message": format!("render discovery plan: {e}"),
-            }
-        })
-        .to_string();
-    }
-    let report = String::from_utf8_lossy(&rendered).to_string();
-    let next_actions = if plan.awaiting_agent {
-        vec!["librarian_index", "discover_project", "awareness_status"]
-    } else {
-        vec!["awareness_status", "query_observations"]
-    };
-
-    serde_json::to_string_pretty(&serde_json::json!({
-        "plan": plan,
-        "report": report,
-        "next_actions": next_actions,
-    }))
-    .unwrap_or_default()
-}
-
-async fn register_provider_projects(lib: Arc<dyn daemon8_store::LibrarianStore>) {
-    let projects = daemon8_providers::list_all_projects();
-    if projects.is_empty() {
-        return;
-    }
-    let now = current_ns();
-    let mut registered = 0u32;
-    for entry in &projects {
-        let node = daemon8_store::LibrarianNode {
-            id: None,
-            kind: daemon8_types::LibrarianNodeKind::Project,
-            label: entry.slug.clone(),
-            locator_kind: daemon8_types::LocatorKind::File,
-            locator: entry.path.to_string_lossy().to_string(),
-            tags: vec![format!("provider:{}", entry.provider)],
-            project_slug: entry.slug.clone(),
-            version: String::new(),
-            parent_id: None,
-            created_at: now,
-            updated_at: now,
-            last_read_at: None,
-            deprecated_at: None,
-            canonicalized_at: None,
-            data: None,
-        };
-        match lib.index_node(node).await {
-            Ok(_) => registered += 1,
-            Err(e) => {
-                tracing::warn!(slug = %entry.slug, "failed to register project: {e}");
-            }
-        }
-    }
-    if registered > 0 {
-        tracing::info!(
-            count = registered,
-            "registered provider projects in librarian"
         );
     }
 }

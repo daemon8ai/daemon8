@@ -30,11 +30,6 @@ pub struct ApiState {
     pub chrome_endpoint: Arc<std::sync::Mutex<Option<Arc<str>>>>,
     pub lens: Arc<LensManager>,
     pub source_activator: Option<Arc<dyn daemon8_types::SourceActivator>>,
-    /// Live handle into the discovery scanner's wait loop. Populated by
-    /// `serve` only while a scan is in progress; `None` once the scanner
-    /// has produced its plan. The HTTP routes mounted on
-    /// `/api/discover/{complete,skip}` flip the relevant flag.
-    pub discovery_control: Option<Arc<dyn daemon8_types::DiscoveryControl>>,
 }
 
 pub fn api_router(state: ApiState) -> Router {
@@ -52,37 +47,7 @@ pub fn api_router(state: ApiState) -> Router {
                 .delete(handle_lens_clear),
         )
         .route("/api/browser/act", post(handle_chrome_act))
-        .route("/api/discover/complete", post(handle_discover_complete))
-        .route("/api/discover/skip", post(handle_discover_skip))
         .with_state(state)
-}
-
-async fn handle_discover_complete(State(state): State<ApiState>) -> Response {
-    match state.discovery_control.as_ref() {
-        Some(ctl) => {
-            ctl.signal_complete();
-            (StatusCode::OK, "discovery complete signaled").into_response()
-        }
-        None => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            "no discovery scan is currently waiting",
-        )
-            .into_response(),
-    }
-}
-
-async fn handle_discover_skip(State(state): State<ApiState>) -> Response {
-    match state.discovery_control.as_ref() {
-        Some(ctl) => {
-            ctl.signal_skip();
-            (StatusCode::OK, "discovery skip signaled").into_response()
-        }
-        None => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            "no discovery scan is currently waiting",
-        )
-            .into_response(),
-    }
 }
 
 #[derive(Debug, Deserialize)]

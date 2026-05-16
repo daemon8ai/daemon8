@@ -5,14 +5,10 @@ use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
-use daemon8_store::{LibrarianStore, StateModel, SurrealStore};
-use daemon8_types::ProjectClassification;
+use daemon8_store::{StateModel, SurrealStore};
 
 use super::observe::{base_url, check_response};
 use crate::config::{self, SourceConfig};
-use crate::discovery::doctor_checks::{
-    self, ProjectNodeStatus, SourceDriftReport, SourceTemplatesStatus,
-};
 
 struct Check {
     name: String,
@@ -39,13 +35,6 @@ impl Check {
         }
     }
 
-    fn ok_hint(name: impl Into<String>, msg: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            result: CheckResult::OkHint(msg.into()),
-        }
-    }
-
     fn warn(name: impl Into<String>, msg: impl Into<String>) -> Self {
         Self {
             name: name.into(),
@@ -53,12 +42,6 @@ impl Check {
         }
     }
 
-    fn err(name: impl Into<String>, msg: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            result: CheckResult::Err(msg.into()),
-        }
-    }
 }
 
 impl std::fmt::Display for Check {
@@ -94,23 +77,11 @@ pub async fn cmd_doctor(config_path: Option<String>, fix: bool) -> Result<()> {
         check_sources(&cfg),
     ];
 
-    // Open the store once and reuse for both the store health check
-    // and the project-aware onboarding checks. SurrealKV holds an
-    // exclusive lock, so opening twice in sequence races against
-    // file-lock release timing and produces spurious failures.
-    let (store_check, shared_store) = check_store_with_handle(&cfg, port).await;
+    let (store_check, _shared_store) = check_store_with_handle(&cfg, port).await;
     checks.push(store_check);
 
     #[cfg(target_os = "macos")]
     checks.push(check_macos_launchd_state());
-
-    // Project-aware onboarding checks (D8). Doctor runs as a CLI
-    // separate from the running daemon, so we classify the cwd and
-    // query the librarian directly. Any failure here folds into a
-    // single advisory check rather than aborting the whole run —
-    // empty-librarian or unclassifiable directories are normal.
-    let project_checks = run_project_aware_checks(&cfg, shared_store.as_ref()).await;
-    checks.extend(project_checks);
 
     let has_failure = checks.iter().any(|c| c.is_failure());
     let has_warning = checks
@@ -415,253 +386,6 @@ fn check_sources(cfg: &config::Config) -> Check {
         Check {
             name: "sources".into(),
             result: CheckResult::Warn(warnings.join("; ")),
-        }
-    }
-}
-
-/// Run the three project-aware onboarding checks (D8).
-///
-/// `shared_store` is `Some` when [`check_store_with_handle`] opened the
-/// DB directly, `None` when it answered via the daemon's HTTP API. In
-/// the API path the daemon owns the SurrealKV lock; we don't try to
-/// open the DB a second time — these checks are an offline diagnostic
-/// and the running daemon is already the authoritative reader of its
-/// own state.
-async fn run_project_aware_checks(
-    cfg: &config::Config,
-    shared_store: Option<&SurrealStore>,
-) -> Vec<Check> {
-    let mut out = Vec::new();
-
-    let cwd = match std::env::current_dir() {
-        Ok(p) => p,
-        Err(e) => {
-            out.push(Check::ok_hint(
-                "project awareness",
-                format!("cannot read current dir ({e})"),
-            ));
-            return out;
-        }
-    };
-
-    let classification = match daemon8_providers::classify(&cwd) {
-        Ok(mut c) => {
-            // The scanner canonicalizes the root; mirror that here so
-            // librarian lookups (which key by canonical string) match.
-            c.root = std::fs::canonicalize(&c.root).unwrap_or(c.root);
-            c
-        }
-        Err(_) => {
-            out.push(Check::ok_hint(
-                "project awareness",
-                format!("cwd {} is not a classifiable project root", cwd.display()),
-            ));
-            return out;
-        }
-    };
-
-    let db_path = config::resolve_db_path(cfg.storage.path.as_deref());
-    if !db_path.exists() {
-        out.push(Check::ok_hint(
-            "project awareness",
-            "librarian not initialized yet (first run will create it)",
-        ));
-        return out;
-    }
-
-    let Some(store) = shared_store else {
-        // Daemon is up and answering /api/summary — store check used
-        // the API path, so we never opened the DB. Skip rather than
-        // masquerade as an error.
-        out.push(Check::ok_hint(
-            "project awareness",
-            "skipped while daemon is running (SurrealKV lock held by the daemon). \
-             Run `daemon8 stop` then `daemon8 doctor` to inspect project node, source \
-             templates, and source drift.",
-        ));
-        return out;
-    };
-    let librarian = store.librarian_store();
-
-    out.push(render_project_node(&librarian, &classification).await);
-    out.push(render_source_templates(&librarian, &classification).await);
-    out.extend(render_source_drift(&librarian, &classification).await);
-    out
-}
-
-async fn render_project_node(
-    librarian: &dyn LibrarianStore,
-    classification: &ProjectClassification,
-) -> Check {
-    match doctor_checks::check_project_node(librarian, classification).await {
-        Ok(ProjectNodeStatus::Absent) => Check::ok_hint(
-            "project node",
-            "no project node yet — daemon8 has not onboarded this project; \
-             call `discover_project` with the explicit project root to inspect source coverage",
-        ),
-        Ok(ProjectNodeStatus::SkipDiscovery { slug }) => Check::ok_hint(
-            "project node",
-            format!(
-                "{slug}: skip-discovery marker active; run `daemon8 discover --rescan --root <project>` to re-enable"
-            ),
-        ),
-        Ok(ProjectNodeStatus::Present {
-            slug,
-            classification_tags,
-            framework_versions,
-            last_serve_age_secs,
-        }) => {
-            let tags = if classification_tags.is_empty() {
-                "no tags".to_string()
-            } else {
-                classification_tags.join(", ")
-            };
-            let versions = if framework_versions.is_empty() {
-                String::new()
-            } else {
-                let parts: Vec<String> = framework_versions
-                    .iter()
-                    .map(|(k, v)| format!("{k}={v}"))
-                    .collect();
-                format!(", versions {}", parts.join(", "))
-            };
-            let age = match last_serve_age_secs {
-                Some(secs) => format!(", last verified {} ago", doctor_checks::format_age(secs)),
-                None => String::new(),
-            };
-            Check::ok_hint(
-                "project node",
-                format!("{slug}: tags [{tags}]{versions}{age}"),
-            )
-        }
-        Ok(ProjectNodeStatus::Malformed) => Check::ok_hint(
-            "project node",
-            "project node predates the D6 schema (no payload) — \
-             run `daemon8 discover --rescan --root <project>` then call `discover_project` to refresh",
-        ),
-        Err(e) => Check::warn("project node", format!("librarian lookup failed: {e}")),
-    }
-}
-
-async fn render_source_templates(
-    librarian: &dyn LibrarianStore,
-    classification: &ProjectClassification,
-) -> Check {
-    match doctor_checks::check_source_templates(librarian, classification).await {
-        Ok(SourceTemplatesStatus::None { matched_tags }) => {
-            let tags = if matched_tags.is_empty() {
-                "no tags detected".to_string()
-            } else {
-                matched_tags.join(", ")
-            };
-            Check::ok_hint(
-                "source templates",
-                format!(
-                    "no source_templates yet for this project type ({tags}) on this machine \
-                     — call `discover_project` so the agent can inspect and register reusable sources"
-                ),
-            )
-        }
-        Ok(SourceTemplatesStatus::Some {
-            count,
-            matched_tags,
-        }) => {
-            let tags = matched_tags.join(", ");
-            Check::ok_hint(
-                "source templates",
-                format!("{count} source_template(s) known for project tags ({tags})"),
-            )
-        }
-        Err(e) => Check::warn("source templates", format!("librarian lookup failed: {e}")),
-    }
-}
-
-async fn render_source_drift(
-    librarian: &dyn LibrarianStore,
-    classification: &ProjectClassification,
-) -> Vec<Check> {
-    match doctor_checks::check_source_drift(librarian, classification).await {
-        Ok(reports) => reports.into_iter().map(report_to_check).collect(),
-        Err(e) => vec![Check::warn(
-            "source drift",
-            format!("librarian lookup failed: {e}"),
-        )],
-    }
-}
-
-fn report_to_check(report: SourceDriftReport) -> Check {
-    match report {
-        SourceDriftReport::Ok {
-            description,
-            path,
-            last_write_age_secs,
-        } => {
-            let name = format!("source: {description}");
-            let detail = match last_write_age_secs {
-                Some(secs) => format!(
-                    "{}: last write {} ago",
-                    path.display(),
-                    doctor_checks::format_age(secs)
-                ),
-                None => format!("{}: present", path.display()),
-            };
-            Check::ok_hint(name, detail)
-        }
-        SourceDriftReport::Stale {
-            description,
-            path,
-            last_write_age_secs,
-        } => Check::warn(
-            format!("source: {description}"),
-            format!(
-                "{}: file exists, last write {} ago — stale?",
-                path.display(),
-                doctor_checks::format_age(last_write_age_secs)
-            ),
-        ),
-        SourceDriftReport::MissingNoVersionChange { description, path } => Check::err(
-            format!("source: {description}"),
-            format!(
-                "{}: source path missing — possible causes: manual deletion, \
-                 OS update, project relocation. Run `daemon8 discover --rescan --root <project>` then call `discover_project` to re-discover",
-                path.display()
-            ),
-        ),
-        SourceDriftReport::MissingWithVersionChange {
-            description,
-            path,
-            framework,
-            old_version,
-            new_version,
-        } => Check::err(
-            format!("source: {description}"),
-            format!(
-                "{}: source path missing. Diagnosis: framework version changed since template \
-                 registration. {framework} upgraded {old_version} -> {new_version}. \
-                 Likely cause: log location moved between versions. \
-                 Recommended: `daemon8 discover --rescan --root <project>` then `discover_project` to learn the new location.",
-                path.display()
-            ),
-        ),
-        SourceDriftReport::MissingPartialVersionChange {
-            description,
-            path,
-            changed_frameworks,
-        } => {
-            let changes: Vec<String> = changed_frameworks
-                .iter()
-                .map(|(f, o, n)| format!("{f} {o} -> {n}"))
-                .collect();
-            Check::err(
-                format!("source: {description}"),
-                format!(
-                    "{}: source path missing. Framework versions changed ({}), \
-                     but none directly tied to this source — less likely caused \
-                     by version change. Run `daemon8 discover --rescan --root <project>` then `discover_project` to investigate.",
-                    path.display(),
-                    changes.join(", ")
-                ),
-            )
         }
     }
 }
