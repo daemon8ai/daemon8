@@ -5,7 +5,6 @@
 pub enum FeatureGate {
     DebugSession,
     Setup,
-    Librarian,
 }
 
 pub struct HelpTopic {
@@ -35,12 +34,6 @@ pub static ALL_HELP_TOPICS: &[HelpTopic] = &[
         requires: None,
     },
     HelpTopic {
-        name: "awareness",
-        one_liner: "source, context, and reasoning awareness for a project",
-        body: include_str!("../tool_descriptions/help/awareness.md"),
-        requires: None,
-    },
-    HelpTopic {
         name: "lens",
         one_liner: "buffering matching observations between queries",
         body: include_str!("../tool_descriptions/help/lens.md"),
@@ -58,15 +51,9 @@ pub static ALL_HELP_TOPICS: &[HelpTopic] = &[
         body: include_str!("../tool_descriptions/help/setup.md"),
         requires: Some(FeatureGate::Setup),
     },
-    HelpTopic {
-        name: "librarian",
-        one_liner: "graph-based reference catalog for documentation, configs, fixes",
-        body: include_str!("../tool_descriptions/help/librarian.md"),
-        requires: Some(FeatureGate::Librarian),
-    },
 ];
 
-pub fn build_dynamic_index(enabled: &[FeatureGate], librarian_enabled: bool) -> String {
+pub fn build_dynamic_index(enabled: &[FeatureGate], _librarian_enabled: bool) -> String {
     use std::fmt::Write;
 
     let mut out = String::with_capacity(1024);
@@ -82,18 +69,6 @@ pub fn build_dynamic_index(enabled: &[FeatureGate], librarian_enabled: bool) -> 
         if topic_enabled(topic, enabled) {
             let _ = writeln!(out, "- `{}` — {}", topic.name, topic.one_liner);
         }
-    }
-
-    if librarian_enabled {
-        out.push_str(
-            "\n## Knowledge graph\n\n\
-             The **librarian** extends this help system with a graph-based index of project-specific \
-             references: documentation URLs, fix recipes, source configs, project protocols. \
-             These are high-value pointers — the librarian never stores content, only locators to \
-             where information lives. It complements whatever knowledge system you already use \
-             (Obsidian, cloud storage, wikis) without replacing it.\n\n\
-             Use `librarian_lookup` for project knowledge; `daemon8_help` for daemon8 protocol docs.\n",
-        );
     }
 
     out.push_str("\nUnknown topics return this index.\n");

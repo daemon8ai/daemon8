@@ -8,45 +8,25 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use daemon8_store::{
-    ActiveSessionState, AwarenessFilter, AwarenessRef, AwarenessRefs, AwarenessSignalInput,
-    AwarenessStore, AwarenessSync, AwarenessTraversalFilter, DebugSessionStore, LensManager,
-    LibrarianFilter, LibrarianStore, MemoryFilter, MemoryStore, StateModel,
+    ActiveSessionState, DebugSessionStore, LensManager, MemoryStore, StateModel,
 };
-use daemon8_types::{
-    AwarenessAuthority, AwarenessNodeKind, AwarenessOperation, Checkpoint, DevicePlatform, Filter,
-    LibrarianNodeKind, LocatorKind, Observation, ProjectClassification, SourceActivator,
-};
+use daemon8_types::{Checkpoint, DevicePlatform, Filter, Observation, SourceActivator};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{Implementation, ServerCapabilities, ServerInfo, Tool};
 use rmcp::schemars::{self, JsonSchema};
 use rmcp::{RoleServer, ServerHandler, tool, tool_router};
 use serde::Deserialize;
-use tokio::sync::RwLock;
 use tokio::sync::broadcast;
 use tracing::Instrument;
 
 pub mod envelope;
 pub mod help;
-pub mod hints;
 use envelope::{ActiveSessionEcho, DaemonMeta};
 use help::FeatureGate;
 
-/// Per-MCP-session project context. Calls that include an explicit
-/// `project_root` classify and cache the project for later reads from the
-/// same session; sibling MCP sessions never share this state.
-pub type SessionProjectHandle = Arc<RwLock<Option<ProjectClassification>>>;
-pub type ProjectContextResolverFn = Arc<
-    dyn Fn(String) -> Pin<Box<dyn Future<Output = Result<ProjectClassification, String>> + Send>>
-        + Send
-        + Sync,
->;
-pub type ProjectDiscoveryFn =
-    Arc<dyn Fn(String) -> Pin<Box<dyn Future<Output = String> + Send>> + Send + Sync>;
-
 const INSTRUCTIONS: &str = include_str!("../tool_descriptions/instructions.md");
 static MCP_SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
-const AWARENESS_SIGNAL_TTL_NS: u64 = 30 * 60 * 1_000_000_000;
 
 fn next_mcp_session_id() -> String {
     let id = MCP_SESSION_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -393,179 +373,6 @@ pub struct HelpParams {
     pub topic: Option<String>,
 }
 
-#[derive(Debug, Default, Deserialize, JsonSchema)]
-pub struct AwarenessStatusParams {
-    #[schemars(
-        description = "Explicit project root for this awareness read. Use this at session start or after compaction so daemon8 does not infer from daemon cwd."
-    )]
-    pub project_root: Option<String>,
-    #[schemars(description = "Optional awareness path to inspect. Omit for a compact manifest.")]
-    pub focus_path: Option<String>,
-    #[schemars(description = "Traversal depth for focused reads. Default 1, max 5.")]
-    pub depth: Option<u32>,
-    #[schemars(description = "Include notes and Redex notation in focused output. Default false.")]
-    pub include_notes: Option<bool>,
-    #[schemars(description = "Include evidence refs in focused output. Default false.")]
-    pub include_evidence: Option<bool>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct AwarenessRefParams {
-    #[schemars(
-        description = "Reference kind. evidence_refs accept durable kinds; signal_refs accept ephemeral runtime kinds."
-    )]
-    pub kind: String,
-    #[schemars(description = "Reference id. Observation refs use the sequence id as a string.")]
-    pub id: String,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct AwarenessEvidenceParams {
-    #[schemars(description = "Durable typed evidence refs for this awareness update.")]
-    pub refs: Option<Vec<AwarenessRefParams>>,
-    #[schemars(description = "Deprecated: observation ids are converted to signal_refs.")]
-    pub observation_ids: Option<Vec<u64>>,
-    #[schemars(description = "Deprecated: active debug-session ids are converted to signal_refs.")]
-    pub debug_session_ids: Option<Vec<String>>,
-    #[schemars(description = "Deprecated: checkpoint ids are converted to signal_refs.")]
-    pub checkpoint_ids: Option<Vec<String>>,
-    #[schemars(
-        description = "Deprecated: librarian node ids are converted to durable evidence_refs."
-    )]
-    pub librarian_node_ids: Option<Vec<String>>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct AwarenessSyncParams {
-    #[schemars(
-        description = "Reasoning operation: capture, update, question, resolve, verify, or retire."
-    )]
-    pub operation: String,
-    #[schemars(description = "Hierarchical awareness path, e.g. debug/frontend/root-cause.")]
-    pub path: String,
-    #[schemars(
-        description = "Node kind: objective, question, hypothesis, fact, decision, constraint, risk, or blocker."
-    )]
-    pub kind: String,
-    #[schemars(
-        description = "Project slug. Defaults to active debug session project when omitted."
-    )]
-    pub project_slug: Option<String>,
-    #[schemars(description = "Authority: verified, accepted, inferred, hypothesis, or question.")]
-    pub authority: Option<String>,
-    #[schemars(description = "Confidence from 0.0 to 1.0.")]
-    pub confidence: Option<f64>,
-    #[schemars(description = "Compact user-facing summary of the awareness node.")]
-    pub summary: Option<String>,
-    #[schemars(description = "Short internal note. Not returned by default status reads.")]
-    pub note: Option<String>,
-    #[schemars(
-        description = "Optional compact Redex notation. Stored raw and lightly validated later."
-    )]
-    pub redex: Option<String>,
-    #[schemars(description = "Free-form tags for focused retrieval.")]
-    pub tags: Option<Vec<String>>,
-    #[schemars(
-        description = "Debug session id. Stored as a signal ref; defaults to active debug session when omitted."
-    )]
-    pub debug_session_id: Option<String>,
-    #[schemars(description = "Checkpoint id connected as a signal ref, not durable evidence.")]
-    pub checkpoint_id: Option<String>,
-    #[schemars(
-        description = "Durable evidence refs. Use persistent conclusions or accepted records only."
-    )]
-    pub evidence_refs: Option<Vec<AwarenessRefParams>>,
-    #[schemars(
-        description = "Ephemeral signal refs. Use observations/checkpoints/logs/tool/browser/device refs only."
-    )]
-    pub signal_refs: Option<Vec<AwarenessRefParams>>,
-    #[schemars(
-        description = "Deprecated compatibility wrapper. Raw observation/checkpoint fields become signal_refs."
-    )]
-    pub evidence: Option<AwarenessEvidenceParams>,
-    #[schemars(description = "Existing awareness node id for update/resolve/verify/retire.")]
-    pub target_node_id: Option<String>,
-    #[schemars(description = "Existing node ids this node supersedes.")]
-    pub supersedes: Option<Vec<String>>,
-    #[schemars(description = "Question/blocker node ids this node answers.")]
-    pub answers: Option<Vec<String>>,
-    #[schemars(description = "Existing node ids this node contradicts.")]
-    pub contradicts: Option<Vec<String>>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct LibrarianIndexEdge {
-    #[schemars(
-        description = "Edge kind: has_source | documented_by | fixes | supersedes | child_of"
-    )]
-    pub kind: String,
-    #[schemars(description = "Target catalog node ID for this edge")]
-    pub target_node_id: String,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct LibrarianIndexParams {
-    #[schemars(description = "Node kind: doc | source_template | fix | project")]
-    pub kind: String,
-    #[schemars(description = "Human-readable name for this reference")]
-    pub label: String,
-    #[schemars(description = "Locator type: file | url | vault")]
-    pub locator_kind: String,
-    #[schemars(description = "The actual pointer — a file path, URL, or vault note path")]
-    pub locator: String,
-    #[schemars(description = "Free-form retrieval tags")]
-    pub tags: Option<Vec<String>>,
-    #[schemars(description = "Project slug to scope this reference")]
-    pub project_slug: Option<String>,
-    #[schemars(description = "Place under an existing catalog node for hierarchy")]
-    pub parent_id: Option<String>,
-    #[schemars(description = "Optional edge to create at index time")]
-    pub edge: Option<LibrarianIndexEdge>,
-    #[schemars(
-        description = "Mark as authoritative reference — canonicalized nodes are never flagged as stale"
-    )]
-    pub canonicalize: Option<bool>,
-    #[schemars(
-        description = "Kind-specific payload (snake_case JSON). For kind=source_template pass a SourceTemplateData shape; for kind=project pass a ProjectNodeData shape. See daemon8-types for the exact fields."
-    )]
-    pub data: Option<serde_json::Value>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct LibrarianLookupParams {
-    #[schemars(description = "Look up a single node by ID (returns node + edges)")]
-    pub id: Option<String>,
-    #[schemars(description = "Filter by kind: doc | source_template | fix | project")]
-    pub kinds: Option<Vec<String>>,
-    #[schemars(description = "Filter by tags")]
-    pub tags: Option<Vec<String>>,
-    #[schemars(description = "Scope to a project")]
-    pub project_slug: Option<String>,
-    #[schemars(description = "Case-insensitive search across label and locator")]
-    pub text: Option<String>,
-    #[schemars(description = "Max results. Default 20, max 500.")]
-    pub limit: Option<u32>,
-    #[schemars(description = "Include superseded/deprecated entries. Default false.")]
-    pub include_deprecated: Option<bool>,
-    #[schemars(description = "Find nodes not accessed in N days")]
-    pub stale_before_days: Option<u32>,
-    #[schemars(description = "Browse children of a specific catalog node")]
-    pub parent_id: Option<String>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct LibrarianForgetParams {
-    #[schemars(description = "Catalog node ID to remove or deprecate")]
-    pub id: String,
-    #[schemars(
-        description = "Required for hard delete (deprecate=false). Must be true to proceed."
-    )]
-    pub confirm: Option<bool>,
-    #[schemars(
-        description = "Default true. When true: soft-delete (deprecated_at set). When false and confirm=true: permanent removal."
-    )]
-    pub deprecate: Option<bool>,
-}
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CreateCheckpointParams {
@@ -671,11 +478,6 @@ pub struct SetupApplyParams {
     pub providers: Option<String>,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct DiscoverProjectParams {
-    #[schemars(description = "Explicit project root to classify and scan for source coverage.")]
-    pub project_root: String,
-}
 
 pub type SetupToolFn =
     Arc<dyn Fn(SetupToolAction) -> Pin<Box<dyn Future<Output = String> + Send>> + Send + Sync>;
@@ -684,8 +486,6 @@ pub struct DaemonMcp {
     store: Arc<dyn StateModel>,
     memory_store: Option<Arc<dyn MemoryStore>>,
     debug_session_store: Option<Arc<dyn DebugSessionStore>>,
-    librarian_store: Option<Arc<dyn LibrarianStore>>,
-    awareness_store: Option<Arc<dyn AwarenessStore>>,
     active_state: ActiveSessionState,
     obs_tx: tokio::sync::mpsc::UnboundedSender<Observation>,
     chrome_tx: tokio::sync::mpsc::Sender<ChromeCommand>,
@@ -694,23 +494,13 @@ pub struct DaemonMcp {
     last_checkpoint: Mutex<Checkpoint>,
     device_screenshot_fn: Option<DeviceScreenshotFn>,
     screenshot_dir: std::path::PathBuf,
-    /// Per-session subscription filter. Each `DaemonMcp` instance owns its own
-    /// channel so concurrent MCP sessions do not overwrite each other's
-    /// `subscribe_observations` filter.
     subscription_tx: tokio::sync::watch::Sender<Option<Filter>>,
     broadcast_tx: broadcast::Sender<(Arc<Observation>, Arc<str>)>,
     lens: Arc<LensManager>,
     setup_tool_fn: Option<SetupToolFn>,
-    project_discovery_fn: Option<ProjectDiscoveryFn>,
-    project_context_resolver: Option<ProjectContextResolverFn>,
     source_activator: Option<Arc<dyn SourceActivator>>,
-    /// Parent cancellation token. The push task spawned in `on_initialized`
-    /// uses a child token so daemon shutdown propagates cleanly.
     cancel: tokio_util::sync::CancellationToken,
     enabled_features: Vec<FeatureGate>,
-    /// Per-MCP-session project context. Explicit project roots on tool calls
-    /// refresh this value; it is never shared across concurrent sessions.
-    project_context: SessionProjectHandle,
     tool_router: ToolRouter<Self>,
 }
 
@@ -718,8 +508,6 @@ pub struct DaemonMcpConfig {
     pub store: Arc<dyn StateModel>,
     pub memory_store: Option<Arc<dyn MemoryStore>>,
     pub debug_session_store: Option<Arc<dyn DebugSessionStore>>,
-    pub librarian_store: Option<Arc<dyn LibrarianStore>>,
-    pub awareness_store: Option<Arc<dyn AwarenessStore>>,
     pub obs_tx: tokio::sync::mpsc::UnboundedSender<Observation>,
     pub chrome_tx: tokio::sync::mpsc::Sender<ChromeCommand>,
     pub chrome_state: tokio::sync::watch::Receiver<daemon8_chrome::ConnectionState>,
@@ -729,11 +517,7 @@ pub struct DaemonMcpConfig {
     pub broadcast_tx: broadcast::Sender<(Arc<Observation>, Arc<str>)>,
     pub lens: Arc<LensManager>,
     pub setup_tool_fn: Option<SetupToolFn>,
-    pub project_discovery_fn: Option<ProjectDiscoveryFn>,
-    pub project_context_resolver: Option<ProjectContextResolverFn>,
     pub source_activator: Option<Arc<dyn SourceActivator>>,
-    /// Parent cancellation token. Use the daemon-wide token; the MCP push task
-    /// derives a child from it so daemon shutdown stops per-session work.
     pub cancel: tokio_util::sync::CancellationToken,
 }
 
@@ -749,12 +533,6 @@ impl DaemonMcp {
         if cfg.setup_tool_fn.is_some() {
             router += Self::setup_tool_router();
         }
-        if cfg.librarian_store.is_some() {
-            router += Self::librarian_tool_router();
-        }
-        if cfg.awareness_store.is_some() {
-            router += Self::awareness_tool_router();
-        }
         let mut enabled_features = Vec::new();
         if cfg.debug_session_store.is_some() && cfg.memory_store.is_some() {
             enabled_features.push(FeatureGate::DebugSession);
@@ -762,16 +540,11 @@ impl DaemonMcp {
         if cfg.setup_tool_fn.is_some() {
             enabled_features.push(FeatureGate::Setup);
         }
-        if cfg.librarian_store.is_some() {
-            enabled_features.push(FeatureGate::Librarian);
-        }
         let (subscription_tx, _) = tokio::sync::watch::channel::<Option<Filter>>(None);
         Self {
             store: cfg.store,
             memory_store: cfg.memory_store,
             debug_session_store: cfg.debug_session_store,
-            librarian_store: cfg.librarian_store,
-            awareness_store: cfg.awareness_store,
             active_state: ActiveSessionState::new(),
             obs_tx: cfg.obs_tx,
             chrome_tx: cfg.chrome_tx,
@@ -784,12 +557,9 @@ impl DaemonMcp {
             broadcast_tx: cfg.broadcast_tx,
             lens: cfg.lens,
             setup_tool_fn: cfg.setup_tool_fn,
-            project_discovery_fn: cfg.project_discovery_fn,
-            project_context_resolver: cfg.project_context_resolver,
             source_activator: cfg.source_activator,
             cancel: cfg.cancel,
             enabled_features,
-            project_context: Arc::new(RwLock::new(None)),
             tool_router: router,
         }
     }
@@ -817,10 +587,6 @@ impl DaemonMcp {
         self.cancel.child_token()
     }
 
-    #[cfg(feature = "test-util")]
-    pub fn help_index_body(&self) -> String {
-        help::build_dynamic_index(&self.enabled_features, self.librarian_store.is_some())
-    }
 
     /// Drive `query_observations` with empty parameters. Exposed for
     /// integration tests that need to inspect the rendered envelope
@@ -907,14 +673,6 @@ impl DaemonMcp {
     #[doc = include_str!("../tool_descriptions/query_observations.md")]
     #[tool(name = "query_observations")]
     async fn query_observations(&self, Parameters(params): Parameters<ObserveParams>) -> String {
-        let project_context = match self
-            .resolve_project_context(params.project_root.as_deref())
-            .await
-        {
-            Ok(context) => context,
-            Err(e) => return self.err("project_context_failed", &e, None, None),
-        };
-
         // If the caller wants browser observations, ensure Chrome is connected.
         let wants_browser = params
             .origins
@@ -970,30 +728,11 @@ impl DaemonMcp {
                     result["lens_count"] = serde_json::json!(lens_obs.len());
                 }
 
-                let path_hint = self
-                    .compute_path_hint(project_context.as_ref(), &slice.observations)
-                    .await;
                 let warned_since_checkpoint = filter.since.is_some()
                     && slice
                         .observations
                         .iter()
                         .any(|obs| obs.severity.level() >= daemon8_types::Severity::Warn.level());
-                if warned_since_checkpoint {
-                    self.record_runtime_signal(&slice.observations).await;
-                }
-                if let Some(hint) = path_hint {
-                    let mut meta = self.current_meta();
-                    meta.hints.push(hint.hint_text);
-                    if warned_since_checkpoint {
-                        meta.next_actions = Some(vec![
-                            "query_observations".into(),
-                            "resolve_debug_session".into(),
-                        ]);
-                        meta.hint = Some("runtime signal found; treat raw observations as signal, then promote only the interpreted conclusion from a resolved session or accepted analysis".into());
-                    }
-                    return envelope::ok_value(result, meta);
-                }
-
                 if warned_since_checkpoint {
                     return self.ok_with(
                         result,
@@ -1008,27 +747,6 @@ impl DaemonMcp {
         }
     }
 
-    async fn compute_path_hint(
-        &self,
-        project_context: Option<&ProjectClassification>,
-        observations: &[Observation],
-    ) -> Option<hints::PathPatternHint> {
-        let (project_tags, project_root) = match project_context {
-            Some(c) => (c.tags.clone(), c.root.to_str().map(|s| s.to_string())),
-            None => (Vec::new(), None),
-        };
-        let obs_values: Vec<serde_json::Value> = observations
-            .iter()
-            .filter_map(|o| serde_json::to_value(o).ok())
-            .collect();
-        hints::maybe_emit_path_hint(
-            &obs_values,
-            self.librarian_store.as_ref(),
-            &project_tags,
-            project_root.as_deref(),
-        )
-        .await
-    }
 
     #[doc = include_str!("../tool_descriptions/status.md")]
     #[tool(name = "status")]
@@ -1050,375 +768,11 @@ impl DaemonMcp {
         }
     }
 
-    #[doc = include_str!("../tool_descriptions/awareness_status.md")]
-    #[tool(name = "awareness_status")]
-    async fn awareness_status(
-        &self,
-        Parameters(params): Parameters<AwarenessStatusParams>,
-    ) -> String {
-        let active_session = self.active_state.current_session();
-        let project = match self
-            .resolve_project_context(params.project_root.as_deref())
-            .await
-        {
-            Ok(project) => project,
-            Err(e) => return self.err("project_context_failed", &e, None, None),
-        };
-        let project_slug = active_session
-            .as_ref()
-            .map(|s| s.project_slug.to_string())
-            .filter(|s| s != "unknown")
-            .or_else(|| {
-                project
-                    .as_ref()
-                    .and_then(|p| derive_slug_from_root(&p.root))
-            });
 
-        let (source_awareness, source_hint) = match self
-            .source_awareness(project.as_ref(), project_slug.as_deref())
-            .await
-        {
-            Ok(v) => v,
-            Err(e) => return self.err("awareness_lookup_failed", &e.to_string(), None, None),
-        };
 
-        let context_awareness = match project_slug.as_deref() {
-            None => serde_json::json!({
-                "available": false,
-                "reason": "project slug unavailable",
-            }),
-            Some(slug) => self.context_awareness(slug).await,
-        };
 
-        let reasoning_awareness = match (&self.awareness_store, project_slug.as_deref()) {
-            (None, _) => serde_json::json!({
-                "available": false,
-                "reason": "awareness store unavailable",
-            }),
-            (Some(_), None) => serde_json::json!({
-                "available": false,
-                "reason": "project slug unavailable",
-            }),
-            (Some(store), Some(slug)) => {
-                if let Some(focus_path) = params.focus_path.as_deref() {
-                    match store
-                        .traverse(&AwarenessTraversalFilter {
-                            project_slug: slug.to_string(),
-                            focus_path: focus_path.to_string(),
-                            depth: params.depth.unwrap_or(1).min(5) as usize,
-                            include_inactive: false,
-                            include_notes: params.include_notes.unwrap_or(false),
-                            include_evidence: params.include_evidence.unwrap_or(false),
-                            limit: Some(100),
-                        })
-                        .await
-                    {
-                        Ok(tree) => serde_json::json!({
-                            "available": true,
-                            "mode": "focused",
-                            "tree": tree,
-                        }),
-                        Err(e) => {
-                            return self.err(
-                                "awareness_traverse_failed",
-                                &e.to_string(),
-                                None,
-                                None,
-                            );
-                        }
-                    }
-                } else {
-                    match store
-                        .manifest(&AwarenessFilter {
-                            project_slug: slug.to_string(),
-                            include_inactive: false,
-                            limit: Some(500),
-                        })
-                        .await
-                    {
-                        Ok(manifest) => serde_json::json!({
-                            "available": true,
-                            "mode": "manifest",
-                            "manifest": compact_manifest_json(&manifest),
-                        }),
-                        Err(e) => {
-                            return self.err(
-                                "awareness_manifest_failed",
-                                &e.to_string(),
-                                None,
-                                None,
-                            );
-                        }
-                    }
-                }
-            }
-        };
-        let signals = match (&self.awareness_store, project_slug.as_deref()) {
-            (Some(store), Some(slug)) => match store.active_signals(slug, 8).await {
-                Ok(signals) => serde_json::json!(signals),
-                Err(e) => serde_json::json!({
-                    "available": false,
-                    "reason": e.to_string(),
-                }),
-            },
-            _ => serde_json::json!([]),
-        };
 
-        let hint = if source_hint.contains("optimal awareness") {
-            source_hint
-        } else if self.awareness_store.is_some() {
-            format!(
-                "{source_hint}; call awareness_sync only if a durable objective, question, fact, decision, hypothesis, risk, or blocker changed"
-            )
-        } else {
-            source_hint
-        };
 
-        let next_actions = awareness_status_next_actions(
-            active_session.is_some(),
-            params.focus_path.is_some(),
-            &source_awareness,
-        );
-
-        self.ok_with(
-            serde_json::json!({
-                "project_slug": project_slug,
-                "source_awareness": source_awareness,
-                "context_awareness": context_awareness,
-                "reasoning_awareness": reasoning_awareness,
-                "signals": signals,
-            }),
-            next_actions,
-            Some(hint.as_str()),
-        )
-    }
-
-    async fn context_awareness(&self, project_slug: &str) -> serde_json::Value {
-        let librarian_counts = match &self.librarian_store {
-            Some(store) => {
-                let nodes = match store
-                    .lookup(&LibrarianFilter {
-                        project_slug: Some(project_slug.to_string()),
-                        limit: Some(500),
-                        ..Default::default()
-                    })
-                    .await
-                {
-                    Ok(nodes) => nodes,
-                    Err(e) => {
-                        return serde_json::json!({
-                            "available": true,
-                            "librarian": {
-                                "available": false,
-                                "reason": e.to_string(),
-                            },
-                            "durable_records": durable_records_json(self.memory_store.as_ref(), project_slug).await,
-                        });
-                    }
-                };
-                let mut counts = std::collections::BTreeMap::new();
-                for node in nodes {
-                    *counts.entry(node.kind.to_string()).or_insert(0usize) += 1;
-                }
-                serde_json::json!({
-                    "available": true,
-                    "counts_by_kind": counts,
-                })
-            }
-            None => serde_json::json!({
-                "available": false,
-                "reason": "librarian unavailable",
-            }),
-        };
-        let durable_records = durable_records_json(self.memory_store.as_ref(), project_slug).await;
-        serde_json::json!({
-            "available": true,
-            "librarian": librarian_counts,
-            "durable_records": durable_records,
-        })
-    }
-
-    async fn record_runtime_signal(&self, observations: &[Observation]) {
-        let Some(store) = &self.awareness_store else {
-            return;
-        };
-        let Some(project_slug) = self.current_project_slug().await else {
-            return;
-        };
-        let mut signal_refs = Vec::new();
-        for obs in observations
-            .iter()
-            .filter(|obs| obs.severity.level() >= daemon8_types::Severity::Warn.level())
-            .take(10)
-        {
-            push_ref(&mut signal_refs, "observation", obs.id.to_string());
-            if let Some(checkpoint_id) = &obs.checkpoint_id {
-                push_ref(&mut signal_refs, "checkpoint", checkpoint_id.to_string());
-            }
-            if let Some(debug_session_id) = &obs.debug_session_id {
-                push_ref(
-                    &mut signal_refs,
-                    "debug_session",
-                    debug_session_id.to_string(),
-                );
-            }
-        }
-        if signal_refs.is_empty() {
-            return;
-        }
-        let now = current_ns();
-        if let Err(e) = store
-            .record_signal(AwarenessSignalInput {
-                project_slug,
-                signal_kind: "runtime_warning".into(),
-                severity: "warn".into(),
-                summary: "warning or error observations appeared after the checkpoint".into(),
-                signal_refs,
-                related_awareness_node_ids: Vec::new(),
-                score: 0.8,
-                expires_at: now.saturating_add(AWARENESS_SIGNAL_TTL_NS),
-            })
-            .await
-        {
-            tracing::warn!("failed to record runtime awareness signal: {e}");
-        }
-    }
-
-    async fn current_project_slug(&self) -> Option<String> {
-        self.active_state
-            .current_session()
-            .map(|s| s.project_slug.to_string())
-            .filter(|s| s != "unknown")
-            .or_else(|| {
-                self.project_context.try_read().ok().and_then(|project| {
-                    project
-                        .as_ref()
-                        .and_then(|p| derive_slug_from_root(&p.root))
-                })
-            })
-    }
-
-    async fn resolve_project_context(
-        &self,
-        project_root: Option<&str>,
-    ) -> Result<Option<ProjectClassification>, String> {
-        let Some(root) = project_root.map(str::trim).filter(|root| !root.is_empty()) else {
-            return Ok(self.project_context.read().await.clone());
-        };
-        let Some(resolver) = &self.project_context_resolver else {
-            return Err(
-                "project_root was provided, but daemon8 has no project context resolver configured"
-                    .into(),
-            );
-        };
-        let classification = resolver(root.to_string()).await?;
-        *self.project_context.write().await = Some(classification.clone());
-        Ok(Some(classification))
-    }
-
-    async fn source_awareness(
-        &self,
-        project: Option<&ProjectClassification>,
-        project_slug: Option<&str>,
-    ) -> Result<(serde_json::Value, String), String> {
-        let Some(lib_store) = &self.librarian_store else {
-            return Ok((
-                serde_json::json!({
-                    "level": "limited",
-                    "reason": "librarian unavailable",
-                    "known_source_templates": 0,
-                    "known_source_instances": 0,
-                    "accessible_source_instances": 0,
-                    "inaccessible_source_instances": 0,
-                }),
-                "limited awareness: librarian topology is unavailable, so use broad observation queries and register reusable sources when found".into(),
-            ));
-        };
-
-        let Some(classification) = project else {
-            return Ok((
-                serde_json::json!({
-                    "level": "unknown",
-                    "reason": "no active project classification",
-                    "known_source_templates": 0,
-                    "known_source_instances": 0,
-                    "accessible_source_instances": 0,
-                    "inaccessible_source_instances": 0,
-                }),
-                "unknown awareness: check the project sitrep/librarian before trusting debug-session deltas".into(),
-            ));
-        };
-
-        let templates = lib_store
-            .lookup(&LibrarianFilter {
-                kinds: Some(vec![LibrarianNodeKind::SourceTemplate]),
-                limit: Some(500),
-                ..Default::default()
-            })
-            .await
-            .map_err(|e| e.to_string())?
-            .into_iter()
-            .filter(|node| source_template_matches(node.data.as_ref(), classification))
-            .collect::<Vec<_>>();
-
-        let instances = if let Some(slug) = project_slug {
-            lib_store
-                .lookup(&LibrarianFilter {
-                    kinds: Some(vec![LibrarianNodeKind::SourceInstance]),
-                    project_slug: Some(slug.to_string()),
-                    limit: Some(500),
-                    ..Default::default()
-                })
-                .await
-                .map_err(|e| e.to_string())?
-        } else {
-            Vec::new()
-        };
-
-        let inaccessible = instances
-            .iter()
-            .filter(|node| {
-                node.locator_kind == LocatorKind::File
-                    && !std::path::Path::new(&node.locator).exists()
-            })
-            .count();
-        let accessible = instances.len().saturating_sub(inaccessible);
-
-        let (level, reason, hint) = if !instances.is_empty() && inaccessible == 0 {
-            (
-                "optimal",
-                "all librarian-known project source instances are accessible",
-                "optimal awareness: create a checkpoint, run the action, then query observations since the checkpoint",
-            )
-        } else if !instances.is_empty() || !templates.is_empty() {
-            (
-                "partial",
-                "librarian knows relevant sources, but coverage is not fully accessible for this session",
-                "partial awareness: inspect source drift and activate/query relevant source tags before relying on checkpoint deltas",
-            )
-        } else {
-            (
-                "limited",
-                "no matching librarian source templates or project source instances were found",
-                "limited awareness: use broad observation queries and teach reusable source locations with librarian_index when discovered",
-            )
-        };
-
-        Ok((
-            serde_json::json!({
-                "level": level,
-                "reason": reason,
-                "classification_tags": classification.tags,
-                "platform": classification.platform,
-                "known_source_templates": templates.len(),
-                "known_source_instances": instances.len(),
-                "accessible_source_instances": accessible,
-                "inaccessible_source_instances": inaccessible,
-                "cursor_status": "checkpoint_seq_available; durable source cursor ledger pending",
-            }),
-            hint.into(),
-        ))
-    }
 
     #[tool(
         name = "daemon8_help",
@@ -1427,17 +781,13 @@ impl DaemonMcp {
     async fn daemon8_help(&self, Parameters(params): Parameters<HelpParams>) -> String {
         let topic = params.topic.as_deref().unwrap_or("index");
         if topic == "index" {
-            let body =
-                help::build_dynamic_index(&self.enabled_features, self.librarian_store.is_some());
+            let body = help::build_dynamic_index(&self.enabled_features, false);
             return self.ok(serde_json::json!({ "topic": "index", "body": body }));
         }
         match help::find_topic(topic, &self.enabled_features) {
             Some(t) => self.ok(serde_json::json!({ "topic": t.name, "body": t.body })),
             None => {
-                let body = help::build_dynamic_index(
-                    &self.enabled_features,
-                    self.librarian_store.is_some(),
-                );
+                let body = help::build_dynamic_index(&self.enabled_features, false);
                 self.ok(serde_json::json!({ "topic": "index", "body": body }))
             }
         }
@@ -2079,17 +1429,8 @@ async fn end_or_resolve_inner(daemon: &DaemonMcp, intent: EndIntent) -> String {
         "kind": "session_summary",
         "id": summary_memory_id.clone(),
     });
-    let (next_actions, hint) = if daemon.awareness_store.is_some() {
-        (
-            vec!["awareness_sync", "start_debug_session"],
-            "session closed; use awareness_sync with the returned project_slug and evidence_ref only if this durable session summary changes reasoning awareness",
-        )
-    } else {
-        (
-            vec!["start_debug_session", "list_debug_sessions"],
-            "session closed; start_debug_session for the next investigation",
-        )
-    };
+    let next_actions = vec!["start_debug_session", "list_debug_sessions"];
+    let hint = "session closed; start_debug_session for the next investigation";
 
     daemon.ok_with(
         serde_json::json!({
@@ -2212,285 +1553,9 @@ impl DaemonMcp {
         wrap_inner_result(self, &inner)
     }
 
-    #[doc = include_str!("../tool_descriptions/discover_project.md")]
-    #[tool(name = "discover_project")]
-    async fn discover_project(
-        &self,
-        Parameters(params): Parameters<DiscoverProjectParams>,
-    ) -> String {
-        let Some(discover) = &self.project_discovery_fn else {
-            return self.err(
-                "project_discovery_unavailable",
-                "project discovery is not configured",
-                Some("use librarian_lookup and broad observation queries until daemon project discovery is available"),
-                None,
-            );
-        };
-        let root = params.project_root.trim();
-        if root.is_empty() {
-            return self.err(
-                "missing_project_root",
-                "discover_project requires a non-empty project_root",
-                Some("pass the repository or app root explicitly; daemon8 does not infer from daemon cwd"),
-                None,
-            );
-        }
-        if let Err(e) = self.resolve_project_context(Some(root)).await {
-            return self.err("project_context_failed", &e, None, None);
-        }
-        let inner = discover(root.to_string()).await;
-        wrap_inner_result(self, &inner)
-    }
 }
 
-#[tool_router(router = awareness_tool_router, vis = "pub")]
-impl DaemonMcp {
-    #[doc = include_str!("../tool_descriptions/awareness_sync.md")]
-    #[tool(name = "awareness_sync")]
-    async fn awareness_sync(&self, Parameters(params): Parameters<AwarenessSyncParams>) -> String {
-        let Some(store) = &self.awareness_store else {
-            return self.err(
-                "awareness_store_unavailable",
-                "awareness store not configured",
-                Some("use awareness_status for source posture; project-state sync requires awareness store"),
-                None,
-            );
-        };
 
-        let operation = match params.operation.parse::<AwarenessOperation>() {
-            Ok(v) => v,
-            Err(e) => return self.err("bad_awareness_operation", &e, None, None),
-        };
-        let kind = match params.kind.parse::<AwarenessNodeKind>() {
-            Ok(v) => v,
-            Err(e) => return self.err("bad_awareness_kind", &e, None, None),
-        };
-        let authority = match params.authority.as_deref() {
-            Some(raw) => match raw.parse::<AwarenessAuthority>() {
-                Ok(v) => Some(v),
-                Err(e) => return self.err("bad_awareness_authority", &e, None, None),
-            },
-            None => None,
-        };
-        let active = self.active_state.current_session();
-        let project_slug = params
-            .project_slug
-            .or_else(|| active.as_ref().map(|s| s.project_slug.to_string()))
-            .filter(|s| s != "unknown");
-        let Some(project_slug) = project_slug else {
-            return self.err(
-                "missing_project_slug",
-                "awareness_sync requires project_slug or an active debug session project",
-                Some("pass project_slug explicitly or start_debug_session with project"),
-                Some("start_debug_session"),
-            );
-        };
-        let debug_session_id = params
-            .debug_session_id
-            .or_else(|| active.as_ref().map(|s| s.id.to_string()));
-        let checkpoint_id = params.checkpoint_id;
-        let refs = awareness_refs_from_params(
-            params.evidence_refs,
-            params.signal_refs,
-            params.evidence,
-            debug_session_id.as_deref(),
-            checkpoint_id.as_deref(),
-        );
-
-        let input = AwarenessSync {
-            operation,
-            project_slug,
-            path: params.path,
-            kind,
-            authority,
-            confidence: params.confidence,
-            summary: params.summary,
-            note: params.note,
-            redex: params.redex,
-            tags: params.tags.unwrap_or_default(),
-            debug_session_id,
-            checkpoint_id,
-            refs,
-            target_node_id: params.target_node_id,
-            supersedes: params.supersedes.unwrap_or_default(),
-            answers: params.answers.unwrap_or_default(),
-            contradicts: params.contradicts.unwrap_or_default(),
-        };
-
-        match store.sync_node(input).await {
-            Ok(result) => {
-                if result.conflict.is_some() {
-                    self.ok_with(
-                        serde_json::json!({
-                            "status": "conflict_detected",
-                            "result": result,
-                        }),
-                        vec!["awareness_status"],
-                        Some("conflict detected; ask the user which source of truth should remain active before continuing"),
-                    )
-                } else {
-                    self.ok_with(
-                        serde_json::json!({
-                            "status": "synced",
-                            "result": result,
-                        }),
-                        vec!["awareness_status"],
-                        Some("awareness updated; use awareness_status for the compact current manifest"),
-                    )
-                }
-            }
-            Err(e) => self.err("awareness_sync_failed", &e.to_string(), None, None),
-        }
-    }
-}
-
-#[tool_router(router = librarian_tool_router, vis = "pub")]
-impl DaemonMcp {
-    #[doc = include_str!("../tool_descriptions/librarian_index.md")]
-    #[tool(name = "librarian_index")]
-    async fn librarian_index(
-        &self,
-        Parameters(params): Parameters<LibrarianIndexParams>,
-    ) -> String {
-        let lib_store = match &self.librarian_store {
-            Some(s) => s,
-            None => {
-                return self.err(
-                    "librarian_store_unavailable",
-                    "librarian catalog not configured",
-                    None,
-                    None,
-                );
-            }
-        };
-        let inner = librarian_index_inner(lib_store.as_ref(), params).await;
-        match serde_json::from_str::<serde_json::Value>(&inner) {
-            Ok(v) if v.get("error").is_some() => wrap_inner_result(self, &inner),
-            Ok(v) => {
-                let mut hints = Vec::new();
-                let kind = v.get("kind").and_then(|k| k.as_str()).unwrap_or("");
-                let version = v.get("version").and_then(|v| v.as_str()).unwrap_or("");
-                match kind {
-                    "project" => hints.push(
-                        "Next: index its documentation and source configs with edges linking back.",
-                    ),
-                    "fix" => hints.push(
-                        "Consider linking this fix to the error it resolves with edge kind 'fixes'.",
-                    ),
-                    _ => {}
-                }
-                if version.matches('.').count() > 2 {
-                    hints.push("Previous version deprecated and linked via supersedes edge.");
-                }
-                if v.get("parent_id").and_then(|p| p.as_str()).is_none() && kind != "project" {
-                    hints.push("Consider organizing under a parent node for hierarchy.");
-                }
-                let hint = if hints.is_empty() {
-                    None
-                } else {
-                    Some(hints.join(" "))
-                };
-                self.ok_with(v, vec!["librarian_lookup"], hint.as_deref())
-            }
-            Err(_) => wrap_inner_result(self, &inner),
-        }
-    }
-
-    #[doc = include_str!("../tool_descriptions/librarian_lookup.md")]
-    #[tool(name = "librarian_lookup")]
-    async fn librarian_lookup(
-        &self,
-        Parameters(params): Parameters<LibrarianLookupParams>,
-    ) -> String {
-        let lib_store = match &self.librarian_store {
-            Some(s) => s,
-            None => {
-                return self.err(
-                    "librarian_store_unavailable",
-                    "librarian catalog not configured",
-                    None,
-                    None,
-                );
-            }
-        };
-        let inner = librarian_lookup_inner(lib_store.as_ref(), params).await;
-        match serde_json::from_str::<serde_json::Value>(&inner) {
-            Ok(v) if v.get("error").is_some() => wrap_inner_result(self, &inner),
-            Ok(v) => {
-                let mut hints = Vec::new();
-                if let Some(nodes) = v.get("nodes").and_then(|n| n.as_array()) {
-                    let thirty_days_ago_ns = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_nanos() as u64
-                        - 30 * 86_400_000_000_000;
-                    let stale_count = nodes
-                        .iter()
-                        .filter(|n| {
-                            if n.get("canonicalized_at").and_then(|c| c.as_u64()).is_some() {
-                                return false;
-                            }
-                            n.get("last_read_at")
-                                .and_then(|r| r.as_u64())
-                                .is_none_or(|ts| ts < thirty_days_ago_ns)
-                        })
-                        .count();
-                    if stale_count > 0 {
-                        hints.push(
-                            "Some results haven't been accessed in over 30 days. Consider reviewing and deprecating stale entries with librarian_forget(deprecate=true).",
-                        );
-                    }
-                }
-                let hint = if hints.is_empty() {
-                    None
-                } else {
-                    Some(hints.join(" "))
-                };
-                self.ok_with(v, vec![], hint.as_deref())
-            }
-            Err(_) => wrap_inner_result(self, &inner),
-        }
-    }
-
-    #[doc = include_str!("../tool_descriptions/librarian_forget.md")]
-    #[tool(name = "librarian_forget")]
-    async fn librarian_forget(
-        &self,
-        Parameters(params): Parameters<LibrarianForgetParams>,
-    ) -> String {
-        let lib_store = match &self.librarian_store {
-            Some(s) => s,
-            None => {
-                return self.err(
-                    "librarian_store_unavailable",
-                    "librarian catalog not configured",
-                    None,
-                    None,
-                );
-            }
-        };
-        let deprecate = params.deprecate.unwrap_or(true);
-        if deprecate {
-            match lib_store.deprecate_node(&params.id).await {
-                Ok(existed) => self.ok(serde_json::json!({ "deprecated": existed })),
-                Err(e) => self.err("librarian_forget_failed", &e.to_string(), None, None),
-            }
-        } else {
-            if params.confirm != Some(true) {
-                return self.err(
-                    "missing_confirm",
-                    "hard delete requires confirm=true",
-                    Some("pass confirm=true to permanently delete, or use deprecate=true (default) for soft-delete"),
-                    None,
-                );
-            }
-            match lib_store.forget_node(&params.id).await {
-                Ok(existed) => self.ok(serde_json::json!({ "deleted": existed })),
-                Err(e) => self.err("librarian_forget_failed", &e.to_string(), None, None),
-            }
-        }
-    }
-}
 
 // Command handler implementations (inner methods, not registered with tool_router).
 impl DaemonMcp {
@@ -3011,226 +2076,6 @@ fn error_json(msg: &str) -> String {
     )
 }
 
-fn source_template_matches(
-    data: Option<&serde_json::Value>,
-    classification: &ProjectClassification,
-) -> bool {
-    let Some(data) = data else {
-        return false;
-    };
-    let Ok(template) = serde_json::from_value::<daemon8_types::SourceTemplateData>(data.clone())
-    else {
-        return false;
-    };
-    if !template.platforms.contains(&classification.platform) {
-        return false;
-    }
-    template
-        .project_types
-        .iter()
-        .any(|project_type| classification.tags.contains(project_type))
-}
-
-async fn durable_records_json(
-    memory_store: Option<&Arc<dyn MemoryStore>>,
-    project_slug: &str,
-) -> serde_json::Value {
-    let Some(store) = memory_store else {
-        return serde_json::json!({
-            "available": false,
-            "reason": "memory store unavailable",
-        });
-    };
-    match store
-        .query_memory(&MemoryFilter {
-            project_slug: Some(project_slug.to_string()),
-            limit: Some(500),
-            ..Default::default()
-        })
-        .await
-    {
-        Ok(memories) => {
-            let mut counts = std::collections::BTreeMap::new();
-            for memory in memories {
-                *counts.entry(memory.kind.to_string()).or_insert(0usize) += 1;
-            }
-            serde_json::json!({
-                "available": true,
-                "counts_by_kind": counts,
-            })
-        }
-        Err(e) => serde_json::json!({
-            "available": false,
-            "reason": e.to_string(),
-        }),
-    }
-}
-
-fn compact_manifest_json(manifest: &daemon8_store::AwarenessManifest) -> serde_json::Value {
-    serde_json::json!({
-        "project_slug": &manifest.project_slug,
-        "counts_by_kind": &manifest.counts_by_kind,
-        "active_objectives": compact_nodes_json(&manifest.active_objectives),
-        "open_questions": compact_nodes_json(&manifest.open_questions),
-        "active_hypotheses": compact_nodes_json(&manifest.active_hypotheses),
-        "stale_risk_count": manifest.stale_risk_count,
-        "conflict_count": manifest.conflict_count,
-        "suggested_focus_paths": &manifest.suggested_focus_paths,
-    })
-}
-
-fn compact_nodes_json(nodes: &[daemon8_store::AwarenessNode]) -> Vec<serde_json::Value> {
-    nodes
-        .iter()
-        .map(|node| {
-            serde_json::json!({
-                "id": &node.id,
-                "path": &node.path,
-                "kind": node.kind,
-                "state": node.state,
-                "authority": node.authority,
-                "confidence": node.confidence,
-                "summary": &node.summary,
-                "tags": &node.tags,
-                "updated_at": node.updated_at,
-            })
-        })
-        .collect()
-}
-
-fn awareness_status_next_actions(
-    has_active_session: bool,
-    focused: bool,
-    source_awareness: &serde_json::Value,
-) -> Vec<&'static str> {
-    if !has_active_session {
-        return if focused {
-            vec!["start_debug_session"]
-        } else {
-            vec!["start_debug_session", "librarian_lookup"]
-        };
-    }
-
-    match source_awareness.get("level").and_then(|v| v.as_str()) {
-        Some("optimal") => vec!["create_checkpoint"],
-        _ if focused => vec!["librarian_lookup"],
-        _ => vec!["librarian_lookup", "list_connections"],
-    }
-}
-
-fn ref_params_to_refs(params: Option<Vec<AwarenessRefParams>>) -> Vec<AwarenessRef> {
-    params
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|r| !r.kind.trim().is_empty() && !r.id.trim().is_empty())
-        .map(|r| AwarenessRef {
-            kind: r.kind.trim().to_ascii_lowercase(),
-            id: r.id.trim().to_string(),
-        })
-        .collect()
-}
-
-fn push_ref(refs: &mut Vec<AwarenessRef>, kind: &str, id: impl Into<String>) {
-    let id = id.into().trim().to_string();
-    if id.is_empty() || refs.iter().any(|r| r.kind == kind && r.id == id) {
-        return;
-    }
-    refs.push(AwarenessRef {
-        kind: kind.trim().to_ascii_lowercase(),
-        id,
-    });
-}
-
-fn push_ref_by_role(refs: &mut AwarenessRefs, item: AwarenessRef) {
-    if is_ephemeral_ref_kind(&item.kind) {
-        push_ref(&mut refs.signal_refs, &item.kind, item.id);
-    } else {
-        push_ref(&mut refs.evidence_refs, &item.kind, item.id);
-    }
-}
-
-fn is_ephemeral_ref_kind(kind: &str) -> bool {
-    matches!(
-        kind,
-        "observation"
-            | "checkpoint"
-            | "debug_session"
-            | "log_row"
-            | "browser_event"
-            | "device_event"
-            | "tool_output"
-            | "tool_call"
-            | "http_exchange"
-            | "js_exception"
-            | "console"
-            | "network"
-            | "event"
-    )
-}
-
-fn awareness_refs_from_params(
-    evidence_refs: Option<Vec<AwarenessRefParams>>,
-    signal_refs: Option<Vec<AwarenessRefParams>>,
-    legacy: Option<AwarenessEvidenceParams>,
-    debug_session_id: Option<&str>,
-    checkpoint_id: Option<&str>,
-) -> AwarenessRefs {
-    let mut refs = AwarenessRefs::default();
-    for item in ref_params_to_refs(evidence_refs) {
-        push_ref_by_role(&mut refs, item);
-    }
-    for item in ref_params_to_refs(signal_refs) {
-        push_ref(&mut refs.signal_refs, &item.kind, item.id);
-    }
-    if let Some(debug_session_id) = debug_session_id {
-        push_ref(&mut refs.signal_refs, "debug_session", debug_session_id);
-    }
-    if let Some(checkpoint_id) = checkpoint_id {
-        push_ref(&mut refs.signal_refs, "checkpoint", checkpoint_id);
-    }
-    if let Some(legacy) = legacy {
-        for r in ref_params_to_refs(legacy.refs) {
-            push_ref_by_role(&mut refs, r);
-        }
-        for id in legacy.observation_ids.unwrap_or_default() {
-            push_ref(&mut refs.signal_refs, "observation", id.to_string());
-        }
-        for id in legacy.debug_session_ids.unwrap_or_default() {
-            push_ref(&mut refs.signal_refs, "debug_session", id);
-        }
-        for id in legacy.checkpoint_ids.unwrap_or_default() {
-            push_ref(&mut refs.signal_refs, "checkpoint", id);
-        }
-        for id in legacy.librarian_node_ids.unwrap_or_default() {
-            push_ref(&mut refs.evidence_refs, "librarian_node", id);
-        }
-    }
-    refs
-}
-
-fn derive_slug_from_root(root: &std::path::Path) -> Option<String> {
-    root.file_name().and_then(|name| name.to_str()).map(|raw| {
-        let slug = raw
-            .chars()
-            .map(|ch| {
-                if ch.is_ascii_alphanumeric() {
-                    ch.to_ascii_lowercase()
-                } else {
-                    '-'
-                }
-            })
-            .collect::<String>()
-            .split('-')
-            .filter(|part| !part.is_empty())
-            .collect::<Vec<_>>()
-            .join("-");
-        if slug.is_empty() {
-            "project".to_string()
-        } else {
-            slug
-        }
-    })
-}
 
 impl DaemonMcp {
     /// Returns the connection-state JSON with full state including browser.
@@ -3504,163 +2349,7 @@ pub async fn query_memory_inner(mem_store: &dyn MemoryStore, params: QueryMemory
     }
 }
 
-pub async fn librarian_index_inner(
-    lib_store: &dyn LibrarianStore,
-    params: LibrarianIndexParams,
-) -> String {
-    let kind = match params.kind.parse::<daemon8_types::LibrarianNodeKind>() {
-        Ok(k) => k,
-        Err(_) => {
-            return error_json(&format!(
-                "invalid kind '{}'. Use: doc, source_template, fix, project",
-                params.kind
-            ));
-        }
-    };
-    let locator_kind = match params.locator_kind.parse::<daemon8_types::LocatorKind>() {
-        Ok(k) => k,
-        Err(_) => {
-            return error_json(&format!(
-                "invalid locator_kind '{}'. Use: file, url, vault",
-                params.locator_kind
-            ));
-        }
-    };
 
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos() as u64;
-
-    let node = daemon8_store::LibrarianNode {
-        id: None,
-        kind,
-        label: params.label,
-        locator_kind,
-        locator: params.locator,
-        tags: params.tags.unwrap_or_default(),
-        project_slug: params.project_slug.unwrap_or_default(),
-        version: String::new(),
-        parent_id: params.parent_id.clone(),
-        created_at: now,
-        updated_at: now,
-        last_read_at: None,
-        deprecated_at: None,
-        canonicalized_at: if params.canonicalize.unwrap_or(false) {
-            Some(now)
-        } else {
-            None
-        },
-        data: params.data,
-    };
-
-    let id = match lib_store.index_node(node).await {
-        Ok(id) => id,
-        Err(e) => return error_json(&format!("librarian_index failed: {e}")),
-    };
-
-    let indexed_node = match lib_store.get_node(&id).await {
-        Ok(Some(n)) => n,
-        _ => {
-            return serde_json::to_string(&serde_json::json!({
-                "id": id, "version": "unknown", "kind": kind.to_string()
-            }))
-            .unwrap_or_default();
-        }
-    };
-
-    if let Some(ref edge) = params.edge {
-        let edge_kind = match edge.kind.parse::<daemon8_types::LibrarianEdgeKind>() {
-            Ok(k) => k,
-            Err(_) => {
-                return serde_json::to_string(&serde_json::json!({
-                    "id": id,
-                    "version": indexed_node.version,
-                    "kind": kind.to_string(),
-                    "edge_error": format!("invalid edge kind '{}'. Use: has_source, documented_by, fixes, supersedes, child_of", edge.kind)
-                }))
-                .unwrap_or_default();
-            }
-        };
-        let lib_edge = daemon8_store::LibrarianEdge {
-            id: None,
-            kind: edge_kind,
-            from_node: id.clone(),
-            to_node: edge.target_node_id.clone(),
-            created_at: now,
-        };
-        if let Err(e) = lib_store.index_edge(lib_edge).await {
-            return serde_json::to_string(&serde_json::json!({
-                "id": id,
-                "version": indexed_node.version,
-                "kind": kind.to_string(),
-                "edge_error": format!("edge creation failed: {e}")
-            }))
-            .unwrap_or_default();
-        }
-    }
-
-    serde_json::to_string(&serde_json::json!({
-        "id": id,
-        "version": indexed_node.version,
-        "kind": kind.to_string(),
-        "parent_id": params.parent_id,
-    }))
-    .unwrap_or_default()
-}
-
-pub async fn librarian_lookup_inner(
-    lib_store: &dyn LibrarianStore,
-    params: LibrarianLookupParams,
-) -> String {
-    if let Some(ref id) = params.id {
-        let node = match lib_store.get_node(id).await {
-            Ok(Some(n)) => n,
-            Ok(None) => return error_json(&format!("node '{id}' not found")),
-            Err(e) => return error_json(&format!("librarian_lookup failed: {e}")),
-        };
-        let edges = match lib_store.get_edges(id).await {
-            Ok(e) => e,
-            Err(e) => return error_json(&format!("librarian_lookup edges: {e}")),
-        };
-        return serde_json::to_string_pretty(&serde_json::json!({
-            "node": node,
-            "edges": edges,
-        }))
-        .unwrap_or_default();
-    }
-
-    let kinds = params.kinds.map(|v| {
-        v.into_iter()
-            .filter_map(|s| s.parse::<daemon8_types::LibrarianNodeKind>().ok())
-            .collect()
-    });
-
-    let stale_before = params.stale_before_days.map(|days| {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos() as u64;
-        now.saturating_sub(u64::from(days) * 86_400_000_000_000)
-    });
-
-    let filter = daemon8_store::LibrarianFilter {
-        kinds,
-        tags: params.tags,
-        project_slug: params.project_slug,
-        text_match: params.text,
-        limit: Some(params.limit.unwrap_or(20).min(500) as usize),
-        include_deprecated: params.include_deprecated.unwrap_or(false),
-        stale_before,
-        parent_id: params.parent_id,
-    };
-
-    match lib_store.lookup(&filter).await {
-        Ok(nodes) => serde_json::to_string_pretty(&serde_json::json!({ "nodes": nodes }))
-            .unwrap_or_else(|e| error_json(&format!("serialization failed: {e}"))),
-        Err(e) => error_json(&format!("librarian_lookup failed: {e}")),
-    }
-}
 
 fn logging_notification(obs: &Observation) -> rmcp::model::LoggingMessageNotificationParam {
     let severity_str = obs.severity.to_string();
@@ -3752,8 +2441,6 @@ mod logging_tests {
         let store = Arc::new(daemon8_store::SurrealStore::memory().await.unwrap());
         let memory_store: Arc<dyn MemoryStore> = Arc::new(store.memory_store());
         let debug_session_store: Arc<dyn DebugSessionStore> = Arc::new(store.debug_session_store());
-        let awareness_store: Arc<dyn daemon8_store::AwarenessStore> =
-            Arc::new(store.awareness_store());
         let (obs_tx, _obs_rx) = tokio::sync::mpsc::unbounded_channel();
         let (chrome_tx, _chrome_rx) = tokio::sync::mpsc::channel(8);
         let (_, chrome_state) =
@@ -3764,8 +2451,6 @@ mod logging_tests {
             store: store.clone(),
             memory_store: Some(memory_store),
             debug_session_store: Some(debug_session_store),
-            librarian_store: None,
-            awareness_store: Some(awareness_store),
             obs_tx,
             chrome_tx,
             chrome_state,
@@ -3775,279 +2460,14 @@ mod logging_tests {
             broadcast_tx,
             lens,
             setup_tool_fn: None,
-            project_discovery_fn: None,
-            project_context_resolver: None,
             source_activator: None,
             cancel: tokio_util::sync::CancellationToken::new(),
         })
     }
 
-    async fn build_mcp_with_project_resolver(project_name: &'static str) -> DaemonMcp {
-        let mut mcp = build_mcp_with_debug_session().await;
-        let resolver: ProjectContextResolverFn = Arc::new(move |root: String| {
-            Box::pin(async move {
-                let root = std::path::PathBuf::from(root);
-                Ok(ProjectClassification {
-                    tags: vec![format!("{project_name}-tag")],
-                    framework_versions: std::collections::BTreeMap::new(),
-                    root,
-                    manifests: std::collections::BTreeMap::new(),
-                    platform: daemon8_types::Platform::current(),
-                })
-            })
-        });
-        mcp.project_context_resolver = Some(resolver);
-        mcp
-    }
 
-    async fn build_mcp_with_project_resolver_and_discovery(
-        project_name: &'static str,
-    ) -> DaemonMcp {
-        let mut mcp = build_mcp_with_project_resolver(project_name).await;
-        let discovery: ProjectDiscoveryFn = Arc::new(|_root: String| {
-            Box::pin(async move {
-                serde_json::json!({
-                    "plan": {
-                        "ok": true,
-                    },
-                    "report": "test discovery report",
-                    "next_actions": ["awareness_status"],
-                })
-                .to_string()
-            })
-        });
-        mcp.project_discovery_fn = Some(discovery);
-        mcp
-    }
 
-    #[tokio::test]
-    async fn project_context_is_scoped_per_mcp_session() {
-        let a = build_mcp_with_project_resolver("alpha").await;
-        let b = build_mcp_with_project_resolver("beta").await;
 
-        let a_status = a
-            .awareness_status(Parameters(AwarenessStatusParams {
-                project_root: Some("/tmp/alpha-app".into()),
-                ..AwarenessStatusParams::default()
-            }))
-            .await;
-        let a_json: serde_json::Value = serde_json::from_str(&a_status).unwrap();
-        assert_eq!(a_json["result"]["project_slug"], "alpha-app");
-
-        let b_initial = b
-            .awareness_status(Parameters(AwarenessStatusParams::default()))
-            .await;
-        let b_initial_json: serde_json::Value = serde_json::from_str(&b_initial).unwrap();
-        assert_eq!(
-            b_initial_json["result"]["project_slug"],
-            serde_json::Value::Null
-        );
-
-        let b_status = b
-            .awareness_status(Parameters(AwarenessStatusParams {
-                project_root: Some("/tmp/beta-app".into()),
-                ..AwarenessStatusParams::default()
-            }))
-            .await;
-        let b_json: serde_json::Value = serde_json::from_str(&b_status).unwrap();
-        assert_eq!(b_json["result"]["project_slug"], "beta-app");
-
-        let a_cached = a
-            .awareness_status(Parameters(AwarenessStatusParams::default()))
-            .await;
-        let a_cached_json: serde_json::Value = serde_json::from_str(&a_cached).unwrap();
-        assert_eq!(a_cached_json["result"]["project_slug"], "alpha-app");
-    }
-
-    #[tokio::test]
-    async fn discover_project_establishes_session_project_context() {
-        let mcp = build_mcp_with_project_resolver_and_discovery("gamma").await;
-
-        let discovered = mcp
-            .discover_project(Parameters(DiscoverProjectParams {
-                project_root: "/tmp/gamma-app".into(),
-            }))
-            .await;
-        let discovered_json: serde_json::Value = serde_json::from_str(&discovered).unwrap();
-        assert_eq!(discovered_json["result"]["report"], "test discovery report");
-
-        let status = mcp
-            .awareness_status(Parameters(AwarenessStatusParams::default()))
-            .await;
-        let status_json: serde_json::Value = serde_json::from_str(&status).unwrap();
-        assert_eq!(status_json["result"]["project_slug"], "gamma-app");
-    }
-
-    #[tokio::test]
-    async fn awareness_sync_populates_status_manifest() {
-        let mcp = build_mcp_with_debug_session().await;
-        let start_res = mcp
-            .start_debug_session(Parameters(StartDebugSessionParams {
-                project: Some("daemon8".into()),
-                description: Some("awareness tree alpha".into()),
-                agent_id: ":test/codex+runtime-agent>".into(),
-                feature: Some("awareness".into()),
-            }))
-            .await;
-        let start: serde_json::Value = serde_json::from_str(&start_res).unwrap();
-        assert_eq!(
-            start["daemon8"]["next_actions"],
-            serde_json::json!(["awareness_status"])
-        );
-
-        let synced = mcp
-            .awareness_sync(Parameters(AwarenessSyncParams {
-                operation: "capture".into(),
-                path: "alpha.awareness.objective".into(),
-                kind: "objective".into(),
-                authority: Some("accepted".into()),
-                confidence: Some(0.8),
-                summary: Some("Keep debug-session state visible without flooding context.".into()),
-                note: Some("internal objective note".into()),
-                redex: Some("objective! @now $".into()),
-                tags: Some(vec!["alpha".into(), "cadence".into()]),
-                project_slug: None,
-                debug_session_id: None,
-                checkpoint_id: None,
-                evidence_refs: Some(vec![
-                    AwarenessRefParams {
-                        kind: "session_summary".into(),
-                        id: "session-summary-1".into(),
-                    },
-                    AwarenessRefParams {
-                        kind: "observation".into(),
-                        id: "42".into(),
-                    },
-                ]),
-                signal_refs: None,
-                evidence: None,
-                target_node_id: None,
-                supersedes: None,
-                answers: None,
-                contradicts: None,
-            }))
-            .await;
-        let synced: serde_json::Value = serde_json::from_str(&synced).unwrap();
-        assert_eq!(synced["result"]["status"], "synced");
-        let node = &synced["result"]["result"]["node"];
-        assert!(
-            node["evidence_refs"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|r| r["kind"] == "session_summary" && r["id"] == "session-summary-1")
-        );
-        assert!(
-            node["signal_refs"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|r| r["kind"] == "observation" && r["id"] == "42")
-        );
-
-        let status = mcp
-            .awareness_status(Parameters(AwarenessStatusParams {
-                project_root: None,
-                focus_path: None,
-                depth: None,
-                include_notes: None,
-                include_evidence: None,
-            }))
-            .await;
-        let status: serde_json::Value = serde_json::from_str(&status).unwrap();
-        assert!(status["result"]["source_awareness"].is_object());
-        assert!(status["result"]["context_awareness"].is_object());
-        assert!(status["result"]["signals"].is_array());
-        let objectives = status["result"]["reasoning_awareness"]["manifest"]["active_objectives"]
-            .as_array()
-            .expect("manifest must include active objectives");
-        assert_eq!(objectives.len(), 1);
-        assert_eq!(objectives[0]["path"], "alpha.awareness.objective");
-        assert!(objectives[0].get("note").is_none());
-        assert!(objectives[0].get("redex").is_none());
-        assert!(objectives[0].get("redex_derived").is_none());
-        assert!(objectives[0].get("evidence_refs").is_none());
-        assert!(objectives[0].get("signal_refs").is_none());
-        assert!(objectives[0].get("observation_ids").is_none());
-        assert!(
-            status["daemon8"]["next_actions"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .all(|v| v != "awareness_sync"),
-            "status reads must not nudge durable writes unless state changes"
-        );
-    }
-
-    #[tokio::test]
-    async fn warning_observations_create_signals_not_awareness_sync_nudges() {
-        let mcp = build_mcp_with_debug_session().await;
-        let _ = mcp
-            .start_debug_session(Parameters(StartDebugSessionParams {
-                project: Some("daemon8".into()),
-                description: Some("runtime signal test".into()),
-                agent_id: ":test/codex+runtime-agent>".into(),
-                feature: Some("awareness".into()),
-            }))
-            .await;
-        let checkpoint = mcp
-            .create_checkpoint(Parameters(CreateCheckpointParams {
-                description: Some("before warning".into()),
-            }))
-            .await;
-        let checkpoint: serde_json::Value = serde_json::from_str(&checkpoint).unwrap();
-        let seq = checkpoint["result"]["seq_at_creation"].as_u64().unwrap();
-
-        let obs = Observation::new(
-            Origin::Application {
-                name: "test-app".into(),
-            },
-            ObservationKind::Log,
-            serde_json::json!({"message": "runtime warning"}),
-            Severity::Warn,
-            None,
-        );
-        let inserted_id = mcp.store.insert(obs).await.unwrap();
-
-        let queried = mcp
-            .query_observations(Parameters(ObserveParams {
-                since_checkpoint: Some(seq),
-                ..Default::default()
-            }))
-            .await;
-        let queried: serde_json::Value = serde_json::from_str(&queried).unwrap();
-        let next_actions = queried["daemon8"]["next_actions"].as_array().unwrap();
-        assert!(
-            !next_actions.iter().any(|v| v == "awareness_sync"),
-            "raw warning rows must not directly nudge durable awareness sync"
-        );
-        assert!(
-            next_actions.iter().any(|v| v == "resolve_debug_session"),
-            "runtime signals should nudge toward interpreted durable conclusions"
-        );
-
-        let status = mcp
-            .awareness_status(Parameters(AwarenessStatusParams {
-                project_root: None,
-                focus_path: None,
-                depth: None,
-                include_notes: None,
-                include_evidence: None,
-            }))
-            .await;
-        let status: serde_json::Value = serde_json::from_str(&status).unwrap();
-        let signals = status["result"]["signals"].as_array().unwrap();
-        assert_eq!(signals.len(), 1);
-        assert_eq!(signals[0]["signal_kind"], "runtime_warning");
-        let inserted_id = inserted_id.to_string();
-        assert!(
-            signals[0]["signal_refs"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|r| r["kind"] == "observation" && r["id"] == inserted_id)
-        );
-    }
 
     #[tokio::test]
     async fn debug_session_lifecycle_resolved_writes_rich_summary() {
@@ -4340,8 +2760,6 @@ mod logging_tests {
                 store: shared_store.clone(),
                 memory_store: Some(shared_mem.clone()),
                 debug_session_store: Some(shared_ds.clone()),
-                librarian_store: None,
-                awareness_store: None,
                 obs_tx: shared_obs_tx.clone(),
                 chrome_tx,
                 chrome_state,
@@ -4351,8 +2769,6 @@ mod logging_tests {
                 broadcast_tx,
                 lens,
                 setup_tool_fn: None,
-                project_discovery_fn: None,
-                project_context_resolver: None,
                 source_activator: None,
                 cancel: tokio_util::sync::CancellationToken::new(),
             })

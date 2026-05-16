@@ -25,12 +25,6 @@ pub struct DaemonMeta {
     pub next_actions: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hint: Option<String>,
-    /// Path-pattern hints (D7) — librarian-aware nudges injected when an
-    /// observation references a reusable runtime-data path with no
-    /// covering source_template. Empty vector is omitted from the
-    /// serialized envelope.
-    #[serde(skip_serializing_if = "Vec::is_empty", default)]
-    pub hints: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -128,7 +122,6 @@ mod tests {
             }),
             next_actions: Some(vec!["create_checkpoint".into()]),
             hint: Some("an active debug session is running".into()),
-            hints: Vec::new(),
         };
         let s = ok_value(json!({"checkpoint": 42}), meta);
         let parsed: Value = serde_json::from_str(&s).unwrap();
