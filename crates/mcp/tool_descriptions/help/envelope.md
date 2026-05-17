@@ -27,3 +27,5 @@ Branch on `status`, then `code`.
 ## Connect-first flow
 
 `daemon8_connect` binds the MCP session to project or general mode. `daemon8_status` is the diagnostic pre-connect exception. `daemon8_init` is also allowed before connect when setup is required or the user explicitly asks to initialize a path. All other tools start with `daemon8_connect`.
+
+Project connect may also bind the active provider transcript. If daemon8 finds multiple plausible transcripts, the response is `blocked/transcript_ambiguous` with candidate paths and a `daemon8_connect` retry action. If the caller supplies a transcript from the wrong provider, the response is `error/transcript_provider_mismatch`.

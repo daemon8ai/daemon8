@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: LicenseRef-FCL-1.0-ALv2
 // Copyright (c) 2026 Havy.tech, LLC
 
+use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 use std::{borrow::Cow, sync::Arc};
 
 use daemon8_chrome::ConnectionState;
@@ -53,6 +55,10 @@ async fn make_mcp() -> DaemonMcp {
 }
 
 async fn make_mcp_with_cancel(cancel: CancellationToken) -> DaemonMcp {
+    make_mcp_with_cancel_and_home(cancel, test_home_dir()).await
+}
+
+async fn make_mcp_with_cancel_and_home(cancel: CancellationToken, home_dir: PathBuf) -> DaemonMcp {
     let store = Arc::new(SurrealStore::memory().await.unwrap());
     let memory_store = store.memory_store();
     memory_store.init_schema().await.unwrap();
@@ -73,6 +79,7 @@ async fn make_mcp_with_cancel(cancel: CancellationToken) -> DaemonMcp {
         chrome_endpoint: Arc::new(std::sync::Mutex::new(None)),
         device_screenshot_fn: None,
         screenshot_dir: std::env::temp_dir().join("daemon8-test-screenshots"),
+        home_dir,
         broadcast_tx,
         source_trigger: None,
         lens,
@@ -109,6 +116,7 @@ async fn make_mcp_with_debug() -> DaemonMcp {
         chrome_endpoint: Arc::new(std::sync::Mutex::new(None)),
         device_screenshot_fn: None,
         screenshot_dir: std::env::temp_dir().join("daemon8-test-screenshots"),
+        home_dir: test_home_dir(),
         broadcast_tx,
         source_trigger: Some(Arc::new(source_trigger)),
         lens,
@@ -137,6 +145,7 @@ async fn make_mcp_with_debug_without_memory() -> DaemonMcp {
         chrome_endpoint: Arc::new(std::sync::Mutex::new(None)),
         device_screenshot_fn: None,
         screenshot_dir: std::env::temp_dir().join("daemon8-test-screenshots"),
+        home_dir: test_home_dir(),
         broadcast_tx,
         source_trigger: None,
         lens,
@@ -145,6 +154,10 @@ async fn make_mcp_with_debug_without_memory() -> DaemonMcp {
 }
 
 async fn make_mcp_with_writer() -> DaemonMcp {
+    make_mcp_with_writer_in_home(test_home_dir()).await
+}
+
+async fn make_mcp_with_writer_in_home(home_dir: PathBuf) -> DaemonMcp {
     let store = Arc::new(SurrealStore::memory().await.unwrap());
     let memory_store = store.memory_store();
     memory_store.init_schema().await.unwrap();
@@ -178,11 +191,22 @@ async fn make_mcp_with_writer() -> DaemonMcp {
         chrome_endpoint: Arc::new(std::sync::Mutex::new(None)),
         device_screenshot_fn: None,
         screenshot_dir: std::env::temp_dir().join("daemon8-test-screenshots"),
+        home_dir,
         broadcast_tx,
         source_trigger: Some(Arc::new(source_trigger)),
         lens,
         cancel: CancellationToken::new(),
     })
+}
+
+fn test_home_dir() -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!("daemon8-test-home-{nanos}"));
+    std::fs::create_dir_all(&path).unwrap();
+    path
 }
 
 use daemon8_store::{StateModel, SurrealStore};
@@ -265,6 +289,34 @@ sources:
     kind: file
     parser: line
     path: "$PRJ_ROOT/{log_name}"
+---
+# daemon8
+"#,
+            root.display()
+        ),
+    )
+    .unwrap();
+}
+
+fn write_empty_project_config(root: &std::path::Path) {
+    let daemon_dir = root.join(".daemon8");
+    std::fs::create_dir_all(&daemon_dir).unwrap();
+    std::fs::write(
+        daemon_dir.join("config.md"),
+        format!(
+            r#"---
+daemon8_schema: 1
+created_at: "2026-05-17T00:00:00Z"
+updated_at: "2026-05-17T00:00:00Z"
+project:
+  name: mcp-project
+  stack:
+    languages: [rust]
+    frameworks: [tokio]
+    tools: [cargo]
+vars:
+  PRJ_ROOT: "{}"
+sources: []
 ---
 # daemon8
 "#,
@@ -752,6 +804,142 @@ async fn daemon8_connect_triggers_configured_conversation_source_ingestion() {
     assert_eq!(
         parsed["data"]["observations"][0]["source"],
         "codex.sessions"
+    );
+}
+
+#[tokio::test]
+async fn daemon8_connect_binds_explicit_runtime_transcript() {
+    let home = test_home_dir();
+    let mcp = make_mcp_with_writer_in_home(home.clone()).await;
+    let tmp = tempfile::tempdir().unwrap();
+    mark_project(tmp.path());
+    write_empty_project_config(tmp.path());
+    let sessions = home.join(".codex/sessions");
+    std::fs::create_dir_all(&sessions).unwrap();
+    let transcript = sessions.join(format!(
+        "active-{}.jsonl",
+        tmp.path().file_name().unwrap().to_string_lossy()
+    ));
+    std::fs::write(
+        &transcript,
+        format!(
+            "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"s1\",\"cwd\":\"{}\"}}}}\n",
+            tmp.path().display()
+        ),
+    )
+    .unwrap();
+
+    let connect = mcp
+        .daemon8_connect_for_tests(Daemon8ConnectParams {
+            provider: "codex-cli".into(),
+            project_path: tmp.path().display().to_string(),
+            agent_name: None,
+            transcript_path: Some(transcript.display().to_string()),
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&connect).unwrap();
+    assert_eq!(parsed["status"], "success");
+    assert_eq!(parsed["data"]["provider"], "codex");
+    assert_eq!(parsed["data"]["transcript"]["status"], "bound");
+    assert_eq!(
+        parsed["data"]["triggered_ingestion"]["observations_written"],
+        1
+    );
+
+    let status = mcp.daemon8_status_for_tests().await;
+    let parsed: serde_json::Value = serde_json::from_str(&status).unwrap();
+    assert_eq!(parsed["data"]["connection"]["mode"], "project");
+    assert_eq!(parsed["data"]["connection"]["provider"], "codex");
+    assert_eq!(
+        parsed["data"]["connection"]["transcript_path"],
+        std::fs::canonicalize(&transcript)
+            .unwrap()
+            .display()
+            .to_string()
+    );
+
+    let filtered = mcp
+        .read_live_feed_for_tests_with(ObserveParams {
+            source: Some(vec!["runtime.transcript.codex".into()]),
+            ..Default::default()
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&filtered).unwrap();
+    assert_eq!(parsed["status"], "success");
+    assert_eq!(parsed["data"]["observations"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn daemon8_connect_rejects_transcript_provider_mismatch() {
+    let home = test_home_dir();
+    let mcp = make_mcp_with_cancel_and_home(CancellationToken::new(), home.clone()).await;
+    let tmp = tempfile::tempdir().unwrap();
+    mark_project(tmp.path());
+    write_empty_project_config(tmp.path());
+    let sessions = home.join(".claude/projects/-tmp-project");
+    std::fs::create_dir_all(&sessions).unwrap();
+    std::fs::create_dir_all(home.join(".codex/sessions")).unwrap();
+    let transcript = sessions.join(format!(
+        "claude-{}.jsonl",
+        tmp.path().file_name().unwrap().to_string_lossy()
+    ));
+    std::fs::write(
+        &transcript,
+        "{\"type\":\"permission-mode\",\"sessionId\":\"c1\",\"cwd\":\"/tmp/project\"}\n",
+    )
+    .unwrap();
+
+    let connect = mcp
+        .daemon8_connect_for_tests(Daemon8ConnectParams {
+            provider: "codex".into(),
+            project_path: tmp.path().display().to_string(),
+            agent_name: None,
+            transcript_path: Some(transcript.display().to_string()),
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&connect).unwrap();
+    assert_eq!(parsed["status"], "error");
+    assert_eq!(parsed["code"], "transcript_provider_mismatch");
+
+    let status = mcp.daemon8_status_for_tests().await;
+    let parsed: serde_json::Value = serde_json::from_str(&status).unwrap();
+    assert!(parsed["data"]["connection"].is_null());
+}
+
+#[tokio::test]
+async fn daemon8_connect_invalid_provider_clears_previous_connection() {
+    let mcp = make_mcp().await;
+    let general = tempfile::tempdir().unwrap();
+
+    let connected = mcp
+        .daemon8_connect_for_tests(Daemon8ConnectParams {
+            provider: "codex".into(),
+            project_path: general.path().display().to_string(),
+            agent_name: None,
+            transcript_path: None,
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&connected).unwrap();
+    assert_eq!(parsed["status"], "success");
+
+    let failed = mcp
+        .daemon8_connect_for_tests(Daemon8ConnectParams {
+            provider: "unknown-provider".into(),
+            project_path: general.path().display().to_string(),
+            agent_name: None,
+            transcript_path: None,
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&failed).unwrap();
+    assert_eq!(parsed["status"], "error");
+    assert_eq!(parsed["code"], "invalid_provider");
+
+    let status = mcp.daemon8_status_for_tests().await;
+    let parsed: serde_json::Value = serde_json::from_str(&status).unwrap();
+    assert!(parsed["data"]["connection"].is_null());
+    assert_eq!(
+        parsed["data"]["scope_ledger"]["recent_failures"][0]["code"],
+        "invalid_provider"
     );
 }
 

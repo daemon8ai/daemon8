@@ -8,6 +8,7 @@ pub(crate) mod helpers;
 pub mod hook_management;
 pub mod opencode;
 pub mod traits;
+pub mod transcripts;
 
 pub use traits::{
     AiProvider, HookEvent, HookEventEntry, HookProvider, HookScope, InstalledHookEntry, LogLevel,
@@ -253,6 +254,21 @@ impl Provider {
         ALL_PROVIDERS
             .iter()
             .find(|p| p.as_provider().label() == label)
+            .copied()
+    }
+
+    pub fn from_id_or_alias(raw: &str) -> Option<Provider> {
+        let raw = raw.trim();
+        ALL_PROVIDERS
+            .iter()
+            .find(|p| {
+                let provider = p.as_provider();
+                provider.id().eq_ignore_ascii_case(raw)
+                    || provider
+                        .aliases()
+                        .iter()
+                        .any(|alias| alias.eq_ignore_ascii_case(raw))
+            })
             .copied()
     }
 }

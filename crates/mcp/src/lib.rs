@@ -10,10 +10,13 @@ use std::time::{Duration, Instant};
 
 use daemon8_core::control::{
     AlphaEnvelope, AlphaStatus, ConnectRequest, NextAction, ScopeMode, SessionConnection,
-    connect as connect_scope, status_envelope,
+    connect as connect_scope, normalize_provider_for_connect, resolve_connect_transcript,
+    status_envelope,
 };
 use daemon8_core::init::{InitRequest, init_project};
-use daemon8_ingest::source_sync::{SourceSyncReport, SourceTrigger, SourceTriggerRequest};
+use daemon8_ingest::source_sync::{
+    ActiveTranscriptSource, SourceSyncReport, SourceTrigger, SourceTriggerRequest,
+};
 use daemon8_store::{
     ActiveSessionState, DebugSessionStore, LensManager, MemoryStore, RecentScopeRecord,
     ScopeConnectFailureRecord, ScopeLedgerStore, ScopeSessionRecord, StateModel,
@@ -488,6 +491,7 @@ pub struct DaemonMcp {
     last_checkpoint: Mutex<Checkpoint>,
     device_screenshot_fn: Option<DeviceScreenshotFn>,
     screenshot_dir: std::path::PathBuf,
+    home_dir: PathBuf,
     subscription_tx: tokio::sync::watch::Sender<Option<Filter>>,
     broadcast_tx: broadcast::Sender<(Arc<Observation>, Arc<str>)>,
     source_trigger: Option<Arc<dyn SourceTrigger>>,
@@ -510,6 +514,7 @@ pub struct DaemonMcpConfig {
     pub chrome_endpoint: Arc<Mutex<Option<Arc<str>>>>,
     pub device_screenshot_fn: Option<DeviceScreenshotFn>,
     pub screenshot_dir: std::path::PathBuf,
+    pub home_dir: PathBuf,
     pub broadcast_tx: broadcast::Sender<(Arc<Observation>, Arc<str>)>,
     pub source_trigger: Option<Arc<dyn SourceTrigger>>,
     pub lens: Arc<LensManager>,
@@ -543,6 +548,7 @@ impl DaemonMcp {
             last_checkpoint: Mutex::new(Checkpoint(0)),
             device_screenshot_fn: cfg.device_screenshot_fn,
             screenshot_dir: cfg.screenshot_dir,
+            home_dir: cfg.home_dir,
             subscription_tx,
             broadcast_tx: cfg.broadcast_tx,
             source_trigger: cfg.source_trigger,
@@ -796,6 +802,27 @@ impl DaemonMcp {
         let project_path = params.project_path;
         let agent_name = params.agent_name;
         let transcript_path = params.transcript_path;
+        let provider =
+            match normalize_provider_for_connect(&self.session_id, &provider, &project_path) {
+                Ok(provider) => provider,
+                Err(envelope) => {
+                    let envelope = *envelope;
+                    let outcome = daemon8_core::control::ConnectOutcome {
+                        envelope,
+                        connection: None,
+                    };
+                    *self.connection.lock().expect("connection mutex poisoned") = None;
+                    self.record_connect_outcome(
+                        &provider,
+                        &project_path,
+                        agent_name.as_deref(),
+                        transcript_path.as_deref(),
+                        &outcome,
+                    )
+                    .await;
+                    return outcome.envelope.render();
+                }
+            };
         let outcome = connect_scope(ConnectRequest {
             session_id: self.session_id.clone(),
             provider: provider.clone(),
@@ -803,6 +830,9 @@ impl DaemonMcp {
             agent_name: agent_name.clone(),
             transcript_path: transcript_path.clone().map(PathBuf::from),
         });
+        let transcript_path_buf = transcript_path.as_ref().map(PathBuf::from);
+        let outcome =
+            resolve_connect_transcript(outcome, transcript_path_buf.as_deref(), &self.home_dir);
 
         *self.connection.lock().expect("connection mutex poisoned") = outcome.connection.clone();
         self.record_connect_outcome(
@@ -1893,18 +1923,32 @@ impl DaemonMcp {
 
     async fn trigger_project_sources(&self) -> Option<SourceSyncReport> {
         let trigger = self.source_trigger.as_ref()?;
-        let scope_root = {
+        let (scope_root, active_transcript) = {
             let connection = self.connection.lock().expect("connection mutex poisoned");
             let connection = connection.as_ref()?;
             if connection.mode != ScopeMode::Project {
                 return None;
             }
-            PathBuf::from(connection.scope_root.as_ref()?)
+            let active_transcript =
+                connection
+                    .transcript_path
+                    .as_ref()
+                    .map(|path| ActiveTranscriptSource {
+                        provider: connection.provider.clone(),
+                        path: PathBuf::from(path),
+                    });
+            (
+                PathBuf::from(connection.scope_root.as_ref()?),
+                active_transcript,
+            )
         };
 
         Some(
             trigger
-                .trigger_sources(SourceTriggerRequest { scope_root })
+                .trigger_sources(SourceTriggerRequest {
+                    scope_root,
+                    active_transcript,
+                })
                 .await,
         )
     }
@@ -2849,6 +2893,7 @@ mod logging_tests {
             chrome_endpoint: Arc::new(Mutex::new(None)),
             device_screenshot_fn: None,
             screenshot_dir: std::env::temp_dir().join("daemon8-test"),
+            home_dir: std::env::temp_dir().join("daemon8-test-home"),
             broadcast_tx,
             source_trigger: None,
             lens,
@@ -3122,6 +3167,7 @@ mod logging_tests {
                 chrome_endpoint: Arc::new(Mutex::new(None)),
                 device_screenshot_fn: None,
                 screenshot_dir: std::env::temp_dir().join("daemon8-test"),
+                home_dir: std::env::temp_dir().join("daemon8-test-home"),
                 broadcast_tx,
                 source_trigger: None,
                 lens,

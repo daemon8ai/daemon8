@@ -9,8 +9,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Result, bail};
 use daemon8_core::control::{
     AlphaEnvelope, AlphaStatus, ConnectOutcome, ConnectRequest, ScopeMode, SessionConnection,
-    connect,
+    connect, normalize_provider_for_connect, resolve_connect_transcript,
 };
+use daemon8_providers::dirs_home;
 use daemon8_store::{
     ScopeConnectFailureRecord, ScopeLedgerStore, ScopeSessionRecord, SurrealStore,
 };
@@ -31,7 +32,7 @@ pub struct ConnectArgs {
     #[arg(long)]
     pub agent_name: Option<String>,
 
-    /// Optional provider transcript path for future conversation-source binding.
+    /// Optional provider transcript path for runtime conversation binding.
     #[arg(long)]
     pub transcript_path: Option<PathBuf>,
 
@@ -41,7 +42,7 @@ pub struct ConnectArgs {
 }
 
 pub async fn cmd_connect(config_path: Option<String>, args: ConnectArgs) -> Result<()> {
-    let provider = args.provider;
+    let provider_input = args.provider;
     let project_path = args.path;
     let agent_name = args.agent_name;
     let transcript_path = args.transcript_path;
@@ -50,6 +51,43 @@ pub async fn cmd_connect(config_path: Option<String>, args: ConnectArgs) -> Resu
     let transcript_path_display = transcript_path
         .as_ref()
         .map(|path| path.display().to_string());
+    let provider =
+        match normalize_provider_for_connect(&session_id, &provider_input, &requested_path) {
+            Ok(provider) => provider,
+            Err(envelope) => {
+                let envelope = *envelope;
+                let outcome = ConnectOutcome {
+                    envelope,
+                    connection: None,
+                };
+                if let Err(err) = record_connect_outcome(
+                    config_path.as_deref(),
+                    &session_id,
+                    &provider_input,
+                    &requested_path,
+                    agent_name.as_deref(),
+                    transcript_path_display.as_deref(),
+                    &outcome,
+                )
+                .await
+                {
+                    tracing::warn!(error = %err, "scope ledger connect recording failed");
+                }
+                if args.json {
+                    println!("{}", outcome.envelope.render());
+                    return Ok(());
+                }
+                bail!(
+                    "{}: {}",
+                    outcome.envelope.code,
+                    outcome
+                        .envelope
+                        .why
+                        .as_deref()
+                        .unwrap_or(&outcome.envelope.message)
+                );
+            }
+        };
     let outcome = connect(ConnectRequest {
         session_id: session_id.clone(),
         provider: provider.clone(),
@@ -57,6 +95,7 @@ pub async fn cmd_connect(config_path: Option<String>, args: ConnectArgs) -> Resu
         agent_name: agent_name.clone(),
         transcript_path: transcript_path.clone(),
     });
+    let outcome = resolve_connect_transcript(outcome, transcript_path.as_deref(), &dirs_home());
 
     if let Err(err) = record_connect_outcome(
         config_path.as_deref(),

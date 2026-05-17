@@ -78,6 +78,22 @@ pub struct SourceSyncFailure {
 #[derive(Debug, Clone)]
 pub struct SourceTriggerRequest {
     pub scope_root: PathBuf,
+    pub active_transcript: Option<ActiveTranscriptSource>,
+}
+
+impl SourceTriggerRequest {
+    pub fn project(scope_root: PathBuf) -> Self {
+        Self {
+            scope_root,
+            active_transcript: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActiveTranscriptSource {
+    pub provider: String,
+    pub path: PathBuf,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -132,6 +148,10 @@ impl SourceTrigger for ConfiguredSourceTrigger {
             }
         };
 
+        let active_transcript = request.active_transcript;
+        let active_transcript_path = active_transcript
+            .as_ref()
+            .and_then(|active| canonical_source_path(&active.path).ok());
         let mut report = SourceSyncReport::default();
         for source in &config.sources {
             let source_report = match source {
@@ -139,10 +159,25 @@ impl SourceTrigger for ConfiguredSourceTrigger {
                     self.ingest_file_source(&scope_root, &config, file).await
                 }
                 ProjectSource::Conversation(conversation) => {
-                    self.ingest_conversation_source(&scope_root, &config, conversation)
-                        .await
+                    if let Some(active) = active_transcript.as_ref()
+                        && let Some(path) = active_transcript_path.as_ref()
+                        && active.provider == conversation.provider
+                        && conversation_source_covers_transcript(&config, conversation, path)
+                    {
+                        self.ingest_selected_conversation_source(&scope_root, conversation, path)
+                            .await
+                    } else {
+                        self.ingest_conversation_source(&scope_root, &config, conversation)
+                            .await
+                    }
                 }
             };
+            report.absorb(source_report);
+        }
+        if let Some(active_transcript) = active_transcript {
+            let source_report = self
+                .ingest_active_transcript(&scope_root, &config, &active_transcript)
+                .await;
             report.absorb(source_report);
         }
         report
@@ -349,6 +384,82 @@ impl ConfiguredSourceTrigger {
             report.cursors_updated += instance_report.cursors_updated;
             report.failures.append(&mut instance_report.failures);
         }
+        report
+    }
+
+    async fn ingest_selected_conversation_source(
+        &self,
+        scope_root: &Path,
+        source: &ConversationSource,
+        path: &Path,
+    ) -> SourceSyncReport {
+        let mut report = SourceSyncReport {
+            sources_considered: 1,
+            instances_considered: 1,
+            ..Default::default()
+        };
+        let mut instance_report = self
+            .ingest_conversation_instance(scope_root, source, path)
+            .await;
+        report.observations_written += instance_report.observations_written;
+        report.observations_deduped += instance_report.observations_deduped;
+        report.cursors_updated += instance_report.cursors_updated;
+        report.failures.append(&mut instance_report.failures);
+        report
+    }
+
+    async fn ingest_active_transcript(
+        &self,
+        scope_root: &Path,
+        config: &ProjectConfig,
+        active: &ActiveTranscriptSource,
+    ) -> SourceSyncReport {
+        let mut report = SourceSyncReport {
+            sources_considered: 1,
+            ..Default::default()
+        };
+        let source_id = format!("runtime.transcript.{}", active.provider);
+        if !matches!(active.provider.as_str(), "claude" | "codex" | "gemini") {
+            report.failure(
+                &source_id,
+                Some(active.path.display().to_string()),
+                "invalid_provider",
+                format!("unsupported conversation provider '{}'", active.provider),
+            );
+            return report;
+        }
+
+        let path = match canonical_source_path(&active.path) {
+            Ok(path) => path,
+            Err(err) => {
+                report.failure(
+                    &source_id,
+                    Some(active.path.display().to_string()),
+                    "read_failed",
+                    err.to_string(),
+                );
+                return report;
+            }
+        };
+        if configured_source_covers_transcript(config, &active.provider, &path) {
+            return report;
+        }
+
+        report.instances_considered += 1;
+        let source = ConversationSource {
+            id: source_id,
+            service: active.provider.clone(),
+            path: path.display().to_string(),
+            provider: active.provider.clone(),
+            tags: vec!["active_transcript".into()],
+        };
+        let mut instance_report = self
+            .ingest_conversation_instance(scope_root, &source, &path)
+            .await;
+        report.observations_written += instance_report.observations_written;
+        report.observations_deduped += instance_report.observations_deduped;
+        report.cursors_updated += instance_report.cursors_updated;
+        report.failures.append(&mut instance_report.failures);
         report
     }
 
@@ -880,6 +991,44 @@ fn conversation_instances(path: &Path) -> std::io::Result<Vec<PathBuf>> {
     Ok(paths)
 }
 
+fn configured_source_covers_transcript(
+    config: &ProjectConfig,
+    provider: &str,
+    transcript_path: &Path,
+) -> bool {
+    config.sources.iter().any(|source| {
+        let ProjectSource::Conversation(conversation) = source else {
+            return false;
+        };
+        if conversation.provider != provider {
+            return false;
+        }
+        conversation_source_covers_transcript(config, conversation, transcript_path)
+    })
+}
+
+fn conversation_source_covers_transcript(
+    config: &ProjectConfig,
+    source: &ConversationSource,
+    transcript_path: &Path,
+) -> bool {
+    let project_source = ProjectSource::Conversation(source.clone());
+    let Ok(path) = resolve_project_source_path(config, &project_source) else {
+        return false;
+    };
+    let Ok(path) = canonical_source_path(&path) else {
+        return false;
+    };
+    let Ok(instances) = conversation_instances(&path) else {
+        return false;
+    };
+    instances.iter().any(|instance| {
+        canonical_source_path(instance)
+            .map(|instance| transcript_path == instance)
+            .unwrap_or(false)
+    })
+}
+
 fn collect_jsonl_files(path: &Path, paths: &mut Vec<PathBuf>) -> std::io::Result<()> {
     for entry in std::fs::read_dir(path)? {
         let entry = entry?;
@@ -994,9 +1143,7 @@ sources:
         let store = SurrealStore::memory().await.unwrap();
         let trigger = ConfiguredSourceTrigger::new(Arc::new(store.cursor_store()), writer);
         trigger
-            .trigger_sources(SourceTriggerRequest {
-                scope_root: root.to_path_buf(),
-            })
+            .trigger_sources(SourceTriggerRequest::project(root.to_path_buf()))
             .await
     }
 
@@ -1192,6 +1339,179 @@ sources:
     }
 
     #[tokio::test]
+    async fn active_transcript_overlay_ingests_runtime_source_instance() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sessions = tmp.path().join("outside-sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        let transcript = sessions.join("active.jsonl");
+        std::fs::write(
+            &transcript,
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"s1\",\"cwd\":\"/tmp/project\"}}\n",
+        )
+        .unwrap();
+        write_config(tmp.path(), "  []");
+        let store = SurrealStore::memory().await.unwrap();
+        let writer = Arc::new(VecWriter::default());
+        let trigger = ConfiguredSourceTrigger::new(Arc::new(store.cursor_store()), writer.clone());
+
+        let report = trigger
+            .trigger_sources(SourceTriggerRequest {
+                scope_root: tmp.path().to_path_buf(),
+                active_transcript: Some(ActiveTranscriptSource {
+                    provider: "codex".into(),
+                    path: transcript.clone(),
+                }),
+            })
+            .await;
+
+        assert_eq!(report.sources_considered, 1);
+        assert_eq!(report.instances_considered, 1);
+        assert_eq!(report.observations_written, 1);
+        assert_eq!(report.cursors_updated, 1);
+        let observations = writer.observations();
+        let canonical = std::fs::canonicalize(transcript).unwrap();
+        assert_eq!(
+            observations[0].source.as_deref(),
+            Some("runtime.transcript.codex")
+        );
+        assert_eq!(
+            observations[0].source_instance.as_deref(),
+            Some(canonical.display().to_string().as_str())
+        );
+        assert!(
+            observations[0]
+                .tags
+                .as_ref()
+                .unwrap()
+                .contains(&"active_transcript".into())
+        );
+    }
+
+    #[tokio::test]
+    async fn active_transcript_overlay_uses_cursor_on_second_trigger() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sessions = tmp.path().join("outside-sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        let transcript = sessions.join("active.jsonl");
+        std::fs::write(
+            &transcript,
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"s1\",\"cwd\":\"/tmp/project\"}}\n",
+        )
+        .unwrap();
+        write_config(tmp.path(), "  []");
+        let store = SurrealStore::memory().await.unwrap();
+        let writer = Arc::new(VecWriter::default());
+        let trigger = ConfiguredSourceTrigger::new(Arc::new(store.cursor_store()), writer.clone());
+        let request = || SourceTriggerRequest {
+            scope_root: tmp.path().to_path_buf(),
+            active_transcript: Some(ActiveTranscriptSource {
+                provider: "codex".into(),
+                path: transcript.clone(),
+            }),
+        };
+
+        trigger.trigger_sources(request()).await;
+        std::fs::write(
+            &transcript,
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"s1\",\"cwd\":\"/tmp/project\"}}\n{\"timestamp\":\"2026-01-01T00:00:00Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"hello\"}]}}\n",
+        )
+        .unwrap();
+        let report = trigger.trigger_sources(request()).await;
+
+        assert_eq!(report.observations_written, 1);
+        assert_eq!(writer.observations().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn active_transcript_overlay_skips_configured_duplicate_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sessions = tmp.path().join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        let transcript = sessions.join("active.jsonl");
+        std::fs::write(
+            &transcript,
+            "{\"timestamp\":\"2026-01-01T00:00:00Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"function_call\",\"name\":\"shell\",\"call_id\":\"c1\",\"arguments\":\"{}\"}}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            sessions.join("other.jsonl"),
+            "{\"timestamp\":\"2026-01-01T00:00:00Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"function_call\",\"name\":\"ignored\",\"call_id\":\"c2\",\"arguments\":\"{}\"}}\n",
+        )
+        .unwrap();
+        write_config(
+            tmp.path(),
+            r#"  - id: codex.sessions
+    service: codex
+    kind: conversation
+    provider: codex
+    path: "$PRJ_ROOT/sessions"
+"#,
+        );
+        let writer = Arc::new(VecWriter::default());
+        let store = SurrealStore::memory().await.unwrap();
+        let trigger = ConfiguredSourceTrigger::new(Arc::new(store.cursor_store()), writer.clone());
+
+        let report = trigger
+            .trigger_sources(SourceTriggerRequest {
+                scope_root: tmp.path().to_path_buf(),
+                active_transcript: Some(ActiveTranscriptSource {
+                    provider: "codex".into(),
+                    path: transcript,
+                }),
+            })
+            .await;
+
+        assert_eq!(report.observations_written, 1);
+        assert_eq!(writer.observations().len(), 1);
+        assert_eq!(
+            writer.observations()[0].source.as_deref(),
+            Some("codex.sessions")
+        );
+    }
+
+    #[tokio::test]
+    async fn active_transcript_overlay_skips_configured_duplicate_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sessions = tmp.path().join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        let transcript = sessions.join("active.jsonl");
+        std::fs::write(
+            &transcript,
+            "{\"timestamp\":\"2026-01-01T00:00:00Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"function_call\",\"name\":\"shell\",\"call_id\":\"c1\",\"arguments\":\"{}\"}}\n",
+        )
+        .unwrap();
+        write_config(
+            tmp.path(),
+            r#"  - id: codex.active
+    service: codex
+    kind: conversation
+    provider: codex
+    path: "$PRJ_ROOT/sessions/active.jsonl"
+"#,
+        );
+        let writer = Arc::new(VecWriter::default());
+        let store = SurrealStore::memory().await.unwrap();
+        let trigger = ConfiguredSourceTrigger::new(Arc::new(store.cursor_store()), writer.clone());
+
+        let report = trigger
+            .trigger_sources(SourceTriggerRequest {
+                scope_root: tmp.path().to_path_buf(),
+                active_transcript: Some(ActiveTranscriptSource {
+                    provider: "codex".into(),
+                    path: sessions.join("../sessions/active.jsonl"),
+                }),
+            })
+            .await;
+
+        assert_eq!(report.observations_written, 1);
+        assert_eq!(writer.observations().len(), 1);
+        assert_eq!(
+            writer.observations()[0].source.as_deref(),
+            Some("codex.active")
+        );
+    }
+
+    #[tokio::test]
     async fn cursor_lookup_failure_reports_failure() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("app.log"), "first\n").unwrap();
@@ -1207,9 +1527,7 @@ sources:
         let trigger = ConfiguredSourceTrigger::new(Arc::new(FailingCursorStore), writer.clone());
 
         let report = trigger
-            .trigger_sources(SourceTriggerRequest {
-                scope_root: tmp.path().to_path_buf(),
-            })
+            .trigger_sources(SourceTriggerRequest::project(tmp.path().to_path_buf()))
             .await;
 
         assert_eq!(report.failures[0].code, "cursor_lookup_failed");
@@ -1237,9 +1555,7 @@ sources:
         let trigger = ConfiguredSourceTrigger::new(Arc::new(store.cursor_store()), writer);
 
         let report = trigger
-            .trigger_sources(SourceTriggerRequest {
-                scope_root: tmp.path().to_path_buf(),
-            })
+            .trigger_sources(SourceTriggerRequest::project(tmp.path().to_path_buf()))
             .await;
 
         assert_eq!(report.observations_written, 2);
@@ -1274,15 +1590,11 @@ sources:
         let trigger = ConfiguredSourceTrigger::new(Arc::new(store.cursor_store()), writer.clone());
 
         trigger
-            .trigger_sources(SourceTriggerRequest {
-                scope_root: tmp.path().to_path_buf(),
-            })
+            .trigger_sources(SourceTriggerRequest::project(tmp.path().to_path_buf()))
             .await;
         std::fs::write(&log, "first\nsecond\n").unwrap();
         let report = trigger
-            .trigger_sources(SourceTriggerRequest {
-                scope_root: tmp.path().to_path_buf(),
-            })
+            .trigger_sources(SourceTriggerRequest::project(tmp.path().to_path_buf()))
             .await;
 
         assert_eq!(report.observations_written, 1);
@@ -1308,9 +1620,7 @@ sources:
 "#,
         );
         trigger
-            .trigger_sources(SourceTriggerRequest {
-                scope_root: tmp.path().to_path_buf(),
-            })
+            .trigger_sources(SourceTriggerRequest::project(tmp.path().to_path_buf()))
             .await;
 
         std::fs::write(&log, "first\nsecond\n").unwrap();
@@ -1323,9 +1633,7 @@ sources:
 "#,
         );
         let report = trigger
-            .trigger_sources(SourceTriggerRequest {
-                scope_root: tmp.path().to_path_buf(),
-            })
+            .trigger_sources(SourceTriggerRequest::project(tmp.path().to_path_buf()))
             .await;
 
         assert_eq!(report.observations_written, 1);
@@ -1360,16 +1668,12 @@ sources:
         let trigger = ConfiguredSourceTrigger::new(Arc::new(store.cursor_store()), writer.clone());
 
         trigger
-            .trigger_sources(SourceTriggerRequest {
-                scope_root: tmp.path().to_path_buf(),
-            })
+            .trigger_sources(SourceTriggerRequest::project(tmp.path().to_path_buf()))
             .await;
         std::fs::remove_file(&log).unwrap();
         std::fs::write(&log, "fresh\nnew\n").unwrap();
         let report = trigger
-            .trigger_sources(SourceTriggerRequest {
-                scope_root: tmp.path().to_path_buf(),
-            })
+            .trigger_sources(SourceTriggerRequest::project(tmp.path().to_path_buf()))
             .await;
 
         assert_eq!(report.observations_written, 2);
@@ -1394,15 +1698,11 @@ sources:
         let trigger = ConfiguredSourceTrigger::new(Arc::new(store.cursor_store()), writer.clone());
 
         trigger
-            .trigger_sources(SourceTriggerRequest {
-                scope_root: tmp.path().to_path_buf(),
-            })
+            .trigger_sources(SourceTriggerRequest::project(tmp.path().to_path_buf()))
             .await;
         std::fs::write(&log, "new\n").unwrap();
         let report = trigger
-            .trigger_sources(SourceTriggerRequest {
-                scope_root: tmp.path().to_path_buf(),
-            })
+            .trigger_sources(SourceTriggerRequest::project(tmp.path().to_path_buf()))
             .await;
 
         assert_eq!(report.observations_written, 1);

@@ -486,9 +486,9 @@ async fn trigger_project_sources(
     let trigger = state.source_trigger.as_ref()?;
     Some(
         trigger
-            .trigger_sources(SourceTriggerRequest {
-                scope_root: std::path::PathBuf::from(project_path),
-            })
+            .trigger_sources(SourceTriggerRequest::project(std::path::PathBuf::from(
+                project_path,
+            )))
             .await,
     )
 }
@@ -723,9 +723,9 @@ async fn handle_stream(
             && let Some(trigger) = source_trigger.as_ref()
         {
             let report = trigger
-                .trigger_sources(SourceTriggerRequest {
-                    scope_root: std::path::PathBuf::from(project_path),
-                })
+                .trigger_sources(SourceTriggerRequest::project(std::path::PathBuf::from(
+                    project_path,
+                )))
                 .await;
             let event = Event::default()
                 .event("triggered_ingestion")

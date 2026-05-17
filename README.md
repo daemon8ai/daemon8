@@ -74,7 +74,7 @@ Core runtime tools:
 
 | Tool | Purpose |
 |------|---------|
-| `daemon8_connect` | Bind this MCP session to an explicit project/general scope. |
+| `daemon8_connect` | Bind this MCP session to an explicit project/general scope and active provider transcript when available. |
 | `daemon8_init` | Write `.daemon8/config.md` for an explicit project path. |
 | `daemon8_status` | Snapshot daemon health, connected sources, and current MCP scope. |
 | `read_live_feed` | Query observations with filters and checkpoint windows. |

@@ -3,6 +3,10 @@
 
 use std::path::{Path, PathBuf};
 
+use daemon8_providers::transcripts::{
+    TranscriptCandidate, TranscriptResolution, TranscriptResolver, normalize_provider_id,
+    resolve_transcript,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -161,6 +165,30 @@ pub enum ScopeCandidate {
     General(PathBuf),
 }
 
+pub fn normalize_provider_for_connect(
+    session_id: &str,
+    provider: &str,
+    requested_path: &str,
+) -> Result<String, Box<AlphaEnvelope>> {
+    normalize_provider_id(provider)
+        .map(ToString::to_string)
+        .map_err(|err| {
+            Box::new(
+                AlphaEnvelope::non_success(
+                    AlphaStatus::Error,
+                    err.code.as_str(),
+                    "provider is not supported",
+                    err.message,
+                )
+                .with_data(json!({
+                    "session_id": session_id,
+                    "mode": ScopeMode::Invalid,
+                    "requested_path": requested_path,
+                })),
+            )
+        })
+}
+
 pub fn connect(request: ConnectRequest) -> ConnectOutcome {
     let requested_path = request.project_path.display().to_string();
     let provider = request.provider.trim().to_string();
@@ -212,9 +240,7 @@ pub fn connect(request: ConnectRequest) -> ConnectOutcome {
                 agent_name: request
                     .agent_name
                     .unwrap_or_else(|| format!("{provider}-agent")),
-                transcript_path: request
-                    .transcript_path
-                    .map(|path| path.display().to_string()),
+                transcript_path: None,
             };
             ConnectOutcome {
                 envelope: AlphaEnvelope::success(
@@ -321,6 +347,164 @@ fn connect_project(
         envelope: AlphaEnvelope::success("connected", "connected to project", data),
         connection: Some(connection),
     }
+}
+
+pub fn resolve_connect_transcript(
+    outcome: ConnectOutcome,
+    transcript_path: Option<&Path>,
+    home: &Path,
+) -> ConnectOutcome {
+    if outcome.envelope.status != AlphaStatus::Success {
+        return outcome;
+    }
+    let Some(connection) = &outcome.connection else {
+        return outcome;
+    };
+    if connection.mode != ScopeMode::Project {
+        return outcome;
+    }
+    let Some(scope_root) = connection.scope_root.as_deref() else {
+        return outcome;
+    };
+
+    let provider = connection.provider.clone();
+    let scope_root = PathBuf::from(scope_root);
+    match resolve_transcript(TranscriptResolver {
+        provider: &provider,
+        scope_root: &scope_root,
+        home,
+        transcript_path,
+    }) {
+        Ok(TranscriptResolution::Bound(candidate)) => {
+            connect_outcome_with_transcript(outcome, "bound", Some(candidate))
+        }
+        Ok(TranscriptResolution::NotFound) => {
+            connect_outcome_with_transcript(outcome, "not_found", None)
+        }
+        Ok(TranscriptResolution::Ambiguous(candidates)) => {
+            let retry_path = candidates.first().map(|candidate| candidate.path.clone());
+            transcript_blocked_outcome(
+                outcome,
+                "transcript_ambiguous",
+                "multiple provider transcripts match this session",
+                "daemon8 found more than one provider transcript for this project and will not choose implicitly",
+                json!({
+                    "status": "ambiguous",
+                    "provider": provider,
+                    "candidates": candidates,
+                }),
+                retry_path,
+            )
+        }
+        Err(err) => transcript_error_outcome(
+            outcome,
+            err.code.as_str(),
+            "provider transcript cannot be bound",
+            err.message,
+        ),
+    }
+}
+
+fn connect_outcome_with_transcript(
+    mut outcome: ConnectOutcome,
+    status: &str,
+    candidate: Option<TranscriptCandidate>,
+) -> ConnectOutcome {
+    let Some(connection) = outcome.connection.as_mut() else {
+        return outcome;
+    };
+    let transcript = match candidate {
+        Some(candidate) => {
+            connection.transcript_path = Some(candidate.path.clone());
+            json!({
+                "status": status,
+                "provider": candidate.provider,
+                "path": candidate.path,
+                "provider_session_id": candidate.provider_session_id,
+                "cwd": candidate.cwd,
+                "modified_at_ms": candidate.modified_at_ms,
+                "size_bytes": candidate.size_bytes,
+            })
+        }
+        None => json!({
+            "status": status,
+            "provider": connection.provider,
+        }),
+    };
+
+    let mut data = outcome.envelope.data.take().unwrap_or_else(|| json!({}));
+    if let Some(path) = &connection.transcript_path {
+        data["transcript_path"] = json!(path);
+    }
+    data["transcript"] = transcript;
+    outcome.envelope.data = Some(data);
+    outcome
+}
+
+fn transcript_blocked_outcome(
+    outcome: ConnectOutcome,
+    code: &str,
+    message: &str,
+    why: &str,
+    transcript: Value,
+    retry_path: Option<String>,
+) -> ConnectOutcome {
+    let data = transcript_outcome_data(&outcome, transcript);
+    let params = transcript_retry_params(&outcome, retry_path);
+    ConnectOutcome {
+        envelope: AlphaEnvelope::non_success(AlphaStatus::Blocked, code, message, why)
+            .with_data(data)
+            .with_hint("retry daemon8_connect with transcript_path set to one candidate path")
+            .with_next_action(NextAction::new(
+                "daemon8_connect",
+                "bind an explicit transcript path",
+                params,
+            )),
+        connection: None,
+    }
+}
+
+fn transcript_retry_params(outcome: &ConnectOutcome, retry_path: Option<String>) -> Value {
+    let Some(connection) = &outcome.connection else {
+        return json!({});
+    };
+    json!({
+        "provider": connection.provider,
+        "project_path": connection.scope_root.as_deref().unwrap_or(&connection.requested_path),
+        "agent_name": connection.agent_name,
+        "transcript_path": retry_path.unwrap_or_else(|| "<candidate path>".into()),
+    })
+}
+
+fn transcript_error_outcome(
+    outcome: ConnectOutcome,
+    code: &str,
+    message: &str,
+    why: String,
+) -> ConnectOutcome {
+    let transcript = json!({
+        "status": "error",
+        "code": code,
+    });
+    ConnectOutcome {
+        envelope: AlphaEnvelope::non_success(AlphaStatus::Error, code, message, why)
+            .with_data(transcript_outcome_data(&outcome, transcript)),
+        connection: None,
+    }
+}
+
+fn transcript_outcome_data(outcome: &ConnectOutcome, transcript: Value) -> Value {
+    let Some(connection) = &outcome.connection else {
+        return json!({ "transcript": transcript });
+    };
+    let mut data = serde_json::to_value(connection).unwrap_or_default();
+    data["transcript"] = transcript;
+    if let Some(existing) = &outcome.envelope.data
+        && let Some(config_path) = existing.get("config_path")
+    {
+        data["config_path"] = config_path.clone();
+    }
+    data
 }
 
 fn canonical_project_dir(path: &Path) -> Result<PathBuf, String> {

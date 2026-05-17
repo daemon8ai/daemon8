@@ -16,7 +16,7 @@ none.
 
 ## Returns
 
-Common envelope with summary data in `data`, including `connection` when this MCP session is connected and `scope_ledger.recent_scopes` / `scope_ledger.recent_failures` as daemon-owned history.
+Common envelope with summary data in `data`, including `connection` when this MCP session is connected. A project connection includes `connection.transcript_path` when an active transcript is bound. Scope history is reported under `scope_ledger.recent_scopes` / `scope_ledger.recent_failures`.
 
 ## Next
 

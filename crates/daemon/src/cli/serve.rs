@@ -219,6 +219,7 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
             chrome_endpoint: chrome_endpoint.clone(),
             device_screenshot_fn: device_screenshot_fn.clone(),
             screenshot_dir: screenshot_dir.clone(),
+            home_dir: daemon8_providers::dirs_home(),
             broadcast_tx: broadcast_tx.clone(),
             source_trigger: Some(source_trigger.clone()),
             lens,
@@ -276,6 +277,7 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
                 chrome_endpoint: mcp_ep.clone(),
                 device_screenshot_fn: mcp_screenshot_fn.clone(),
                 screenshot_dir: mcp_screenshot_dir.clone(),
+                home_dir: daemon8_providers::dirs_home(),
                 broadcast_tx: mcp_broadcast_tx.clone(),
                 source_trigger: Some(mcp_source_trigger.clone()),
                 lens: Arc::new(daemon8_store::LensManager::new(

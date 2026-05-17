@@ -612,6 +612,137 @@ fn cli_connect_after_init_returns_connected_json() {
 }
 
 #[test]
+fn cli_connect_binds_explicit_transcript_path() {
+    let (_tmp, work, home) = setup_dirs();
+    mark_project(&work);
+    run_init(&work, &home, &[]);
+    let sessions = home.join(".codex/sessions");
+    std::fs::create_dir_all(&sessions).unwrap();
+    let transcript = sessions.join("one.jsonl");
+    std::fs::write(
+        &transcript,
+        format!(
+            "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"s1\",\"cwd\":\"{}\"}}}}\n",
+            work.display()
+        ),
+    )
+    .unwrap();
+
+    let out = run_connect(
+        &work,
+        &home,
+        &[
+            "--path",
+            work.to_str().unwrap(),
+            "--provider",
+            "codex-cli",
+            "--transcript-path",
+            transcript.to_str().unwrap(),
+            "--json",
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let parsed: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(parsed["status"], "success");
+    assert_eq!(parsed["data"]["provider"], "codex");
+    assert_eq!(parsed["data"]["transcript"]["status"], "bound");
+    assert_eq!(
+        parsed["data"]["transcript_path"],
+        transcript.canonicalize().unwrap().display().to_string()
+    );
+}
+
+#[test]
+fn cli_connect_blocks_ambiguous_transcripts() {
+    let (_tmp, work, home) = setup_dirs();
+    mark_project(&work);
+    run_init(&work, &home, &[]);
+    let sessions = home.join(".codex/sessions");
+    std::fs::create_dir_all(&sessions).unwrap();
+    for name in ["one.jsonl", "two.jsonl"] {
+        std::fs::write(
+            sessions.join(name),
+            format!(
+                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{name}\",\"cwd\":\"{}\"}}}}\n",
+                work.display()
+            ),
+        )
+        .unwrap();
+    }
+
+    let out = run_connect(
+        &work,
+        &home,
+        &[
+            "--path",
+            work.to_str().unwrap(),
+            "--provider",
+            "codex",
+            "--json",
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let parsed: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(parsed["status"], "blocked");
+    assert_eq!(parsed["code"], "transcript_ambiguous");
+    assert_eq!(
+        parsed["data"]["transcript"]["candidates"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
+#[test]
+fn cli_connect_invalid_provider_records_failure() {
+    let (_tmp, work, home) = setup_dirs();
+    mark_project(&work);
+
+    let out = run_connect(
+        &work,
+        &home,
+        &[
+            "--path",
+            work.to_str().unwrap(),
+            "--provider",
+            "unknown-provider",
+            "--json",
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let parsed: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(parsed["status"], "error");
+    assert_eq!(parsed["code"], "invalid_provider");
+
+    let status = run_daemon8_with_env(&work, &home, &[], &["status", "--json"]);
+    assert!(
+        status.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&status.stderr)
+    );
+    let parsed: Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(
+        parsed["data"]["scope_ledger"]["recent_failures"][0]["code"],
+        "invalid_provider"
+    );
+}
+
+#[test]
 fn cli_force_overwrites_existing_project_config() {
     let (_tmp, work, home) = setup_dirs();
     let config_path = project_config_path(&work);

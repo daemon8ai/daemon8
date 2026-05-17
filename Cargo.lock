@@ -1387,6 +1387,7 @@ dependencies = [
 name = "daemon8-core"
 version = "0.3.4"
 dependencies = [
+ "daemon8-providers",
  "humantime",
  "serde",
  "serde_json",
