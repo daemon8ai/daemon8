@@ -12,9 +12,11 @@ When asked about browser state, console output, network activity, device logs, o
 Observations are real-time and change constantly. Do not answer questions about current state from memory or previous tool results. Re-query with `since_checkpoint` for fresh data.
 
 Tool selection:
+- Bind this MCP session to a project/general scope: `daemon8_connect`.
+- Initialize missing project config: `daemon8_init`, then retry `daemon8_connect`.
+- Snapshot daemon and MCP session state: `daemon8_status`.
 - See console output, network traffic, device logs, or app telemetry: `read_live_feed` (use `since_checkpoint` for incremental polling).
 - Run JavaScript in the browser: `issue_command` with action="eval_js".
-- Snapshot daemon health and connected sources: `status`.
 - Take screenshots, inject CSS, navigate, manipulate storage, set viewport, throttle network: `issue_command`.
 - Write a note, emit a metric, or message another agent: `write_to_live_feed`.
 - Watch for specific events in real-time: `watch_live_feed` (live alerts pushed into the session).

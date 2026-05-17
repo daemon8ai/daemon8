@@ -39,7 +39,7 @@ daemon8 logs --follow
 Create the project-local alpha config:
 
 ```bash
-daemon8 setup init --yes
+daemon8 init --yes
 ```
 
 This writes `.daemon8/config.md`. The file is Markdown with YAML frontmatter so daemon8 can parse it and the LLM can read it directly.
@@ -69,7 +69,9 @@ Core runtime tools:
 
 | Tool | Purpose |
 |------|---------|
-| `status` | Snapshot daemon health and connected sources. |
+| `daemon8_connect` | Bind this MCP session to an explicit project/general scope. |
+| `daemon8_init` | Write `.daemon8/config.md` for an explicit project path. |
+| `daemon8_status` | Snapshot daemon health, connected sources, and current MCP scope. |
 | `read_live_feed` | Query observations with filters and checkpoint windows. |
 | `write_to_live_feed` | Ingest an agent/app note, metric, exception, or custom event. |
 | `watch_live_feed` | Subscribe this MCP session to live matching observations. |
@@ -103,17 +105,16 @@ MCP responses use a common envelope:
 
 ```json
 {
-  "result": {},
-  "daemon8": {
-    "active_debug_session": {},
-    "next_actions": [],
-    "hint": "..."
-  },
-  "error": null
+  "status": "success",
+  "code": "connected",
+  "message": "connected to project",
+  "data": {},
+  "hints": [],
+  "next_actions": []
 }
 ```
 
-The envelope is part of the control flow. Hints and next actions guide the model at decision points, and successful connection/setup state should not be repeated until it changes.
+The envelope is part of the control flow. `status`, `code`, and structured `next_actions` guide the model at decision points. Successful connection state should not be repeated until it changes.
 
 ## Reset Safety
 

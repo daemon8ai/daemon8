@@ -62,9 +62,10 @@ enum Commands {
         #[arg(value_enum)]
         shell: clap_complete::aot::Shell,
     },
-    /// Report what daemon8 found in this project and register with detected agents
-    #[command(subcommand)]
-    Setup(SetupSubcommand),
+    /// Classify and connect an explicit alpha scope
+    Connect(cli::connect::ConnectArgs),
+    /// Write `.daemon8/config.md` for explicit project configuration
+    Init(cli::init::InitArgs),
     /// Manage daemon8 system service (install/uninstall)
     #[command(subcommand)]
     Service(ServiceSubcommand),
@@ -78,25 +79,6 @@ enum Commands {
         #[arg(long)]
         fix: bool,
     },
-    // Hidden aliases for backward compatibility
-    #[command(hide = true)]
-    Install,
-    #[command(hide = true)]
-    Uninstall,
-    #[command(hide = true)]
-    Init(cli::init::InitArgs),
-    #[command(hide = true)]
-    Features(cli::features::FeaturesArgs),
-}
-
-#[derive(Subcommand)]
-enum SetupSubcommand {
-    /// Register MCP with detected agents
-    Apply(cli::setup::SetupArgs),
-    /// Enable optional features interactively
-    Features(cli::features::FeaturesArgs),
-    /// Write `.daemon8/config.md` for explicit project configuration
-    Init(cli::init::InitArgs),
 }
 
 #[derive(Subcommand)]
@@ -143,11 +125,8 @@ async fn main() -> Result<()> {
             use clap::CommandFactory;
             cli::completions::cmd_completions(shell, &mut Cli::command())
         }
-        Commands::Setup(sub) => match sub {
-            SetupSubcommand::Apply(args) => cli::setup::cmd_setup(cli.config, args).await,
-            SetupSubcommand::Features(args) => cli::features::cmd_features(args),
-            SetupSubcommand::Init(args) => cli::init::cmd_init(args),
-        },
+        Commands::Connect(args) => cli::connect::cmd_connect(args),
+        Commands::Init(args) => cli::init::cmd_init(args),
         Commands::Service(sub) => match sub {
             ServiceSubcommand::Install => cli::service::cmd_install(),
             ServiceSubcommand::Uninstall => cli::service::cmd_uninstall(),
@@ -155,11 +134,6 @@ async fn main() -> Result<()> {
         Commands::Reset(args) => cli::reset::cmd_reset(cli.config, args).await,
         Commands::Channel => cli::channel::cmd_channel().await,
         Commands::Doctor { fix } => cli::doctor::cmd_doctor(cli.config, fix).await,
-        // Hidden backward-compat aliases
-        Commands::Install => cli::service::cmd_install(),
-        Commands::Uninstall => cli::service::cmd_uninstall(),
-        Commands::Init(args) => cli::init::cmd_init(args),
-        Commands::Features(args) => cli::features::cmd_features(args),
     }
 }
 

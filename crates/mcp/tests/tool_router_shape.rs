@@ -4,13 +4,15 @@
 use std::sync::Arc;
 
 use daemon8_chrome::ConnectionState;
-use daemon8_mcp::{DaemonMcp, DaemonMcpConfig};
+use daemon8_mcp::{Daemon8ConnectParams, Daemon8InitParams, DaemonMcp, DaemonMcpConfig};
 use daemon8_types::Filter;
 use tokio_util::sync::CancellationToken;
 
-const EXPECTED_TOOLS: [&str; 12] = [
+const EXPECTED_TOOLS: [&str; 14] = [
     "read_live_feed",
-    "status",
+    "daemon8_connect",
+    "daemon8_init",
+    "daemon8_status",
     "create_checkpoint",
     "list_connections",
     "write_to_live_feed",
@@ -116,6 +118,61 @@ async fn live_mcp_exposes_full_tool_surface() {
             names
         );
     }
+}
+
+#[tokio::test]
+async fn daemon8_connect_missing_config_guides_to_init() {
+    let mcp = make_mcp().await;
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
+
+    let body = mcp
+        .daemon8_connect_for_tests(Daemon8ConnectParams {
+            provider: "codex".into(),
+            project_path: tmp.path().display().to_string(),
+            agent_name: None,
+            transcript_path: None,
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(parsed["status"], "setup_required");
+    assert_eq!(parsed["code"], "missing_config");
+    assert_eq!(parsed["next_actions"][0]["tool"], "daemon8_init");
+}
+
+#[tokio::test]
+async fn daemon8_init_then_connect_sets_session_connection() {
+    let mcp = make_mcp().await;
+    let tmp = tempfile::tempdir().unwrap();
+
+    let init = mcp
+        .daemon8_init_for_tests(Daemon8InitParams {
+            project_path: tmp.path().display().to_string(),
+            name: Some("mcp-project".into()),
+            overwrite: None,
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&init).unwrap();
+    assert_eq!(parsed["status"], "success");
+    assert_eq!(parsed["code"], "initialized");
+
+    let connect = mcp
+        .daemon8_connect_for_tests(Daemon8ConnectParams {
+            provider: "codex".into(),
+            project_path: tmp.path().display().to_string(),
+            agent_name: None,
+            transcript_path: None,
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&connect).unwrap();
+    assert_eq!(parsed["status"], "success");
+    assert_eq!(parsed["data"]["mode"], "project");
+
+    let status = mcp.daemon8_status_for_tests().await;
+    let parsed: serde_json::Value = serde_json::from_str(&status).unwrap();
+    assert_eq!(parsed["status"], "success");
+    assert_eq!(parsed["data"]["connection"]["mode"], "project");
+    assert_eq!(parsed["data"]["connection"]["provider"], "codex");
 }
 
 #[tokio::test]

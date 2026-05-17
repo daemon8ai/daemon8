@@ -50,15 +50,15 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
             .with_context(|| format!("opening database: {}", db_path.display()))?,
     );
 
-    if let Some(version) = surreal_store.schema_version().await {
-        if version != daemon8_store::SCHEMA_VERSION {
-            eprintln!(
-                "daemon8: incompatible database schema (found {version}, need {}). \
-                 Run `daemon8 reset --yes` to wipe and reinitialize.",
-                daemon8_store::SCHEMA_VERSION,
-            );
-            std::process::exit(1);
-        }
+    if let Some(version) = surreal_store.schema_version().await
+        && version != daemon8_store::SCHEMA_VERSION
+    {
+        eprintln!(
+            "daemon8: incompatible database schema (found {version}, need {}). \
+             Run `daemon8 reset --yes` to wipe and reinitialize.",
+            daemon8_store::SCHEMA_VERSION,
+        );
+        std::process::exit(1);
     }
 
     let memory_store: Arc<dyn daemon8_store::MemoryStore> = Arc::new(surreal_store.memory_store());

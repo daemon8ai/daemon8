@@ -22,7 +22,7 @@ pub static ALL_HELP_TOPICS: &[HelpTopic] = &[
     },
     HelpTopic {
         name: "envelope",
-        one_liner: "the standard {result, daemon8, error} response shape",
+        one_liner: "the common alpha response envelope",
         body: include_str!("../tool_descriptions/help/envelope.md"),
         requires: None,
     },

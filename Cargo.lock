@@ -1455,7 +1455,9 @@ dependencies = [
 name = "daemon8-core"
 version = "0.3.4"
 dependencies = [
+ "humantime",
  "serde",
+ "serde_json",
  "serde_norway",
  "tempfile",
  "thiserror 2.0.18",
@@ -1483,6 +1485,7 @@ version = "0.3.4"
 dependencies = [
  "anyhow",
  "daemon8-chrome",
+ "daemon8-core",
  "daemon8-ingest",
  "daemon8-mcp",
  "daemon8-store",
@@ -1491,6 +1494,7 @@ dependencies = [
  "rmcp",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tokio-util",
  "tracing",

@@ -59,32 +59,6 @@ fn macos_open_privacy_pane() {
         .output();
 }
 
-pub fn service_installed() -> bool {
-    #[cfg(target_os = "macos")]
-    {
-        plist_path().exists()
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        unit_path().exists()
-    }
-
-    #[cfg(windows)]
-    {
-        std::process::Command::new("schtasks")
-            .args(["/Query", "/TN", "Daemon8"])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
-    }
-
-    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
-    false
-}
-
 pub fn cmd_install() -> Result<()> {
     let binary = binary_path()?;
     let binary_str = binary.display().to_string();

@@ -72,7 +72,6 @@ pub async fn cmd_doctor(config_path: Option<String>, fix: bool) -> Result<()> {
         check_data_dir(&cfg, fix),
         check_port(port),
         check_network(),
-        check_setup_state(&cfg),
         check_sources(&cfg),
     ];
 
@@ -287,44 +286,6 @@ fn check_network() -> Check {
         } else {
             CheckResult::Warn("outbound network unreachable".into())
         },
-    }
-}
-
-fn check_setup_state(cfg: &config::Config) -> Check {
-    if cfg.setup.projects.is_empty() {
-        return Check {
-            name: "setup state".into(),
-            result: CheckResult::OkHint("no projects applied".into()),
-        };
-    }
-
-    let mut warnings: Vec<String> = Vec::new();
-
-    for (slug, state) in &cfg.setup.projects {
-        let root = Path::new(&state.root_path);
-        let cfg_file = Path::new(&state.config_path);
-
-        if !root.exists() {
-            warnings.push(format!("{slug}: root_path missing ({})", state.root_path));
-        }
-        if !cfg_file.exists() {
-            warnings.push(format!(
-                "{slug}: project config missing ({})",
-                state.config_path
-            ));
-        }
-    }
-
-    if warnings.is_empty() {
-        Check {
-            name: "setup state".into(),
-            result: CheckResult::OkHint(format!("{} project(s) applied", cfg.setup.projects.len())),
-        }
-    } else {
-        Check {
-            name: "setup state".into(),
-            result: CheckResult::Warn(warnings.join("; ")),
-        }
     }
 }
 
@@ -561,90 +522,6 @@ mod tests {
             matches!(result.result, CheckResult::Warn(_)),
             "missing config file with fix=false should return Warn"
         );
-    }
-
-    fn applied_state(slug: &str, root: &Path, cfg_path: &Path) -> config::ProjectSetupState {
-        config::ProjectSetupState {
-            slug: slug.into(),
-            root_path: root.display().to_string(),
-            config_path: cfg_path.display().to_string(),
-            applied_at_ns: 0,
-            desired_scope: Vec::new(),
-            hook_policy: config::HookPolicy::Manual,
-            sources: Vec::new(),
-            source_audit: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn check_setup_state_empty_is_ok_hint() {
-        let cfg = config::Config::default();
-        let result = check_setup_state(&cfg);
-        assert!(matches!(result.result, CheckResult::OkHint(_)));
-    }
-
-    #[test]
-    fn check_setup_state_present_paths_is_ok_hint_with_count() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().to_path_buf();
-        let cfg_path = root.join(".daemon8").join("config.md");
-        std::fs::create_dir_all(cfg_path.parent().unwrap()).unwrap();
-        std::fs::write(&cfg_path, "version = 1\n").unwrap();
-
-        let mut cfg = config::Config::default();
-        cfg.setup
-            .projects
-            .insert("demo".into(), applied_state("demo", &root, &cfg_path));
-
-        let result = check_setup_state(&cfg);
-        match result.result {
-            CheckResult::OkHint(msg) => assert!(msg.contains("1 project")),
-            other => panic!("expected OkHint, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn check_setup_state_missing_root_warns() {
-        let mut cfg = config::Config::default();
-        let bogus_root = PathBuf::from("/nonexistent/daemon8-doctor-root");
-        let bogus_cfg = bogus_root.join(".daemon8").join("config.md");
-        cfg.setup.projects.insert(
-            "ghost".into(),
-            applied_state("ghost", &bogus_root, &bogus_cfg),
-        );
-
-        let result = check_setup_state(&cfg);
-        match result.result {
-            CheckResult::Warn(msg) => {
-                assert!(msg.contains("ghost: root_path missing"), "got: {msg}");
-                assert!(msg.contains("ghost: project config missing"), "got: {msg}");
-            }
-            other => panic!("expected Warn, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn check_setup_state_missing_config_only_warns_about_config() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().to_path_buf();
-        let absent_cfg = root.join("missing.toml");
-
-        let mut cfg = config::Config::default();
-        cfg.setup
-            .projects
-            .insert("demo".into(), applied_state("demo", &root, &absent_cfg));
-
-        let result = check_setup_state(&cfg);
-        match result.result {
-            CheckResult::Warn(msg) => {
-                assert!(
-                    !msg.contains("root_path missing"),
-                    "root exists, should not warn: {msg}"
-                );
-                assert!(msg.contains("project config missing"), "got: {msg}");
-            }
-            other => panic!("expected Warn, got {other:?}"),
-        }
     }
 
     impl std::fmt::Debug for CheckResult {

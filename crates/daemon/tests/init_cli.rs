@@ -80,24 +80,16 @@ fn run_daemon8_with_env(
     cmd.output().expect("spawn daemon8")
 }
 
-fn run_setup(
-    dir: &Path,
-    fake_home: &Path,
-    config_path: &Path,
-    args: &[&str],
-) -> std::process::Output {
+fn run_connect(dir: &Path, fake_home: &Path, args: &[&str]) -> std::process::Output {
     Command::new(binary())
-        .arg("--config")
-        .arg(config_path)
-        .arg("setup")
-        .arg("apply")
+        .arg("connect")
         .args(args)
         .current_dir(dir)
         .env("HOME", fake_home)
         .env_remove("CI")
         .stdin(Stdio::null())
         .output()
-        .expect("spawn daemon8 setup apply")
+        .expect("spawn daemon8 connect")
 }
 
 fn setup_dirs() -> (tempfile::TempDir, PathBuf, PathBuf) {
@@ -206,6 +198,27 @@ fn cli_agent_command_is_removed() {
 }
 
 #[test]
+fn cli_setup_command_is_removed() {
+    let out = run_daemon8(&["setup", "--help"]);
+    assert!(!out.status.success());
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("unrecognized subcommand") || stderr.contains("unexpected argument"),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
+fn cli_hidden_service_aliases_are_removed() {
+    let install = run_daemon8(&["install", "--help"]);
+    assert!(!install.status.success());
+
+    let uninstall = run_daemon8(&["uninstall", "--help"]);
+    assert!(!uninstall.status.success());
+}
+
+#[test]
 fn cli_init_providers_flag_is_removed() {
     let (_tmp, work, home) = setup_dirs();
     let out = run_init(&work, &home, &["--yes", "--providers", "codex-cli"]);
@@ -242,6 +255,24 @@ fn cli_init_name_sets_project_name() {
     let config = std::fs::read_to_string(project_config_path(&work)).unwrap();
     let parsed = parse_project_config_str(&config).unwrap();
     assert_eq!(parsed.project.name, "alpha-name");
+}
+
+#[test]
+fn cli_init_json_uses_common_envelope() {
+    let (_tmp, work, home) = setup_dirs();
+    let out = run_init(&work, &home, &["--yes", "--json"]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let parsed: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(parsed["status"], "success");
+    assert_eq!(parsed["code"], "initialized");
+    assert_eq!(parsed["data"]["project_name"], "work");
+    assert!(parsed.get("result").is_none());
+    assert!(parsed.get("daemon8").is_none());
 }
 
 #[test]
@@ -295,11 +326,21 @@ fn cli_skips_existing_project_config_without_force() {
 }
 
 #[test]
-fn setup_json_reports_providers_and_daemon_state() {
+fn cli_connect_missing_config_returns_setup_required_json() {
     let (_tmp, work, home) = setup_dirs();
-    let config_path = work.join("global-config.toml");
+    std::fs::write(work.join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
 
-    let out = run_setup(&work, &home, &config_path, &["--json"]);
+    let out = run_connect(
+        &work,
+        &home,
+        &[
+            "--path",
+            work.to_str().unwrap(),
+            "--provider",
+            "codex",
+            "--json",
+        ],
+    );
     assert!(
         out.status.success(),
         "stderr: {}",
@@ -307,9 +348,43 @@ fn setup_json_reports_providers_and_daemon_state() {
     );
 
     let parsed: Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert!(parsed["providers"].is_array());
-    assert!(parsed["daemon_running"].is_boolean());
-    assert!(parsed["issues"].is_array());
+    assert_eq!(parsed["status"], "setup_required");
+    assert_eq!(parsed["code"], "missing_config");
+    assert_eq!(parsed["next_actions"][0]["tool"], "daemon8_init");
+}
+
+#[test]
+fn cli_connect_after_init_returns_connected_json() {
+    let (_tmp, work, home) = setup_dirs();
+    let init = run_init(&work, &home, &["--yes"]);
+    assert!(
+        init.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+
+    let out = run_connect(
+        &work,
+        &home,
+        &[
+            "--path",
+            work.to_str().unwrap(),
+            "--provider",
+            "codex",
+            "--json",
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let parsed: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(parsed["status"], "success");
+    assert_eq!(parsed["code"], "connected");
+    assert_eq!(parsed["data"]["mode"], "project");
+    assert_eq!(parsed["data"]["provider"], "codex");
 }
 
 #[test]

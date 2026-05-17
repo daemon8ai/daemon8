@@ -7,7 +7,7 @@
 Available topics (call `daemon8_help(topic="<name>")`):
 
 - `observations` — querying, filtering, subscribing to runtime telemetry
-- `envelope` — the standard `{result, daemon8, error}` response shape
+- `envelope` — the common alpha response envelope
 - `checkpoint` — bookmarking moments in the observation stream
 - `lens` — buffering matching observations between queries
 - `debug_session` — protocol for opening/closing debugging investigations

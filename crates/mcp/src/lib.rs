@@ -2,11 +2,17 @@
 // Copyright (c) 2026 Havy.tech, LLC
 
 use std::future::Future;
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use daemon8_core::control::{
+    AlphaEnvelope, AlphaStatus, ConnectRequest, NextAction, SessionConnection,
+    connect as connect_scope,
+};
+use daemon8_core::init::{InitRequest, init_project};
 use daemon8_store::{ActiveSessionState, DebugSessionStore, LensManager, MemoryStore, StateModel};
 use daemon8_types::{Checkpoint, DevicePlatform, Filter, Observation, SourceActivator};
 use rmcp::handler::server::router::tool::ToolRouter;
@@ -20,7 +26,6 @@ use tracing::Instrument;
 
 pub mod envelope;
 pub mod help;
-use envelope::{ActiveSessionEcho, DaemonMeta};
 use help::FeatureGate;
 
 const INSTRUCTIONS: &str = include_str!("../tool_descriptions/instructions.md");
@@ -99,6 +104,35 @@ pub struct ObserveParams {
 pub struct ConnectParams {
     #[schemars(description = "Browser DevTools endpoint URL (default http://localhost:9222)")]
     pub endpoint: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct Daemon8ConnectParams {
+    #[schemars(description = "Calling provider name, e.g. codex, claude, gemini.")]
+    pub provider: String,
+
+    #[schemars(description = "Explicit project or general directory path for this MCP session.")]
+    pub project_path: String,
+
+    #[schemars(description = "Optional human-readable agent name.")]
+    pub agent_name: Option<String>,
+
+    #[schemars(description = "Optional provider transcript path for conversation-source binding.")]
+    pub transcript_path: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct Daemon8InitParams {
+    #[schemars(
+        description = "Explicit project directory where .daemon8/config.md should be written."
+    )]
+    pub project_path: String,
+
+    #[schemars(description = "Optional project name. Defaults to the directory basename.")]
+    pub name: Option<String>,
+
+    #[schemars(description = "Replace an existing .daemon8/config.md when true.")]
+    pub overwrite: Option<bool>,
 }
 
 pub use daemon8_types::DebugAction;
@@ -366,7 +400,7 @@ pub struct ForgetMemoryParams {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct HelpParams {
     #[schemars(
-        description = "Help topic: index, debug_session, checkpoint, setup, lens, observations, envelope. Omit for index."
+        description = "Help topic: index, debug_session, checkpoint, lens, observations, envelope. Omit for index."
     )]
     pub topic: Option<String>,
 }
@@ -447,6 +481,8 @@ pub struct DaemonMcp {
     source_activator: Option<Arc<dyn SourceActivator>>,
     cancel: tokio_util::sync::CancellationToken,
     enabled_features: Vec<FeatureGate>,
+    session_id: String,
+    connection: Arc<Mutex<Option<SessionConnection>>>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -498,6 +534,8 @@ impl DaemonMcp {
             source_activator: cfg.source_activator,
             cancel: cfg.cancel,
             enabled_features,
+            session_id: next_mcp_session_id(),
+            connection: Arc::new(Mutex::new(None)),
             tool_router: router,
         }
     }
@@ -534,6 +572,21 @@ impl DaemonMcp {
     #[cfg(feature = "test-util")]
     pub async fn read_live_feed_for_tests_with(&self, params: ObserveParams) -> String {
         self.read_live_feed(Parameters(params)).await
+    }
+
+    #[cfg(feature = "test-util")]
+    pub async fn daemon8_connect_for_tests(&self, params: Daemon8ConnectParams) -> String {
+        self.daemon8_connect(Parameters(params)).await
+    }
+
+    #[cfg(feature = "test-util")]
+    pub async fn daemon8_init_for_tests(&self, params: Daemon8InitParams) -> String {
+        self.daemon8_init(Parameters(params)).await
+    }
+
+    #[cfg(feature = "test-util")]
+    pub async fn daemon8_status_for_tests(&self) -> String {
+        self.daemon8_status().await
     }
 
     #[cfg(feature = "test-util")]
@@ -680,9 +733,41 @@ impl DaemonMcp {
         }
     }
 
-    #[doc = include_str!("../tool_descriptions/status.md")]
-    #[tool(name = "status")]
-    async fn status(&self) -> String {
+    #[doc = include_str!("../tool_descriptions/daemon8_connect.md")]
+    #[tool(name = "daemon8_connect")]
+    async fn daemon8_connect(
+        &self,
+        Parameters(params): Parameters<Daemon8ConnectParams>,
+    ) -> String {
+        let outcome = connect_scope(ConnectRequest {
+            session_id: self.session_id.clone(),
+            provider: params.provider,
+            project_path: PathBuf::from(params.project_path),
+            agent_name: params.agent_name,
+            transcript_path: params.transcript_path.map(PathBuf::from),
+        });
+
+        if let Some(connection) = outcome.connection.clone() {
+            *self.connection.lock().expect("connection mutex poisoned") = Some(connection);
+        }
+
+        outcome.envelope.render()
+    }
+
+    #[doc = include_str!("../tool_descriptions/daemon8_init.md")]
+    #[tool(name = "daemon8_init")]
+    async fn daemon8_init(&self, Parameters(params): Parameters<Daemon8InitParams>) -> String {
+        let outcome = init_project(InitRequest {
+            project_path: PathBuf::from(params.project_path),
+            name: params.name,
+            overwrite: params.overwrite.unwrap_or(false),
+        });
+        outcome.envelope.render()
+    }
+
+    #[doc = include_str!("../tool_descriptions/daemon8_status.md")]
+    #[tool(name = "daemon8_status")]
+    async fn daemon8_status(&self) -> String {
         match self.store.summary().await {
             Ok(summary) => match serde_json::to_value(&summary) {
                 Ok(mut val) => {
@@ -692,6 +777,13 @@ impl DaemonMcp {
                             serde_json::Value::String(env!("CARGO_PKG_VERSION").to_string()),
                         );
                     }
+                    val["session_id"] = serde_json::json!(self.session_id);
+                    let connection = self
+                        .connection
+                        .lock()
+                        .expect("connection mutex poisoned")
+                        .clone();
+                    val["connection"] = serde_json::to_value(connection).unwrap_or_default();
                     self.ok(val)
                 }
                 Err(e) => self.err("serialization_failed", &e.to_string(), None, None),
@@ -977,10 +1069,13 @@ impl DaemonMcp {
 fn wrap_inner_result(daemon: &DaemonMcp, raw: &str) -> String {
     match serde_json::from_str::<serde_json::Value>(raw) {
         Ok(v) => {
-            // If the inner function already produced an envelope-shaped value
-            // (i.e. `error_json(...)` from inside the inner), pass it through
-            // by extracting the error and rewrapping. Otherwise it's a raw
-            // success payload to wrap as `result`.
+            // If the inner function already produced an alpha envelope
+            // (i.e. `error_json(...)` from inside the inner), pass it through.
+            // Otherwise it's a raw success payload to wrap as `data`.
+            if v.get("status").is_some() && v.get("code").is_some() {
+                return serde_json::to_string_pretty(&v)
+                    .unwrap_or_else(|_| daemon.err("serialization_failed", raw, None, None));
+            }
             if let Some(err_obj) = v.get("error").and_then(|e| e.as_object()) {
                 let code = err_obj
                     .get("code")
@@ -1375,39 +1470,8 @@ fn current_ns() -> u64 {
 }
 
 impl DaemonMcp {
-    /// Build the per-tool-call meta block. Currently echoes the active debug
-    /// session so the LLM sees its lifecycle context on every response.
-    /// Alpha connect/status surfacing lands with the connect-first control
-    /// flow. Until then this meta block only echoes active debug lifecycle.
-    pub(crate) fn current_meta(&self) -> DaemonMeta {
-        let mut meta = DaemonMeta::default();
-        if let Some(s) = self.active_state.current_session() {
-            meta.active_debug_session = Some(ActiveSessionEcho {
-                id: s.id.to_string(),
-                project_slug: s.project_slug.to_string(),
-                started_at_ns: s.started_at_ns,
-            });
-        }
-        meta
-    }
-
-    pub(crate) fn current_meta_with(
-        &self,
-        next_actions: Vec<&str>,
-        hint: Option<&str>,
-    ) -> DaemonMeta {
-        let mut meta = self.current_meta();
-        if !next_actions.is_empty() {
-            meta.next_actions = Some(next_actions.into_iter().map(String::from).collect());
-        }
-        if let Some(h) = hint {
-            meta.hint = Some(h.to_string());
-        }
-        meta
-    }
-
     pub(crate) fn ok(&self, value: serde_json::Value) -> String {
-        envelope::ok_value(value, self.current_meta())
+        AlphaEnvelope::success("ok", "ok", self.with_session_context(value)).render()
     }
 
     pub(crate) fn ok_with(
@@ -1416,7 +1480,18 @@ impl DaemonMcp {
         next_actions: Vec<&str>,
         hint: Option<&str>,
     ) -> String {
-        envelope::ok_value(value, self.current_meta_with(next_actions, hint))
+        let mut envelope = AlphaEnvelope::success("ok", "ok", self.with_session_context(value));
+        for action in next_actions {
+            envelope = envelope.with_next_action(NextAction::new(
+                action,
+                "recommended next tool",
+                serde_json::json!({}),
+            ));
+        }
+        if let Some(hint) = hint {
+            envelope = envelope.with_hint(hint);
+        }
+        envelope.render()
     }
 
     pub(crate) fn err(
@@ -1426,7 +1501,54 @@ impl DaemonMcp {
         hint: Option<&str>,
         fix_tool: Option<&str>,
     ) -> String {
-        envelope::err(code, message, hint, fix_tool, self.current_meta())
+        let mut envelope =
+            AlphaEnvelope::non_success(AlphaStatus::Error, code, message, hint.unwrap_or(message))
+                .with_data(self.session_context());
+        if let Some(tool) = fix_tool {
+            envelope = envelope.with_next_action(NextAction::new(
+                tool,
+                "call this tool to continue",
+                serde_json::json!({}),
+            ));
+        }
+        envelope.render()
+    }
+
+    fn with_session_context(&self, mut value: serde_json::Value) -> serde_json::Value {
+        if let Some(object) = value.as_object_mut() {
+            let context = self.session_context();
+            if let Some(context) = context.as_object() {
+                for (key, value) in context {
+                    object.entry(key.clone()).or_insert_with(|| value.clone());
+                }
+            }
+        }
+        value
+    }
+
+    fn session_context(&self) -> serde_json::Value {
+        let mut data = serde_json::json!({
+            "session_id": self.session_id,
+        });
+
+        let connection = self
+            .connection
+            .lock()
+            .expect("connection mutex poisoned")
+            .clone();
+        if let Some(connection) = connection {
+            data["connection"] = serde_json::to_value(connection).unwrap_or_default();
+        }
+
+        if let Some(s) = self.active_state.current_session() {
+            data["active_debug_session"] = serde_json::json!({
+                "id": s.id.to_string(),
+                "project_slug": s.project_slug.to_string(),
+                "started_at_ns": s.started_at_ns,
+            });
+        }
+
+        data
     }
 }
 
@@ -1928,18 +2050,9 @@ fn screenshot_path(dir: &std::path::Path, target: &str, label: Option<&str>) -> 
     dir.join(format!("daemon8-screenshot-{ts}-{safe_target}{suffix}.png"))
 }
 
-/// Standalone error builder for code paths without &self access (free
-/// functions, inner helpers). Produces an envelope-shaped error with no
-/// `daemon8` meta — tool methods that have &self should prefer
-/// `self.err(...)` so the active debug session echoes correctly.
+/// Standalone error builder for code paths without &self access.
 fn error_json(msg: &str) -> String {
-    envelope::err(
-        "internal_error",
-        msg,
-        None,
-        None,
-        envelope::DaemonMeta::default(),
-    )
+    AlphaEnvelope::non_success(AlphaStatus::Error, "internal_error", msg, msg).render()
 }
 
 impl DaemonMcp {
@@ -1989,7 +2102,7 @@ impl ServerHandler for DaemonMcp {
     }
 
     async fn on_initialized(&self, context: rmcp::service::NotificationContext<RoleServer>) {
-        let session_id = next_mcp_session_id();
+        let session_id = self.session_id.clone();
         tracing::info!(
             session_id,
             "MCP session initialized, starting observation push"
@@ -2341,7 +2454,7 @@ mod logging_tests {
             }))
             .await;
         let started: serde_json::Value = serde_json::from_str(&start_res).unwrap();
-        let session_id = started["result"]["debug_session_id"]
+        let session_id = started["data"]["debug_session_id"]
             .as_str()
             .unwrap()
             .to_string();
@@ -2361,14 +2474,11 @@ mod logging_tests {
             }))
             .await;
         let resolved: serde_json::Value = serde_json::from_str(&resolve_res).unwrap();
-        assert_eq!(resolved["result"]["debug_session_id"], session_id);
-        assert_eq!(resolved["result"]["project_slug"], "daemon8");
-        let memory_id = resolved["result"]["summary_memory_id"].as_str().unwrap();
-        assert_eq!(
-            resolved["result"]["evidence_ref"]["kind"],
-            "session_summary"
-        );
-        assert_eq!(resolved["result"]["evidence_ref"]["id"], memory_id);
+        assert_eq!(resolved["data"]["debug_session_id"], session_id);
+        assert_eq!(resolved["data"]["project_slug"], "daemon8");
+        let memory_id = resolved["data"]["summary_memory_id"].as_str().unwrap();
+        assert_eq!(resolved["data"]["evidence_ref"]["kind"], "session_summary");
+        assert_eq!(resolved["data"]["evidence_ref"]["id"], memory_id);
 
         // active state cleared
         assert!(mcp.active_state.current_session().is_none());
@@ -2431,9 +2541,9 @@ mod logging_tests {
             .create_checkpoint(Parameters(CreateCheckpointParams { description: None }))
             .await;
         let parsed: serde_json::Value = serde_json::from_str(&res).unwrap();
-        assert_eq!(parsed["error"]["code"], "no_active_debug_session");
-        assert_eq!(parsed["error"]["fix"]["tool"], "start_debug_session");
-        assert!(parsed["result"].is_null());
+        assert_eq!(parsed["status"], "error");
+        assert_eq!(parsed["code"], "no_active_debug_session");
+        assert_eq!(parsed["next_actions"][0]["tool"], "start_debug_session");
     }
 
     #[tokio::test]
@@ -2453,11 +2563,11 @@ mod logging_tests {
             }))
             .await;
         let parsed: serde_json::Value = serde_json::from_str(&res).unwrap();
-        let result = &parsed["result"];
+        let result = &parsed["data"];
         let cp_id = result["checkpoint_id"].as_str().unwrap();
         assert!(result["seq_at_creation"].is_number());
         // Envelope echoes the active session.
-        assert!(parsed["daemon8"]["active_debug_session"].is_object());
+        assert!(parsed["data"]["active_debug_session"].is_object());
 
         // active_state.checkpoint should now match
         let active_cp = mcp.active_state.current_checkpoint().unwrap();
@@ -2517,7 +2627,7 @@ mod logging_tests {
             }))
             .await;
         let parsed: serde_json::Value = serde_json::from_str(&active_only).unwrap();
-        assert_eq!(parsed["result"]["count"], 1);
+        assert_eq!(parsed["data"]["count"], 1);
 
         let all = mcp
             .list_debug_sessions(Parameters(ListDebugSessionsParams {
@@ -2526,7 +2636,7 @@ mod logging_tests {
             }))
             .await;
         let parsed: serde_json::Value = serde_json::from_str(&all).unwrap();
-        assert_eq!(parsed["result"]["count"], 2);
+        assert_eq!(parsed["data"]["count"], 2);
     }
 
     #[tokio::test]
@@ -2648,7 +2758,7 @@ mod logging_tests {
             .await;
         let a_parsed: serde_json::Value = serde_json::from_str(&a_start).unwrap();
         assert!(
-            a_parsed["result"]["debug_session_id"].is_string(),
+            a_parsed["data"]["debug_session_id"].is_string(),
             "agent A must start successfully: {a_start}"
         );
 
@@ -2662,7 +2772,7 @@ mod logging_tests {
             .await;
         let b_parsed: serde_json::Value = serde_json::from_str(&b_start).unwrap();
         assert!(
-            b_parsed["result"]["debug_session_id"].is_string(),
+            b_parsed["data"]["debug_session_id"].is_string(),
             "agent B must start successfully — no global single-active: {b_start}"
         );
 
@@ -2688,7 +2798,7 @@ mod logging_tests {
             .await,
         )
         .unwrap();
-        let a_sid = a_start["result"]["debug_session_id"].as_str().unwrap();
+        let a_sid = a_start["data"]["debug_session_id"].as_str().unwrap();
 
         // Agent B starts search session
         let b_start: serde_json::Value = serde_json::from_str(
@@ -2701,7 +2811,7 @@ mod logging_tests {
             .await,
         )
         .unwrap();
-        let b_sid = b_start["result"]["debug_session_id"].as_str().unwrap();
+        let b_sid = b_start["data"]["debug_session_id"].as_str().unwrap();
 
         assert_ne!(a_sid, b_sid, "each agent must get a distinct session id");
 
@@ -2801,7 +2911,7 @@ mod logging_tests {
         )
         .unwrap();
         assert!(
-            end_res["result"]["debug_session_id"].is_string(),
+            end_res["data"]["debug_session_id"].is_string(),
             "end must succeed: {end_res}"
         );
 
@@ -2851,11 +2961,11 @@ mod logging_tests {
         )
         .unwrap();
         assert_eq!(
-            auth_only["result"]["count"], 1,
+            auth_only["data"]["count"], 1,
             "feature filter must return only the auth session"
         );
         assert_eq!(
-            auth_only["result"]["sessions"][0]["feature"], "auth",
+            auth_only["data"]["sessions"][0]["feature"], "auth",
             "returned session must have the matching feature"
         );
 
@@ -2868,7 +2978,7 @@ mod logging_tests {
         )
         .unwrap();
         assert_eq!(
-            search_only["result"]["count"], 1,
+            search_only["data"]["count"], 1,
             "feature filter must return only the search session"
         );
 
@@ -2881,7 +2991,7 @@ mod logging_tests {
         )
         .unwrap();
         assert_eq!(
-            none["result"]["count"], 0,
+            none["data"]["count"], 0,
             "unknown feature must return empty"
         );
     }

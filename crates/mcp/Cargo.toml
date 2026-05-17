@@ -7,6 +7,7 @@ description = "MCP tool server for daemon8 AI agent integration"
 repository.workspace = true
 
 [dependencies]
+daemon8-core.workspace = true
 daemon8-types.workspace = true
 daemon8-store.workspace = true
 daemon8-chrome.workspace = true
@@ -28,3 +29,4 @@ test-util = []
 
 [dev-dependencies]
 daemon8-mcp = { path = ".", features = ["test-util"] }
+tempfile = "3"

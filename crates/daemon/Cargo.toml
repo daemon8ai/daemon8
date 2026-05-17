@@ -53,7 +53,7 @@ notify.workspace = true
 glob.workspace = true
 semver.workspace = true
 futures.workspace = true
-humantime = "2"
+humantime.workspace = true
 libc = "0.2"
 xcap = { version = "0.9", optional = true }
 image = { version = "0.25", optional = true, default-features = false, features = ["png"] }

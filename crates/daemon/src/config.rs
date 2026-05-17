@@ -30,8 +30,6 @@ pub struct Config {
     #[serde(default)]
     pub sources: BTreeMap<String, SourceConfig>,
     #[serde(default)]
-    pub setup: SetupConfig,
-    #[serde(default)]
     pub debug_session: DebugSessionConfig,
     #[serde(default)]
     pub source_config: SourceManagerConfig,
@@ -208,42 +206,6 @@ pub struct ConversationSourceConfig {
     pub tags: Vec<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SetupConfig {
-    #[serde(default)]
-    pub projects: BTreeMap<String, ProjectSetupState>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ProjectSetupState {
-    pub slug: String,
-    pub root_path: String,
-    pub config_path: String,
-    pub applied_at_ns: u64,
-    #[serde(default)]
-    pub desired_scope: Vec<String>,
-    pub hook_policy: HookPolicy,
-    #[serde(default)]
-    pub sources: Vec<String>,
-    #[serde(default)]
-    pub source_audit: Vec<String>,
-}
-
-/// Records whether hook installation was performed during `setup apply` or
-/// left to the operator. Stored verbatim in setup state TOML; existing
-/// `"install"` / `"manual"` strings continue to round-trip via
-/// `rename_all = "snake_case"`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum HookPolicy {
-    /// Setup applied hook installation for one or more providers.
-    Install,
-    /// Setup deferred hook installation; the operator wires hooks themselves.
-    Manual,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SourceManagerConfig {
@@ -321,7 +283,6 @@ impl Default for Config {
             ingestion: IngestionConfig::default(),
             logging: LoggingConfig::default(),
             sources: BTreeMap::new(),
-            setup: SetupConfig::default(),
             debug_session: DebugSessionConfig::default(),
             source_config: SourceManagerConfig::default(),
             config_dir: project_dirs()
@@ -451,7 +412,6 @@ fn is_config_env_key(key: &str) -> bool {
             | "logging"
             | "sources"
             | "source_config"
-            | "setup"
     )
 }
 
@@ -569,7 +529,6 @@ mod tests {
         assert_eq!(cfg.logging.max_log_files, 5);
         assert!(cfg.storage.path.is_none());
         assert!(cfg.browser.path.is_none());
-        assert!(cfg.setup.projects.is_empty());
     }
 
     #[test]
@@ -636,55 +595,16 @@ role_default = "debugger"
     }
 
     #[test]
-    fn invalid_hook_policy_value_is_rejected() {
+    fn removed_setup_config_is_rejected() {
         let result: Result<Config, _> = toml::from_str(
             r#"
 [setup.projects.daemon8]
 slug = "daemon8"
-root_path = "/tmp/daemon8"
-config_path = "/tmp/daemon8/.daemon8/config.md"
-applied_at_ns = 0
-hook_policy = "banana"
 "#,
         );
         assert!(
             result.is_err(),
-            "unknown hook_policy value must be rejected, got Ok: {result:?}"
-        );
-    }
-
-    #[test]
-    fn hook_policy_round_trips_via_snake_case() {
-        let cfg: Config = toml::from_str(
-            r#"
-[setup.projects.daemon8]
-slug = "daemon8"
-root_path = "/tmp/daemon8"
-config_path = "/tmp/daemon8/.daemon8/config.md"
-applied_at_ns = 0
-hook_policy = "install"
-"#,
-        )
-        .expect("install policy should parse");
-        assert_eq!(
-            cfg.setup.projects["daemon8"].hook_policy,
-            HookPolicy::Install
-        );
-
-        let cfg: Config = toml::from_str(
-            r#"
-[setup.projects.daemon8]
-slug = "daemon8"
-root_path = "/tmp/daemon8"
-config_path = "/tmp/daemon8/.daemon8/config.md"
-applied_at_ns = 0
-hook_policy = "manual"
-"#,
-        )
-        .expect("manual policy should parse");
-        assert_eq!(
-            cfg.setup.projects["daemon8"].hook_policy,
-            HookPolicy::Manual
+            "removed setup config must not be silently accepted"
         );
     }
 
@@ -875,27 +795,5 @@ path = "/tmp/test.log"
             panic!("expected File source");
         };
         assert_eq!(f.parser, "line");
-    }
-
-    #[test]
-    fn setup_state_parses() {
-        let cfg: Config = toml::from_str(
-            r#"
-[setup.projects.daemon8]
-slug = "daemon8"
-root_path = "/tmp/daemon8"
-config_path = "/tmp/daemon8/.daemon8/config.md"
-applied_at_ns = 42
-desired_scope = ["file-sources"]
-hook_policy = "manual"
-sources = ["daemon8.app-logs"]
-source_audit = ["daemon8.app-logs: registered"]
-"#,
-        )
-        .unwrap();
-
-        let state = &cfg.setup.projects["daemon8"];
-        assert_eq!(state.slug, "daemon8");
-        assert_eq!(state.sources, vec!["daemon8.app-logs"]);
     }
 }
