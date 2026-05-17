@@ -14,7 +14,9 @@ pub(crate) struct ResetArgs {
 
 pub(crate) async fn cmd_reset(config_path: Option<String>, args: ResetArgs) -> Result<()> {
     if !args.yes {
-        eprint!("Wipe all daemon8 state (observations, memory, debug sessions)? [y/N] ");
+        eprint!(
+            "Wipe daemon-owned state (observations, memory, debug sessions/checkpoints, session/scope ledger, schema metadata)? [y/N] "
+        );
         let mut input = String::new();
         std::io::stdin().read_line(&mut input)?;
         if !input.trim().eq_ignore_ascii_case("y") {
@@ -41,8 +43,9 @@ pub(crate) async fn cmd_reset(config_path: Option<String>, args: ResetArgs) -> R
     let report = store.reset().await.context("reset failed")?;
 
     eprintln!(
-        "daemon8 reset complete: {} observations dropped, schema re-initialized at {}",
+        "daemon8 reset complete: cleared observations/live feed, memories, debug sessions/checkpoints, session/scope ledger, and schema metadata; {} observations dropped, {} session/scope ledger records dropped; schema re-initialized at {}; project files were untouched",
         report.observations_dropped,
+        report.scope_ledger_records_dropped,
         daemon8_store::SCHEMA_VERSION,
     );
     Ok(())

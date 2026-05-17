@@ -252,7 +252,7 @@ fn cli_init_yes_flag_is_removed() {
     let (_tmp, work, home) = setup_dirs();
     mark_project(&work);
     let out = run_init(&work, &home, &["--yes"]);
-    assert!(!out.status.success(), "legacy --yes flag must be removed");
+    assert!(!out.status.success(), "removed --yes flag must stay gone");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains("unexpected argument") || stderr.contains("unrecognized"),
@@ -285,7 +285,7 @@ fn cli_init_providers_flag_is_removed() {
 fn cli_init_slug_flag_is_removed() {
     let (_tmp, work, home) = setup_dirs();
     let out = run_init(&work, &home, &["--slug", "old-name"]);
-    assert!(!out.status.success(), "legacy slug flag must be removed");
+    assert!(!out.status.success(), "removed slug flag must stay gone");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains("unexpected argument") || stderr.contains("unrecognized"),
@@ -438,6 +438,42 @@ fn cli_connect_missing_config_returns_setup_required_json() {
     assert_eq!(parsed["status"], "setup_required");
     assert_eq!(parsed["code"], "missing_config");
     assert_eq!(parsed["next_actions"][0]["tool"], "daemon8_init");
+
+    let out = run_connect(
+        &work,
+        &home,
+        &[
+            "--path",
+            work.to_str().unwrap(),
+            "--provider",
+            "codex",
+            "--json",
+        ],
+    );
+    assert!(out.status.success());
+
+    let status = run_daemon8_with_env(&work, &home, &[], &["status", "--json"]);
+    assert!(
+        status.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&status.stderr)
+    );
+    let parsed: Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(
+        parsed["data"]["scope_ledger"]["recent_failures"][0]["code"],
+        "missing_config"
+    );
+    assert_eq!(
+        parsed["data"]["scope_ledger"]["recent_failures"][0]["attempt_count"],
+        1
+    );
+    assert_eq!(
+        parsed["data"]["scope_ledger"]["recent_failures"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
 }
 
 #[test]
@@ -473,6 +509,22 @@ fn cli_connect_after_init_returns_connected_json() {
     assert_eq!(parsed["code"], "connected");
     assert_eq!(parsed["data"]["mode"], "project");
     assert_eq!(parsed["data"]["provider"], "codex");
+
+    let status = run_daemon8_with_env(&work, &home, &[], &["status", "--json"]);
+    assert!(
+        status.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&status.stderr)
+    );
+    let parsed: Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(
+        parsed["data"]["scope_ledger"]["recent_scopes"][0]["scope_root"],
+        work.canonicalize().unwrap().display().to_string()
+    );
+    assert_eq!(
+        parsed["data"]["scope_ledger"]["recent_scopes"][0]["provider"],
+        "codex"
+    );
 }
 
 #[test]

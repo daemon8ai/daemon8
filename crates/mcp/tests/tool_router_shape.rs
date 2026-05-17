@@ -45,6 +45,7 @@ async fn make_mcp_with_cancel(cancel: CancellationToken) -> DaemonMcp {
     let store = Arc::new(SurrealStore::memory().await.unwrap());
     let memory_store = store.memory_store();
     memory_store.init_schema().await.unwrap();
+    let scope_ledger_store = store.scope_ledger_store();
     let (obs_tx, _) = tokio::sync::mpsc::unbounded_channel();
     let (chrome_tx, _) = tokio::sync::mpsc::channel(16);
     let (_, chrome_state_rx) = tokio::sync::watch::channel(ConnectionState::Disconnected);
@@ -54,6 +55,7 @@ async fn make_mcp_with_cancel(cancel: CancellationToken) -> DaemonMcp {
         store,
         memory_store: Some(Arc::new(memory_store)),
         debug_session_store: None,
+        scope_ledger_store: Some(Arc::new(scope_ledger_store)),
         obs_tx,
         chrome_tx,
         chrome_state: chrome_state_rx,
@@ -173,6 +175,28 @@ async fn daemon8_connect_missing_config_guides_to_init() {
     assert_eq!(parsed["status"], "setup_required");
     assert_eq!(parsed["code"], "missing_config");
     assert_eq!(parsed["next_actions"][0]["tool"], "daemon8_init");
+
+    let body = mcp
+        .daemon8_connect_for_tests(Daemon8ConnectParams {
+            provider: "codex".into(),
+            project_path: tmp.path().display().to_string(),
+            agent_name: None,
+            transcript_path: None,
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(parsed["status"], "setup_required");
+
+    let status = mcp.daemon8_status_for_tests().await;
+    let parsed: serde_json::Value = serde_json::from_str(&status).unwrap();
+    assert_eq!(
+        parsed["data"]["scope_ledger"]["recent_failures"][0]["code"],
+        "missing_config"
+    );
+    assert_eq!(
+        parsed["data"]["scope_ledger"]["recent_failures"][0]["attempt_count"],
+        2
+    );
 }
 
 #[tokio::test]
@@ -209,6 +233,14 @@ async fn daemon8_init_then_connect_sets_session_connection() {
     assert_eq!(parsed["status"], "success");
     assert_eq!(parsed["data"]["connection"]["mode"], "project");
     assert_eq!(parsed["data"]["connection"]["provider"], "codex");
+    assert_eq!(
+        parsed["data"]["scope_ledger"]["recent_scopes"][0]["scope_root"],
+        tmp.path().canonicalize().unwrap().display().to_string()
+    );
+    assert_eq!(
+        parsed["data"]["scope_ledger"]["recent_scopes"][0]["provider"],
+        "codex"
+    );
 }
 
 #[tokio::test]

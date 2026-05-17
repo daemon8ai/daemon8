@@ -3,16 +3,17 @@
 
 use anyhow::Result;
 use daemon8_core::control::status_envelope;
+use daemon8_store::{ScopeLedgerStore, ScopeLedgerSummary, SurrealStore};
 use daemon8_types::{HealthStatus, RuntimeSummary};
 use owo_colors::OwoColorize;
 
 use super::{base_url, format_number};
 
-pub async fn cmd_status(args: super::ClientArgs) -> Result<()> {
+pub async fn cmd_status(config_path: Option<String>, args: super::ClientArgs) -> Result<()> {
     use crate::config;
     use crate::style;
 
-    let cfg = config::load(None).unwrap_or_default();
+    let cfg = config::load(config_path.as_deref()).unwrap_or_default();
     let config_path = cfg.config_dir.join("config.toml");
 
     let config_exists = config_path.exists();
@@ -38,6 +39,9 @@ pub async fn cmd_status(args: super::ClientArgs) -> Result<()> {
     };
 
     if args.json {
+        let scope_ledger = load_scope_ledger_summary(&data_dir)
+            .await
+            .unwrap_or_default();
         let data = serde_json::json!({
             "config_path": config_path.display().to_string(),
             "config_exists": config_exists,
@@ -46,6 +50,7 @@ pub async fn cmd_status(args: super::ClientArgs) -> Result<()> {
             "daemon": if running { "running" } else { "stopped" },
             "port": port,
             "daemon_version": env!("CARGO_PKG_VERSION"),
+            "scope_ledger": scope_ledger,
         });
         println!("{}", status_envelope(data).render());
         return Ok(());
@@ -105,4 +110,17 @@ pub async fn cmd_status(args: super::ClientArgs) -> Result<()> {
 
     println!();
     Ok(())
+}
+
+async fn load_scope_ledger_summary(db_path: &std::path::Path) -> Option<ScopeLedgerSummary> {
+    if !db_path.exists() {
+        return Some(ScopeLedgerSummary::default());
+    }
+
+    let store = SurrealStore::open(db_path).await.ok()?;
+    store
+        .scope_ledger_store()
+        .scope_ledger_summary(5)
+        .await
+        .ok()
 }

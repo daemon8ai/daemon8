@@ -27,6 +27,7 @@ const DATABASE: &str = "observations";
 #[derive(Debug)]
 pub struct ResetReport {
     pub observations_dropped: usize,
+    pub scope_ledger_records_dropped: usize,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -156,6 +157,7 @@ impl SurrealStore {
         store.init_schema().await?;
         store.memory_store().init_schema().await?;
         store.debug_session_store().init_schema().await?;
+        store.scope_ledger_store().init_schema().await?;
         store.recover_seq().await?;
         Ok(store)
     }
@@ -175,6 +177,7 @@ impl SurrealStore {
         store.init_schema().await?;
         store.memory_store().init_schema().await?;
         store.debug_session_store().init_schema().await?;
+        store.scope_ledger_store().init_schema().await?;
         Ok(store)
     }
 
@@ -189,6 +192,10 @@ impl SurrealStore {
         SurrealDebugSessionStore::new(self.db.clone())
     }
 
+    pub fn scope_ledger_store(&self) -> crate::SurrealScopeLedgerStore {
+        crate::SurrealScopeLedgerStore::new(self.db.clone())
+    }
+
     pub async fn schema_version(&self) -> Option<String> {
         let mut result = self
             .db
@@ -200,15 +207,8 @@ impl SurrealStore {
     }
 
     pub async fn reset(&self) -> Result<ResetReport, StoreError> {
-        let obs_count: Option<usize> = self
-            .db
-            .query("SELECT count() FROM observation GROUP ALL")
-            .await
-            .ok()
-            .and_then(|mut r| {
-                let v: Option<serde_json::Value> = r.take(0).ok()?;
-                v.and_then(|v| v.get("count").and_then(|c| c.as_u64()).map(|c| c as usize))
-            });
+        let obs_count = self.count_table("observation").await.unwrap_or(0);
+        let scope_ledger_records = self.count_scope_ledger_records().await.unwrap_or(0);
 
         self.db
             .query(
@@ -216,6 +216,10 @@ impl SurrealStore {
                  REMOVE TABLE IF EXISTS memory;
                  REMOVE TABLE IF EXISTS debug_session;
                  REMOVE TABLE IF EXISTS debug_checkpoint;
+                 REMOVE TABLE IF EXISTS checkpoint;
+                 REMOVE TABLE IF EXISTS scope_session;
+                 REMOVE TABLE IF EXISTS recent_scope;
+                 REMOVE TABLE IF EXISTS scope_connect_failure;
                  REMOVE TABLE IF EXISTS _meta;",
             )
             .await
@@ -227,10 +231,34 @@ impl SurrealStore {
         self.init_schema().await?;
         self.memory_store().init_schema().await?;
         self.debug_session_store().init_schema().await?;
+        self.scope_ledger_store().init_schema().await?;
 
         Ok(ResetReport {
-            observations_dropped: obs_count.unwrap_or(0),
+            observations_dropped: obs_count,
+            scope_ledger_records_dropped: scope_ledger_records,
         })
+    }
+
+    async fn count_scope_ledger_records(&self) -> Result<usize, StoreError> {
+        let session = self.count_table("scope_session").await?;
+        let recent = self.count_table("recent_scope").await?;
+        let failures = self.count_table("scope_connect_failure").await?;
+        Ok(session + recent + failures)
+    }
+
+    async fn count_table(&self, table: &str) -> Result<usize, StoreError> {
+        let sql = format!("SELECT count() FROM {table} GROUP ALL");
+        let mut result = self
+            .db
+            .query(sql)
+            .await
+            .map_err(|e| StoreError::Db(format!("count {table}: {e}")))?;
+        let row: Option<serde_json::Value> = result
+            .take(0)
+            .map_err(|e| StoreError::Db(format!("count {table} read: {e}")))?;
+        Ok(row
+            .and_then(|v| v.get("count").and_then(|c| c.as_u64()).map(|c| c as usize))
+            .unwrap_or(0))
     }
 
     async fn init_schema(&self) -> Result<(), StoreError> {

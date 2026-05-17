@@ -106,7 +106,7 @@ async fn main() -> Result<()> {
 
     match command {
         Commands::Serve(args) => cli::serve::cmd_serve(cli.config, args).await,
-        Commands::Status(args) => cli::observe::status::cmd_status(args).await,
+        Commands::Status(args) => cli::observe::status::cmd_status(cli.config, args).await,
         Commands::Tail(args) => cli::observe::tail::cmd_tail(args).await,
         Commands::Query(args) => cli::observe::query::cmd_query(args).await,
         Commands::Connections(args) => cli::observe::connections::cmd_connections(args).await,
@@ -118,8 +118,8 @@ async fn main() -> Result<()> {
             use clap::CommandFactory;
             cli::completions::cmd_completions(shell, &mut Cli::command())
         }
-        Commands::Connect(args) => cli::connect::cmd_connect(args),
-        Commands::Init(args) => cli::init::cmd_init(args),
+        Commands::Connect(args) => cli::connect::cmd_connect(cli.config, args).await,
+        Commands::Init(args) => cli::init::cmd_init(cli.config, args).await,
         Commands::Service(sub) => match sub {
             ServiceSubcommand::Install => cli::service::cmd_install(),
             ServiceSubcommand::Uninstall => cli::service::cmd_uninstall(),

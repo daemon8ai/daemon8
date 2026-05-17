@@ -8,7 +8,7 @@ Reading DOM state, capturing visual proof of a fix, prototyping CSS, simulating 
 
 ## Prereq
 
-A connected MCP session and a connected browser. Call `daemon8_connect` first. Browser auto-discovery handles localhost:9222; use `connect_browser` for non-standard endpoints.
+A connected MCP session and a connected browser. Call `daemon8_connect` first. Browser auto-connect handles localhost:9222; use `connect_browser` for non-standard endpoints.
 
 ## Args
   - action: required string. One of: eval_js, screenshot, inject_css, revert_css, list_tabs, get_perf_metrics, get_dom, set_viewport, clear_viewport, network_conditions, navigate, storage_clear, storage_inspect, storage_set, element_at_point, new_tab, close_tab.

@@ -13,7 +13,10 @@ use daemon8_core::control::{
     connect as connect_scope, status_envelope,
 };
 use daemon8_core::init::{InitRequest, init_project};
-use daemon8_store::{ActiveSessionState, DebugSessionStore, LensManager, MemoryStore, StateModel};
+use daemon8_store::{
+    ActiveSessionState, DebugSessionStore, LensManager, MemoryStore, RecentScopeRecord,
+    ScopeConnectFailureRecord, ScopeLedgerStore, ScopeSessionRecord, StateModel,
+};
 use daemon8_types::{Checkpoint, DevicePlatform, Filter, Observation};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
@@ -492,6 +495,7 @@ pub struct DaemonMcp {
     store: Arc<dyn StateModel>,
     memory_store: Option<Arc<dyn MemoryStore>>,
     debug_session_store: Option<Arc<dyn DebugSessionStore>>,
+    scope_ledger_store: Option<Arc<dyn ScopeLedgerStore>>,
     active_state: ActiveSessionState,
     obs_tx: tokio::sync::mpsc::UnboundedSender<Observation>,
     chrome_tx: tokio::sync::mpsc::Sender<ChromeCommand>,
@@ -514,6 +518,7 @@ pub struct DaemonMcpConfig {
     pub store: Arc<dyn StateModel>,
     pub memory_store: Option<Arc<dyn MemoryStore>>,
     pub debug_session_store: Option<Arc<dyn DebugSessionStore>>,
+    pub scope_ledger_store: Option<Arc<dyn ScopeLedgerStore>>,
     pub obs_tx: tokio::sync::mpsc::UnboundedSender<Observation>,
     pub chrome_tx: tokio::sync::mpsc::Sender<ChromeCommand>,
     pub chrome_state: tokio::sync::watch::Receiver<daemon8_chrome::ConnectionState>,
@@ -543,6 +548,7 @@ impl DaemonMcp {
             store: cfg.store,
             memory_store: cfg.memory_store,
             debug_session_store: cfg.debug_session_store,
+            scope_ledger_store: cfg.scope_ledger_store,
             active_state: ActiveSessionState::new(),
             obs_tx: cfg.obs_tx,
             chrome_tx: cfg.chrome_tx,
@@ -781,15 +787,27 @@ impl DaemonMcp {
         &self,
         Parameters(params): Parameters<Daemon8ConnectParams>,
     ) -> String {
+        let provider = params.provider;
+        let project_path = params.project_path;
+        let agent_name = params.agent_name;
+        let transcript_path = params.transcript_path;
         let outcome = connect_scope(ConnectRequest {
             session_id: self.session_id.clone(),
-            provider: params.provider,
-            project_path: PathBuf::from(params.project_path),
-            agent_name: params.agent_name,
-            transcript_path: params.transcript_path.map(PathBuf::from),
+            provider: provider.clone(),
+            project_path: PathBuf::from(&project_path),
+            agent_name: agent_name.clone(),
+            transcript_path: transcript_path.clone().map(PathBuf::from),
         });
 
         *self.connection.lock().expect("connection mutex poisoned") = outcome.connection.clone();
+        self.record_connect_outcome(
+            &provider,
+            &project_path,
+            agent_name.as_deref(),
+            transcript_path.as_deref(),
+            &outcome,
+        )
+        .await;
 
         outcome.envelope.render()
     }
@@ -802,6 +820,7 @@ impl DaemonMcp {
             name: params.name,
             overwrite: params.overwrite.unwrap_or(false),
         });
+        self.record_init_outcome(&outcome.envelope).await;
         outcome.envelope.render()
     }
 
@@ -824,6 +843,18 @@ impl DaemonMcp {
                         .expect("connection mutex poisoned")
                         .clone();
                     val["connection"] = serde_json::to_value(connection).unwrap_or_default();
+                    if let Some(ledger) = &self.scope_ledger_store {
+                        match ledger.scope_ledger_summary(5).await {
+                            Ok(summary) => {
+                                val["scope_ledger"] =
+                                    serde_json::to_value(summary).unwrap_or_default();
+                            }
+                            Err(err) => {
+                                tracing::warn!(error = %err, "scope ledger summary failed");
+                                val["scope_ledger_error"] = serde_json::json!(err.to_string());
+                            }
+                        }
+                    }
                     status_envelope(self.with_session_context(val)).render()
                 }
                 Err(e) => self.err("serialization_failed", &e.to_string(), None, None),
@@ -1503,6 +1534,83 @@ fn current_ns() -> u64 {
         .as_nanos() as u64
 }
 
+fn scope_session_record(
+    connection: &SessionConnection,
+    envelope: &AlphaEnvelope,
+    now: u64,
+) -> ScopeSessionRecord {
+    ScopeSessionRecord {
+        id: None,
+        session_id: connection.session_id.clone(),
+        provider: connection.provider.clone(),
+        agent_name: connection.agent_name.clone(),
+        mode: connection.mode.as_str().into(),
+        requested_path: connection.requested_path.clone(),
+        scope_root: connection.scope_root.clone(),
+        transcript_path: connection.transcript_path.clone(),
+        project_name: envelope_data_str(envelope, "project_name"),
+        source_count: envelope_data_u64(envelope, "source_count"),
+        connected_at: now,
+        last_seen_at: now,
+    }
+}
+
+fn scope_failure_record(
+    session_id: &str,
+    provider: &str,
+    requested_path: &str,
+    agent_name: Option<&str>,
+    transcript_path: Option<&str>,
+    envelope: &AlphaEnvelope,
+    now: u64,
+) -> ScopeConnectFailureRecord {
+    ScopeConnectFailureRecord {
+        id: None,
+        session_id: session_id.into(),
+        provider: provider.into(),
+        agent_name: agent_name.map(Into::into),
+        requested_path: requested_path.into(),
+        scope_root: envelope_data_str(envelope, "scope_root"),
+        transcript_path: transcript_path.map(Into::into),
+        mode: envelope_data_str(envelope, "mode")
+            .unwrap_or_else(|| ScopeMode::Invalid.as_str().into()),
+        status: alpha_status_str(envelope.status).into(),
+        code: envelope.code.clone(),
+        message: envelope.message.clone(),
+        why: envelope.why.clone(),
+        attempt_count: 1,
+        first_seen_at: now,
+        last_seen_at: now,
+    }
+}
+
+fn envelope_data_str(envelope: &AlphaEnvelope, key: &str) -> Option<String> {
+    envelope
+        .data
+        .as_ref()
+        .and_then(|data| data.get(key))
+        .and_then(|value| value.as_str())
+        .map(ToString::to_string)
+}
+
+fn envelope_data_u64(envelope: &AlphaEnvelope, key: &str) -> Option<u64> {
+    envelope
+        .data
+        .as_ref()
+        .and_then(|data| data.get(key))
+        .and_then(|value| value.as_u64())
+}
+
+fn alpha_status_str(status: AlphaStatus) -> &'static str {
+    match status {
+        AlphaStatus::Success => "success",
+        AlphaStatus::Error => "error",
+        AlphaStatus::ConnectRequired => "connect_required",
+        AlphaStatus::SetupRequired => "setup_required",
+        AlphaStatus::Blocked => "blocked",
+    }
+}
+
 impl DaemonMcp {
     pub(crate) fn ok(&self, value: serde_json::Value) -> String {
         AlphaEnvelope::success("ok", "ok", self.with_session_context(value)).render()
@@ -1583,6 +1691,80 @@ impl DaemonMcp {
         }
 
         data
+    }
+
+    async fn record_connect_outcome(
+        &self,
+        provider: &str,
+        requested_path: &str,
+        agent_name: Option<&str>,
+        transcript_path: Option<&str>,
+        outcome: &daemon8_core::control::ConnectOutcome,
+    ) {
+        let Some(ledger) = &self.scope_ledger_store else {
+            return;
+        };
+        let now = current_ns();
+
+        let result = match &outcome.connection {
+            Some(connection) => {
+                ledger
+                    .record_connect_success(scope_session_record(
+                        connection,
+                        &outcome.envelope,
+                        now,
+                    ))
+                    .await
+            }
+            None => {
+                ledger
+                    .record_connect_failure(scope_failure_record(
+                        &self.session_id,
+                        provider,
+                        requested_path,
+                        agent_name,
+                        transcript_path,
+                        &outcome.envelope,
+                        now,
+                    ))
+                    .await
+            }
+        };
+
+        if let Err(err) = result {
+            tracing::warn!(error = %err, "scope ledger connect recording failed");
+        }
+    }
+
+    async fn record_init_outcome(&self, envelope: &AlphaEnvelope) {
+        if envelope.status != AlphaStatus::Success {
+            return;
+        }
+        let Some(ledger) = &self.scope_ledger_store else {
+            return;
+        };
+        let Some(scope_root) = envelope_data_str(envelope, "scope_root") else {
+            return;
+        };
+        let now = current_ns();
+        let record = RecentScopeRecord {
+            id: None,
+            mode: envelope_data_str(envelope, "mode").unwrap_or_else(|| "project".into()),
+            requested_path: envelope_data_str(envelope, "requested_path")
+                .unwrap_or_else(|| scope_root.clone()),
+            scope_root,
+            provider: None,
+            agent_name: None,
+            session_id: Some(self.session_id.clone()),
+            project_name: envelope_data_str(envelope, "project_name"),
+            source_count: envelope_data_u64(envelope, "source_count"),
+            first_seen_at: now,
+            last_seen_at: now,
+        };
+
+        if let Err(err) = ledger.record_recent_scope(record).await {
+            tracing::warn!(error = %err, "scope ledger init recording failed");
+        }
     }
 
     fn has_connection(&self) -> bool {
@@ -2603,6 +2785,7 @@ mod logging_tests {
         let store = Arc::new(daemon8_store::SurrealStore::memory().await.unwrap());
         let memory_store: Arc<dyn MemoryStore> = Arc::new(store.memory_store());
         let debug_session_store: Arc<dyn DebugSessionStore> = Arc::new(store.debug_session_store());
+        let scope_ledger_store: Arc<dyn ScopeLedgerStore> = Arc::new(store.scope_ledger_store());
         let (obs_tx, _obs_rx) = tokio::sync::mpsc::unbounded_channel();
         let (chrome_tx, _chrome_rx) = tokio::sync::mpsc::channel(8);
         let (_, chrome_state) =
@@ -2613,6 +2796,7 @@ mod logging_tests {
             store: store.clone(),
             memory_store: Some(memory_store),
             debug_session_store: Some(debug_session_store),
+            scope_ledger_store: Some(scope_ledger_store),
             obs_tx,
             chrome_tx,
             chrome_state,
@@ -2889,6 +3073,8 @@ mod logging_tests {
         let shared_store = Arc::new(daemon8_store::SurrealStore::memory().await.unwrap());
         let shared_mem: Arc<dyn MemoryStore> = Arc::new(shared_store.memory_store());
         let shared_ds: Arc<dyn DebugSessionStore> = Arc::new(shared_store.debug_session_store());
+        let shared_scope_ledger: Arc<dyn ScopeLedgerStore> =
+            Arc::new(shared_store.scope_ledger_store());
 
         // Keep receivers alive so observations sent via write_to_live_feed
         // actually reach the store through the drain tasks.
@@ -2913,6 +3099,7 @@ mod logging_tests {
                 store: shared_store.clone(),
                 memory_store: Some(shared_mem.clone()),
                 debug_session_store: Some(shared_ds.clone()),
+                scope_ledger_store: Some(shared_scope_ledger.clone()),
                 obs_tx: shared_obs_tx.clone(),
                 chrome_tx,
                 chrome_state,

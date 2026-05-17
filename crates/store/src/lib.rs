@@ -7,6 +7,7 @@ pub mod error_hash;
 pub mod hash_cache;
 mod lens;
 pub mod memory;
+pub mod scope_ledger;
 mod surreal;
 
 pub use active_session::{ActiveDebugSession, ActiveSessionState};
@@ -14,6 +15,7 @@ pub use debug_session::SurrealDebugSessionStore;
 pub use hash_cache::ObservationHashCache;
 pub use lens::{LensManager, LensStatus};
 pub use memory::SurrealMemoryStore;
+pub use scope_ledger::SurrealScopeLedgerStore;
 pub use surreal::{ResetReport, SCHEMA_VERSION, SurrealStore};
 
 use daemon8_types::{
@@ -155,4 +157,87 @@ pub trait DebugSessionStore: Send + Sync {
         &self,
         debug_session_id: &str,
     ) -> Result<Vec<DebugCheckpoint>, StoreError>;
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScopeSessionRecord {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub session_id: String,
+    pub provider: String,
+    pub agent_name: String,
+    pub mode: String,
+    pub requested_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope_root: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transcript_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_count: Option<u64>,
+    pub connected_at: u64,
+    pub last_seen_at: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecentScopeRecord {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub mode: String,
+    pub requested_path: String,
+    pub scope_root: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_count: Option<u64>,
+    pub first_seen_at: u64,
+    pub last_seen_at: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScopeConnectFailureRecord {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub session_id: String,
+    pub provider: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_name: Option<String>,
+    pub requested_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope_root: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transcript_path: Option<String>,
+    pub mode: String,
+    pub status: String,
+    pub code: String,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+    pub attempt_count: u64,
+    pub first_seen_at: u64,
+    pub last_seen_at: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ScopeLedgerSummary {
+    pub recent_scopes: Vec<RecentScopeRecord>,
+    pub recent_failures: Vec<ScopeConnectFailureRecord>,
+}
+
+#[async_trait::async_trait]
+pub trait ScopeLedgerStore: Send + Sync {
+    async fn record_connect_success(&self, record: ScopeSessionRecord) -> Result<(), StoreError>;
+    async fn record_recent_scope(&self, record: RecentScopeRecord) -> Result<(), StoreError>;
+    async fn record_connect_failure(
+        &self,
+        record: ScopeConnectFailureRecord,
+    ) -> Result<(), StoreError>;
+    async fn scope_ledger_summary(&self, limit: usize) -> Result<ScopeLedgerSummary, StoreError>;
 }

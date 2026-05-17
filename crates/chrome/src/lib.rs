@@ -617,16 +617,16 @@ async fn monitor_browser(
         pump_client.run(event_tx, pump_cancel).await;
     });
 
-    // Initial target discovery via HTTP /json/list
+    // Initial target enumeration via HTTP /json/list
     discover_and_attach(&client, endpoint, &mut sessions, &mut target_to_session).await;
 
-    // Enable push-based target discovery so new tabs are detected immediately
+    // Enable push-based target detection so new tabs are detected immediately
     // instead of waiting for the fallback scan timer.
     if let Err(e) = client
         .send_command("Target.setDiscoverTargets", json!({"discover": true}), None)
         .await
     {
-        tracing::warn!("failed to enable target discovery: {e}");
+        tracing::warn!("failed to enable target detection: {e}");
     }
 
     // Auto-attach to child targets (workers, OOPIFs, popups) so their
