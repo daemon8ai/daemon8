@@ -747,8 +747,8 @@ fn build_slice_summary(observations: &[Observation]) -> SliceSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Memory, MemoryStore};
-    use daemon8_types::{MemoryKind, ObservationKind};
+    use crate::{DebugCheckpoint, DebugSession, DebugSessionStore, Memory, MemoryStore};
+    use daemon8_types::{DebugSessionStatus, MemoryKind, ObservationKind};
 
     fn make_obs(severity: Severity, ts: u64) -> Observation {
         Observation {
@@ -829,6 +829,57 @@ mod tests {
         let slice = store.query(&filter).await.unwrap();
         assert_eq!(slice.observations.len(), 1);
         assert_eq!(slice.observations[0].id, id2);
+    }
+
+    #[tokio::test]
+    async fn reset_clears_debug_checkpoints() {
+        let store = SurrealStore::memory().await.unwrap();
+        let debug_store = store.debug_session_store();
+        let session_id = debug_store
+            .start_debug_session(DebugSession {
+                id: None,
+                started_at: 1,
+                ended_at: None,
+                last_activity: 1,
+                project_slug: "daemon8".into(),
+                description: None,
+                status: DebugSessionStatus::Active,
+                outcome: None,
+                summary_memory_id: None,
+                agent_id: ":local/codex+test-agent>".into(),
+                feature: Some("reset".into()),
+            })
+            .await
+            .unwrap();
+        debug_store
+            .create_checkpoint(DebugCheckpoint {
+                id: None,
+                debug_session_id: session_id.clone(),
+                description: Some("before reset".into()),
+                created_at: 2,
+                seq_at_creation: 3,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            debug_store
+                .list_checkpoints(&session_id)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+
+        store.reset().await.unwrap();
+
+        assert!(
+            store
+                .debug_session_store()
+                .list_checkpoints(&session_id)
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]

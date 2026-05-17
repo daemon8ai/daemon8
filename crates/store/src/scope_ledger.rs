@@ -78,7 +78,7 @@ impl SurrealScopeLedgerStore {
                  DEFINE FIELD IF NOT EXISTS attempt_count   ON scope_connect_failure TYPE int;
                  DEFINE FIELD IF NOT EXISTS first_seen_at   ON scope_connect_failure TYPE int;
                  DEFINE FIELD IF NOT EXISTS last_seen_at    ON scope_connect_failure TYPE int;
-                 DEFINE INDEX IF NOT EXISTS idx_scope_failure_key ON scope_connect_failure FIELDS session_id, provider, requested_path, code UNIQUE;
+                 DEFINE INDEX IF NOT EXISTS idx_scope_failure_identity ON scope_connect_failure FIELDS provider, requested_path, code UNIQUE;
                  DEFINE INDEX IF NOT EXISTS idx_scope_failure_seen ON scope_connect_failure FIELDS last_seen_at;",
             )
             .await
@@ -171,6 +171,11 @@ impl ScopeLedgerStore for SurrealScopeLedgerStore {
             .await?
         {
             record.first_seen_at = existing.first_seen_at;
+            record.provider = record.provider.or(existing.provider);
+            record.agent_name = record.agent_name.or(existing.agent_name);
+            record.session_id = record.session_id.or(existing.session_id);
+            record.project_name = record.project_name.or(existing.project_name);
+            record.source_count = record.source_count.or(existing.source_count);
         }
         record.id = None;
         self.upsert_content("recent_scope", &key, &record).await
@@ -182,7 +187,6 @@ impl ScopeLedgerStore for SurrealScopeLedgerStore {
     ) -> Result<(), StoreError> {
         let key = ledger_key(&[
             "scope_connect_failure",
-            &record.session_id,
             &record.provider,
             &record.requested_path,
             &record.code,
@@ -383,6 +387,104 @@ mod tests {
         assert_eq!(summary.recent_failures[0].first_seen_at, 100);
         assert_eq!(summary.recent_failures[0].last_seen_at, 200);
         assert!(summary.recent_scopes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn repeated_failure_coalesces_across_sessions() {
+        let store = SurrealStore::memory().await.unwrap();
+        let ledger = store.scope_ledger_store();
+
+        ledger
+            .record_connect_failure(failure_record(100))
+            .await
+            .unwrap();
+
+        let mut second = failure_record(200);
+        second.session_id = "cli-2".into();
+        ledger.record_connect_failure(second).await.unwrap();
+
+        let summary = ledger.scope_ledger_summary(5).await.unwrap();
+        assert_eq!(summary.recent_failures.len(), 1);
+        assert_eq!(summary.recent_failures[0].session_id, "cli-2");
+        assert_eq!(summary.recent_failures[0].attempt_count, 2);
+        assert_eq!(summary.recent_failures[0].first_seen_at, 100);
+        assert_eq!(summary.recent_failures[0].last_seen_at, 200);
+    }
+
+    #[tokio::test]
+    async fn recent_scope_partial_update_preserves_connect_metadata() {
+        let store = SurrealStore::memory().await.unwrap();
+        let ledger = store.scope_ledger_store();
+        ledger
+            .record_connect_success(success_record(100))
+            .await
+            .unwrap();
+
+        ledger
+            .record_recent_scope(RecentScopeRecord {
+                id: None,
+                mode: "project".into(),
+                requested_path: "/tmp/project".into(),
+                scope_root: "/tmp/project".into(),
+                provider: None,
+                agent_name: None,
+                session_id: None,
+                project_name: None,
+                source_count: None,
+                first_seen_at: 200,
+                last_seen_at: 200,
+            })
+            .await
+            .unwrap();
+
+        let summary = ledger.scope_ledger_summary(5).await.unwrap();
+        assert_eq!(summary.recent_scopes.len(), 1);
+        assert_eq!(summary.recent_scopes[0].first_seen_at, 100);
+        assert_eq!(summary.recent_scopes[0].last_seen_at, 200);
+        assert_eq!(summary.recent_scopes[0].provider.as_deref(), Some("codex"));
+        assert_eq!(
+            summary.recent_scopes[0].agent_name.as_deref(),
+            Some("codex-agent")
+        );
+        assert_eq!(
+            summary.recent_scopes[0].session_id.as_deref(),
+            Some("mcp-1")
+        );
+        assert_eq!(
+            summary.recent_scopes[0].project_name.as_deref(),
+            Some("project")
+        );
+        assert_eq!(summary.recent_scopes[0].source_count, Some(2));
+    }
+
+    #[tokio::test]
+    async fn failure_pruning_keeps_bounded_recent_set() {
+        let store = SurrealStore::memory().await.unwrap();
+        let ledger = store.scope_ledger_store();
+
+        for idx in 0..205 {
+            let mut record = failure_record(idx);
+            record.requested_path = format!("/tmp/project/{idx}");
+            record.first_seen_at = idx;
+            record.last_seen_at = idx;
+            ledger.record_connect_failure(record).await.unwrap();
+        }
+
+        let mut result = ledger
+            .db
+            .query("SELECT count() AS total FROM scope_connect_failure GROUP ALL")
+            .await
+            .unwrap();
+        let row: Option<serde_json::Value> = result.take(0).unwrap();
+        assert_eq!(
+            row.and_then(|value| value.get("total").and_then(|total| total.as_u64())),
+            Some(MAX_FAILURE_RECORDS as u64)
+        );
+
+        let summary = ledger.scope_ledger_summary(5).await.unwrap();
+        assert_eq!(summary.recent_failures.len(), 5);
+        assert_eq!(summary.recent_failures[0].last_seen_at, 204);
+        assert_eq!(summary.recent_failures[4].last_seen_at, 200);
     }
 
     #[tokio::test]

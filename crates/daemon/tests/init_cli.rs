@@ -194,9 +194,56 @@ fn cli_status_json_uses_common_envelope() {
     assert_eq!(parsed["message"], "daemon status");
     assert!(parsed["data"]["config_path"].is_string());
     assert!(parsed["data"]["daemon_version"].is_string());
+    assert!(parsed["data"]["connection"].is_null());
+    assert_eq!(parsed["data"]["scope_authority"], "none");
     assert!(parsed.get("result").is_none());
     assert!(parsed.get("daemon8").is_none());
     assert!(parsed.get("error").is_none());
+}
+
+#[test]
+fn cli_status_json_uses_global_config_file() {
+    let (_tmp, work, home) = setup_dirs();
+    let config_path = home.join("daemon8.custom.toml");
+    let store_path = home.join("custom-store");
+    let screenshot_path = home.join("custom-screens");
+    std::fs::write(
+        &config_path,
+        format!(
+            "[server]\nport = 9777\n[storage]\npath = {:?}\nscreenshot_path = {:?}\n",
+            store_path.display().to_string(),
+            screenshot_path.display().to_string()
+        ),
+    )
+    .unwrap();
+
+    let out = run_daemon8_with_env(
+        &work,
+        &home,
+        &[],
+        &[
+            "--config",
+            config_path.to_str().unwrap(),
+            "status",
+            "--json",
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let parsed: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(parsed["data"]["port"], 9777);
+    assert_eq!(
+        parsed["data"]["config_path"],
+        config_path.display().to_string()
+    );
+    assert_eq!(
+        parsed["data"]["screenshot_dir"],
+        screenshot_path.display().to_string()
+    );
 }
 
 #[test]
@@ -465,14 +512,14 @@ fn cli_connect_missing_config_returns_setup_required_json() {
     );
     assert_eq!(
         parsed["data"]["scope_ledger"]["recent_failures"][0]["attempt_count"],
-        1
+        2
     );
     assert_eq!(
         parsed["data"]["scope_ledger"]["recent_failures"]
             .as_array()
             .unwrap()
             .len(),
-        2
+        1
     );
 }
 
@@ -517,6 +564,8 @@ fn cli_connect_after_init_returns_connected_json() {
         String::from_utf8_lossy(&status.stderr)
     );
     let parsed: Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert!(parsed["data"]["connection"].is_null());
+    assert_eq!(parsed["data"]["scope_authority"], "none");
     assert_eq!(
         parsed["data"]["scope_ledger"]["recent_scopes"][0]["scope_root"],
         work.canonicalize().unwrap().display().to_string()

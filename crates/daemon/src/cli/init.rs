@@ -99,7 +99,7 @@ async fn record_init_outcome(config_path: Option<&str>, envelope: &AlphaEnvelope
         return Ok(());
     };
 
-    let cfg = config::load(config_path).unwrap_or_default();
+    let cfg = config::load(config_path)?;
     let db_path = config::resolve_db_path(cfg.storage.path.as_deref());
     let store = SurrealStore::open(&db_path).await?;
     let ledger = store.scope_ledger_store();

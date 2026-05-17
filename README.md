@@ -97,7 +97,7 @@ Debug-session tools are available when debug-session storage is enabled:
 The standard debugging loop is:
 
 ```text
-start_debug_session -> create_checkpoint -> change/repro/test -> read_live_feed(since_checkpoint=...) -> resolve_debug_session
+daemon8_connect -> start_debug_session -> create_checkpoint -> change/repro/test -> read_live_feed(since_checkpoint=...) -> resolve_debug_session
 ```
 
 ## Response Shape

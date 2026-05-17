@@ -21,7 +21,7 @@ pub async fn cmd_connections(args: super::ClientArgs) -> Result<()> {
 
     #[derive(serde::Deserialize)]
     struct ConnectionsResponse {
-        #[serde(default, alias = "applications")]
+        #[serde(default)]
         connections: Vec<ConnectionInfo>,
     }
 

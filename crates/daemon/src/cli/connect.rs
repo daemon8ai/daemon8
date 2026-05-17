@@ -117,7 +117,7 @@ async fn record_connect_outcome(
     transcript_path: Option<&str>,
     outcome: &ConnectOutcome,
 ) -> Result<()> {
-    let cfg = config::load(config_path).unwrap_or_default();
+    let cfg = config::load(config_path)?;
     let db_path = config::resolve_db_path(cfg.storage.path.as_deref());
     let store = SurrealStore::open(&db_path).await?;
     let ledger = store.scope_ledger_store();
