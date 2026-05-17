@@ -266,6 +266,19 @@ fn cli_observe_and_lens_help_include_provenance_filters() {
             "missing --source-instance in {args:?}"
         );
     }
+
+    for args in [
+        ["query", "--help"].as_slice(),
+        ["tail", "--help"].as_slice(),
+    ] {
+        let out = run_daemon8(args);
+        assert!(out.status.success(), "command failed: {args:?}");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            stdout.contains("--project-path"),
+            "missing --project-path in {args:?}"
+        );
+    }
 }
 
 #[test]

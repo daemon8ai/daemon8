@@ -3,12 +3,13 @@
 
 use anyhow::{Context, Result};
 use comfy_table::{Cell, ContentArrangement, Table, presets::UTF8_FULL_CONDENSED};
+use daemon8_ingest::source_sync::SourceSyncReport;
 use daemon8_types::StateSlice;
 use std::path::PathBuf;
 
 use super::{
-    base_url, check_response, format_origin, format_timestamp, handle_reqwest_error, truncate,
-    urlenc,
+    base_url, check_response, encoded_project_path, format_origin, format_timestamp,
+    handle_reqwest_error, source_sync_failure_lines, source_sync_summary, truncate, urlenc,
 };
 
 #[derive(clap::Args)]
@@ -85,7 +86,7 @@ pub async fn cmd_query(args: QueryArgs) -> Result<()> {
     if let Some(ref project_path) = args.project_path {
         params.push(format!(
             "project_path={}",
-            urlenc(&project_path.display().to_string())
+            encoded_project_path(project_path)?
         ));
     }
     params.push(format!("limit={}", args.limit));
@@ -101,7 +102,7 @@ pub async fn cmd_query(args: QueryArgs) -> Result<()> {
         .map_err(|e| handle_reqwest_error(e, args.client.resolved_port()))?;
     let resp = check_response(resp).await?;
 
-    let slice: StateSlice = resp
+    let body: serde_json::Value = resp
         .json()
         .await
         .context("failed to parse query response")?;
@@ -109,10 +110,17 @@ pub async fn cmd_query(args: QueryArgs) -> Result<()> {
     if args.client.json {
         println!(
             "{}",
-            serde_json::to_string_pretty(&slice).unwrap_or_default()
+            serde_json::to_string_pretty(&body).unwrap_or_default()
         );
         return Ok(());
     }
+
+    let source_report = body
+        .get("triggered_ingestion")
+        .cloned()
+        .and_then(|value| serde_json::from_value::<SourceSyncReport>(value).ok());
+    let slice: StateSlice =
+        serde_json::from_value(body).context("failed to parse query response")?;
 
     let mut table = Table::new();
     table.load_preset(UTF8_FULL_CONDENSED);
@@ -143,6 +151,12 @@ pub async fn cmd_query(args: QueryArgs) -> Result<()> {
         slice.observations.len(),
         slice.checkpoint.0
     );
+    if let Some(report) = source_report {
+        println!("{}", source_sync_summary(&report));
+        for line in source_sync_failure_lines(&report) {
+            println!("{line}");
+        }
+    }
 
     Ok(())
 }

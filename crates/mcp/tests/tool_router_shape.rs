@@ -274,6 +274,39 @@ sources:
     .unwrap();
 }
 
+fn write_conversation_source_config(root: &std::path::Path, source_id: &str, path_name: &str) {
+    let daemon_dir = root.join(".daemon8");
+    std::fs::create_dir_all(&daemon_dir).unwrap();
+    std::fs::write(
+        daemon_dir.join("config.md"),
+        format!(
+            r#"---
+daemon8_schema: 1
+created_at: "2026-05-17T00:00:00Z"
+updated_at: "2026-05-17T00:00:00Z"
+project:
+  name: mcp-project
+  stack:
+    languages: [rust]
+    frameworks: [tokio]
+    tools: [cargo]
+vars:
+  PRJ_ROOT: "{}"
+sources:
+  - id: {source_id}
+    service: codex
+    kind: conversation
+    provider: codex
+    path: "$PRJ_ROOT/{path_name}"
+---
+# daemon8
+"#,
+            root.display()
+        ),
+    )
+    .unwrap();
+}
+
 fn tool_request(
     name: impl Into<Cow<'static, str>>,
     arguments: serde_json::Value,
@@ -668,10 +701,58 @@ async fn daemon8_connect_triggers_configured_file_source_ingestion() {
     assert_eq!(parsed["data"]["observations"][0]["source"], "cargo.check");
     assert_eq!(
         parsed["data"]["observations"][0]["source_instance"],
-        tmp.path().join("cargo.log").display().to_string()
+        std::fs::canonicalize(tmp.path().join("cargo.log"))
+            .unwrap()
+            .display()
+            .to_string()
     );
     let config_after = std::fs::read_to_string(tmp.path().join(".daemon8/config.md")).unwrap();
     assert_eq!(config_after, config_before);
+}
+
+#[tokio::test]
+async fn daemon8_connect_triggers_configured_conversation_source_ingestion() {
+    let mcp = make_mcp_with_writer().await;
+    let tmp = tempfile::tempdir().unwrap();
+    mark_project(tmp.path());
+    let sessions = tmp.path().join("sessions");
+    std::fs::create_dir_all(&sessions).unwrap();
+    std::fs::write(
+        sessions.join("one.jsonl"),
+        "{\"timestamp\":\"2026-01-01T00:00:00Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"hello\"}]}}\n",
+    )
+    .unwrap();
+    write_conversation_source_config(tmp.path(), "codex.sessions", "sessions");
+
+    let connect = mcp
+        .daemon8_connect_for_tests(Daemon8ConnectParams {
+            provider: "codex".into(),
+            project_path: tmp.path().display().to_string(),
+            agent_name: None,
+            transcript_path: None,
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&connect).unwrap();
+    assert_eq!(parsed["status"], "success");
+    assert_eq!(
+        parsed["data"]["triggered_ingestion"]["observations_written"],
+        1
+    );
+
+    let filtered = mcp
+        .read_live_feed_for_tests_with(ObserveParams {
+            source: Some(vec!["codex.sessions".into()]),
+            ..Default::default()
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&filtered).unwrap();
+    assert_eq!(parsed["status"], "success");
+    assert_eq!(parsed["data"]["observations"].as_array().unwrap().len(), 1);
+    assert_eq!(parsed["data"]["observations"][0]["service"], "codex");
+    assert_eq!(
+        parsed["data"]["observations"][0]["source"],
+        "codex.sessions"
+    );
 }
 
 #[tokio::test]
@@ -1077,6 +1158,50 @@ async fn create_checkpoint_refreshes_project_sources_before_sequence_capture() {
             .iter()
             .all(|obs| obs["id"].as_u64().unwrap() <= seq_at_creation)
     );
+}
+
+#[tokio::test]
+async fn create_checkpoint_blocks_when_source_refresh_fails() {
+    let mcp = make_mcp_with_debug().await;
+    let tmp = tempfile::tempdir().unwrap();
+    mark_project(tmp.path());
+    write_file_source_config(tmp.path(), "cargo.check", "missing.log");
+
+    let connected = mcp
+        .daemon8_connect_for_tests(Daemon8ConnectParams {
+            provider: "codex".into(),
+            project_path: tmp.path().display().to_string(),
+            agent_name: None,
+            transcript_path: None,
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&connected).unwrap();
+    assert_eq!(parsed["status"], "success");
+
+    let started = mcp
+        .start_debug_session_for_tests(StartDebugSessionParams {
+            project: Some("daemon8".into()),
+            description: Some("source checkpoint failure".into()),
+            agent_id: ":host/codex+worker>".into(),
+            feature: None,
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&started).unwrap();
+    assert_eq!(parsed["status"], "success");
+
+    let checkpoint = mcp
+        .create_checkpoint_for_tests(CreateCheckpointParams {
+            description: Some("blocked by missing source".into()),
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&checkpoint).unwrap();
+    assert_eq!(parsed["status"], "blocked");
+    assert_eq!(parsed["code"], "checkpoint_source_refresh_failed");
+    assert_eq!(
+        parsed["data"]["triggered_ingestion"]["failures"][0]["code"],
+        "read_failed"
+    );
+    assert!(parsed["data"].get("checkpoint_id").is_none());
 }
 
 #[tokio::test]

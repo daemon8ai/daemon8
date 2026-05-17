@@ -275,7 +275,7 @@ mod filesystem_layout_tests {
     use super::*;
 
     fn home() -> &'static Path {
-        Path::new("/tmp/daemon8-test-home")
+        Path::new("daemon8-test-home")
     }
 
     #[test]

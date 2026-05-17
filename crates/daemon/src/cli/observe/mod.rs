@@ -9,8 +9,11 @@ pub mod tail;
 pub use query::QueryArgs;
 pub use tail::TailArgs;
 
-use anyhow::Result;
+use std::path::Path;
+
+use anyhow::{Context, Result};
 use comfy_table::{Cell, ContentArrangement, Table, presets::UTF8_FULL_CONDENSED};
+use daemon8_ingest::source_sync::SourceSyncReport;
 use daemon8_types::{ConnectionInfo, ConnectionKind, Origin, Severity};
 
 #[derive(clap::Args, Clone, Debug)]
@@ -33,6 +36,13 @@ impl ClientArgs {
 
 pub fn base_url(port: u16) -> String {
     format!("http://127.0.0.1:{port}")
+}
+
+pub fn encoded_project_path(project_path: &Path) -> Result<String> {
+    let canonical = project_path
+        .canonicalize()
+        .with_context(|| format!("project path is not readable: {}", project_path.display()))?;
+    Ok(urlenc(&canonical.display().to_string()))
 }
 
 pub fn handle_reqwest_error(e: reqwest::Error, port: u16) -> anyhow::Error {
@@ -144,6 +154,34 @@ pub fn urlenc(s: &str) -> String {
         }
     }
     out
+}
+
+pub fn source_sync_summary(report: &SourceSyncReport) -> String {
+    format!(
+        "configured sources refreshed: {} written, {} deduped, {} cursor updates, {} failures",
+        report.observations_written,
+        report.observations_deduped,
+        report.cursors_updated,
+        report.failures.len()
+    )
+}
+
+pub fn source_sync_failure_lines(report: &SourceSyncReport) -> Vec<String> {
+    report
+        .failures
+        .iter()
+        .map(|failure| {
+            let instance = failure
+                .source_instance
+                .as_deref()
+                .map(|value| format!(" ({value})"))
+                .unwrap_or_default();
+            format!(
+                "source refresh failed: {}{} [{}] {}",
+                failure.source, instance, failure.code, failure.message
+            )
+        })
+        .collect()
 }
 
 /// Format a number with thousand separators (simple implementation).

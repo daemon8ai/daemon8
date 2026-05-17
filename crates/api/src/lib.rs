@@ -267,6 +267,9 @@ mod tests {
     };
     use daemon8_store::SurrealStore;
     use http_body_util::BodyExt;
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
     use tower::ServiceExt;
 
     struct DirectStoreWriter {
@@ -349,6 +352,35 @@ sources:
         (api_router(state), tmp)
     }
 
+    fn drain_sse_frames(buf: &mut String, frames: &mut Vec<(Option<String>, String)>) {
+        while let Some((idx, sep_len)) = sse_frame_end(buf) {
+            let frame = buf[..idx].to_string();
+            buf.drain(..idx + sep_len);
+            let mut event = None;
+            let mut data = String::new();
+            for line in frame.lines() {
+                let line = line.trim_end_matches('\r');
+                if let Some(rest) = line.strip_prefix("event:") {
+                    event = Some(rest.trim().to_string());
+                } else if let Some(rest) = line.strip_prefix("data:") {
+                    if !data.is_empty() {
+                        data.push('\n');
+                    }
+                    data.push_str(rest.strip_prefix(' ').unwrap_or(rest));
+                }
+            }
+            if !data.is_empty() {
+                frames.push((event, data));
+            }
+        }
+    }
+
+    fn sse_frame_end(buf: &str) -> Option<(usize, usize)> {
+        buf.find("\r\n\r\n")
+            .map(|idx| (idx, 4))
+            .or_else(|| buf.find("\n\n").map(|idx| (idx, 2)))
+    }
+
     #[tokio::test]
     async fn observe_triggers_sources_when_project_path_is_explicit() {
         let (app, tmp) = app_with_source_trigger().await;
@@ -390,6 +422,54 @@ sources:
             serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
         assert!(body.get("triggered_ingestion").is_none());
         assert_eq!(body["observations"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn stream_emits_triggered_ingestion_before_replay() {
+        let (app, tmp) = app_with_source_trigger().await;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let request = format!(
+            "GET /api/stream?project_path={}&source=cargo.check HTTP/1.1\r\nHost: {addr}\r\nAccept: text/event-stream\r\nLast-Event-ID: 0\r\n\r\n",
+            tmp.path().display()
+        );
+        stream.write_all(request.as_bytes()).await.unwrap();
+
+        let mut headers = String::new();
+        let mut body = String::new();
+        let mut frames = Vec::new();
+        let mut headers_seen = false;
+        let mut bytes = [0u8; 4096];
+        while frames.len() < 2 {
+            let read = tokio::time::timeout(Duration::from_secs(2), stream.read(&mut bytes))
+                .await
+                .expect("timed out waiting for SSE bytes")
+                .expect("failed to read SSE bytes");
+            assert!(read > 0, "SSE stream ended before expected frames");
+            let chunk = String::from_utf8_lossy(&bytes[..read]);
+            if headers_seen {
+                body.push_str(&chunk);
+            } else {
+                headers.push_str(&chunk);
+                if let Some(idx) = headers.find("\r\n\r\n") {
+                    assert!(headers.starts_with("HTTP/1.1 200"), "{headers}");
+                    body.push_str(&headers[idx + 4..]);
+                    headers_seen = true;
+                }
+            }
+            drain_sse_frames(&mut body, &mut frames);
+        }
+        server.abort();
+
+        assert_eq!(frames[0].0.as_deref(), Some("triggered_ingestion"));
+        let report: serde_json::Value = serde_json::from_str(&frames[0].1).unwrap();
+        assert_eq!(report["observations_written"], 1);
+        let obs: serde_json::Value = serde_json::from_str(&frames[1].1).unwrap();
+        assert_eq!(obs["source"], "cargo.check");
     }
 }
 

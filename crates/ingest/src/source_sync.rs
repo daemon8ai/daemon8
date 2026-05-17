@@ -2,6 +2,8 @@
 // Copyright (c) 2026 Havy.tech, LLC
 
 use std::collections::VecDeque;
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -10,8 +12,10 @@ use daemon8_core::project_config::{
     ConversationSource, FileSource, ProjectConfig, ProjectSource, parse_project_config_file,
     resolve_project_source_path,
 };
-use daemon8_parse::{ConversationEvent, ParsedLine, parse_conversation_line};
-use daemon8_store::{CursorState, CursorStore};
+use daemon8_parse::{
+    ConversationEvent, ParsedLine, parse_conversation_line, timestamp::normalize_timestamp_ns,
+};
+use daemon8_store::{CursorState, CursorStore, StoreError};
 use daemon8_types::{
     AppName, Observation, ObservationKind, Origin, SYSTEM_TAG, Severity, SourceLocation,
 };
@@ -112,7 +116,8 @@ impl ConfiguredSourceTrigger {
 #[async_trait]
 impl SourceTrigger for ConfiguredSourceTrigger {
     async fn trigger_sources(&self, request: SourceTriggerRequest) -> SourceSyncReport {
-        let config_path = request.scope_root.join(CONFIG_PATH);
+        let scope_root = canonical_source_path(&request.scope_root).unwrap_or(request.scope_root);
+        let config_path = scope_root.join(CONFIG_PATH);
         let config = match parse_project_config_file(&config_path) {
             Ok(config) => config,
             Err(err) => {
@@ -131,11 +136,10 @@ impl SourceTrigger for ConfiguredSourceTrigger {
         for source in &config.sources {
             let source_report = match source {
                 ProjectSource::File(file) => {
-                    self.ingest_file_source(&request.scope_root, &config, file)
-                        .await
+                    self.ingest_file_source(&scope_root, &config, file).await
                 }
                 ProjectSource::Conversation(conversation) => {
-                    self.ingest_conversation_source(&request.scope_root, &config, conversation)
+                    self.ingest_conversation_source(&scope_root, &config, conversation)
                         .await
                 }
             };
@@ -157,14 +161,14 @@ impl ConfiguredSourceTrigger {
             ..Default::default()
         };
         let project_source = ProjectSource::File(source.clone());
-        let path = match resolve_project_source_path(config, &project_source) {
+        let resolved_path = match resolve_project_source_path(config, &project_source) {
             Ok(path) => path,
             Err(err) => {
                 report.failure(&source.id, None, "invalid_source_path", err.to_string());
                 return report;
             }
         };
-        let source_instance = path.display().to_string();
+        let source_instance = resolved_path.display().to_string();
         report.instances_considered += 1;
 
         let parser = match daemon8_parse::resolve_parser_with_pattern(
@@ -183,10 +187,48 @@ impl ConfiguredSourceTrigger {
             }
         };
 
-        let window = match read_complete_window(
-            &path,
-            self.cursor_position(scope_root, &source.id, &path).await,
-        ) {
+        let path = match canonical_source_path(&resolved_path) {
+            Ok(path) => path,
+            Err(err) => {
+                report.failure(
+                    &source.id,
+                    Some(source_instance),
+                    "read_failed",
+                    err.to_string(),
+                );
+                return report;
+            }
+        };
+        let source_instance = path.display().to_string();
+        let fingerprint = match source_file_fingerprint(&path) {
+            Ok(fingerprint) => fingerprint,
+            Err(err) => {
+                report.failure(
+                    &source.id,
+                    Some(source_instance),
+                    "read_failed",
+                    err.to_string(),
+                );
+                return report;
+            }
+        };
+        let cursor_position = match self
+            .cursor_position(scope_root, &source.id, &path, &fingerprint)
+            .await
+        {
+            Ok(position) => position,
+            Err(err) => {
+                report.failure(
+                    &source.id,
+                    Some(source_instance),
+                    "cursor_lookup_failed",
+                    err.to_string(),
+                );
+                return report;
+            }
+        };
+
+        let window = match read_complete_window(&path, cursor_position) {
             Ok(window) => window,
             Err(err) => {
                 report.failure(
@@ -222,7 +264,13 @@ impl ConfiguredSourceTrigger {
         }
 
         if let Err(err) = self
-            .upsert_cursor(scope_root, &source.id, &path, window.next_position)
+            .upsert_cursor(
+                scope_root,
+                &source.id,
+                &path,
+                window.next_position,
+                &fingerprint,
+            )
             .await
         {
             report.failure(
@@ -258,10 +306,22 @@ impl ConfiguredSourceTrigger {
         }
 
         let project_source = ProjectSource::Conversation(source.clone());
-        let path = match resolve_project_source_path(config, &project_source) {
+        let resolved_path = match resolve_project_source_path(config, &project_source) {
             Ok(path) => path,
             Err(err) => {
                 report.failure(&source.id, None, "invalid_source_path", err.to_string());
+                return report;
+            }
+        };
+        let path = match canonical_source_path(&resolved_path) {
+            Ok(path) => path,
+            Err(err) => {
+                report.failure(
+                    &source.id,
+                    Some(resolved_path.display().to_string()),
+                    "read_failed",
+                    err.to_string(),
+                );
                 return report;
             }
         };
@@ -299,10 +359,35 @@ impl ConfiguredSourceTrigger {
         path: &Path,
     ) -> SourceSyncReport {
         let mut report = SourceSyncReport::default();
-        let window = match read_complete_window(
-            path,
-            self.cursor_position(scope_root, &source.id, path).await,
-        ) {
+        let fingerprint = match source_file_fingerprint(path) {
+            Ok(fingerprint) => fingerprint,
+            Err(err) => {
+                report.failure(
+                    &source.id,
+                    Some(path.display().to_string()),
+                    "read_failed",
+                    err.to_string(),
+                );
+                return report;
+            }
+        };
+        let cursor_position = match self
+            .cursor_position(scope_root, &source.id, path, &fingerprint)
+            .await
+        {
+            Ok(position) => position,
+            Err(err) => {
+                report.failure(
+                    &source.id,
+                    Some(path.display().to_string()),
+                    "cursor_lookup_failed",
+                    err.to_string(),
+                );
+                return report;
+            }
+        };
+
+        let window = match read_complete_window(path, cursor_position) {
             Ok(window) => window,
             Err(err) => {
                 report.failure(
@@ -337,7 +422,13 @@ impl ConfiguredSourceTrigger {
         }
 
         if let Err(err) = self
-            .upsert_cursor(scope_root, &source.id, path, window.next_position)
+            .upsert_cursor(
+                scope_root,
+                &source.id,
+                path,
+                window.next_position,
+                &fingerprint,
+            )
             .await
         {
             report.failure(
@@ -352,20 +443,20 @@ impl ConfiguredSourceTrigger {
         report
     }
 
-    async fn cursor_position(&self, scope_root: &Path, source: &str, path: &Path) -> Option<u64> {
+    async fn cursor_position(
+        &self,
+        scope_root: &Path,
+        source: &str,
+        path: &Path,
+        fingerprint: &SourceFileFingerprint,
+    ) -> Result<Option<u64>, StoreError> {
         let scope_root = scope_root.display().to_string();
         let source_instance = path.display().to_string();
-        match self
+        let cursor = self
             .cursors
             .get_cursor(&scope_root, source, &source_instance)
-            .await
-        {
-            Ok(cursor) => cursor.map(|cursor| cursor.position),
-            Err(err) => {
-                tracing::warn!(source, source_instance, error = %err, "cursor lookup failed");
-                None
-            }
-        }
+            .await?;
+        Ok(cursor.and_then(|cursor| valid_cursor_position(cursor, fingerprint)))
     }
 
     async fn upsert_cursor(
@@ -374,7 +465,8 @@ impl ConfiguredSourceTrigger {
         source: &str,
         path: &Path,
         position: u64,
-    ) -> Result<(), daemon8_store::StoreError> {
+        fingerprint: &SourceFileFingerprint,
+    ) -> Result<(), StoreError> {
         self.cursors
             .upsert_cursor(CursorState {
                 id: None,
@@ -385,6 +477,7 @@ impl ConfiguredSourceTrigger {
                 updated_at: current_ns(),
                 metadata: Some(json!({
                     "reader": "triggered",
+                    "file": fingerprint,
                     "max_lines": MAX_LINES_PER_TRIGGER,
                     "max_bytes": MAX_BYTES_PER_TRIGGER
                 })),
@@ -404,15 +497,17 @@ fn file_observation(source: &FileSource, path: &Path, parsed: ParsedLine) -> Obs
         .channel
         .map(|channel| ObservationKind::Custom { channel })
         .unwrap_or(ObservationKind::Log);
-    stamped_observation(
-        &source.service,
-        &source.id,
+    let source_timestamp = timestamp_from_data(&data);
+    stamped_observation(ObservationStamp {
+        service: &source.service,
+        source: &source.id,
         path,
-        source.tags.clone(),
+        tags: source.tags.clone(),
         kind,
         data,
-        parsed.severity.unwrap_or(Severity::Info),
-    )
+        severity: parsed.severity.unwrap_or(Severity::Info),
+        source_timestamp: source_timestamp.as_deref(),
+    })
 }
 
 fn conversation_observation(
@@ -560,26 +655,41 @@ fn conversation_observation(
         ),
     };
 
-    stamped_observation(
-        &source.service,
-        &source.id,
+    let source_timestamp = timestamp_from_data(&data);
+    stamped_observation(ObservationStamp {
+        service: &source.service,
+        source: &source.id,
         path,
-        source.tags.clone(),
+        tags: source.tags.clone(),
         kind,
         data,
-        Severity::Info,
-    )
+        severity: Severity::Info,
+        source_timestamp: source_timestamp.as_deref(),
+    })
 }
 
-fn stamped_observation(
-    service: &str,
-    source: &str,
-    path: &Path,
-    mut tags: Vec<String>,
+struct ObservationStamp<'a> {
+    service: &'a str,
+    source: &'a str,
+    path: &'a Path,
+    tags: Vec<String>,
     kind: ObservationKind,
     data: Value,
     severity: Severity,
-) -> Observation {
+    source_timestamp: Option<&'a str>,
+}
+
+fn stamped_observation(input: ObservationStamp<'_>) -> Observation {
+    let ObservationStamp {
+        service,
+        source,
+        path,
+        mut tags,
+        kind,
+        data,
+        severity,
+        source_timestamp,
+    } = input;
     tags.retain(|tag| tag != SYSTEM_TAG);
     let mut obs = Observation::new(
         Origin::Application {
@@ -594,6 +704,9 @@ fn stamped_observation(
             function: None,
         }),
     );
+    if let Some(timestamp_ns) = source_timestamp.and_then(parsed_timestamp_ns) {
+        obs.timestamp_ns = timestamp_ns;
+    }
     obs.service = Some(Arc::from(service));
     obs.source = Some(Arc::from(source));
     obs.source_instance = Some(Arc::from(path.display().to_string()));
@@ -601,6 +714,16 @@ fn stamped_observation(
         obs.tags = Some(tags);
     }
     obs
+}
+
+fn timestamp_from_data(data: &Value) -> Option<String> {
+    data.get("timestamp")
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+}
+
+fn parsed_timestamp_ns(raw: &str) -> Option<u64> {
+    normalize_timestamp_ns(raw).and_then(|ns| u64::try_from(ns).ok())
 }
 
 #[derive(Debug)]
@@ -614,9 +737,74 @@ struct CompleteLine {
     text: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct SourceFileFingerprint {
+    len: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    modified_ns: Option<u64>,
+    #[cfg(unix)]
+    dev: u64,
+    #[cfg(unix)]
+    ino: u64,
+}
+
+fn canonical_source_path(path: &Path) -> std::io::Result<PathBuf> {
+    std::fs::canonicalize(path)
+}
+
+fn source_file_fingerprint(path: &Path) -> std::io::Result<SourceFileFingerprint> {
+    let metadata = std::fs::metadata(path)?;
+    Ok(SourceFileFingerprint {
+        len: metadata.len(),
+        modified_ns: metadata.modified().ok().and_then(system_time_ns),
+        #[cfg(unix)]
+        dev: {
+            use std::os::unix::fs::MetadataExt;
+            metadata.dev()
+        },
+        #[cfg(unix)]
+        ino: {
+            use std::os::unix::fs::MetadataExt;
+            metadata.ino()
+        },
+    })
+}
+
+fn system_time_ns(time: std::time::SystemTime) -> Option<u64> {
+    time.duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|duration| duration.as_nanos() as u64)
+}
+
+fn valid_cursor_position(cursor: CursorState, fingerprint: &SourceFileFingerprint) -> Option<u64> {
+    if cursor.position > fingerprint.len {
+        return None;
+    }
+    let stored = cursor
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("file"))
+        .and_then(|value| serde_json::from_value::<SourceFileFingerprint>(value.clone()).ok())?;
+    if same_source_file(&stored, fingerprint) {
+        Some(cursor.position)
+    } else {
+        None
+    }
+}
+
+#[cfg(unix)]
+fn same_source_file(stored: &SourceFileFingerprint, current: &SourceFileFingerprint) -> bool {
+    stored.dev == current.dev && stored.ino == current.ino
+}
+
+#[cfg(not(unix))]
+fn same_source_file(stored: &SourceFileFingerprint, current: &SourceFileFingerprint) -> bool {
+    stored.modified_ns == current.modified_ns
+}
+
 fn read_complete_window(path: &Path, cursor_position: Option<u64>) -> std::io::Result<ReadWindow> {
-    let bytes = std::fs::read(path)?;
-    let file_len = bytes.len() as u64;
+    let mut file = File::open(path)?;
+    let file_len = file.metadata()?.len();
     let cursor_is_valid = cursor_position.is_some_and(|position| position <= file_len);
     let start = if cursor_is_valid {
         cursor_position.unwrap()
@@ -624,9 +812,11 @@ fn read_complete_window(path: &Path, cursor_position: Option<u64>) -> std::io::R
         file_len.saturating_sub(MAX_BYTES_PER_TRIGGER)
     };
     let end = (start + MAX_BYTES_PER_TRIGGER).min(file_len);
-    let window = &bytes[start as usize..end as usize];
+    file.seek(SeekFrom::Start(start))?;
+    let mut bytes = Vec::with_capacity((end - start) as usize);
+    file.take(end - start).read_to_end(&mut bytes)?;
     Ok(collect_complete_lines(
-        window,
+        &bytes,
         start,
         !cursor_is_valid && start > 0,
     ))
@@ -746,6 +936,31 @@ mod tests {
         }
     }
 
+    struct FailingCursorStore;
+
+    #[async_trait]
+    impl CursorStore for FailingCursorStore {
+        async fn upsert_cursor(&self, _cursor: CursorState) -> Result<(), StoreError> {
+            Ok(())
+        }
+
+        async fn get_cursor(
+            &self,
+            _scope_root: &str,
+            _source: &str,
+            _source_instance: &str,
+        ) -> Result<Option<CursorState>, StoreError> {
+            Err(StoreError::Other("cursor store offline".into()))
+        }
+
+        async fn list_cursors_for_scope(
+            &self,
+            _scope_root: &str,
+        ) -> Result<Vec<CursorState>, StoreError> {
+            Ok(Vec::new())
+        }
+    }
+
     fn config(root: &Path, source: &str) -> String {
         format!(
             r#"---
@@ -830,9 +1045,10 @@ sources:
         let observations = writer.observations();
         assert_eq!(observations[0].service.as_deref(), Some("app"));
         assert_eq!(observations[0].source.as_deref(), Some("app.logs"));
+        let canonical_log = std::fs::canonicalize(tmp.path().join("app.log")).unwrap();
         assert_eq!(
             observations[0].source_instance.as_deref(),
-            Some(tmp.path().join("app.log").display().to_string().as_str())
+            Some(canonical_log.display().to_string().as_str())
         );
         assert!(
             observations[0]
@@ -840,6 +1056,34 @@ sources:
                 .as_ref()
                 .unwrap()
                 .contains(&"runtime".into())
+        );
+    }
+
+    #[tokio::test]
+    async fn file_source_applies_parsed_timestamp() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("app.log"),
+            "{\"timestamp\":\"2026-01-01T00:00:00Z\",\"message\":\"boot\"}\n",
+        )
+        .unwrap();
+        write_config(
+            tmp.path(),
+            r#"  - id: app.logs
+    service: app
+    kind: file
+    parser: json
+    path: "$PRJ_ROOT/app.log"
+"#,
+        );
+        let writer = Arc::new(VecWriter::default());
+
+        let report = trigger(tmp.path(), writer.clone()).await;
+
+        assert_eq!(report.observations_written, 1);
+        assert_eq!(
+            writer.observations()[0].timestamp_ns,
+            1_767_225_600_000_000_000
         );
     }
 
@@ -918,6 +1162,61 @@ sources:
     }
 
     #[tokio::test]
+    async fn conversation_source_applies_event_timestamp() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sessions = tmp.path().join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::write(
+            sessions.join("one.jsonl"),
+            "{\"timestamp\":\"2026-01-01T00:00:00Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"hello\"}]}}\n",
+        )
+        .unwrap();
+        write_config(
+            tmp.path(),
+            r#"  - id: codex.sessions
+    service: codex
+    kind: conversation
+    provider: codex
+    path: "$PRJ_ROOT/sessions"
+"#,
+        );
+        let writer = Arc::new(VecWriter::default());
+
+        let report = trigger(tmp.path(), writer.clone()).await;
+
+        assert_eq!(report.observations_written, 1);
+        assert_eq!(
+            writer.observations()[0].timestamp_ns,
+            1_767_225_600_000_000_000
+        );
+    }
+
+    #[tokio::test]
+    async fn cursor_lookup_failure_reports_failure() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("app.log"), "first\n").unwrap();
+        write_config(
+            tmp.path(),
+            r#"  - id: app.logs
+    service: app
+    kind: file
+    path: "$PRJ_ROOT/app.log"
+"#,
+        );
+        let writer = Arc::new(VecWriter::default());
+        let trigger = ConfiguredSourceTrigger::new(Arc::new(FailingCursorStore), writer.clone());
+
+        let report = trigger
+            .trigger_sources(SourceTriggerRequest {
+                scope_root: tmp.path().to_path_buf(),
+            })
+            .await;
+
+        assert_eq!(report.failures[0].code, "cursor_lookup_failed");
+        assert!(writer.observations().is_empty());
+    }
+
+    #[tokio::test]
     async fn distinct_source_ids_share_file_with_distinct_cursors() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("shared.log"), "first\n").unwrap();
@@ -946,7 +1245,12 @@ sources:
         assert_eq!(report.observations_written, 2);
         let cursors = store
             .cursor_store()
-            .list_cursors_for_scope(&tmp.path().display().to_string())
+            .list_cursors_for_scope(
+                &std::fs::canonicalize(tmp.path())
+                    .unwrap()
+                    .display()
+                    .to_string(),
+            )
             .await
             .unwrap();
         assert_eq!(cursors.len(), 2);
@@ -983,6 +1287,93 @@ sources:
 
         assert_eq!(report.observations_written, 1);
         assert_eq!(writer.observations().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn lexical_path_variants_share_canonical_cursor() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("logs")).unwrap();
+        let log = tmp.path().join("app.log");
+        std::fs::write(&log, "first\n").unwrap();
+        let store = SurrealStore::memory().await.unwrap();
+        let writer = Arc::new(VecWriter::default());
+        let trigger = ConfiguredSourceTrigger::new(Arc::new(store.cursor_store()), writer.clone());
+
+        write_config(
+            tmp.path(),
+            r#"  - id: app.logs
+    service: app
+    kind: file
+    path: "$PRJ_ROOT/logs/../app.log"
+"#,
+        );
+        trigger
+            .trigger_sources(SourceTriggerRequest {
+                scope_root: tmp.path().to_path_buf(),
+            })
+            .await;
+
+        std::fs::write(&log, "first\nsecond\n").unwrap();
+        write_config(
+            tmp.path(),
+            r#"  - id: app.logs
+    service: app
+    kind: file
+    path: "$PRJ_ROOT/app.log"
+"#,
+        );
+        let report = trigger
+            .trigger_sources(SourceTriggerRequest {
+                scope_root: tmp.path().to_path_buf(),
+            })
+            .await;
+
+        assert_eq!(report.observations_written, 1);
+        let cursors = store
+            .cursor_store()
+            .list_cursors_for_scope(
+                &std::fs::canonicalize(tmp.path())
+                    .unwrap()
+                    .display()
+                    .to_string(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(cursors.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn replaced_larger_file_resets_cursor() {
+        let tmp = tempfile::tempdir().unwrap();
+        let log = tmp.path().join("app.log");
+        std::fs::write(&log, "first\n").unwrap();
+        write_config(
+            tmp.path(),
+            r#"  - id: app.logs
+    service: app
+    kind: file
+    path: "$PRJ_ROOT/app.log"
+"#,
+        );
+        let store = SurrealStore::memory().await.unwrap();
+        let writer = Arc::new(VecWriter::default());
+        let trigger = ConfiguredSourceTrigger::new(Arc::new(store.cursor_store()), writer.clone());
+
+        trigger
+            .trigger_sources(SourceTriggerRequest {
+                scope_root: tmp.path().to_path_buf(),
+            })
+            .await;
+        std::fs::remove_file(&log).unwrap();
+        std::fs::write(&log, "fresh\nnew\n").unwrap();
+        let report = trigger
+            .trigger_sources(SourceTriggerRequest {
+                scope_root: tmp.path().to_path_buf(),
+            })
+            .await;
+
+        assert_eq!(report.observations_written, 2);
+        assert_eq!(writer.observations().len(), 3);
     }
 
     #[tokio::test]
