@@ -4,6 +4,5 @@
 mod conversation_watcher;
 mod file_watcher;
 mod source_manager;
-mod sqlite_reader;
 
 pub use source_manager::SourceManager;

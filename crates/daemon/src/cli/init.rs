@@ -1,24 +1,18 @@
 // SPDX-License-Identifier: LicenseRef-FCL-1.0-ALv2
 // Copyright (c) 2026 Havy.tech, LLC
 
-//! `daemon8 init` -- scaffold `.daemon8.toml` at cwd and optionally
-//! bootstrap provider configs.
+//! `daemon8 init` -- scaffold `.daemon8/config.md` at cwd.
 
 use std::env;
-use std::io::IsTerminal;
 use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use crate::cli_config::PROJECT_CONFIG_FILENAME;
-use daemon8_providers::{
-    Provider, ProviderWriteSummary, dirs_home, is_non_interactive, parse_provider_list,
-    summarize_restarts, write_provider_config,
-};
+use crate::cli_config::{PROJECT_CONFIG_DIR, PROJECT_CONFIG_FILENAME};
 
 #[derive(clap::Args, Default)]
 pub struct InitArgs {
-    /// Overwrite an existing `.daemon8.toml` at this location
+    /// Overwrite an existing `.daemon8/config.md` at this location
     #[arg(long)]
     pub force: bool,
 
@@ -26,20 +20,15 @@ pub struct InitArgs {
     #[arg(long)]
     pub slug: Option<String>,
 
-    /// Accept defaults without prompting. Auto-enabled when stdin is not a TTY
-    /// or when the `CI` env var is set.
+    /// Accept defaults without prompting.
     #[arg(short = 'y', long, visible_alias = "no-interaction")]
     pub yes: bool,
-
-    /// Comma-separated providers to configure alongside project bootstrap.
-    /// Example: `claude-code,codex-cli`.
-    #[arg(long)]
-    pub providers: Option<String>,
 }
 
 pub fn cmd_init(args: InitArgs) -> Result<()> {
     let cwd = env::current_dir().context("cannot read current working directory")?;
-    let target = cwd.join(PROJECT_CONFIG_FILENAME);
+    let config_dir = cwd.join(PROJECT_CONFIG_DIR);
+    let target = config_dir.join(PROJECT_CONFIG_FILENAME);
 
     if target.exists() && !args.force {
         println!(
@@ -49,70 +38,22 @@ pub fn cmd_init(args: InitArgs) -> Result<()> {
         return Ok(());
     }
 
-    let non_interactive = args.yes || is_non_interactive() || !std::io::stdin().is_terminal();
     let slug = args.slug.clone().unwrap_or_else(|| derive_slug(&cwd));
-    let project_type = detect_project_type(&cwd);
-    let contents = render_template(&slug, project_type);
+    let stack = detect_stack(&cwd);
+    let root = cwd
+        .canonicalize()
+        .with_context(|| format!("failed to canonicalize {}", cwd.display()))?;
+    let contents = render_template(&slug, &root, &stack);
 
+    std::fs::create_dir_all(&config_dir)
+        .with_context(|| format!("failed to create {}", config_dir.display()))?;
     std::fs::write(&target, contents)
         .with_context(|| format!("failed to write {}", target.display()))?;
 
-    let mut summary = ProviderWriteSummary::default();
-
-    let port = crate::config::load(None).unwrap_or_default().server.port;
-    let mcp_url = format!("http://127.0.0.1:{port}/mcp");
-
-    for provider in resolve_providers(&args, non_interactive)? {
-        let config_path = provider.config_path(&dirs_home());
-        write_provider_config(
-            provider,
-            &config_path,
-            &mcp_url,
-            Some(&cwd),
-            &crate::cli_config::SERVICE,
-        )?;
-        summary.provider_files.push(config_path);
-        summary.note_restart(provider);
-    }
-
     println!("wrote {}", target.display());
     println!("slug: {slug}");
-    if !summary.provider_files.is_empty() {
-        println!();
-        println!("provider configs:");
-        for path in &summary.provider_files {
-            println!("  {}", path.display());
-        }
-    }
-    let restart_messages = summarize_restarts(&summary);
-    if !restart_messages.is_empty() {
-        println!();
-        println!("restart required:");
-        for message in restart_messages {
-            println!("  {message}");
-        }
-    }
 
     Ok(())
-}
-
-fn resolve_providers(args: &InitArgs, non_interactive: bool) -> Result<Vec<Provider>> {
-    if let Some(raw) = args.providers.as_deref() {
-        return parse_provider_list(raw);
-    }
-    if non_interactive {
-        return Ok(Vec::new());
-    }
-
-    let items: Vec<(Provider, &str, &str)> = daemon8_providers::ALL_PROVIDERS
-        .iter()
-        .map(|&p| (p, p.label(), p.as_provider().init_hint()))
-        .collect();
-
-    Ok(cliclack::multiselect("Select provider configs to write")
-        .required(false)
-        .items(&items)
-        .interact()?)
 }
 
 fn derive_slug(cwd: &Path) -> String {
@@ -122,88 +63,82 @@ fn derive_slug(cwd: &Path) -> String {
         .to_string()
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ProjectType {
-    Laravel,
-    Symfony,
-    Node,
-    Rust,
-    Generic,
-}
-
-fn detect_project_type(cwd: &Path) -> ProjectType {
+fn detect_stack(cwd: &Path) -> Vec<&'static str> {
+    let mut stack = Vec::new();
     if cwd.join("artisan").exists() {
-        ProjectType::Laravel
-    } else if cwd.join("bin/console").exists() {
-        ProjectType::Symfony
-    } else if cwd.join("package.json").exists() {
-        ProjectType::Node
-    } else if cwd.join("Cargo.toml").exists() {
-        ProjectType::Rust
-    } else {
-        ProjectType::Generic
+        stack.push("php");
+        stack.push("laravel");
     }
+    if cwd.join("bin/console").exists() {
+        stack.push("php");
+        stack.push("symfony");
+    }
+    if cwd.join("package.json").exists() {
+        stack.push("javascript");
+        stack.push("node");
+    }
+    if cwd.join("Cargo.toml").exists() {
+        stack.push("rust");
+        stack.push("cargo");
+    }
+    if stack.is_empty() {
+        stack.push("generic");
+    }
+    stack.sort_unstable();
+    stack.dedup();
+    stack
 }
 
-fn sources_example(project_type: ProjectType) -> &'static str {
-    match project_type {
-        ProjectType::Laravel => {
-            r#"
-# [sources.app-logs]
-# type = "file"
-# path = "storage/logs/laravel.log"
-# parser = "monolog"
-# tags = ["app"]
-"#
-        }
-        ProjectType::Symfony => {
-            r#"
-# [sources.app-logs]
-# type = "file"
-# path = "var/log/*.log"
-# parser = "monolog"
-# tags = ["app"]
-"#
-        }
-        ProjectType::Node => {
-            r#"
-# [sources.app-logs]
-# type = "file"
-# path = "logs/app.log"
-# parser = "json"
-# tags = ["app"]
-"#
-        }
-        ProjectType::Rust => {
-            r#"
-# [sources.app-logs]
-# type = "file"
-# path = "logs/app.log"
-# parser = "line"
-# tags = ["app"]
-"#
-        }
-        ProjectType::Generic => {
-            r#"
-# [sources.app-logs]
-# type = "file"
-# path = "logs/app.log"
-# parser = "line"
-# tags = ["app"]
-"#
-        }
-    }
+fn yaml_string(value: &str) -> String {
+    serde_json::to_string(value).expect("JSON string serialization cannot fail")
 }
 
-fn render_template(slug: &str, project_type: ProjectType) -> String {
-    let sources = sources_example(project_type);
+fn render_stack(stack: &[&str]) -> String {
+    stack
+        .iter()
+        .map(|item| format!("    - {}", yaml_string(item)))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn render_template(slug: &str, root: &Path, stack: &[&str]) -> String {
+    let root = root.display().to_string();
+    let stack = render_stack(stack);
     format!(
-        r##"# Daemon8 project configuration.
-# Runtime sources can be registered explicitly here or discovered with the librarian.
+        r##"---
+version: 1
+project:
+  slug: {slug}
+  root: {root}
+  stack:
+{stack}
+vars:
+  PRJ_ROOT: {root}
+sources: {{}}
+---
+# daemon8 project config
 
-[project]
-slug = "{slug}"
-{sources}"##
+This is the only project-local daemon8 file. The frontmatter is read by daemon8 and by the LLM in the session.
+
+Source entries are intentionally explicit. Use `kind: file` for logs/files and `kind: conversation` for provider transcripts. Keep `parser` separate from `kind`.
+
+```yaml
+# sources:
+#   app-logs:
+#     kind: file
+#     path: "$PRJ_ROOT/logs/app.log"
+#     parser: line
+#     tags: ["app"]
+#
+#   claude:
+#     kind: conversation
+#     provider: claude
+#     parser: line
+#     tags: ["conversation"]
+```
+"##,
+        slug = yaml_string(slug),
+        root = yaml_string(&root),
     )
 }
 
@@ -213,56 +148,42 @@ mod tests {
 
     #[test]
     fn template_includes_slug_without_role() {
-        let out = render_template("my-proj", ProjectType::Generic);
-        assert!(out.contains(r#"slug = "my-proj""#));
+        let root = std::path::Path::new("/tmp/my-proj");
+        let out = render_template("my-proj", root, &["generic"]);
+        assert!(out.contains(r#"slug: "my-proj""#));
+        assert!(out.contains(r#"PRJ_ROOT: "/tmp/my-proj""#));
         assert!(!out.contains("role_default"));
     }
 
     #[test]
-    fn template_laravel_sources_example() {
-        let out = render_template("my-app", ProjectType::Laravel);
-        assert!(out.contains("storage/logs/laravel.log"));
-        assert!(out.contains(r#"# parser = "monolog""#));
-    }
-
-    #[test]
-    fn template_symfony_sources_example() {
-        let out = render_template("my-app", ProjectType::Symfony);
-        assert!(out.contains("var/log/*.log"));
-        assert!(out.contains(r#"# parser = "monolog""#));
-    }
-
-    #[test]
-    fn template_node_sources_example() {
-        let out = render_template("my-app", ProjectType::Node);
+    fn template_uses_alpha_source_vocabulary() {
+        let root = std::path::Path::new("/tmp/my-app");
+        let out = render_template("my-app", root, &["cargo", "rust"]);
+        assert!(out.contains("kind: file"));
+        assert!(out.contains("kind: conversation"));
         assert!(out.contains("logs/app.log"));
-        assert!(out.contains(r#"# parser = "json""#));
+        assert!(out.contains("parser: line"));
+        assert!(!out.contains("type ="));
     }
 
     #[test]
-    fn template_rust_sources_example() {
-        let out = render_template("my-app", ProjectType::Rust);
-        assert!(out.contains("logs/app.log"));
-        assert!(out.contains(r#"# parser = "line""#));
-    }
-
-    #[test]
-    fn detect_project_type_defaults_to_generic() {
+    fn detect_stack_defaults_to_generic() {
         let tmp = std::env::temp_dir().join("daemon8-test-empty");
         let _ = std::fs::create_dir_all(&tmp);
-        assert_eq!(detect_project_type(&tmp), ProjectType::Generic);
+        assert_eq!(detect_stack(&tmp), vec!["generic"]);
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn detect_stack_identifies_rust_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
+        assert_eq!(detect_stack(tmp.path()), vec!["cargo", "rust"]);
     }
 
     #[test]
     fn derive_slug_uses_basename() {
         let p = std::path::PathBuf::from("/tmp/foo/bar");
         assert_eq!(derive_slug(&p), "bar");
-    }
-
-    #[test]
-    fn provider_list_parser_accepts_codex() {
-        let providers = parse_provider_list("claude-code,codex-cli").unwrap();
-        assert_eq!(providers, vec![Provider::ClaudeCode, Provider::Codex]);
     }
 }

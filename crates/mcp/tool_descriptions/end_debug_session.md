@@ -24,4 +24,4 @@ A debug session must be active. Call start_debug_session first if not.
 
 ## Next
 
-Call `awareness_sync` if unresolved blockers/questions should survive the handoff. Then start_debug_session for a fresh investigation, or list_debug_sessions to review past sessions.
+Start a fresh debug session for the next investigation, or call list_debug_sessions to review recent sessions.

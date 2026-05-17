@@ -7,9 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use daemon8_store::{
-    ActiveSessionState, DebugSessionStore, LensManager, MemoryStore, StateModel,
-};
+use daemon8_store::{ActiveSessionState, DebugSessionStore, LensManager, MemoryStore, StateModel};
 use daemon8_types::{Checkpoint, DevicePlatform, Filter, Observation, SourceActivator};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
@@ -59,7 +57,7 @@ pub enum ChromeCommand {
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct ObserveParams {
     #[schemars(
-        description = "Filter by observation kind: log, query, http_exchange, exception, js_exception, lifecycle, state_snapshot, metric, custom, tool_call. Browser console output is 'log', browser JS errors are 'js_exception', page load events are 'lifecycle', network requests are 'http_exchange'. Observations with kind=custom and channel='discovery_hint' are project-onboarding hints; see librarian_index for the response shape expected."
+        description = "Filter by observation kind: log, query, http_exchange, exception, js_exception, lifecycle, state_snapshot, metric, custom, tool_call. Browser console output is 'log', browser JS errors are 'js_exception', page load events are 'lifecycle', and network requests are 'http_exchange'."
     )]
     pub kinds: Option<Vec<String>>,
 
@@ -368,11 +366,10 @@ pub struct ForgetMemoryParams {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct HelpParams {
     #[schemars(
-        description = "Help topic: index, awareness, debug_session, checkpoint, setup, lens, observations, envelope, librarian. Omit for index."
+        description = "Help topic: index, debug_session, checkpoint, setup, lens, observations, envelope. Omit for index."
     )]
     pub topic: Option<String>,
 }
-
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CreateCheckpointParams {
@@ -432,56 +429,6 @@ pub struct ListDebugSessionsParams {
     pub feature: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize, JsonSchema)]
-pub struct SetupToolAction {
-    #[schemars(description = "Setup action: status or apply.")]
-    pub action: String,
-    #[schemars(
-        description = "Project working directory for provider config context. Omit only when provider setup is global."
-    )]
-    pub cwd: Option<String>,
-    #[schemars(description = "Required to confirm mutating setup_apply.")]
-    pub yes: Option<bool>,
-    #[schemars(
-        description = "Comma-separated providers to configure (e.g. \"claude-code,gemini,codex\"). Omit for auto-detection."
-    )]
-    pub providers: Option<String>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct SetupStatusParams {
-    #[schemars(
-        description = "Project working directory for provider config context. Omit only when provider setup is global."
-    )]
-    pub cwd: Option<String>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct SetupPlanParams {
-    #[schemars(
-        description = "Project working directory for provider config context. Omit only when provider setup is global."
-    )]
-    pub cwd: Option<String>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct SetupApplyParams {
-    #[schemars(
-        description = "Project working directory for provider config context. Omit only when provider setup is global."
-    )]
-    pub cwd: Option<String>,
-    #[schemars(description = "Required to confirm setup_apply writes.")]
-    pub yes: bool,
-    #[schemars(
-        description = "Comma-separated providers to configure (e.g. \"claude-code,gemini,codex\"). Omit for auto-detection."
-    )]
-    pub providers: Option<String>,
-}
-
-
-pub type SetupToolFn =
-    Arc<dyn Fn(SetupToolAction) -> Pin<Box<dyn Future<Output = String> + Send>> + Send + Sync>;
-
 pub struct DaemonMcp {
     store: Arc<dyn StateModel>,
     memory_store: Option<Arc<dyn MemoryStore>>,
@@ -497,7 +444,6 @@ pub struct DaemonMcp {
     subscription_tx: tokio::sync::watch::Sender<Option<Filter>>,
     broadcast_tx: broadcast::Sender<(Arc<Observation>, Arc<str>)>,
     lens: Arc<LensManager>,
-    setup_tool_fn: Option<SetupToolFn>,
     source_activator: Option<Arc<dyn SourceActivator>>,
     cancel: tokio_util::sync::CancellationToken,
     enabled_features: Vec<FeatureGate>,
@@ -516,7 +462,6 @@ pub struct DaemonMcpConfig {
     pub screenshot_dir: std::path::PathBuf,
     pub broadcast_tx: broadcast::Sender<(Arc<Observation>, Arc<str>)>,
     pub lens: Arc<LensManager>,
-    pub setup_tool_fn: Option<SetupToolFn>,
     pub source_activator: Option<Arc<dyn SourceActivator>>,
     pub cancel: tokio_util::sync::CancellationToken,
 }
@@ -530,15 +475,9 @@ impl DaemonMcp {
         if cfg.debug_session_store.is_some() && cfg.memory_store.is_some() {
             router += Self::debug_session_tool_router();
         }
-        if cfg.setup_tool_fn.is_some() {
-            router += Self::setup_tool_router();
-        }
         let mut enabled_features = Vec::new();
         if cfg.debug_session_store.is_some() && cfg.memory_store.is_some() {
             enabled_features.push(FeatureGate::DebugSession);
-        }
-        if cfg.setup_tool_fn.is_some() {
-            enabled_features.push(FeatureGate::Setup);
         }
         let (subscription_tx, _) = tokio::sync::watch::channel::<Option<Filter>>(None);
         Self {
@@ -556,7 +495,6 @@ impl DaemonMcp {
             subscription_tx,
             broadcast_tx: cfg.broadcast_tx,
             lens: cfg.lens,
-            setup_tool_fn: cfg.setup_tool_fn,
             source_activator: cfg.source_activator,
             cancel: cfg.cancel,
             enabled_features,
@@ -587,7 +525,6 @@ impl DaemonMcp {
         self.cancel.child_token()
     }
 
-
     #[cfg(feature = "test-util")]
     pub async fn read_live_feed_for_tests(&self) -> String {
         self.read_live_feed(Parameters(ObserveParams::default()))
@@ -605,7 +542,7 @@ impl DaemonMcp {
             Some(t) => (t.name.to_string(), t.body.to_string()),
             None => (
                 "index".to_string(),
-                help::build_dynamic_index(&self.enabled_features, self.librarian_store.is_some()),
+                help::build_dynamic_index(&self.enabled_features),
             ),
         }
     }
@@ -733,7 +670,7 @@ impl DaemonMcp {
                     return self.ok_with(
                         result,
                         vec!["read_live_feed", "resolve_debug_session"],
-                        Some("runtime signal found; raw observations are signal refs only, so promote awareness from the interpreted conclusion, not the log rows"),
+                        Some("runtime signal found; interpret the live-feed entries before recording any durable conclusion"),
                     );
                 }
 
@@ -742,7 +679,6 @@ impl DaemonMcp {
             Err(e) => self.err("query_failed", &e.to_string(), None, None),
         }
     }
-
 
     #[doc = include_str!("../tool_descriptions/status.md")]
     #[tool(name = "status")]
@@ -764,12 +700,6 @@ impl DaemonMcp {
         }
     }
 
-
-
-
-
-
-
     #[tool(
         name = "daemon8_help",
         description = "Narrative documentation for daemon8 protocols. Pass topic='index' (or omit) for the topic list. Returns markdown."
@@ -777,13 +707,13 @@ impl DaemonMcp {
     async fn daemon8_help(&self, Parameters(params): Parameters<HelpParams>) -> String {
         let topic = params.topic.as_deref().unwrap_or("index");
         if topic == "index" {
-            let body = help::build_dynamic_index(&self.enabled_features, false);
+            let body = help::build_dynamic_index(&self.enabled_features);
             return self.ok(serde_json::json!({ "topic": "index", "body": body }));
         }
         match help::find_topic(topic, &self.enabled_features) {
             Some(t) => self.ok(serde_json::json!({ "topic": t.name, "body": t.body })),
             None => {
-                let body = help::build_dynamic_index(&self.enabled_features, false);
+                let body = help::build_dynamic_index(&self.enabled_features);
                 self.ok(serde_json::json!({ "topic": "index", "body": body }))
             }
         }
@@ -936,10 +866,7 @@ impl DaemonMcp {
 
     #[doc = include_str!("../tool_descriptions/watch_live_feed.md")]
     #[tool(name = "watch_live_feed")]
-    async fn watch_live_feed(
-        &self,
-        Parameters(params): Parameters<SubscribeParams>,
-    ) -> String {
+    async fn watch_live_feed(&self, Parameters(params): Parameters<SubscribeParams>) -> String {
         let kinds = params.kinds.map(Filter::kinds_from_vec);
 
         let severity_min = params.severity_min.and_then(|s| Filter::parse_severity(&s));
@@ -1071,9 +998,8 @@ fn wrap_inner_result(daemon: &DaemonMcp, raw: &str) -> String {
     }
 }
 
-// MVP-12-A1: confirmation gate parallel to setup_apply's `yes=true` requirement.
-// Without this, an MCP client that misroutes a delete intent (or hallucinates a
-// memory id) silently destroys data. The gate forces an explicit boolean.
+// Without this, an MCP client that misroutes a delete intent silently destroys
+// data. The gate forces an explicit boolean before deletion.
 #[cfg(test)]
 fn check_forget_memory_confirm(confirm: Option<bool>) -> Result<(), String> {
     match confirm {
@@ -1126,8 +1052,8 @@ impl DaemonMcp {
                 return self.err(
                     "debug_session_unavailable",
                     "debug_session store not available",
-                    Some("ensure setup_apply has run"),
-                    Some("setup_apply"),
+                    Some("start the daemon with debug session storage enabled"),
+                    None,
                 );
             }
         };
@@ -1179,8 +1105,8 @@ impl DaemonMcp {
                         "debug_session_id": id,
                         "started_at": now,
                     }),
-                    vec!["awareness_status"],
-                    Some("debug session opened; check source/context/reasoning awareness first, then capture objectives or open questions only if durable state changed"),
+                    vec!["create_checkpoint"],
+                    Some("debug session opened; create a checkpoint before the action you want to verify"),
                 )
             }
             Err(e) => self.err("start_debug_session_failed", &e.to_string(), None, None),
@@ -1223,8 +1149,8 @@ impl DaemonMcp {
                 return self.err(
                     "debug_session_unavailable",
                     "debug_session store not available",
-                    Some("ensure setup_apply has run"),
-                    Some("setup_apply"),
+                    Some("start the daemon with debug session storage enabled"),
+                    None,
                 );
             }
         };
@@ -1451,9 +1377,8 @@ fn current_ns() -> u64 {
 impl DaemonMcp {
     /// Build the per-tool-call meta block. Currently echoes the active debug
     /// session so the LLM sees its lifecycle context on every response.
-    /// Setup-status surfacing lands in v0.4 once the synchronous probe is
-    /// wired across crate boundaries; until then `setup_status` remains the
-    /// explicit tool for setup state.
+    /// Alpha connect/status surfacing lands with the connect-first control
+    /// flow. Until then this meta block only echoes active debug lifecycle.
     pub(crate) fn current_meta(&self) -> DaemonMeta {
         let mut meta = DaemonMeta::default();
         if let Some(s) = self.active_state.current_session() {
@@ -1505,63 +1430,8 @@ impl DaemonMcp {
     }
 }
 
-#[tool_router(router = setup_tool_router, vis = "pub")]
-impl DaemonMcp {
-    #[doc = include_str!("../tool_descriptions/setup_status.md")]
-    #[tool(name = "setup_status")]
-    async fn setup_status(&self, Parameters(params): Parameters<SetupStatusParams>) -> String {
-        let inner = self
-            .call_setup_tool(SetupToolAction {
-                action: "status".into(),
-                cwd: params.cwd,
-                yes: None,
-                providers: None,
-            })
-            .await;
-        wrap_inner_result(self, &inner)
-    }
-
-    #[doc = include_str!("../tool_descriptions/setup_plan.md")]
-    #[tool(name = "setup_plan")]
-    async fn setup_plan(&self, Parameters(params): Parameters<SetupPlanParams>) -> String {
-        let inner = self
-            .call_setup_tool(SetupToolAction {
-                action: "status".into(),
-                cwd: params.cwd,
-                yes: None,
-                providers: None,
-            })
-            .await;
-        wrap_inner_result(self, &inner)
-    }
-
-    #[doc = include_str!("../tool_descriptions/setup_apply.md")]
-    #[tool(name = "setup_apply")]
-    async fn setup_apply(&self, Parameters(params): Parameters<SetupApplyParams>) -> String {
-        let inner = self
-            .call_setup_tool(SetupToolAction {
-                action: "apply".into(),
-                cwd: params.cwd,
-                yes: Some(params.yes),
-                providers: params.providers,
-            })
-            .await;
-        wrap_inner_result(self, &inner)
-    }
-
-}
-
-
-
 // Command handler implementations (inner methods, not registered with tool_router).
 impl DaemonMcp {
-    async fn call_setup_tool(&self, action: SetupToolAction) -> String {
-        match &self.setup_tool_fn {
-            Some(f) => f(action).await,
-            None => error_json("setup tools not available"),
-        }
-    }
-
     async fn connect_browser_inner(&self, params: ConnectParams) -> String {
         let endpoint = params.endpoint.clone();
         *self
@@ -2072,7 +1942,6 @@ fn error_json(msg: &str) -> String {
     )
 }
 
-
 impl DaemonMcp {
     /// Returns the connection-state JSON with full state including browser.
     pub async fn connections_json(&self) -> String {
@@ -2345,8 +2214,6 @@ pub async fn query_memory_inner(mem_store: &dyn MemoryStore, params: QueryMemory
     }
 }
 
-
-
 fn logging_notification(obs: &Observation) -> rmcp::model::LoggingMessageNotificationParam {
     let severity_str = obs.severity.to_string();
     let kind_str = obs.kind.tag().to_string();
@@ -2455,15 +2322,10 @@ mod logging_tests {
             screenshot_dir: std::env::temp_dir().join("daemon8-test"),
             broadcast_tx,
             lens,
-            setup_tool_fn: None,
             source_activator: None,
             cancel: tokio_util::sync::CancellationToken::new(),
         })
     }
-
-
-
-
 
     #[tokio::test]
     async fn debug_session_lifecycle_resolved_writes_rich_summary() {
@@ -2764,7 +2626,6 @@ mod logging_tests {
                 screenshot_dir: std::env::temp_dir().join("daemon8-test"),
                 broadcast_tx,
                 lens,
-                setup_tool_fn: None,
                 source_activator: None,
                 cancel: tokio_util::sync::CancellationToken::new(),
             })

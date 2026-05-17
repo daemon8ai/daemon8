@@ -4,7 +4,6 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FeatureGate {
     DebugSession,
-    Setup,
 }
 
 pub struct HelpTopic {
@@ -45,15 +44,9 @@ pub static ALL_HELP_TOPICS: &[HelpTopic] = &[
         body: include_str!("../tool_descriptions/help/debug_session.md"),
         requires: Some(FeatureGate::DebugSession),
     },
-    HelpTopic {
-        name: "setup",
-        one_liner: "first-time configuration and provider MCP registration",
-        body: include_str!("../tool_descriptions/help/setup.md"),
-        requires: Some(FeatureGate::Setup),
-    },
 ];
 
-pub fn build_dynamic_index(enabled: &[FeatureGate], _librarian_enabled: bool) -> String {
+pub fn build_dynamic_index(enabled: &[FeatureGate]) -> String {
     use std::fmt::Write;
 
     let mut out = String::with_capacity(1024);

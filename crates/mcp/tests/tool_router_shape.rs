@@ -8,7 +8,7 @@ use daemon8_mcp::{DaemonMcp, DaemonMcpConfig};
 use daemon8_types::Filter;
 use tokio_util::sync::CancellationToken;
 
-const EXPECTED_TOOLS: [&str; 15] = [
+const EXPECTED_TOOLS: [&str; 12] = [
     "read_live_feed",
     "status",
     "create_checkpoint",
@@ -20,9 +20,6 @@ const EXPECTED_TOOLS: [&str; 15] = [
     "set_lens",
     "clear_lens",
     "lens_status",
-    "setup_status",
-    "setup_plan",
-    "setup_apply",
     "daemon8_help",
 ];
 
@@ -62,15 +59,6 @@ async fn make_mcp_with_cancel(cancel: CancellationToken) -> DaemonMcp {
         screenshot_dir: std::env::temp_dir().join("daemon8-test-screenshots"),
         broadcast_tx,
         lens,
-        setup_tool_fn: Some(Arc::new(|action| {
-            Box::pin(async move {
-                serde_json::to_string(&serde_json::json!({
-                    "action": action.action,
-                    "ok": true
-                }))
-                .unwrap()
-            })
-        })),
         source_activator: None,
         cancel,
     })
@@ -80,10 +68,8 @@ use daemon8_store::SurrealStore;
 
 #[test]
 fn composed_router_has_full_tool_surface() {
-    let router = DaemonMcp::tool_router()
-        + DaemonMcp::action_tool_router()
-        + DaemonMcp::lens_tool_router()
-        + DaemonMcp::setup_tool_router();
+    let router =
+        DaemonMcp::tool_router() + DaemonMcp::action_tool_router() + DaemonMcp::lens_tool_router();
     let names = tool_names(&router);
 
     assert_eq!(
@@ -243,38 +229,10 @@ async fn subscription_filters_are_per_session() {
     assert_eq!(b.severity_min, Some(Severity::Error));
 }
 
-async fn make_mcp_minimal() -> DaemonMcp {
-    let store = Arc::new(SurrealStore::memory().await.unwrap());
-    let (obs_tx, _) = tokio::sync::mpsc::unbounded_channel();
-    let (chrome_tx, _) = tokio::sync::mpsc::channel(16);
-    let (_, chrome_state_rx) = tokio::sync::watch::channel(ConnectionState::Disconnected);
-    let (broadcast_tx, _) = tokio::sync::broadcast::channel(16);
-    let lens = Arc::new(daemon8_store::LensManager::new(
-        broadcast_tx.subscribe(),
-        None,
-    ));
-    DaemonMcp::new(DaemonMcpConfig {
-        store,
-        memory_store: None,
-        debug_session_store: None,
-        obs_tx,
-        chrome_tx,
-        chrome_state: chrome_state_rx,
-        chrome_endpoint: Arc::new(std::sync::Mutex::new(None)),
-        device_screenshot_fn: None,
-        screenshot_dir: std::env::temp_dir().join("daemon8-test-screenshots"),
-        broadcast_tx,
-        lens,
-        setup_tool_fn: None,
-        source_activator: None,
-        cancel: CancellationToken::new(),
-    })
-}
-
 #[tokio::test]
 async fn help_index_includes_core_topics() {
     let mcp = make_mcp().await;
-    let index = mcp.help_index_body();
+    let index = mcp.help_topic_body("index").1;
     assert!(
         index.contains("observations"),
         "index must always contain observations"

@@ -21,9 +21,6 @@ Tool selection:
 - Buffer matches between queries: `set_lens` (matching rows surface automatically in the next `read_live_feed`). `lens_status` inspects depth; `clear_lens` removes.
 - Bookmark a moment: `create_checkpoint`. Then make a change. Then `read_live_feed` with `since_checkpoint`.
 
-Setup:
-- `setup_status` reports current setup. `setup_plan` previews changes. `setup_apply` writes them (requires `yes: true`).
-
 Browser connection is automatic. The daemon discovers, launches, and reconnects without intervention. Browser actions may time out during a transient disconnect — retry.
 
 Real-time alerts: observations at severity warn or error are pushed into the session as they arrive. No polling needed for critical events.

@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: LicenseRef-FCL-1.0-ALv2
 // Copyright (c) 2026 Havy.tech, LLC
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::Result;
 use clap::Args;
-use daemon8_mcp::SetupToolAction;
 use serde::Serialize;
 
 use daemon8_providers::{DetectedProvider, detect_ai_tools, dirs_home, write_provider_config};
@@ -48,31 +47,6 @@ pub async fn cmd_setup(_config_path: Option<String>, args: SetupArgs) -> Result<
     }
 
     Ok(())
-}
-
-pub async fn cmd_setup_mcp(action: SetupToolAction, _config_path: Option<&str>) -> String {
-    let cwd = action.cwd.as_deref().map(PathBuf::from);
-
-    let result = match action.action.as_str() {
-        "status" | "plan" => {
-            run_setup(None, cwd.as_deref(), true).map(|r| serde_json::to_value(&r).unwrap())
-        }
-        "apply" => {
-            if action.yes != Some(true) {
-                return error_json("setup_apply requires yes=true");
-            }
-            run_setup(action.providers.as_deref(), cwd.as_deref(), false)
-                .map(|r| serde_json::to_value(&r).unwrap())
-        }
-        other => Err(anyhow::anyhow!(
-            "unknown setup action '{other}' (valid: status, plan, apply)"
-        )),
-    };
-
-    match result {
-        Ok(v) => serde_json::to_string_pretty(&v).unwrap_or_default(),
-        Err(e) => error_json(&e.to_string()),
-    }
 }
 
 fn run_setup(
@@ -233,18 +207,14 @@ fn print_human(result: &SetupResult) {
     println!();
     println!("     Tell your AI to use daemon8 for debugging and observation.");
     println!();
-    println!("  2. Optional project overrides:");
+    println!("  2. Optional project config:");
     println!("       daemon8 setup features    (interactive menu)");
     println!();
     println!("  3. Inspect:");
-    println!("       daemon8 setup init        (write .daemon8.toml for explicit sources)");
-    println!("       daemon8 doctor            (check project awareness and source drift)");
+    println!("       daemon8 setup init        (write .daemon8/config.md)");
+    println!("       daemon8 doctor            (check daemon8 config and source paths)");
     println!();
     println!("  Docs: https://daemon8.ai/docs");
-}
-
-fn error_json(msg: &str) -> String {
-    serde_json::to_string_pretty(&serde_json::json!({"error": msg})).unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -281,38 +251,5 @@ mod tests {
         assert_eq!(result.providers[0].action, "would_configure");
         let config_path = std::path::Path::new(&result.providers[0].config_path);
         assert!(!config_path.exists());
-    }
-
-    #[tokio::test]
-    async fn mcp_status_returns_json() {
-        let tmp = tempfile::tempdir().unwrap();
-        unsafe { std::env::set_var("HOME", tmp.path()) };
-        let response = cmd_setup_mcp(
-            SetupToolAction {
-                action: "status".into(),
-                cwd: None,
-                yes: None,
-                providers: None,
-            },
-            None,
-        )
-        .await;
-        let parsed: serde_json::Value = serde_json::from_str(&response).unwrap();
-        assert!(parsed.get("providers").is_some());
-    }
-
-    #[tokio::test]
-    async fn mcp_apply_requires_yes() {
-        let response = cmd_setup_mcp(
-            SetupToolAction {
-                action: "apply".into(),
-                cwd: None,
-                yes: Some(false),
-                providers: None,
-            },
-            None,
-        )
-        .await;
-        assert!(response.contains("requires yes=true"));
     }
 }

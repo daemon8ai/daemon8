@@ -19,7 +19,7 @@ resolver = "3"
 version = "0.3.4"
 edition = "2024"
 license-file = "LICENSE"
-description = "Runtime awareness management for AI agents"
+description = "Runtime observation for AI coding agents"
 repository = "https://github.com/daemon8ai/daemon8"
 homepage = "https://daemon8.ai"
 documentation = "https://daemon8.ai/docs"
@@ -117,7 +117,6 @@ glob = "0.3"
 semver = "1"
 
 # SQLite (read-only polling)
-rusqlite = { version = "0.35", features = ["bundled"] }
 
 # Utilities
 futures = "0.3"

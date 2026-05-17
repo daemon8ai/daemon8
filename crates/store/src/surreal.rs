@@ -17,16 +17,13 @@ use daemon8_types::{
 };
 
 use crate::{
-    StateModel, StoreError, debug_session::SurrealDebugSessionStore,
-    memory::SurrealMemoryStore,
+    StateModel, StoreError, debug_session::SurrealDebugSessionStore, memory::SurrealMemoryStore,
 };
 
 pub const SCHEMA_VERSION: &str = "0.4.0-alpha";
 
 const NAMESPACE: &str = "daemon8";
 const DATABASE: &str = "observations";
-const BACKFILL_PAGE_SIZE: u64 = 500;
-
 #[derive(Debug)]
 pub struct ResetReport {
     pub observations_dropped: usize,
@@ -298,8 +295,6 @@ impl SurrealStore {
             .check()
             .map_err(|e| StoreError::Db(format!("schema init check: {e}")))?;
 
-        self.backfill_observation_query_fields().await?;
-
         self.db
             .query(
                 "DEFINE TABLE IF NOT EXISTS _meta SCHEMAFULL;
@@ -313,65 +308,6 @@ impl SurrealStore {
             .map_err(|e| StoreError::Db(format!("meta schema init: {e}")))?
             .check()
             .map_err(|e| StoreError::Db(format!("meta schema init check: {e}")))?;
-
-        Ok(())
-    }
-
-    async fn backfill_observation_query_fields(&self) -> Result<(), StoreError> {
-        loop {
-            let mut result = self
-                .db
-                .query(
-                    "SELECT * FROM observation
-                     WHERE origin_type IS NONE
-                        OR origin_key IS NONE
-                        OR search_text IS NONE
-                     ORDER BY seq
-                     LIMIT $limit",
-                )
-                .bind(("limit", serde_json::json!(BACKFILL_PAGE_SIZE)))
-                .await
-                .map_err(|e| StoreError::Db(format!("observation query field backfill: {e}")))?;
-
-            let rows: Vec<serde_json::Value> = result.take(0).map_err(|e| {
-                StoreError::Db(format!(
-                    "reading observation query field backfill page: {e}"
-                ))
-            })?;
-
-            if rows.is_empty() {
-                break;
-            }
-
-            for row in rows {
-                let record: ObsRecord = serde_json::from_value(row)?;
-                let seq = record.seq;
-                let observation = record.into_observation()?;
-                let (origin_type, origin_key) = observation_origin_fields(&observation.origin);
-
-                self.db
-                    .query(
-                        "UPDATE observation
-                         SET origin_type = $origin_type,
-                             origin_key = $origin_key,
-                             search_text = $search_text
-                         WHERE seq = $seq",
-                    )
-                    .bind(("seq", serde_json::json!(seq)))
-                    .bind(("origin_type", serde_json::json!(origin_type)))
-                    .bind(("origin_key", serde_json::json!(origin_key)))
-                    .bind((
-                        "search_text",
-                        serde_json::json!(observation_search_text(&observation)),
-                    ))
-                    .await
-                    .map_err(|e| StoreError::Db(format!("updating observation query fields: {e}")))?
-                    .check()
-                    .map_err(|e| {
-                        StoreError::Db(format!("checking observation query field update: {e}"))
-                    })?;
-            }
-        }
 
         Ok(())
     }
@@ -686,7 +622,7 @@ impl StateModel for SurrealStore {
     async fn cleanup_before(&self, timestamp_ns: u64) -> Result<u64, StoreError> {
         // Skip rows whose debug_session_id points to an active debug session
         // — losing that context mid-investigation would defeat the purpose
-        // of the situational-awareness layer. Sessions stuck in "active"
+        // of the debug-session capture layer. Sessions stuck in "active"
         // beyond the inactivity threshold are auto-ended by
         // `auto_end_stale_debug_sessions` before this cleanup runs, so any
         // session still active here is genuinely live.
@@ -752,15 +688,9 @@ impl StateModel for SurrealStore {
             .await
             .map_err(|e| StoreError::Db(format!("memory export select page: {e}")))?;
 
-        let mut rows: Vec<serde_json::Value> = result
+        let rows: Vec<serde_json::Value> = result
             .take(0)
             .map_err(|e| StoreError::Db(format!("memory export select page read: {e}")))?;
-
-        for row in &mut rows {
-            if let serde_json::Value::Object(object) = row {
-                object.remove("embedding");
-            }
-        }
 
         Ok(rows)
     }
@@ -910,44 +840,6 @@ mod tests {
             .unwrap();
         assert_eq!(second_page.len(), 1);
         assert_eq!(second_page[0]["content"], "three");
-    }
-
-    #[tokio::test]
-    async fn memory_export_strips_legacy_embedding_field() {
-        let store = SurrealStore::memory().await.unwrap();
-        store
-            .db
-            .query(
-                "DEFINE FIELD IF NOT EXISTS embedding ON memory TYPE option<array<float>>;
-                 CREATE memory CONTENT {
-                    created_at: 1,
-                    updated_at: 1,
-                    kind: 'pattern',
-                    content: 'legacy vector row',
-                    embedding: [0.1, 0.2],
-                    source_observations: [],
-                    tags: [],
-                    project_slug: 'daemon8',
-                    session_id: NONE,
-                    confidence: 1.0
-                 };",
-            )
-            .await
-            .unwrap()
-            .check()
-            .unwrap();
-
-        let rows = store
-            .memory_export_select_page("SELECT * FROM memory ORDER BY created_at ASC", 10, 0)
-            .await
-            .unwrap();
-
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0]["content"], "legacy vector row");
-        assert!(
-            rows[0].get("embedding").is_none(),
-            "memory export must not expose removed embedding data"
-        );
     }
 
     #[tokio::test]
@@ -1186,62 +1078,6 @@ mod tests {
         };
         let slice = store.query(&filter).await.unwrap();
         assert_eq!(slice.observations.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn query_field_backfill_preserves_legacy_observation_filters() {
-        let store = SurrealStore::memory().await.unwrap();
-        let legacy = make_obs(Severity::Warn, 1_000);
-        let record = ObsRecord {
-            seq: 99,
-            timestamp_ns: legacy.timestamp_ns,
-            severity: legacy.severity.to_string(),
-            kind_tag: legacy.kind.tag().to_string(),
-            origin_type: None,
-            origin_key: None,
-            search_text: None,
-            origin: serde_json::to_value(&legacy.origin).unwrap(),
-            kind: serde_json::to_value(&legacy.kind).unwrap(),
-            data: serde_json::json!({"msg": "legacy timeout marker"}),
-            source_file: None,
-            source_line: None,
-            correlation_id: Some("legacy-corr".into()),
-            parent_id: None,
-            tags: Some(vec!["domain:legacy".into()]),
-            session_id: None,
-            node_id: None,
-            debug_session_id: None,
-            checkpoint_id: None,
-            error_hash: None,
-        };
-
-        store
-            .db
-            .query("CREATE type::record('observation', $seq) CONTENT $content")
-            .bind(("seq", serde_json::json!(record.seq)))
-            .bind(("content", serde_json::to_value(record).unwrap()))
-            .await
-            .unwrap()
-            .check()
-            .unwrap();
-
-        store.backfill_observation_query_fields().await.unwrap();
-
-        let origin_filter = Filter {
-            origins: Some(vec![OriginPattern::ApplicationNamed("test-app".into())]),
-            ..Default::default()
-        };
-        let slice = store.query(&origin_filter).await.unwrap();
-        assert_eq!(slice.observations.len(), 1);
-
-        for text in ["legacy", "legacy-corr", "domain:legacy"] {
-            let filter = Filter {
-                text_match: Some(text.to_string()),
-                ..Default::default()
-            };
-            let slice = store.query(&filter).await.unwrap();
-            assert_eq!(slice.observations.len(), 1, "text_match={text}");
-        }
     }
 
     #[tokio::test]

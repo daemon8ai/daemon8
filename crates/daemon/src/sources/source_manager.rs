@@ -12,7 +12,7 @@ use tokio_util::sync::CancellationToken;
 
 use daemon8_types::{Filter, Observation, OriginPattern, SourceActivator};
 
-use crate::config::{ConversationSourceConfig, FileSourceConfig, SourceConfig, SqliteSourceConfig};
+use crate::config::{ConversationSourceConfig, FileSourceConfig, SourceConfig};
 
 const REAPER_INTERVAL: Duration = Duration::from_secs(5 * 60);
 #[cfg(test)]
@@ -28,7 +28,6 @@ enum SourceState {
 enum SourceKind {
     File(FileSourceConfig),
     Conversation(ConversationSourceConfig),
-    Sqlite(SqliteSourceConfig),
 }
 
 struct SourceEntry {
@@ -57,7 +56,6 @@ impl SourceManager {
             let kind = match source {
                 SourceConfig::File(cfg) => SourceKind::File(cfg),
                 SourceConfig::Conversation(cfg) => SourceKind::Conversation(cfg),
-                SourceConfig::Sqlite(cfg) => SourceKind::Sqlite(cfg),
             };
             entries.insert(
                 name.clone(),
@@ -107,15 +105,6 @@ impl SourceManager {
                 }
                 SourceKind::Conversation(cfg) => {
                     super::conversation_watcher::spawn_conversation_source(
-                        &mut tasks,
-                        name.to_owned(),
-                        cfg,
-                        self.obs_tx.clone(),
-                        cancel_child.clone(),
-                    );
-                }
-                SourceKind::Sqlite(cfg) => {
-                    super::sqlite_reader::spawn_sqlite_source(
                         &mut tasks,
                         name.to_owned(),
                         cfg,
@@ -189,7 +178,6 @@ impl SourceManager {
                 let source_tags = match &entry.kind {
                     SourceKind::File(f) => &f.tags,
                     SourceKind::Conversation(c) => &c.tags,
-                    SourceKind::Sqlite(s) => &s.tags,
                 };
                 if source_tags.iter().any(|t| tags.contains(t)) {
                     matched.insert(name);

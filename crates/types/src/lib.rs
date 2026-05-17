@@ -222,7 +222,6 @@ pub trait SourceActivator: Send + Sync {
     fn touch_matching(&self, filter: &Filter);
 }
 
-
 impl fmt::Display for ObservationKindTag {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
@@ -1171,9 +1170,6 @@ mod tests {
             assert_eq!(back, variant);
         }
     }
-
-
-
 
     #[test]
     fn dedup_exempt_kinds() {

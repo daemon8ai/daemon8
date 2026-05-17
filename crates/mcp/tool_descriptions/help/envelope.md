@@ -28,6 +28,6 @@ If `error` is present, `result` will be `null`. The LLM should:
 
 `daemon8.next_actions` is an opinionated suggestion — not all responses include one. When it's there, the listed tool name is the natural next call given current state. The LLM may always override based on user intent.
 
-## Setup self-disclosure (planned)
+## Connect-first flow
 
-In v0.4, `daemon8.setup` will be added to surface incomplete configuration on the first tool call without requiring a separate `setup_status` invocation. v0.3 ships the rest of the envelope.
+Alpha tools use the envelope to steer the next step. When a session is not connected to a project or general scope, tools return a connect/setup response with a short reason and the next tool to call. Do not keep repeating the same hint after connection succeeds.

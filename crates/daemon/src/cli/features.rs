@@ -33,7 +33,7 @@ pub fn cmd_features(args: FeaturesArgs) -> Result<()> {
         .item(
             Feature::ProjectInit,
             "Project init",
-            "scaffold .daemon8.toml in cwd",
+            "scaffold .daemon8/config.md in cwd",
         )
         .interact()?;
 
@@ -51,7 +51,9 @@ pub fn cmd_features(args: FeaturesArgs) -> Result<()> {
 
 fn enable_project_init() -> Result<()> {
     let cwd = std::env::current_dir()?;
-    let target = cwd.join(crate::cli_config::PROJECT_CONFIG_FILENAME);
+    let target = cwd
+        .join(crate::cli_config::PROJECT_CONFIG_DIR)
+        .join(crate::cli_config::PROJECT_CONFIG_FILENAME);
 
     if target.exists() {
         println!("  {} already exists", target.display());
@@ -68,7 +70,7 @@ fn enable_project_init() -> Result<()> {
 fn print_feature_list() {
     println!("available daemon8 features:");
     println!();
-    println!("  project-init   Scaffold .daemon8.toml at current directory");
+    println!("  project-init   Scaffold .daemon8/config.md at current directory");
     println!("                 Defines project slug and file sources");
     println!();
     println!("Run `daemon8 features` (without --list) for interactive setup.");

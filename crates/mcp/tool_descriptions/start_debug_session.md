@@ -2,7 +2,7 @@
 
 Open a daemon8 debug investigation. Required before create_checkpoint or resolve_debug_session can be used.
 
-Opening a session is not enough by itself. The next step is to establish the session's awareness posture with `awareness_status`; aim for `optimal` awareness before trusting checkpoint deltas.
+Opening a session is not enough by itself. The next step is normally `create_checkpoint`, then the change or repro, then `read_live_feed(since_checkpoint=...)`.
 
 ## When
 
@@ -26,8 +26,8 @@ No other debug session is currently active IN THIS MCP SESSION. Other agents/con
 ## Errors
   - invalid_agent_id: agent_id does not match format :host/tool+role>. hint: use the convention.
   - already_active_debug_session: another session is open IN THIS MCP SESSION. hint: call end_debug_session(outcome="abandoned") or resolve_debug_session first; fix.tool: end_debug_session.
-  - debug_session_unavailable: daemon was started without a debug-session store. hint: ensure setup_apply has run; fix.tool: setup_apply.
+  - debug_session_unavailable: daemon was started without debug-session storage. hint: restart daemon8 with debug-session storage enabled.
 
 ## Next
 
-Call `awareness_status` first. If awareness is `optimal`, create_checkpoint right before any action you may want to compare. If awareness is `partial`, `limited`, or `unknown`, inspect librarian/source coverage before trusting the debug stream.
+Call `create_checkpoint` right before the action you want to compare. Then use `read_live_feed(since_checkpoint=...)` and interpret the runtime signal before resolving the session.

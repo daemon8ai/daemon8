@@ -24,15 +24,11 @@ None. Observations are live; re-call to refresh.
 ## Returns
   result: {observations: [...], total, lens_observations?, lens_count?, browser_state?}.
   daemon8.active_debug_session: present if a debug session is active (and stamping new obs).
-  daemon8.hints: present when an observation references a reusable runtime-data path (e.g. /tmp/*.log, ~/Library/Logs/...) that no librarian source_template covers for the active project's tags. Each entry is a directive nudge — call `librarian_index` with a `source_template` to register the path so future sessions reuse it.
+  daemon8.active_debug_session: present if a debug session is active.
 
 ## Errors
   - query_failed: db query error. hint: check daemon logs.
 
 ## Next
 
-create_checkpoint before testing a fix. Pass `project_root` when you want project-aware path/source hints and no debug session is active. Treat returned observations as runtime signals only. Promote awareness only after you have an interpreted durable conclusion, usually through `resolve_debug_session`, accepted research, a user decision, or a source verification.
-
-## Discovery hints
-
-Observations with `kind=custom` and `channel=discovery_hint` are project-onboarding hints emitted when daemon8 classifies a project but finds no `source_template` entries covering its tags. The `data` field carries a `DiscoveryHintPayload` (project_root, classification_tags, framework_versions, platform, known_project_type_tags_ref, instruction_text, ...). When you see one, follow the `instruction_text` and call `librarian_index` with one or more `source_template` nodes for the locations you discover.
+Create a checkpoint before testing a fix. Treat returned observations as runtime signals only; record durable memory only after interpreting what the signal means.

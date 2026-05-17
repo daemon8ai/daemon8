@@ -27,7 +27,10 @@ pub(crate) async fn cmd_reset(config_path: Option<String>, args: ResetArgs) -> R
     let db_path = config::resolve_db_path(cfg.storage.path.as_deref());
 
     if !db_path.exists() {
-        eprintln!("No database found at {}. Nothing to reset.", db_path.display());
+        eprintln!(
+            "No database found at {}. Nothing to reset.",
+            db_path.display()
+        );
         return Ok(());
     }
 

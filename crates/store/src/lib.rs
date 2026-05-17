@@ -156,4 +156,3 @@ pub trait DebugSessionStore: Send + Sync {
         debug_session_id: &str,
     ) -> Result<Vec<DebugCheckpoint>, StoreError>;
 }
-

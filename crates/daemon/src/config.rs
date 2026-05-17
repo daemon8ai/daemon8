@@ -182,11 +182,10 @@ impl FromStr for LogLevel {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
+#[serde(tag = "kind", rename_all = "lowercase")]
 pub enum SourceConfig {
     File(FileSourceConfig),
     Conversation(ConversationSourceConfig),
-    Sqlite(SqliteSourceConfig),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -207,21 +206,6 @@ pub struct ConversationSourceConfig {
     pub provider: String,
     #[serde(default)]
     pub tags: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SqliteSourceConfig {
-    pub path: String,
-    pub provider: String,
-    #[serde(default = "default_sqlite_poll_secs")]
-    pub poll_interval_secs: u64,
-    #[serde(default)]
-    pub tags: Vec<String>,
-}
-
-fn default_sqlite_poll_secs() -> u64 {
-    60
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -627,11 +611,11 @@ role_default = "debugger"
 "#,
             r#"
 [ingestion.udp]
-legacy_port = 8099
+removed_port = 8099
 "#,
             r#"
 [sources.app]
-type = "file"
+kind = "file"
 path = "app.log"
 role_default = "debugger"
 "#,
@@ -658,7 +642,7 @@ role_default = "debugger"
 [setup.projects.daemon8]
 slug = "daemon8"
 root_path = "/tmp/daemon8"
-config_path = "/tmp/daemon8/.daemon8.toml"
+config_path = "/tmp/daemon8/.daemon8/config.md"
 applied_at_ns = 0
 hook_policy = "banana"
 "#,
@@ -676,7 +660,7 @@ hook_policy = "banana"
 [setup.projects.daemon8]
 slug = "daemon8"
 root_path = "/tmp/daemon8"
-config_path = "/tmp/daemon8/.daemon8.toml"
+config_path = "/tmp/daemon8/.daemon8/config.md"
 applied_at_ns = 0
 hook_policy = "install"
 "#,
@@ -692,7 +676,7 @@ hook_policy = "install"
 [setup.projects.daemon8]
 slug = "daemon8"
 root_path = "/tmp/daemon8"
-config_path = "/tmp/daemon8/.daemon8.toml"
+config_path = "/tmp/daemon8/.daemon8/config.md"
 applied_at_ns = 0
 hook_policy = "manual"
 "#,
@@ -850,13 +834,13 @@ bind = "0.0.0.0:8889"
         let cfg: Config = toml::from_str(
             r#"
 [sources.laravel]
-type = "file"
+kind = "file"
 path = "/var/log/laravel/*.log"
 parser = "monolog"
 tags = ["php", "laravel"]
 
 [sources.nginx]
-type = "file"
+kind = "file"
 path = "/var/log/nginx/access.log"
 parser = "clf"
 "#,
@@ -882,7 +866,7 @@ parser = "clf"
         let cfg: Config = toml::from_str(
             r#"
 [sources.raw]
-type = "file"
+kind = "file"
 path = "/tmp/test.log"
 "#,
         )
@@ -894,54 +878,13 @@ path = "/tmp/test.log"
     }
 
     #[test]
-    fn sources_sqlite_type_parses() {
-        let cfg: Config = toml::from_str(
-            r#"
-[sources.codex-db]
-type = "sqlite"
-path = "~/.codex/state_5.sqlite"
-provider = "codex"
-poll_interval_secs = 30
-tags = ["codex", "agent-topology"]
-"#,
-        )
-        .unwrap();
-        assert_eq!(cfg.sources.len(), 1);
-        let SourceConfig::Sqlite(s) = &cfg.sources["codex-db"] else {
-            panic!("expected Sqlite source");
-        };
-        assert_eq!(s.path, "~/.codex/state_5.sqlite");
-        assert_eq!(s.provider, "codex");
-        assert_eq!(s.poll_interval_secs, 30);
-        assert_eq!(s.tags, vec!["codex", "agent-topology"]);
-    }
-
-    #[test]
-    fn sources_sqlite_defaults() {
-        let cfg: Config = toml::from_str(
-            r#"
-[sources.codex-db]
-type = "sqlite"
-path = "~/.codex/state_5.sqlite"
-provider = "codex"
-"#,
-        )
-        .unwrap();
-        let SourceConfig::Sqlite(s) = &cfg.sources["codex-db"] else {
-            panic!("expected Sqlite source");
-        };
-        assert_eq!(s.poll_interval_secs, 60);
-        assert!(s.tags.is_empty());
-    }
-
-    #[test]
     fn setup_state_parses() {
         let cfg: Config = toml::from_str(
             r#"
 [setup.projects.daemon8]
 slug = "daemon8"
 root_path = "/tmp/daemon8"
-config_path = "/tmp/daemon8/.daemon8.toml"
+config_path = "/tmp/daemon8/.daemon8/config.md"
 applied_at_ns = 42
 desired_scope = ["file-sources"]
 hook_policy = "manual"

@@ -4,7 +4,7 @@
 //! Integration tests for `daemon8 init`.
 //!
 //! Exercise the compiled binary end-to-end: clap parsing, dispatch,
-//! `.daemon8.toml` generation, and provider MCP registration (via fake HOME).
+//! and `.daemon8/config.md` generation.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -108,14 +108,14 @@ fn setup_dirs() -> (tempfile::TempDir, PathBuf, PathBuf) {
     (tmp, workdir, fake_home)
 }
 
-fn codex_config_path(home: &Path) -> PathBuf {
-    home.join(".codex").join("config.toml")
+fn project_config_path(root: &Path) -> PathBuf {
+    root.join(".daemon8").join("config.md")
 }
 
 // ---------------------------------------------------------------------------
 
 #[test]
-fn cli_yes_writes_toml_only() {
+fn cli_yes_writes_project_config_only() {
     let (_tmp, work, home) = setup_dirs();
     let out = run_init(&work, &home, &["--yes"]);
     assert!(
@@ -124,11 +124,17 @@ fn cli_yes_writes_toml_only() {
         String::from_utf8_lossy(&out.stderr)
     );
 
-    assert!(work.join(".daemon8.toml").exists());
-    let toml = std::fs::read_to_string(work.join(".daemon8.toml")).unwrap();
-    assert!(!toml.contains("role_default"));
-    assert!(!toml.contains("[enrollment]"));
-    assert!(!toml.contains("cli-hook"));
+    let config_path = project_config_path(&work);
+    assert!(config_path.exists());
+    let config = std::fs::read_to_string(config_path).unwrap();
+    assert!(config.contains("project:"));
+    assert!(config.contains("stack:"));
+    assert!(config.contains("PRJ_ROOT:"));
+    assert!(config.contains("kind: file"));
+    assert!(config.contains("kind: conversation"));
+    assert!(!config.contains("role_default"));
+    assert!(!config.contains("[enrollment]"));
+    assert!(!config.contains("cli-hook"));
     assert!(
         !work.join(".claude").exists(),
         ".claude must NOT be created by init"
@@ -191,70 +197,14 @@ fn cli_agent_command_is_removed() {
 }
 
 #[test]
-fn cli_yes_with_codex_provider_writes_codex_config_without_hooks() {
+fn cli_init_providers_flag_is_removed() {
     let (_tmp, work, home) = setup_dirs();
     let out = run_init(&work, &home, &["--yes", "--providers", "codex-cli"]);
+    assert!(!out.status.success(), "provider setup moved out of init");
+    let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        out.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-
-    let config = codex_config_path(&home);
-    assert!(config.exists(), "codex config missing");
-    assert!(!home.join(".codex").join("hooks.json").exists());
-
-    let config_toml = std::fs::read_to_string(&config).unwrap();
-    let config_parsed: toml::Value = toml::from_str(&config_toml).unwrap();
-    assert_eq!(
-        config_parsed["mcp_servers"]["daemon8"]["name"].as_str(),
-        Some("Daemon8")
-    );
-}
-
-#[test]
-fn cli_yes_with_codex_provider_preserves_existing_codex_hook_feature() {
-    let (_tmp, work, home) = setup_dirs();
-    let config = codex_config_path(&home);
-    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
-    std::fs::write(
-        &config,
-        r#"
-[features]
-codex_hooks = true
-
-[mcp_servers.daemon8]
-command = "/old/daemon8"
-args = ["mcp"]
-"#,
-    )
-    .unwrap();
-
-    let out = run_init(&work, &home, &["--yes", "--providers", "codex-cli"]);
-    assert!(
-        out.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-
-    let config_toml = std::fs::read_to_string(&config).unwrap();
-    let parsed: toml::Value = toml::from_str(&config_toml).unwrap();
-    assert_eq!(parsed["features"]["codex_hooks"].as_bool(), Some(true));
-    assert!(
-        parsed["features"].get("hooks").is_none(),
-        "daemon8 must not write unsupported codex hooks feature flag"
-    );
-    assert_eq!(
-        parsed["mcp_servers"]["daemon8"]["name"].as_str(),
-        Some("Daemon8")
-    );
-    assert!(
-        parsed["mcp_servers"]["daemon8"].get("command").is_none(),
-        "stale stdio command must be removed when rewriting codex MCP config"
-    );
-    assert!(
-        parsed["mcp_servers"]["daemon8"].get("args").is_none(),
-        "stale stdio args must be removed when rewriting codex MCP config"
+        stderr.contains("unexpected argument") || stderr.contains("unrecognized"),
+        "stderr: {stderr}"
     );
 }
 
@@ -269,7 +219,7 @@ fn cli_noninteractive_when_stdin_not_tty() {
         "stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(work.join(".daemon8.toml").exists());
+    assert!(project_config_path(&work).exists());
 }
 
 #[test]
@@ -284,13 +234,15 @@ fn cli_ci_env_forces_noninteractive() {
         "stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(work.join(".daemon8.toml").exists());
+    assert!(project_config_path(&work).exists());
 }
 
 #[test]
-fn cli_skips_existing_toml_without_force() {
+fn cli_skips_existing_project_config_without_force() {
     let (_tmp, work, home) = setup_dirs();
-    std::fs::write(work.join(".daemon8.toml"), "# pre-existing\n").unwrap();
+    let config_path = project_config_path(&work);
+    std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+    std::fs::write(&config_path, "# pre-existing\n").unwrap();
 
     let out = run_init(&work, &home, &["--yes"]);
     assert!(
@@ -299,7 +251,7 @@ fn cli_skips_existing_toml_without_force() {
         String::from_utf8_lossy(&out.stderr)
     );
 
-    let preserved = std::fs::read_to_string(work.join(".daemon8.toml")).unwrap();
+    let preserved = std::fs::read_to_string(config_path).unwrap();
     assert_eq!(
         preserved, "# pre-existing\n",
         "file must be untouched when --force is not set"
@@ -325,9 +277,11 @@ fn setup_json_reports_providers_and_daemon_state() {
 }
 
 #[test]
-fn cli_force_overwrites_existing_toml() {
+fn cli_force_overwrites_existing_project_config() {
     let (_tmp, work, home) = setup_dirs();
-    std::fs::write(work.join(".daemon8.toml"), "# pre-existing\n").unwrap();
+    let config_path = project_config_path(&work);
+    std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+    std::fs::write(&config_path, "# pre-existing\n").unwrap();
 
     let out = run_init(&work, &home, &["--yes", "--force"]);
     assert!(
@@ -336,9 +290,9 @@ fn cli_force_overwrites_existing_toml() {
         String::from_utf8_lossy(&out.stderr)
     );
 
-    let content = std::fs::read_to_string(work.join(".daemon8.toml")).unwrap();
+    let content = std::fs::read_to_string(config_path).unwrap();
     assert!(
-        content.contains("[project]"),
+        content.contains("project:"),
         "template should replace the pre-existing stub"
     );
 }

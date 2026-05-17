@@ -34,7 +34,6 @@ pub(crate) struct ServeArgs {
 
 pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> Result<()> {
     let mut cfg = config::load(config_path.as_deref()).context("failed to load configuration")?;
-    let setup_config_path = config_path.clone();
 
     if let Some(port) = args.port {
         cfg.server.port = port;
@@ -204,12 +203,6 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
             None
         };
 
-    let setup_tool_fn: daemon8_mcp::SetupToolFn = Arc::new(move |action| {
-        let setup_config_path = setup_config_path.clone();
-        Box::pin(async move {
-            crate::cli::setup::cmd_setup_mcp(action, setup_config_path.as_deref()).await
-        })
-    });
     // Only start MCP stdio when stdin is a real FIFO from an MCP client.
     // A plain "not a TTY" check is insufficient: launchd, nohup, and shell
     // backgrounding all attach /dev/null (a character device) to stdin.
@@ -236,7 +229,6 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
             screenshot_dir: screenshot_dir.clone(),
             broadcast_tx: broadcast_tx.clone(),
             lens,
-            setup_tool_fn: Some(setup_tool_fn.clone()),
             cancel: cancel.clone(),
             source_activator: source_activator.clone(),
         });
@@ -295,7 +287,6 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
                     mcp_broadcast_tx.subscribe(),
                     mcp_source_activator.clone(),
                 )),
-                setup_tool_fn: Some(setup_tool_fn.clone()),
                 cancel: mcp_root_cancel.clone(),
                 source_activator: mcp_source_activator.clone(),
             }))

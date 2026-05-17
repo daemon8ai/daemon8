@@ -91,11 +91,11 @@ enum Commands {
 
 #[derive(Subcommand)]
 enum SetupSubcommand {
-    /// Register MCP with detected agents, then run the project-aware discovery scan
+    /// Register MCP with detected agents
     Apply(cli::setup::SetupArgs),
     /// Enable optional features interactively
     Features(cli::features::FeaturesArgs),
-    /// Write a `.daemon8.toml` override file for explicit source configuration
+    /// Write `.daemon8/config.md` for explicit project configuration
     Init(cli::init::InitArgs),
 }
 

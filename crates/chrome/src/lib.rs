@@ -1931,16 +1931,7 @@ fn find_chrome_debug_port_for_pid(_pid: u32) -> Option<u16> {
 async fn launch_chrome(configured_path: Option<&str>) -> Result<BrowserLaunch> {
     let tmp = std::env::temp_dir();
     let user_data_dir = tmp.join("daemon8-browser");
-    // Check legacy path for backward compat
-    let legacy_dir = tmp.join("daemon8-chrome");
-    let (user_data_dir, active_port_file) = if !user_data_dir.exists() && legacy_dir.exists() {
-        (legacy_dir.clone(), legacy_dir.join("DevToolsActivePort"))
-    } else {
-        (
-            user_data_dir.clone(),
-            user_data_dir.join("DevToolsActivePort"),
-        )
-    };
+    let active_port_file = user_data_dir.join("DevToolsActivePort");
 
     // Authoritative liveness check: does any process currently hold the
     // SingletonLock for this profile dir?

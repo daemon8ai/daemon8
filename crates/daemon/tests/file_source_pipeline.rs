@@ -96,43 +96,43 @@ level = "debug"
 stderr = false
 
 [sources.structured-json]
-type = "file"
+kind = "file"
 path = "{json}"
 parser = "json"
 tags = ["json", "structured"]
 
 [sources.app-logfmt]
-type = "file"
+kind = "file"
 path = "{logfmt}"
 parser = "logfmt"
 tags = ["logfmt", "structured"]
 
 [sources.php-monolog]
-type = "file"
+kind = "file"
 path = "{monolog}"
 parser = "monolog"
 tags = ["monolog", "php"]
 
 [sources.system-syslog]
-type = "file"
+kind = "file"
 path = "{syslog}"
 parser = "syslog"
 tags = ["syslog", "system"]
 
 [sources.web-access]
-type = "file"
+kind = "file"
 path = "{access}"
 parser = "clf"
 tags = ["clf", "http"]
 
 [sources.plaintext]
-type = "file"
+kind = "file"
 path = "{plain}"
 parser = "line"
 tags = ["plain", "fallback"]
 
 [sources.auto-mixed]
-type = "file"
+kind = "file"
 path = "{mixed}"
 parser = "auto"
 tags = ["auto", "mixed"]
@@ -413,7 +413,7 @@ async fn plaintext_severity_sniffing_pipeline() {
         "plain.log",
         &[
             "[2026-01-15T10:00:00Z] Application starting up...",
-            "[2026-01-15T10:00:01Z] WARNING: deprecated API endpoint called",
+            "[2026-01-15T10:00:01Z] WARNING: slow API endpoint called",
             "[2026-01-15T10:00:02Z] ERROR: disk space critically low",
         ],
     );

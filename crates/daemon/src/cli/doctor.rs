@@ -41,7 +41,6 @@ impl Check {
             result: CheckResult::Warn(msg.into()),
         }
     }
-
 }
 
 impl std::fmt::Display for Check {
@@ -368,12 +367,6 @@ fn check_sources(cfg: &config::Config) -> Check {
                     warnings.push(format!("{name}: unknown provider '{}'", c.provider));
                 }
             }
-            SourceConfig::Sqlite(s) => {
-                let expanded = crate::config::expand_tilde(Path::new(&s.path));
-                if !expanded.exists() {
-                    warnings.push(format!("{name}: sqlite path not found ({})", s.path));
-                }
-            }
         }
     }
 
@@ -594,7 +587,8 @@ mod tests {
     fn check_setup_state_present_paths_is_ok_hint_with_count() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().to_path_buf();
-        let cfg_path = root.join(".daemon8.toml");
+        let cfg_path = root.join(".daemon8").join("config.md");
+        std::fs::create_dir_all(cfg_path.parent().unwrap()).unwrap();
         std::fs::write(&cfg_path, "version = 1\n").unwrap();
 
         let mut cfg = config::Config::default();
@@ -613,7 +607,7 @@ mod tests {
     fn check_setup_state_missing_root_warns() {
         let mut cfg = config::Config::default();
         let bogus_root = PathBuf::from("/nonexistent/daemon8-doctor-root");
-        let bogus_cfg = bogus_root.join(".daemon8.toml");
+        let bogus_cfg = bogus_root.join(".daemon8").join("config.md");
         cfg.setup.projects.insert(
             "ghost".into(),
             applied_state("ghost", &bogus_root, &bogus_cfg),

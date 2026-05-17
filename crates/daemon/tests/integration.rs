@@ -193,7 +193,6 @@ async fn start_server(
             None,
         )),
         source_activator: None,
-        discovery_control: None,
     };
 
     let app =
@@ -1078,7 +1077,6 @@ async fn start_act_server() -> (
         chrome_endpoint: std::sync::Arc::new(std::sync::Mutex::new(None)),
         lens: std::sync::Arc::new(daemon8_store::LensManager::new(stream_tx.subscribe(), None)),
         source_activator: None,
-        discovery_control: None,
     };
     let app = daemon8_api::api_router(api_state);
 
