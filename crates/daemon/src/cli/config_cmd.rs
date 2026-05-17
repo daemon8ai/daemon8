@@ -169,7 +169,7 @@ fn cmd_config_set(config_path: Option<String>, key: &str, value: &str) -> Result
     if daemon_running {
         eprintln!();
         eprintln!("  Restart the daemon for this change to take effect:");
-        eprintln!("  daemon8 install");
+        eprintln!("  daemon8 service install");
     }
 
     Ok(())

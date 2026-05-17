@@ -29,7 +29,6 @@ pub struct ApiState {
     pub chrome_state: tokio::sync::watch::Receiver<daemon8_chrome::ConnectionState>,
     pub chrome_endpoint: Arc<std::sync::Mutex<Option<Arc<str>>>>,
     pub lens: Arc<LensManager>,
-    pub source_activator: Option<Arc<dyn daemon8_types::SourceActivator>>,
 }
 
 pub fn api_router(state: ApiState) -> Router {
@@ -261,10 +260,6 @@ async fn handle_observe(
         include_system: params.include_system,
     });
 
-    if let Some(ref sa) = state.source_activator {
-        sa.touch_matching(&filter);
-    }
-
     match state.store.query(&filter).await {
         Ok(slice) => (StatusCode::OK, Json(slice)).into_response(),
         Err(e) => error_json(
@@ -306,9 +301,6 @@ async fn handle_lens_set(State(state): State<ApiState>, Json(body): Json<LensSet
         tags: body.tags,
         include_system: None,
     });
-    if let Some(ref sa) = state.source_activator {
-        sa.touch_matching(&filter);
-    }
     let capacity = body.capacity.unwrap_or(200).min(1000);
     state.lens.set_with_capacity(filter, capacity).await;
 
@@ -440,17 +432,12 @@ async fn handle_stream(
         include_system: params.include_system,
     });
 
-    if let Some(ref sa) = state.source_activator {
-        sa.touch_matching(&filter);
-    }
-
     let last_event_id: Option<u64> = headers
         .get("last-event-id")
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.trim().parse().ok());
 
     let store = state.store.clone();
-    let stream_source_activator = state.source_activator.clone();
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(256);
 
     tokio::spawn(async move {
@@ -508,9 +495,6 @@ async fn handle_stream(
                     }
                     if !filter.matches(&arc_obs) {
                         continue;
-                    }
-                    if let Some(ref sa) = stream_source_activator {
-                        sa.touch_matching(&filter);
                     }
                     let event = Event::default()
                         .id(arc_obs.id.to_string())

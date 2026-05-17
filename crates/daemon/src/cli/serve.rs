@@ -185,8 +185,6 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
         );
     }
 
-    let source_activator: Option<Arc<dyn daemon8_types::SourceActivator>> = None;
-
     // Only start MCP stdio when stdin is a real FIFO from an MCP client.
     // A plain "not a TTY" check is insufficient: launchd, nohup, and shell
     // backgrounding all attach /dev/null (a character device) to stdin.
@@ -197,10 +195,7 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
     if stdin_is_pipe {
         use rmcp::ServiceExt;
 
-        let lens = Arc::new(daemon8_store::LensManager::new(
-            broadcast_tx.subscribe(),
-            source_activator.clone(),
-        ));
+        let lens = Arc::new(daemon8_store::LensManager::new(broadcast_tx.subscribe()));
         let mcp = daemon8_mcp::DaemonMcp::new(daemon8_mcp::DaemonMcpConfig {
             store: store.clone(),
             memory_store: Some(memory_store.clone()),
@@ -214,7 +209,6 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
             broadcast_tx: broadcast_tx.clone(),
             lens,
             cancel: cancel.clone(),
-            source_activator: source_activator.clone(),
         });
         let cancel_on_eof = cancel.clone();
         tasks.spawn(async move {
@@ -246,7 +240,6 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
     let mcp_screenshot_fn = device_screenshot_fn.clone();
     let mcp_screenshot_dir = screenshot_dir.clone();
     let mcp_broadcast_tx = broadcast_tx.clone();
-    let mcp_source_activator = source_activator.clone();
     let mcp_cancel = cancel.child_token();
     // Daemon-wide cancel cloned into the per-session factory closure. Each
     // `DaemonMcp` then derives its own child token for the push task in
@@ -269,10 +262,8 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
                 broadcast_tx: mcp_broadcast_tx.clone(),
                 lens: Arc::new(daemon8_store::LensManager::new(
                     mcp_broadcast_tx.subscribe(),
-                    mcp_source_activator.clone(),
                 )),
                 cancel: mcp_root_cancel.clone(),
-                source_activator: mcp_source_activator.clone(),
             }))
         },
         Arc::new({
@@ -285,10 +276,7 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
             .with_cancellation_token(mcp_cancel),
     );
 
-    let api_lens = Arc::new(daemon8_store::LensManager::new(
-        broadcast_tx.subscribe(),
-        source_activator.clone(),
-    ));
+    let api_lens = Arc::new(daemon8_store::LensManager::new(broadcast_tx.subscribe()));
     let api_state = daemon8_api::ApiState {
         store: store.clone(),
         stream_tx: broadcast_tx.clone(),
@@ -296,7 +284,6 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
         chrome_state: chrome_state_rx.clone(),
         chrome_endpoint: chrome_endpoint.clone(),
         lens: api_lens,
-        source_activator: source_activator.clone(),
     };
     let port = cfg.server.port;
     let app = daemon8_ingest::ingest_router(obs_tx.clone())

@@ -29,4 +29,5 @@ test-util = []
 
 [dev-dependencies]
 daemon8-mcp = { path = ".", features = ["test-util"] }
+rmcp = { workspace = true, features = ["client"] }
 tempfile = "3"

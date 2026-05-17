@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::project_config::parse_project_config_file;
+use crate::project_config::{ProjectConfigError, parse_project_config_file};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -121,6 +121,10 @@ impl AlphaEnvelope {
             )
         })
     }
+}
+
+pub fn status_envelope(data: Value) -> AlphaEnvelope {
+    AlphaEnvelope::success("status", "daemon status", data)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -261,6 +265,18 @@ fn connect_project(
 
     let config = match parse_project_config_file(&config_path) {
         Ok(config) => config,
+        Err(ProjectConfigError::Read { path, source }) => {
+            return ConnectOutcome {
+                envelope: AlphaEnvelope::non_success(
+                    AlphaStatus::Blocked,
+                    "config_unreadable",
+                    "project config cannot be read",
+                    format!("daemon8 cannot safely repair {}: {source}", path.display()),
+                )
+                .with_data(common_data),
+                connection: None,
+            };
+        }
         Err(err) => {
             return ConnectOutcome {
                 envelope: AlphaEnvelope::non_success(
@@ -380,6 +396,20 @@ mod tests {
         let outcome = connect(request(tmp.path()));
         assert_eq!(outcome.envelope.status, AlphaStatus::SetupRequired);
         assert_eq!(outcome.envelope.code, "missing_config");
+        assert!(outcome.connection.is_none());
+    }
+
+    #[test]
+    fn unreadable_project_config_returns_blocked() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
+        let config_path = tmp.path().join(".daemon8").join("config.md");
+        std::fs::create_dir_all(&config_path).unwrap();
+
+        let outcome = connect(request(tmp.path()));
+        assert_eq!(outcome.envelope.status, AlphaStatus::Blocked);
+        assert_eq!(outcome.envelope.code, "config_unreadable");
+        assert!(outcome.envelope.next_actions.is_empty());
         assert!(outcome.connection.is_none());
     }
 

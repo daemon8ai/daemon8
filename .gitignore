@@ -30,4 +30,3 @@ target/
 !/CODE_OF_CONDUCT.md
 !/NOTICE
 !/logo.svg
-!/tools/sandbox/.daemon8.toml

@@ -6,8 +6,10 @@ use std::sync::Arc;
 use daemon8_chrome::ConnectionState;
 use daemon8_mcp::{
     ActParams, Daemon8ConnectParams, Daemon8InitParams, DaemonMcp, DaemonMcpConfig, DebugAction,
+    ObserveParams,
 };
 use daemon8_types::Filter;
+use rmcp::ServiceExt as _;
 use tokio_util::sync::CancellationToken;
 
 const EXPECTED_TOOLS: [&str; 14] = [
@@ -47,10 +49,7 @@ async fn make_mcp_with_cancel(cancel: CancellationToken) -> DaemonMcp {
     let (chrome_tx, _) = tokio::sync::mpsc::channel(16);
     let (_, chrome_state_rx) = tokio::sync::watch::channel(ConnectionState::Disconnected);
     let (broadcast_tx, _) = tokio::sync::broadcast::channel(16);
-    let lens = Arc::new(daemon8_store::LensManager::new(
-        broadcast_tx.subscribe(),
-        None,
-    ));
+    let lens = Arc::new(daemon8_store::LensManager::new(broadcast_tx.subscribe()));
     DaemonMcp::new(DaemonMcpConfig {
         store,
         memory_store: Some(Arc::new(memory_store)),
@@ -63,12 +62,16 @@ async fn make_mcp_with_cancel(cancel: CancellationToken) -> DaemonMcp {
         screenshot_dir: std::env::temp_dir().join("daemon8-test-screenshots"),
         broadcast_tx,
         lens,
-        source_activator: None,
         cancel,
     })
 }
 
 use daemon8_store::SurrealStore;
+
+#[derive(Clone, Default)]
+struct TestClient;
+
+impl rmcp::handler::client::ClientHandler for TestClient {}
 
 fn act_params(action: DebugAction) -> ActParams {
     ActParams {
@@ -220,17 +223,48 @@ async fn runtime_tools_require_connect_first() {
     assert_eq!(parsed["code"], "connect_required");
     assert_eq!(parsed["next_actions"][0]["tool"], "daemon8_connect");
 
-    for tool in [
-        "daemon8_connect",
-        "daemon8_init",
-        "daemon8_status",
-        "daemon8_help",
-    ] {
+    for tool in ["daemon8_connect", "daemon8_init", "daemon8_status"] {
         assert!(
             mcp.connect_preflight_for_tests(tool).is_none(),
             "{tool} should be a connect-first exception"
         );
     }
+
+    assert!(
+        mcp.connect_preflight_for_tests("daemon8_help").is_some(),
+        "daemon8_help should require daemon8_connect"
+    );
+}
+
+#[tokio::test]
+async fn runtime_tools_require_connect_first_through_real_mcp_call() -> anyhow::Result<()> {
+    let mcp = make_mcp().await;
+    let (server_transport, client_transport) = tokio::io::duplex(8192);
+
+    let server = tokio::spawn(async move {
+        mcp.serve(server_transport).await?.waiting().await?;
+        anyhow::Ok(())
+    });
+
+    let client = TestClient.serve(client_transport).await?;
+    let result = client
+        .call_tool(rmcp::model::CallToolRequestParams::new("read_live_feed"))
+        .await?;
+
+    let text = result
+        .content
+        .first()
+        .and_then(|content| content.raw.as_text())
+        .map(|text| text.text.as_str())
+        .expect("connect-first response should be text content");
+    let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(parsed["status"], "connect_required");
+    assert_eq!(parsed["code"], "connect_required");
+    assert_eq!(parsed["next_actions"][0]["tool"], "daemon8_connect");
+
+    client.cancel().await?;
+    server.await??;
+    Ok(())
 }
 
 #[tokio::test]
@@ -248,6 +282,59 @@ async fn connected_session_passes_runtime_tool_preflight() {
     let parsed: serde_json::Value = serde_json::from_str(&connected).unwrap();
     assert_eq!(parsed["status"], "success");
     assert!(mcp.connect_preflight_for_tests("read_live_feed").is_none());
+}
+
+#[tokio::test]
+async fn general_mode_blocks_unfiltered_live_feed_reads() {
+    let mcp = make_mcp().await;
+    let general = tempfile::tempdir().unwrap();
+    let connected = mcp
+        .daemon8_connect_for_tests(Daemon8ConnectParams {
+            provider: "codex".into(),
+            project_path: general.path().display().to_string(),
+            agent_name: None,
+            transcript_path: None,
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&connected).unwrap();
+    assert_eq!(parsed["data"]["mode"], "general");
+
+    let blocked = mcp.read_live_feed_for_tests().await;
+    let parsed: serde_json::Value = serde_json::from_str(&blocked).unwrap();
+    assert_eq!(parsed["status"], "blocked");
+    assert_eq!(parsed["code"], "narrow_filter_required");
+
+    let narrowed = mcp
+        .read_live_feed_for_tests_with(ObserveParams {
+            severity_min: Some("warn".into()),
+            ..Default::default()
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&narrowed).unwrap();
+    assert_eq!(parsed["status"], "success");
+}
+
+#[tokio::test]
+async fn general_mode_blocks_project_only_tools() {
+    let mcp = make_mcp().await;
+    let general = tempfile::tempdir().unwrap();
+    let connected = mcp
+        .daemon8_connect_for_tests(Daemon8ConnectParams {
+            provider: "codex".into(),
+            project_path: general.path().display().to_string(),
+            agent_name: None,
+            transcript_path: None,
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&connected).unwrap();
+    assert_eq!(parsed["data"]["mode"], "general");
+
+    let blocked = mcp
+        .connect_preflight_for_tests("create_checkpoint")
+        .expect("create_checkpoint should require project scope in general mode");
+    let parsed: serde_json::Value = serde_json::from_str(&blocked).unwrap();
+    assert_eq!(parsed["status"], "blocked");
+    assert_eq!(parsed["code"], "project_required");
 }
 
 #[tokio::test]

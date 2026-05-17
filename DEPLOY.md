@@ -56,8 +56,8 @@ with a stable Developer ID so this step is not needed for those.
 auto-restarts on crash.
 
 ```bash
-daemon8 install     # register + start the service
-daemon8 uninstall   # stop + remove the service
+daemon8 service install     # register + start the service
+daemon8 service uninstall   # stop + remove the service
 ```
 
 | Platform | Service type                  | File location                                                 |
@@ -68,8 +68,8 @@ daemon8 uninstall   # stop + remove the service
 
 The launchd plist uses `KeepAlive: true`, which means `kill <pid>` does
 **not** stop the daemon — launchd immediately respawns it. Use
-`daemon8 uninstall` (or `launchctl bootout` on the plist) to actually
-stop.
+`daemon8 service uninstall` (or `launchctl bootout` on the plist) to
+actually stop.
 
 The generated service only passes `serve` as an argument. Chrome
 endpoint, ADB settings, ingestion listeners — all configured via
@@ -82,14 +82,14 @@ endpoint, ADB settings, ingestion listeners — all configured via
 cp ~/.cargo/bin/daemon8 ~/.cargo/bin/daemon8.bak
 
 # 2. Stop and remove service
-daemon8 uninstall
+daemon8 service uninstall
 
 # 3. Build and install new binary
 cargo install --path crates/daemon --force --locked
 codesign --force --sign - ~/.cargo/bin/daemon8   # macOS only
 
 # 4. Re-register and start service
-daemon8 install
+daemon8 service install
 
 # 5. Verify
 daemon8 status
@@ -98,9 +98,9 @@ daemon8 status
 Quick rollback:
 
 ```bash
-daemon8 uninstall
+daemon8 service uninstall
 cp ~/.cargo/bin/daemon8.bak ~/.cargo/bin/daemon8
-daemon8 install
+daemon8 service install
 ```
 
 ## Configuration
@@ -132,7 +132,7 @@ fail at load time — no silent fallbacks.
 | ----------------- | ----------------------------- | ------------------------ | ------------------------------------------- |
 | server            | port                          | `9077`                   | HTTP server port                            |
 | server            | host                          | `127.0.0.1`              | Bind address (IpAddr)                       |
-| storage           | path                          | (platform default)       | SQLite database location                    |
+| storage           | path                          | (platform default)       | SurrealDB/SurrealKV store location          |
 | storage           | screenshot_path               | (resolved from storage)  | Browser screenshot output directory         |
 | browser           | auto_connect                  | `false`                  | Connect to Chrome on startup                |
 | browser           | endpoint                      | `http://localhost:9222`  | Chrome DevTools Protocol URL                |
@@ -184,17 +184,18 @@ Chrome must be launched with remote debugging enabled:
 **Port 9077 in use** (orphaned daemon):
 
 ```bash
-lsof -ti :9077 | xargs kill    # kill whatever holds the port
-daemon8 uninstall              # clean up stale service
-daemon8 install                # fresh start
+daemon8 service uninstall      # stop the managed service first
+lsof -nP -iTCP:9077 -sTCP:LISTEN
+kill <exact-pid>               # only if the listed process is daemon8
+daemon8 service install        # fresh start
 ```
 
 **Orphaned processes**:
 
 ```bash
 pgrep -fl daemon8              # find all daemon processes
-daemon8 uninstall              # remove service (stops respawning)
-pkill -f daemon8               # kill stragglers
+daemon8 service uninstall      # remove service (stops respawning)
+kill <exact-pid>               # only for confirmed daemon8 processes
 ```
 
 **Logs**:
@@ -206,14 +207,12 @@ daemon8 logs -f                # tail -f the latest log
 
 Log directory: `~/Library/Application Support/dev.daemon8.daemon8/logs/` (macOS), `~/.local/share/dev/daemon8/daemon8/logs/` (Linux).
 
-**Doctor**:
+**Status**:
 
 ```bash
-daemon8 doctor             # run diagnostic checks
-daemon8 doctor --fix       # auto-repair issues that can be repaired
+daemon8 status                 # print daemon health and connected sources
+daemon8 service status         # inspect the installed service
 ```
-
-Covers: config file existence, screenshot/data dir writability, port availability, outbound network, macOS launchd service state, App Management TCC grant.
 
 ## Release Workflow
 
@@ -237,4 +236,3 @@ git push origin v0.1.0
 ```
 
 The release workflow triggers automatically from the tag.
-

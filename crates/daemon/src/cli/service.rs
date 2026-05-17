@@ -122,26 +122,12 @@ pub fn cmd_uninstall() -> Result<()> {
         Err(e) => println!("  [--] scheduled task: {e}"),
     }
 
-    // 2. Config directory
     let cfg = crate::config::load(None).unwrap_or_default();
-    remove_path(&cfg.config_dir, "config dir");
-
-    // 3. Data directory (db, logs, screenshots)
-    let db_path = crate::config::resolve_db_path(cfg.storage.path.as_deref());
-    if let Some(data_dir) = db_path.parent() {
-        remove_path(data_dir, "data dir");
+    for target in daemon_owned_removal_targets(&cfg) {
+        remove_path(&target.path, target.label);
     }
+    println!("  [--] project configs untouched (.daemon8/config.md is project-owned)");
 
-    // 4. Project-local .daemon8/config.md
-    let cwd = std::env::current_dir().unwrap_or_default();
-    let cwd_config = cwd
-        .join(crate::cli_config::PROJECT_CONFIG_DIR)
-        .join(crate::cli_config::PROJECT_CONFIG_FILENAME);
-    if cwd_config.exists() {
-        remove_path(&cwd_config, "project config");
-    }
-
-    // 5. Remove daemon8 from provider MCP configs
     let home = daemon8_providers::dirs_home();
     for &provider in daemon8_providers::ALL_PROVIDERS {
         remove_provider_entry(provider, &home);
@@ -150,6 +136,28 @@ pub fn cmd_uninstall() -> Result<()> {
     println!();
     println!("Daemon8 fully uninstalled.");
     Ok(())
+}
+
+struct RemovalTarget {
+    path: PathBuf,
+    label: &'static str,
+}
+
+fn daemon_owned_removal_targets(cfg: &crate::config::Config) -> Vec<RemovalTarget> {
+    let mut targets = vec![RemovalTarget {
+        path: cfg.config_dir.clone(),
+        label: "config dir",
+    }];
+
+    let db_path = crate::config::resolve_db_path(cfg.storage.path.as_deref());
+    if let Some(data_dir) = db_path.parent() {
+        targets.push(RemovalTarget {
+            path: data_dir.to_path_buf(),
+            label: "data dir",
+        });
+    }
+
+    targets
 }
 
 fn remove_path(path: &std::path::Path, label: &str) {
@@ -601,4 +609,39 @@ fn uninstall_schtasks() -> Result<()> {
         anyhow::bail!("schtasks /Delete failed: {stderr}");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn uninstall_targets_only_daemon_owned_paths() {
+        let root = tempfile::tempdir().unwrap();
+        let cfg = crate::config::Config {
+            config_dir: root.path().join("global-config"),
+            storage: crate::config::StorageConfig {
+                path: Some(root.path().join("data").join("store")),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let project_config = root
+            .path()
+            .join(daemon8_core::init::PROJECT_CONFIG_DIR)
+            .join(daemon8_core::init::PROJECT_CONFIG_FILENAME);
+        let targets = daemon_owned_removal_targets(&cfg);
+
+        assert!(targets.iter().any(|target| target.path == cfg.config_dir));
+        assert!(
+            targets
+                .iter()
+                .any(|target| target.path == root.path().join("data"))
+        );
+        assert!(
+            targets.iter().all(|target| target.path != project_config),
+            "service uninstall must never delete project-owned .daemon8/config.md"
+        );
+    }
 }

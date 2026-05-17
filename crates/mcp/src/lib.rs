@@ -9,12 +9,12 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use daemon8_core::control::{
-    AlphaEnvelope, AlphaStatus, ConnectRequest, NextAction, SessionConnection,
-    connect as connect_scope,
+    AlphaEnvelope, AlphaStatus, ConnectRequest, NextAction, ScopeMode, SessionConnection,
+    connect as connect_scope, status_envelope,
 };
 use daemon8_core::init::{InitRequest, init_project};
 use daemon8_store::{ActiveSessionState, DebugSessionStore, LensManager, MemoryStore, StateModel};
-use daemon8_types::{Checkpoint, DevicePlatform, Filter, Observation, SourceActivator};
+use daemon8_types::{Checkpoint, DevicePlatform, Filter, Observation};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{Implementation, ServerCapabilities, ServerInfo, Tool};
@@ -24,7 +24,6 @@ use serde::Deserialize;
 use tokio::sync::broadcast;
 use tracing::Instrument;
 
-pub mod envelope;
 pub mod help;
 use help::FeatureGate;
 
@@ -98,6 +97,27 @@ pub struct ObserveParams {
         description = "Explicit project root for project-aware path hints. When omitted, daemon8 uses this MCP session's cached project context or active debug session."
     )]
     pub project_root: Option<String>,
+}
+
+impl ObserveParams {
+    fn has_narrowing_filter(&self) -> bool {
+        self.kinds.as_ref().is_some_and(|items| !items.is_empty())
+            || self
+                .severity_min
+                .as_ref()
+                .is_some_and(|s| !s.trim().is_empty())
+            || self.origins.as_ref().is_some_and(|items| !items.is_empty())
+            || self
+                .text_match
+                .as_ref()
+                .is_some_and(|s| !s.trim().is_empty())
+            || self.since_checkpoint.is_some()
+            || self
+                .correlation_id
+                .as_ref()
+                .is_some_and(|s| !s.trim().is_empty())
+            || self.tags.as_ref().is_some_and(|items| !items.is_empty())
+    }
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -246,7 +266,7 @@ pub struct IngestParams {
     pub app: Option<String>,
 
     #[schemars(
-        description = "Observation kind: log, metric, query, exception, custom. Defaults to log."
+        description = "Observation kind: log, query, http_exchange, exception, state_snapshot, metric, custom, js_exception, lifecycle, tool_call. Defaults to log."
     )]
     pub kind: Option<String>,
 
@@ -483,7 +503,6 @@ pub struct DaemonMcp {
     subscription_tx: tokio::sync::watch::Sender<Option<Filter>>,
     broadcast_tx: broadcast::Sender<(Arc<Observation>, Arc<str>)>,
     lens: Arc<LensManager>,
-    source_activator: Option<Arc<dyn SourceActivator>>,
     cancel: tokio_util::sync::CancellationToken,
     enabled_features: Vec<FeatureGate>,
     session_id: String,
@@ -503,7 +522,6 @@ pub struct DaemonMcpConfig {
     pub screenshot_dir: std::path::PathBuf,
     pub broadcast_tx: broadcast::Sender<(Arc<Observation>, Arc<str>)>,
     pub lens: Arc<LensManager>,
-    pub source_activator: Option<Arc<dyn SourceActivator>>,
     pub cancel: tokio_util::sync::CancellationToken,
 }
 
@@ -536,7 +554,6 @@ impl DaemonMcp {
             subscription_tx,
             broadcast_tx: cfg.broadcast_tx,
             lens: cfg.lens,
-            source_activator: cfg.source_activator,
             cancel: cfg.cancel,
             enabled_features,
             session_id: next_mcp_session_id(),
@@ -602,6 +619,11 @@ impl DaemonMcp {
     #[cfg(feature = "test-util")]
     pub fn connect_preflight_for_tests(&self, tool: &str) -> Option<String> {
         self.connect_preflight(tool)
+    }
+
+    #[cfg(feature = "test-util")]
+    pub async fn create_checkpoint_for_tests(&self, params: CreateCheckpointParams) -> String {
+        self.create_checkpoint(Parameters(params)).await
     }
 
     #[cfg(feature = "test-util")]
@@ -674,6 +696,15 @@ impl DaemonMcp {
     #[doc = include_str!("../tool_descriptions/read_live_feed.md")]
     #[tool(name = "read_live_feed")]
     async fn read_live_feed(&self, Parameters(params): Parameters<ObserveParams>) -> String {
+        if self.connection_mode() == Some(ScopeMode::General) && !params.has_narrowing_filter() {
+            return self.blocked(
+                "narrow_filter_required",
+                "general mode read_live_feed requires a narrowing filter",
+                Some("add kinds, severity_min, origins, text_match, since_checkpoint, correlation_id, or tags"),
+                None,
+            );
+        }
+
         // If the caller wants browser observations, ensure Chrome is connected.
         let wants_browser = params
             .origins
@@ -708,10 +739,6 @@ impl DaemonMcp {
             tags: params.tags,
             include_system: params.include_system,
         };
-
-        if let Some(ref sa) = self.source_activator {
-            sa.touch_matching(&filter);
-        }
 
         match self.store.query(&filter).await {
             Ok(slice) => {
@@ -797,7 +824,7 @@ impl DaemonMcp {
                         .expect("connection mutex poisoned")
                         .clone();
                     val["connection"] = serde_json::to_value(connection).unwrap_or_default();
-                    self.ok(val)
+                    status_envelope(self.with_session_context(val)).render()
                 }
                 Err(e) => self.err("serialization_failed", &e.to_string(), None, None),
             },
@@ -990,10 +1017,6 @@ impl DaemonMcp {
             include_system: params.include_system,
         };
 
-        if let Some(ref sa) = self.source_activator {
-            sa.touch_matching(&filter);
-        }
-
         let is_default = filter.kinds.is_none()
             && filter.severity_min.is_none()
             && filter.origins.is_none()
@@ -1051,9 +1074,6 @@ impl DaemonMcp {
             include_system: params.include_system,
         };
 
-        if let Some(ref sa) = self.source_activator {
-            sa.touch_matching(&filter);
-        }
         let capacity = params.capacity.unwrap_or(200).min(1000);
         self.lens.set_with_capacity(filter, capacity).await;
 
@@ -1572,8 +1592,33 @@ impl DaemonMcp {
             .is_some()
     }
 
+    fn connection_mode(&self) -> Option<ScopeMode> {
+        self.connection
+            .lock()
+            .expect("connection mutex poisoned")
+            .as_ref()
+            .map(|connection| connection.mode)
+    }
+
     fn connect_preflight(&self, tool: &str) -> Option<String> {
         if !tool_requires_connection(tool) || self.has_connection() {
+            if tool_requires_project(tool) && self.connection_mode() == Some(ScopeMode::General) {
+                return Some(
+                    AlphaEnvelope::non_success(
+                        AlphaStatus::Blocked,
+                        "project_required",
+                        "project scope required",
+                        "reconnect with daemon8_connect using a project path before using this tool",
+                    )
+                    .with_data(self.session_context())
+                    .with_next_action(NextAction::new(
+                        "daemon8_connect",
+                        "bind this MCP session to a project scope",
+                        serde_json::json!({}),
+                    ))
+                    .render(),
+                );
+            }
             return None;
         }
 
@@ -1593,12 +1638,40 @@ impl DaemonMcp {
             .render(),
         )
     }
+
+    fn blocked(
+        &self,
+        code: &str,
+        message: &str,
+        hint: Option<&str>,
+        next_tool: Option<&str>,
+    ) -> String {
+        let mut envelope = AlphaEnvelope::non_success(
+            AlphaStatus::Blocked,
+            code,
+            message,
+            hint.unwrap_or(message),
+        )
+        .with_data(self.session_context());
+        if let Some(tool) = next_tool {
+            envelope = envelope.with_next_action(NextAction::new(
+                tool,
+                "call this tool to continue",
+                serde_json::json!({}),
+            ));
+        }
+        envelope.render()
+    }
 }
 
 fn tool_requires_connection(tool: &str) -> bool {
-    !matches!(
+    !matches!(tool, "daemon8_connect" | "daemon8_init" | "daemon8_status")
+}
+
+fn tool_requires_project(tool: &str) -> bool {
+    matches!(
         tool,
-        "daemon8_connect" | "daemon8_init" | "daemon8_status" | "daemon8_help"
+        "start_debug_session" | "create_checkpoint" | "resolve_debug_session" | "end_debug_session"
     )
 }
 
@@ -2217,7 +2290,6 @@ impl ServerHandler for DaemonMcp {
         let peer = context.peer;
         let mut rx = self.broadcast_tx.subscribe();
         let sub_rx = self.subscription_tx.subscribe();
-        let push_source_activator = self.source_activator.clone();
         let session_cancel = self.cancel.child_token();
         let span = tracing::info_span!("mcp_session", session_id = %session_id);
 
@@ -2252,10 +2324,6 @@ impl ServerHandler for DaemonMcp {
 
                 if !should_push {
                     continue;
-                }
-
-                if let (Some(f), Some(sa)) = (&filter, &push_source_activator) {
-                    sa.touch_matching(f);
                 }
 
                 if last_push.elapsed() < Duration::from_secs(1) {
@@ -2540,7 +2608,7 @@ mod logging_tests {
         let (_, chrome_state) =
             tokio::sync::watch::channel(daemon8_chrome::ConnectionState::Disconnected);
         let (broadcast_tx, _broadcast_rx) = broadcast::channel(8);
-        let lens = Arc::new(LensManager::new(broadcast_tx.subscribe(), None));
+        let lens = Arc::new(LensManager::new(broadcast_tx.subscribe()));
         DaemonMcp::new(DaemonMcpConfig {
             store: store.clone(),
             memory_store: Some(memory_store),
@@ -2553,7 +2621,6 @@ mod logging_tests {
             screenshot_dir: std::env::temp_dir().join("daemon8-test"),
             broadcast_tx,
             lens,
-            source_activator: None,
             cancel: tokio_util::sync::CancellationToken::new(),
         })
     }
@@ -2841,7 +2908,7 @@ mod logging_tests {
             let (_, chrome_state) =
                 tokio::sync::watch::channel(daemon8_chrome::ConnectionState::Disconnected);
             let (broadcast_tx, _broadcast_rx) = broadcast::channel(8);
-            let lens = Arc::new(LensManager::new(broadcast_tx.subscribe(), None));
+            let lens = Arc::new(LensManager::new(broadcast_tx.subscribe()));
             DaemonMcp::new(DaemonMcpConfig {
                 store: shared_store.clone(),
                 memory_store: Some(shared_mem.clone()),
@@ -2854,7 +2921,6 @@ mod logging_tests {
                 screenshot_dir: std::env::temp_dir().join("daemon8-test"),
                 broadcast_tx,
                 lens,
-                source_activator: None,
                 cancel: tokio_util::sync::CancellationToken::new(),
             })
         };

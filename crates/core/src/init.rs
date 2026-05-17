@@ -141,6 +141,22 @@ pub fn init_project(request: InitRequest) -> InitOutcome {
         }
     };
 
+    match std::fs::symlink_metadata(&config_dir) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            return InitOutcome {
+                envelope: AlphaEnvelope::non_success(
+                    AlphaStatus::Blocked,
+                    "unsafe_config_dir",
+                    "project config directory is a symlink",
+                    ".daemon8 must be a real project-local directory before daemon8_init can write config.md",
+                )
+                .with_data(common_data),
+                config_path: Some(config_path),
+            };
+        }
+        Ok(_) | Err(_) => {}
+    }
+
     if let Err(err) = std::fs::create_dir_all(&config_dir) {
         return InitOutcome {
             envelope: AlphaEnvelope::non_success(
@@ -176,7 +192,12 @@ pub fn init_project(request: InitRequest) -> InitOutcome {
     );
 
     InitOutcome {
-        envelope: AlphaEnvelope::success("initialized", "project config written", data),
+        envelope: AlphaEnvelope::success("initialized", "project config written", data)
+            .with_next_action(NextAction::new(
+                "daemon8_connect",
+                "connect this MCP session to the initialized project",
+                json!({"project_path": scope_root.display().to_string()}),
+            )),
         config_path: Some(config_path),
     }
 }
@@ -370,6 +391,7 @@ mod tests {
             overwrite: false,
         });
         assert_eq!(outcome.envelope.status, AlphaStatus::Success);
+        assert_eq!(outcome.envelope.next_actions[0].tool, "daemon8_connect");
 
         let config_path = tmp.path().join(".daemon8").join("config.md");
         let contents = std::fs::read_to_string(config_path).unwrap();
@@ -442,5 +464,25 @@ mod tests {
         assert_eq!(outcome.envelope.status, AlphaStatus::Error);
         assert_eq!(outcome.envelope.code, "invalid_project_name");
         assert!(!tmp.path().join(".daemon8").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn init_rejects_symlinked_config_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        mark_project(tmp.path());
+        let outside = tmp.path().join("outside-config");
+        std::fs::create_dir(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, tmp.path().join(".daemon8")).unwrap();
+
+        let outcome = init_project(InitRequest {
+            project_path: tmp.path().to_path_buf(),
+            name: Some("alpha".into()),
+            overwrite: false,
+        });
+
+        assert_eq!(outcome.envelope.status, AlphaStatus::Blocked);
+        assert_eq!(outcome.envelope.code, "unsafe_config_dir");
+        assert!(!outside.join("config.md").exists());
     }
 }

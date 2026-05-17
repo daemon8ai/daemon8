@@ -4,7 +4,7 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use daemon8_types::{Filter, Observation, SourceActivator};
+use daemon8_types::{Filter, Observation};
 use serde::Serialize;
 use tokio::sync::{Mutex, broadcast};
 
@@ -70,15 +70,12 @@ pub struct LensManager {
 }
 
 impl LensManager {
-    pub fn new(
-        broadcast_rx: broadcast::Receiver<(Arc<Observation>, Arc<str>)>,
-        source_activator: Option<Arc<dyn SourceActivator>>,
-    ) -> Self {
+    pub fn new(broadcast_rx: broadcast::Receiver<(Arc<Observation>, Arc<str>)>) -> Self {
         let inner: Arc<Mutex<Option<ActiveLens>>> = Arc::new(Mutex::new(None));
 
         let pump_inner = inner.clone();
         tokio::spawn(async move {
-            Self::pump(broadcast_rx, pump_inner, source_activator).await;
+            Self::pump(broadcast_rx, pump_inner).await;
         });
 
         Self { inner }
@@ -87,17 +84,13 @@ impl LensManager {
     async fn pump(
         mut rx: broadcast::Receiver<(Arc<Observation>, Arc<str>)>,
         inner: Arc<Mutex<Option<ActiveLens>>>,
-        source_activator: Option<Arc<dyn SourceActivator>>,
     ) {
         loop {
             match rx.recv().await {
                 Ok((obs, _json)) => {
                     let mut guard = inner.lock().await;
-                    if let Some(lens) = guard.as_mut()
-                        && lens.push(Arc::clone(&obs))
-                        && let Some(ref sa) = source_activator
-                    {
-                        sa.touch_matching(&lens.filter);
+                    if let Some(lens) = guard.as_mut() {
+                        lens.push(Arc::clone(&obs));
                     }
                 }
                 Err(broadcast::error::RecvError::Lagged(n)) => {
@@ -238,7 +231,7 @@ mod tests {
     #[tokio::test]
     async fn lens_manager_lifecycle() {
         let (tx, rx) = broadcast::channel::<(Arc<Observation>, Arc<str>)>(64);
-        let manager = LensManager::new(rx, None);
+        let manager = LensManager::new(rx);
 
         let status = manager.status().await;
         assert!(!status.active);
@@ -278,80 +271,5 @@ mod tests {
 
         manager.clear().await;
         assert!(!manager.status().await.active);
-    }
-
-    struct MockActivator {
-        call_count: std::sync::atomic::AtomicUsize,
-    }
-
-    impl MockActivator {
-        fn new() -> Self {
-            Self {
-                call_count: std::sync::atomic::AtomicUsize::new(0),
-            }
-        }
-
-        fn calls(&self) -> usize {
-            self.call_count.load(std::sync::atomic::Ordering::Relaxed)
-        }
-    }
-
-    impl SourceActivator for MockActivator {
-        fn touch_matching(&self, _filter: &Filter) {
-            self.call_count
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        }
-    }
-
-    #[tokio::test]
-    async fn lens_pump_touches_source_activator_on_match() {
-        let activator = Arc::new(MockActivator::new());
-        let (tx, rx) = broadcast::channel::<(Arc<Observation>, Arc<str>)>(64);
-        let manager = LensManager::new(rx, Some(activator.clone() as Arc<dyn SourceActivator>));
-
-        manager
-            .set(Filter {
-                tags: Some(vec!["important".to_string()]),
-                ..Default::default()
-            })
-            .await;
-
-        let obs = Arc::new(make_obs(1, Severity::Info, "important"));
-        let json: Arc<str> = Arc::from(serde_json::to_string(&*obs).unwrap().as_str());
-        tx.send((obs, json)).unwrap();
-
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        assert_eq!(
-            activator.calls(),
-            1,
-            "source activator should be touched when lens matches"
-        );
-    }
-
-    #[tokio::test]
-    async fn lens_pump_does_not_touch_activator_on_non_match() {
-        let activator = Arc::new(MockActivator::new());
-        let (tx, rx) = broadcast::channel::<(Arc<Observation>, Arc<str>)>(64);
-        let manager = LensManager::new(rx, Some(activator.clone() as Arc<dyn SourceActivator>));
-
-        manager
-            .set(Filter {
-                tags: Some(vec!["important".to_string()]),
-                ..Default::default()
-            })
-            .await;
-
-        let obs = Arc::new(make_obs(1, Severity::Info, "noise"));
-        let json: Arc<str> = Arc::from(serde_json::to_string(&*obs).unwrap().as_str());
-        tx.send((obs, json)).unwrap();
-
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        assert_eq!(
-            activator.calls(),
-            0,
-            "source activator should NOT be touched when lens rejects observation"
-        );
     }
 }

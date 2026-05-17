@@ -218,10 +218,6 @@ impl ObservationKindTag {
     }
 }
 
-pub trait SourceActivator: Send + Sync {
-    fn touch_matching(&self, filter: &Filter);
-}
-
 impl fmt::Display for ObservationKindTag {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
@@ -918,7 +914,7 @@ mod tests {
                 trace: Some("stack".into()),
             },
             ObservationKind::StateSnapshot {
-                label: "before-migration".into(),
+                label: "before-action".into(),
             },
             ObservationKind::Metric {
                 name: "cpu".into(),

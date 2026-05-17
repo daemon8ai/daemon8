@@ -11,7 +11,7 @@ Logging a debugging note, sending an alert (severity=warn|error), recording a st
 A connected MCP session. Call `daemon8_connect` first.
 
 ## Args
-  - kind: required string. One of log, query, http_exchange, exception, js_exception, lifecycle, state_snapshot, metric, custom, tool_call.
+  - kind: required string. One of log, query, http_exchange, exception, state_snapshot, metric, custom, js_exception, lifecycle, tool_call.
   - severity: required string. trace | debug | info | warn | error.
   - app: optional string. Origin tag (e.g. "my-api", "agent-name"). Defaults to MCP session app.
   - data: optional object. Free-form payload. Conventional `data.message` for a clean log line.

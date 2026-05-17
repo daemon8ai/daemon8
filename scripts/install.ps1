@@ -106,3 +106,4 @@ Write-Host ""
 Write-Host "  Start daemon8: daemon8 serve" -ForegroundColor DarkGray
 Write-Host "  Install the login service when wanted: daemon8 service install" -ForegroundColor DarkGray
 Write-Host "  Inside a project, initialize alpha config: daemon8 init" -ForegroundColor DarkGray
+Write-Host "  .daemon8/ should stay gitignored; daemon8 does not edit project .gitignore" -ForegroundColor DarkGray

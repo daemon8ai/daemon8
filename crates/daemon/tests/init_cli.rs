@@ -179,6 +179,27 @@ fn config_env_nested_override_applies() {
 }
 
 #[test]
+fn cli_status_json_uses_common_envelope() {
+    let (_tmp, work, home) = setup_dirs();
+    let out = run_daemon8_with_env(&work, &home, &[], &["status", "--json"]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let parsed: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(parsed["status"], "success");
+    assert_eq!(parsed["code"], "status");
+    assert_eq!(parsed["message"], "daemon status");
+    assert!(parsed["data"]["config_path"].is_string());
+    assert!(parsed["data"]["daemon_version"].is_string());
+    assert!(parsed.get("result").is_none());
+    assert!(parsed.get("daemon8").is_none());
+    assert!(parsed.get("error").is_none());
+}
+
+#[test]
 fn cli_install_hooks_flag_is_removed() {
     let (_tmp, work, home) = setup_dirs();
     let out = run_init(&work, &home, &["--install-hooks", "local"]);

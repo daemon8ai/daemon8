@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Havy.tech, LLC
 
 use anyhow::Result;
+use daemon8_core::control::status_envelope;
 use daemon8_types::{HealthStatus, RuntimeSummary};
 use owo_colors::OwoColorize;
 
@@ -37,15 +38,16 @@ pub async fn cmd_status(args: super::ClientArgs) -> Result<()> {
     };
 
     if args.json {
-        let json = serde_json::json!({
+        let data = serde_json::json!({
             "config_path": config_path.display().to_string(),
             "config_exists": config_exists,
             "data_dir": data_dir_display,
             "screenshot_dir": screenshot_dir.display().to_string(),
             "daemon": if running { "running" } else { "stopped" },
             "port": port,
+            "daemon_version": env!("CARGO_PKG_VERSION"),
         });
-        println!("{}", serde_json::to_string_pretty(&json)?);
+        println!("{}", status_envelope(data).render());
         return Ok(());
     }
 
