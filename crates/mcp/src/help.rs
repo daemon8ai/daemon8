@@ -30,7 +30,7 @@ pub static ALL_HELP_TOPICS: &[HelpTopic] = &[
         name: "checkpoint",
         one_liner: "bookmarking moments in the observation stream",
         body: include_str!("../tool_descriptions/help/checkpoint.md"),
-        requires: None,
+        requires: Some(FeatureGate::DebugSession),
     },
     HelpTopic {
         name: "lens",

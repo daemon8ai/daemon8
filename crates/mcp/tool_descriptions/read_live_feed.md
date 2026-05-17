@@ -25,6 +25,7 @@ A connected MCP session. Call `daemon8_connect` first. Observations are live; re
 Common envelope with `data.observations`, `data.total`, optional `data.lens_observations`, `data.lens_count`, `data.browser_state`, and session context.
 
 ## Errors
+  - narrow_filter_required: in general mode, add `kinds`, `severity_min`, `origins`, `text_match`, `since_checkpoint`, `correlation_id`, or `tags`.
   - query_failed: db query error. hint: check daemon logs.
 
 ## Next

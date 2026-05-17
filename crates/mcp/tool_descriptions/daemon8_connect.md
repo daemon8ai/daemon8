@@ -4,7 +4,7 @@ Bind this MCP session to an explicit alpha scope: project, general, or invalid.
 
 ## When
 
-Call once at the start of an LLM session before normal project-aware tools. Retry after `daemon8_init` if the first response returns `setup_required`.
+Call once at the start of an LLM session before any MCP tool except `daemon8_init` and `daemon8_status`. Retry after `daemon8_init` if the first response returns `setup_required`.
 
 ## Prereq
 

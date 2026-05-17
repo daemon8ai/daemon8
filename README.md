@@ -78,7 +78,6 @@ Core runtime tools:
 | `read_live_feed` | Query observations with filters and checkpoint windows. |
 | `write_to_live_feed` | Ingest an agent/app note, metric, exception, or custom event. |
 | `watch_live_feed` | Subscribe this MCP session to live matching observations. |
-| `create_checkpoint` | Bookmark the current observation sequence. |
 | `connect_browser` | Override the browser DevTools endpoint. |
 | `issue_command` | Browser/device action surface: eval JS, screenshot, navigate, storage, viewport, network. |
 | `list_connections` | Inspect browser/app/device connections feeding the stream. |
@@ -87,11 +86,12 @@ Core runtime tools:
 | `clear_lens` | Clear the active lens. |
 | `daemon8_help` | Load focused MCP help topics. |
 
-Debug-session tools are available when debug-session storage is enabled:
+Debug-session tools are available when debug lifecycle storage is enabled:
 
 | Tool | Purpose |
 |------|---------|
 | `start_debug_session` | Open a scoped investigation. |
+| `create_checkpoint` | Bookmark the current observation sequence. |
 | `list_debug_sessions` | Review active or past investigations. |
 | `resolve_debug_session` | Close with a rich SessionSummary. |
 | `end_debug_session` | Close without a fix. |

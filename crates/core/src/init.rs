@@ -170,6 +170,47 @@ pub fn init_project(request: InitRequest) -> InitOutcome {
         };
     }
 
+    match std::fs::symlink_metadata(&config_path) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            return InitOutcome {
+                envelope: AlphaEnvelope::non_success(
+                    AlphaStatus::Blocked,
+                    "unsafe_config_file",
+                    "project config file is a symlink",
+                    ".daemon8/config.md must be a real project-local file before daemon8_init can replace it",
+                )
+                .with_data(common_data),
+                config_path: Some(config_path),
+            };
+        }
+        Ok(meta) if !meta.file_type().is_file() => {
+            return InitOutcome {
+                envelope: AlphaEnvelope::non_success(
+                    AlphaStatus::Blocked,
+                    "unsafe_config_file",
+                    "project config path is not a file",
+                    ".daemon8/config.md must be a real project-local file before daemon8_init can replace it",
+                )
+                .with_data(common_data),
+                config_path: Some(config_path),
+            };
+        }
+        Ok(_) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => {
+            return InitOutcome {
+                envelope: AlphaEnvelope::non_success(
+                    AlphaStatus::Error,
+                    "write_failed",
+                    "failed to inspect project config path",
+                    format!("{}: {err}", config_path.display()),
+                )
+                .with_data(common_data),
+                config_path: Some(config_path),
+            };
+        }
+    }
+
     if let Err(err) = std::fs::write(&config_path, contents) {
         return InitOutcome {
             envelope: AlphaEnvelope::non_success(
@@ -484,5 +525,27 @@ mod tests {
         assert_eq!(outcome.envelope.status, AlphaStatus::Blocked);
         assert_eq!(outcome.envelope.code, "unsafe_config_dir");
         assert!(!outside.join("config.md").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn init_rejects_symlinked_config_file_on_overwrite() {
+        let tmp = tempfile::tempdir().unwrap();
+        mark_project(tmp.path());
+        let config_dir = tmp.path().join(".daemon8");
+        std::fs::create_dir(&config_dir).unwrap();
+        let outside = tmp.path().join("outside-config.md");
+        std::fs::write(&outside, "do not replace").unwrap();
+        std::os::unix::fs::symlink(&outside, config_dir.join("config.md")).unwrap();
+
+        let outcome = init_project(InitRequest {
+            project_path: tmp.path().to_path_buf(),
+            name: Some("alpha".into()),
+            overwrite: true,
+        });
+
+        assert_eq!(outcome.envelope.status, AlphaStatus::Blocked);
+        assert_eq!(outcome.envelope.code, "unsafe_config_file");
+        assert_eq!(std::fs::read_to_string(outside).unwrap(), "do not replace");
     }
 }

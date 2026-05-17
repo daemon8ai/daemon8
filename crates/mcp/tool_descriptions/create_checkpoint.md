@@ -20,7 +20,7 @@ Common envelope with `code="checkpoint_created"`, `data.checkpoint_id`, `data.de
 
 ## Errors
   - no_active_debug_session: no session is open; `next_actions[].tool` points to start_debug_session.
-  - create_checkpoint failed: db write failed. hint: check daemon logs.
+  - create_checkpoint_failed: db write failed. hint: check daemon logs.
 
 ## Next
 

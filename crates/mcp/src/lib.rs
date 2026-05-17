@@ -370,62 +370,6 @@ pub struct LensParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct SaveMemoryParams {
-    #[schemars(description = "The memory content to persist")]
-    pub content: String,
-
-    #[schemars(
-        description = "Memory kind: pattern, decision, error_signature, session_summary, user_flagged. Defaults to user_flagged."
-    )]
-    pub kind: Option<String>,
-
-    #[schemars(description = "Tags for categorization and retrieval")]
-    pub tags: Option<Vec<String>>,
-
-    #[schemars(description = "Observation IDs that informed this memory")]
-    pub source_observations: Option<Vec<u64>>,
-
-    #[schemars(description = "Project slug to scope this memory to")]
-    pub project_slug: Option<String>,
-
-    #[schemars(description = "Session ID that produced this memory")]
-    pub session_id: Option<String>,
-
-    #[schemars(description = "Confidence score from 0.0 to 1.0 (default 1.0)")]
-    pub confidence: Option<f64>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct QueryMemoryParams {
-    #[schemars(description = "Substring search across memory content")]
-    pub text: Option<String>,
-
-    #[schemars(
-        description = "Filter by kind: pattern, decision, error_signature, session_summary, user_flagged"
-    )]
-    pub kinds: Option<Vec<String>>,
-
-    #[schemars(description = "Filter by tags (all listed tags must be present)")]
-    pub tags: Option<Vec<String>>,
-
-    #[schemars(description = "Filter by project slug")]
-    pub project_slug: Option<String>,
-
-    #[schemars(description = "Maximum number of results (default 20)")]
-    pub limit: Option<u64>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct ForgetMemoryParams {
-    #[schemars(description = "The memory ID to delete")]
-    pub id: String,
-    #[schemars(
-        description = "Required to confirm deletion. Must be true to delete the memory; any other value (including absent) returns an error and leaves the memory intact."
-    )]
-    pub confirm: Option<bool>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
 pub struct HelpParams {
     #[schemars(
         description = "Help topic: index, debug_session, checkpoint, lens, observations, envelope. Omit for index."
@@ -536,11 +480,11 @@ impl DaemonMcp {
         let mut router = Self::tool_router();
         router += Self::action_tool_router();
         router += Self::lens_tool_router();
-        if cfg.debug_session_store.is_some() {
+        if cfg.debug_session_store.is_some() && cfg.memory_store.is_some() {
             router += Self::debug_session_tool_router();
         }
         let mut enabled_features = Vec::new();
-        if cfg.debug_session_store.is_some() {
+        if cfg.debug_session_store.is_some() && cfg.memory_store.is_some() {
             enabled_features.push(FeatureGate::DebugSession);
         }
         let (subscription_tx, _) = tokio::sync::watch::channel::<Option<Filter>>(None);
@@ -882,69 +826,6 @@ impl DaemonMcp {
         }
     }
 
-    #[doc = include_str!("../tool_descriptions/create_checkpoint.md")]
-    #[tool(name = "create_checkpoint")]
-    async fn create_checkpoint(
-        &self,
-        Parameters(params): Parameters<CreateCheckpointParams>,
-    ) -> String {
-        let active = match self.active_state.current_session() {
-            Some(s) => s,
-            None => {
-                return self.err(
-                    "no_active_debug_session",
-                    "create_checkpoint requires an active debug session",
-                    Some("call start_debug_session first"),
-                    Some("start_debug_session"),
-                );
-            }
-        };
-        let ds_store = match &self.debug_session_store {
-            Some(s) => s,
-            None => {
-                return self.err(
-                    "internal_error",
-                    "debug_session store not available",
-                    None,
-                    None,
-                );
-            }
-        };
-
-        let seq = self.store.checkpoint().await;
-        let now = current_ns();
-        let cp = daemon8_store::DebugCheckpoint {
-            id: None,
-            debug_session_id: active.id.to_string(),
-            description: params.description,
-            created_at: now,
-            seq_at_creation: seq.0,
-        };
-        let cp_id = match ds_store.create_checkpoint(cp).await {
-            Ok(id) => id,
-            Err(e) => return self.err("create_checkpoint_failed", &e.to_string(), None, None),
-        };
-        self.active_state
-            .set_checkpoint(Some(Arc::from(cp_id.as_str())));
-        active.touch(now);
-        *self
-            .last_checkpoint
-            .lock()
-            .expect("last_checkpoint mutex poisoned") = seq;
-        self.ok_with_code(
-            "checkpoint_created",
-            "checkpoint created",
-            serde_json::json!({
-                "checkpoint_id": cp_id,
-                "debug_session_id": active.id.as_ref(),
-                "seq_at_creation": seq.0,
-                "created_at": now
-            }),
-            vec!["read_live_feed"],
-            Some("checkpoint set; read_live_feed(since_checkpoint=...) returns new entries since this point"),
-        )
-    }
-
     #[doc = include_str!("../tool_descriptions/list_connections.md")]
     #[tool(name = "list_connections")]
     async fn list_connections(&self) -> String {
@@ -1160,16 +1041,6 @@ fn wrap_inner_result(daemon: &DaemonMcp, raw: &str) -> String {
     }
 }
 
-// Without this, an MCP client that misroutes a delete intent silently destroys
-// data. The gate forces an explicit boolean before deletion.
-#[cfg(test)]
-fn check_forget_memory_confirm(confirm: Option<bool>) -> Result<(), String> {
-    match confirm {
-        Some(true) => Ok(()),
-        _ => Err("forget_memory requires confirm=true to delete the memory".into()),
-    }
-}
-
 /// Validate agent_id against the `:host/tool+role>` convention.
 /// All lowercase, bounded by `:` prefix and `>` suffix, `/` separates host from tool,
 /// `+` separates tool from role. Max 64 chars total.
@@ -1202,6 +1073,69 @@ fn validate_agent_id(id: &str) -> Result<(), String> {
 
 #[tool_router(router = debug_session_tool_router, vis = "pub")]
 impl DaemonMcp {
+    #[doc = include_str!("../tool_descriptions/create_checkpoint.md")]
+    #[tool(name = "create_checkpoint")]
+    async fn create_checkpoint(
+        &self,
+        Parameters(params): Parameters<CreateCheckpointParams>,
+    ) -> String {
+        let active = match self.active_state.current_session() {
+            Some(s) => s,
+            None => {
+                return self.err(
+                    "no_active_debug_session",
+                    "create_checkpoint requires an active debug session",
+                    Some("call start_debug_session first"),
+                    Some("start_debug_session"),
+                );
+            }
+        };
+        let ds_store = match &self.debug_session_store {
+            Some(s) => s,
+            None => {
+                return self.err(
+                    "debug_session_unavailable",
+                    "debug_session store not available",
+                    None,
+                    None,
+                );
+            }
+        };
+
+        let seq = self.store.checkpoint().await;
+        let now = current_ns();
+        let cp = daemon8_store::DebugCheckpoint {
+            id: None,
+            debug_session_id: active.id.to_string(),
+            description: params.description,
+            created_at: now,
+            seq_at_creation: seq.0,
+        };
+        let cp_id = match ds_store.create_checkpoint(cp).await {
+            Ok(id) => id,
+            Err(e) => return self.err("create_checkpoint_failed", &e.to_string(), None, None),
+        };
+        self.active_state
+            .set_checkpoint(Some(Arc::from(cp_id.as_str())));
+        active.touch(now);
+        *self
+            .last_checkpoint
+            .lock()
+            .expect("last_checkpoint mutex poisoned") = seq;
+        self.ok_with_code(
+            "checkpoint_created",
+            "checkpoint created",
+            serde_json::json!({
+                "checkpoint_id": cp_id,
+                "debug_session_id": active.id.as_ref(),
+                "seq_at_creation": seq.0,
+                "created_at": now
+            }),
+            vec!["read_live_feed"],
+            Some("checkpoint set; read_live_feed(since_checkpoint=...) returns new entries since this point"),
+        )
+    }
+
     #[doc = include_str!("../tool_descriptions/start_debug_session.md")]
     #[tool(name = "start_debug_session")]
     async fn start_debug_session(
@@ -1393,10 +1327,28 @@ async fn end_or_resolve_inner(daemon: &DaemonMcp, intent: EndIntent) -> String {
 
     let (outcome, summary_text, tags, data_blob) = match intent {
         EndIntent::Abandon { outcome_str } => {
-            let outcome = outcome_str
-                .as_deref()
-                .and_then(|s| s.parse::<daemon8_types::DebugSessionOutcome>().ok())
-                .unwrap_or(daemon8_types::DebugSessionOutcome::Abandoned);
+            let outcome = match outcome_str.as_deref() {
+                None => daemon8_types::DebugSessionOutcome::Abandoned,
+                Some(s) => match s.parse::<daemon8_types::DebugSessionOutcome>() {
+                    Ok(daemon8_types::DebugSessionOutcome::Resolved) => {
+                        return daemon.err(
+                            "bad_outcome",
+                            "end_debug_session cannot resolve a session",
+                            Some("use resolve_debug_session when you have a captured fix"),
+                            Some("resolve_debug_session"),
+                        );
+                    }
+                    Ok(outcome) => outcome,
+                    Err(e) => {
+                        return daemon.err(
+                            "bad_outcome",
+                            &e,
+                            Some("allowed outcomes are abandoned and in_progress"),
+                            None,
+                        );
+                    }
+                },
+            };
             let summary = format!(
                 "Debug session abandoned. Project: {}, started_at_ns: {}, checkpoints: {}.",
                 active.project_slug,
@@ -1817,6 +1769,7 @@ impl DaemonMcp {
     }
 
     fn connect_preflight(&self, tool: &str) -> Option<String> {
+        self.tool_router.get(tool)?;
         let policy = tool_policy(tool)?;
         match policy {
             ToolPolicy::PreConnectAllowed => None,
@@ -2689,69 +2642,6 @@ impl ServerHandler for DaemonMcp {
     }
 }
 
-/// Internal handler for typed persistence. Extracted so API/tests can drive it
-/// against an in-memory `MemoryStore` without spinning up DaemonMcp.
-pub async fn save_memory_inner(mem_store: &dyn MemoryStore, params: SaveMemoryParams) -> String {
-    let kind = params
-        .kind
-        .as_deref()
-        .and_then(|s| s.parse::<daemon8_types::MemoryKind>().ok())
-        .unwrap_or(daemon8_types::MemoryKind::UserFlagged);
-
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos() as u64;
-
-    let memory = daemon8_store::Memory {
-        id: None,
-        created_at: now,
-        updated_at: now,
-        kind,
-        content: params.content,
-        source_observations: params.source_observations.unwrap_or_default(),
-        tags: params.tags.unwrap_or_default(),
-        project_slug: params.project_slug.unwrap_or_default(),
-        session_id: params.session_id,
-        confidence: params.confidence.unwrap_or(1.0),
-        data: None,
-    };
-
-    match mem_store.save_memory(memory).await {
-        Ok(id) => serde_json::to_string(&serde_json::json!({ "id": id })).unwrap_or_default(),
-        Err(e) => error_json("save_memory_failed", &format!("save_memory failed: {e}")),
-    }
-}
-
-/// Internal handler for typed persistence lookup. Extracted so API/tests can drive it
-/// against an in-memory `MemoryStore` without spinning up DaemonMcp.
-pub async fn query_memory_inner(mem_store: &dyn MemoryStore, params: QueryMemoryParams) -> String {
-    let kinds = params.kinds.map(|v| {
-        v.into_iter()
-            .filter_map(|s| s.parse::<daemon8_types::MemoryKind>().ok())
-            .collect()
-    });
-
-    let filter = daemon8_store::MemoryFilter {
-        kinds,
-        tags: params.tags,
-        project_slug: params.project_slug,
-        session_id: None,
-        text_match: params.text,
-        limit: Some(params.limit.unwrap_or(20).min(500) as usize),
-    };
-
-    match mem_store.query_memory(&filter).await {
-        Ok(memories) => serde_json::to_string_pretty(&memories).unwrap_or_else(|e| {
-            error_json(
-                "serialization_failed",
-                &format!("serialization failed: {e}"),
-            )
-        }),
-        Err(e) => error_json("query_memory_failed", &format!("query_memory failed: {e}")),
-    }
-}
-
 fn logging_notification(obs: &Observation) -> rmcp::model::LoggingMessageNotificationParam {
     let severity_str = obs.severity.to_string();
     let kind_str = obs.kind.tag().to_string();
@@ -2794,48 +2684,6 @@ mod logging_tests {
     fn mcp_session_ids_are_stable_and_prefixed() {
         let id = next_mcp_session_id();
         assert!(id.starts_with("mcp-"));
-    }
-
-    #[test]
-    fn forget_memory_gate_rejects_missing_confirm() {
-        let result = check_forget_memory_confirm(None);
-        let err = result.expect_err("missing confirm should error");
-        assert!(
-            err.contains("confirm=true"),
-            "error message should name the required field: {err}"
-        );
-    }
-
-    #[test]
-    fn forget_memory_gate_rejects_confirm_false() {
-        let result = check_forget_memory_confirm(Some(false));
-        assert!(result.is_err(), "confirm=false should error");
-    }
-
-    #[test]
-    fn forget_memory_gate_accepts_confirm_true() {
-        let result = check_forget_memory_confirm(Some(true));
-        assert!(result.is_ok(), "confirm=true should pass");
-    }
-
-    #[test]
-    fn forget_memory_params_parses_without_confirm() {
-        let p: ForgetMemoryParams = serde_json::from_str(r#"{"id":"abc"}"#).unwrap();
-        assert_eq!(p.id, "abc");
-        assert_eq!(p.confirm, None);
-    }
-
-    #[test]
-    fn forget_memory_params_parses_with_confirm_true() {
-        let p: ForgetMemoryParams = serde_json::from_str(r#"{"id":"abc","confirm":true}"#).unwrap();
-        assert_eq!(p.confirm, Some(true));
-    }
-
-    #[test]
-    fn forget_memory_params_parses_with_confirm_false() {
-        let p: ForgetMemoryParams =
-            serde_json::from_str(r#"{"id":"abc","confirm":false}"#).unwrap();
-        assert_eq!(p.confirm, Some(false));
     }
 
     async fn build_mcp_with_debug_session() -> DaemonMcp {
@@ -3067,41 +2915,6 @@ mod logging_tests {
             .await;
         let parsed: serde_json::Value = serde_json::from_str(&all).unwrap();
         assert_eq!(parsed["data"]["count"], 2);
-    }
-
-    #[tokio::test]
-    async fn save_memory_inner_persists_curated_memory() {
-        let store = daemon8_store::SurrealStore::memory().await.unwrap();
-        let mem_store = store.memory_store();
-        mem_store.init_schema().await.unwrap();
-
-        let result = save_memory_inner(
-            &mem_store,
-            SaveMemoryParams {
-                content: "Prefer checkpoints before runtime checks.".into(),
-                kind: Some("decision".into()),
-                tags: Some(vec!["project:daemon8".into(), "kind:test".into()]),
-                source_observations: Some(vec![42]),
-                project_slug: Some("daemon8".into()),
-                session_id: Some("test-session".into()),
-                confidence: Some(0.9),
-            },
-        )
-        .await;
-
-        let value: serde_json::Value = serde_json::from_str(&result).unwrap();
-        let id = value["id"]
-            .as_str()
-            .expect("save_memory should return an id");
-        let saved = mem_store.get_memory(id).await.unwrap().unwrap();
-
-        assert_eq!(saved.kind, daemon8_types::MemoryKind::Decision);
-        assert_eq!(saved.content, "Prefer checkpoints before runtime checks.");
-        assert_eq!(saved.source_observations, vec![42]);
-        assert_eq!(saved.tags, vec!["project:daemon8", "kind:test"]);
-        assert_eq!(saved.project_slug, "daemon8");
-        assert_eq!(saved.session_id.as_deref(), Some("test-session"));
-        assert_eq!(saved.confidence, 0.9);
     }
 
     #[test]

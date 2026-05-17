@@ -21,7 +21,7 @@ Branch on `status`, then `code`.
 - `success`: continue.
 - `connect_required`: call `daemon8_connect`.
 - `setup_required`: call the next action, usually `daemon8_init`, then retry `daemon8_connect`.
-- `blocked`: user intent or explicit overwrite/confirm input is needed.
+- `blocked`: follow `next_actions` when present; otherwise adjust the request according to `why`/`message` or ask for explicit user input when required.
 - `error`: surface `message` and `why`.
 
 ## Connect-first flow

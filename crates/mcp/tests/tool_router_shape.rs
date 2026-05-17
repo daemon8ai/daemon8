@@ -12,12 +12,11 @@ use daemon8_types::Filter;
 use rmcp::ServiceExt as _;
 use tokio_util::sync::CancellationToken;
 
-const EXPECTED_TOOLS: [&str; 14] = [
+const EXPECTED_TOOLS: [&str; 13] = [
     "read_live_feed",
     "daemon8_connect",
     "daemon8_init",
     "daemon8_status",
-    "create_checkpoint",
     "list_connections",
     "write_to_live_feed",
     "watch_live_feed",
@@ -29,7 +28,8 @@ const EXPECTED_TOOLS: [&str; 14] = [
     "daemon8_help",
 ];
 
-const DEBUG_TOOLS: [&str; 4] = [
+const DEBUG_TOOLS: [&str; 5] = [
+    "create_checkpoint",
     "start_debug_session",
     "list_debug_sessions",
     "resolve_debug_session",
@@ -363,8 +363,10 @@ async fn debug_enabled_mcp_exposes_debug_tool_surface() {
 }
 
 #[tokio::test]
-async fn debug_ledger_store_exposes_debug_tool_surface_without_memory() {
+async fn debug_lifecycle_tools_require_memory_for_summary_capture() {
     let mcp = make_mcp_with_debug_without_memory().await;
+    let general = tempfile::tempdir().unwrap();
+    let path = general.path().display().to_string();
     let names: Vec<String> = mcp
         .tools_for_client()
         .iter()
@@ -373,10 +375,67 @@ async fn debug_ledger_store_exposes_debug_tool_surface_without_memory() {
 
     for expected in DEBUG_TOOLS {
         assert!(
-            names.iter().any(|n| n == expected),
-            "debug session ledger should expose '{expected}' even when memory storage is absent"
+            !names.iter().any(|n| n == expected),
+            "debug lifecycle tool '{expected}' must not be exposed without summary memory storage"
         );
     }
+
+    let (server_transport, client_transport) = tokio::io::duplex(8192);
+    let server = tokio::spawn(async move {
+        mcp.serve(server_transport).await?.waiting().await?;
+        anyhow::Ok(())
+    });
+    let client = TestClient.serve(client_transport).await.unwrap();
+
+    let pre_connect = client
+        .call_tool(tool_request(
+            "start_debug_session",
+            serde_json::json!({
+                "project": "daemon8",
+                "description": "hidden without memory",
+                "agent_id": ":host/codex+worker>",
+                "feature": null,
+            }),
+        ))
+        .await;
+    assert!(
+        pre_connect.is_err(),
+        "hidden debug tools must not be masked by connect preflight"
+    );
+
+    let connect = client
+        .call_tool(tool_request(
+            "daemon8_connect",
+            serde_json::json!({
+                "provider": "codex",
+                "project_path": path,
+                "agent_name": null,
+                "transcript_path": null,
+            }),
+        ))
+        .await
+        .unwrap();
+    let parsed = result_json(&connect);
+    assert_eq!(parsed["status"], "success");
+
+    let post_connect = client
+        .call_tool(tool_request(
+            "start_debug_session",
+            serde_json::json!({
+                "project": "daemon8",
+                "description": "hidden without memory",
+                "agent_id": ":host/codex+worker>",
+                "feature": null,
+            }),
+        ))
+        .await;
+    assert!(
+        post_connect.is_err(),
+        "hidden debug tools must stay owned by the MCP router after connect"
+    );
+
+    client.cancel().await.unwrap();
+    server.await.unwrap().unwrap();
 }
 
 #[tokio::test]
@@ -468,6 +527,7 @@ async fn daemon8_init_then_connect_sets_session_connection() {
 #[tokio::test]
 async fn runtime_tools_require_connect_first() {
     let mcp = make_mcp().await;
+    let debug_mcp = make_mcp_with_debug().await;
 
     let body = mcp
         .connect_preflight_for_tests("read_live_feed")
@@ -484,12 +544,16 @@ async fn runtime_tools_require_connect_first() {
         );
     }
 
-    for tool in ["daemon8_help", "list_debug_sessions"] {
-        assert!(
-            mcp.connect_preflight_for_tests(tool).is_some(),
-            "{tool} should require daemon8_connect"
-        );
-    }
+    assert!(
+        mcp.connect_preflight_for_tests("daemon8_help").is_some(),
+        "daemon8_help should require daemon8_connect"
+    );
+    assert!(
+        debug_mcp
+            .connect_preflight_for_tests("list_debug_sessions")
+            .is_some(),
+        "list_debug_sessions should require daemon8_connect"
+    );
 }
 
 #[tokio::test]
@@ -541,11 +605,10 @@ async fn unknown_tools_are_not_masked_by_connect_preflight() -> anyhow::Result<(
             "definitely_unknown",
         ))
         .await;
-    if let Ok(result) = pre_connect {
-        let parsed = serde_json::from_str::<serde_json::Value>(result_text(&result))
-            .unwrap_or(serde_json::Value::Null);
-        assert_ne!(parsed["code"], "connect_required");
-    }
+    assert!(
+        pre_connect.is_err(),
+        "unknown pre-connect tools must stay owned by the MCP router"
+    );
 
     let connect = client
         .call_tool(tool_request(
@@ -566,11 +629,10 @@ async fn unknown_tools_are_not_masked_by_connect_preflight() -> anyhow::Result<(
             "definitely_unknown",
         ))
         .await;
-    if let Ok(result) = post_connect {
-        let parsed = serde_json::from_str::<serde_json::Value>(result_text(&result))
-            .unwrap_or(serde_json::Value::Null);
-        assert_ne!(parsed["code"], "connect_required");
-    }
+    assert!(
+        post_connect.is_err(),
+        "unknown post-connect tools must stay owned by the MCP router"
+    );
 
     client.cancel().await?;
     server.await??;
@@ -656,7 +718,7 @@ async fn general_mode_blocks_unfiltered_live_feed_reads() {
 
 #[tokio::test]
 async fn general_mode_blocks_project_only_tools() {
-    let mcp = make_mcp().await;
+    let mcp = make_mcp_with_debug().await;
     let general = tempfile::tempdir().unwrap();
     let connected = mcp
         .daemon8_connect_for_tests(Daemon8ConnectParams {
@@ -823,6 +885,10 @@ async fn debug_lifecycle_codes_are_stable_through_real_mcp_calls() -> anyhow::Re
     let parsed = result_json(&started);
     assert_eq!(parsed["status"], "success");
     assert_eq!(parsed["code"], "debug_session_started");
+    let first_session_id = parsed["data"]["debug_session_id"]
+        .as_str()
+        .expect("start response must include debug_session_id")
+        .to_string();
 
     let checkpoint = client
         .call_tool(tool_request(
@@ -835,6 +901,7 @@ async fn debug_lifecycle_codes_are_stable_through_real_mcp_calls() -> anyhow::Re
     let parsed = result_json(&checkpoint);
     assert_eq!(parsed["status"], "success");
     assert_eq!(parsed["code"], "checkpoint_created");
+    assert_eq!(parsed["data"]["debug_session_id"], first_session_id);
 
     let resolved = client
         .call_tool(tool_request(
@@ -852,6 +919,23 @@ async fn debug_lifecycle_codes_are_stable_through_real_mcp_calls() -> anyhow::Re
     let parsed = result_json(&resolved);
     assert_eq!(parsed["status"], "success");
     assert_eq!(parsed["code"], "debug_session_resolved");
+    assert_eq!(parsed["data"]["debug_session_id"], first_session_id);
+    assert_eq!(parsed["data"]["checkpoint_count"], 1);
+    assert_eq!(parsed["data"]["evidence_ref"]["kind"], "session_summary");
+
+    let completed = client
+        .call_tool(tool_request(
+            "list_debug_sessions",
+            serde_json::json!({
+                "status": "completed",
+                "feature": "mcp",
+            }),
+        ))
+        .await?;
+    let parsed = result_json(&completed);
+    assert_eq!(parsed["status"], "success");
+    assert_eq!(parsed["code"], "debug_sessions_listed");
+    assert_eq!(parsed["data"]["count"], 1);
 
     let restarted = client
         .call_tool(tool_request(
@@ -866,6 +950,23 @@ async fn debug_lifecycle_codes_are_stable_through_real_mcp_calls() -> anyhow::Re
         .await?;
     let parsed = result_json(&restarted);
     assert_eq!(parsed["code"], "debug_session_started");
+    let second_session_id = parsed["data"]["debug_session_id"]
+        .as_str()
+        .expect("restart response must include debug_session_id")
+        .to_string();
+
+    let rejected = client
+        .call_tool(tool_request(
+            "end_debug_session",
+            serde_json::json!({
+                "outcome": "resolved",
+            }),
+        ))
+        .await?;
+    let parsed = result_json(&rejected);
+    assert_eq!(parsed["status"], "error");
+    assert_eq!(parsed["code"], "bad_outcome");
+    assert_eq!(parsed["next_actions"][0]["tool"], "resolve_debug_session");
 
     let ended = client
         .call_tool(tool_request(
@@ -878,6 +979,21 @@ async fn debug_lifecycle_codes_are_stable_through_real_mcp_calls() -> anyhow::Re
     let parsed = result_json(&ended);
     assert_eq!(parsed["status"], "success");
     assert_eq!(parsed["code"], "debug_session_ended");
+    assert_eq!(parsed["data"]["debug_session_id"], second_session_id);
+
+    let abandoned = client
+        .call_tool(tool_request(
+            "list_debug_sessions",
+            serde_json::json!({
+                "status": "abandoned",
+                "feature": "mcp",
+            }),
+        ))
+        .await?;
+    let parsed = result_json(&abandoned);
+    assert_eq!(parsed["status"], "success");
+    assert_eq!(parsed["code"], "debug_sessions_listed");
+    assert_eq!(parsed["data"]["count"], 1);
 
     client.cancel().await?;
     server.await??;
@@ -886,7 +1002,7 @@ async fn debug_lifecycle_codes_are_stable_through_real_mcp_calls() -> anyhow::Re
 
 #[tokio::test]
 async fn project_mode_allows_project_only_debug_tools() {
-    let mcp = make_mcp().await;
+    let mcp = make_mcp_with_debug().await;
     let project = tempfile::tempdir().unwrap();
     mark_project(project.path());
 
@@ -911,7 +1027,7 @@ async fn project_mode_allows_project_only_debug_tools() {
     let parsed: serde_json::Value = serde_json::from_str(&connected).unwrap();
     assert_eq!(parsed["data"]["mode"], "project");
 
-    for tool in DEBUG_TOOLS.into_iter().chain(["create_checkpoint"]) {
+    for tool in DEBUG_TOOLS {
         assert!(
             mcp.connect_preflight_for_tests(tool).is_none(),
             "{tool} should pass preflight in project mode"
