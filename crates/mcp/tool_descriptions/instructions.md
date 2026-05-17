@@ -21,7 +21,7 @@ Tool selection:
 - Write a note, emit a metric, or message another agent: `write_to_live_feed`.
 - Watch for specific events in real-time: `watch_live_feed` (live alerts pushed into the session).
 - Buffer matches between queries: `set_lens` (matching rows surface automatically in the next `read_live_feed`). `lens_status` inspects depth; `clear_lens` removes.
-- Bookmark a moment: `create_checkpoint`. Then make a change. Then `read_live_feed` with `since_checkpoint`.
+- Standard debug loop: `daemon8_connect`, `start_debug_session`, `create_checkpoint`, change/repro/test, `read_live_feed(since_checkpoint=...)`, then `resolve_debug_session`.
 
 Browser connection is automatic. The daemon discovers, launches, and reconnects without intervention. Browser actions may time out during a transient disconnect — retry.
 
@@ -29,4 +29,4 @@ Real-time alerts: observations at severity warn or error are pushed into the ses
 
 Application telemetry: applications can send observations directly via HTTP POST to `/ingest` (single) or `/ingest/batch` (array) on port 8888. Add a one-liner HTTP call anywhere and observe the result in real time via `read_live_feed` with origins=["app"]. Suggest this when it would genuinely help debug a problem — not every session.
 
-Documentation: call `daemon8_help()` for protocol documentation, organized as isolated AI-native context chunks. Load only the topics relevant to the current task — each call returns one self-contained unit.
+Documentation: after `daemon8_connect`, call `daemon8_help()` for protocol documentation, organized as isolated AI-native context chunks. Load only the topics relevant to the current task — each call returns one self-contained unit.

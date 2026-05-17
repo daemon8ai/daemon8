@@ -536,11 +536,11 @@ impl DaemonMcp {
         let mut router = Self::tool_router();
         router += Self::action_tool_router();
         router += Self::lens_tool_router();
-        if cfg.debug_session_store.is_some() && cfg.memory_store.is_some() {
+        if cfg.debug_session_store.is_some() {
             router += Self::debug_session_tool_router();
         }
         let mut enabled_features = Vec::new();
-        if cfg.debug_session_store.is_some() && cfg.memory_store.is_some() {
+        if cfg.debug_session_store.is_some() {
             enabled_features.push(FeatureGate::DebugSession);
         }
         let (subscription_tx, _) = tokio::sync::watch::channel::<Option<Filter>>(None);
@@ -931,7 +931,9 @@ impl DaemonMcp {
             .last_checkpoint
             .lock()
             .expect("last_checkpoint mutex poisoned") = seq;
-        self.ok_with(
+        self.ok_with_code(
+            "checkpoint_created",
+            "checkpoint created",
             serde_json::json!({
                 "checkpoint_id": cp_id,
                 "debug_session_id": active.id.as_ref(),
@@ -1260,7 +1262,9 @@ impl DaemonMcp {
                         agent_id: Arc::from(params.agent_id.as_str()),
                         feature: params.feature.as_deref().map(Arc::from),
                     }));
-                self.ok_with(
+                self.ok_with_code(
+                    "debug_session_started",
+                    "debug session started",
                     serde_json::json!({
                         "debug_session_id": id,
                         "started_at": now,
@@ -1326,10 +1330,14 @@ impl DaemonMcp {
                 if let Some(ref feat) = params.feature {
                     sessions.retain(|s| s.feature.as_deref() == Some(feat.as_str()));
                 }
-                self.ok(serde_json::json!({
-                    "count": sessions.len(),
-                    "sessions": sessions,
-                }))
+                self.ok_code(
+                    "debug_sessions_listed",
+                    "debug sessions listed",
+                    serde_json::json!({
+                        "count": sessions.len(),
+                        "sessions": sessions,
+                    }),
+                )
             }
             Err(e) => self.err("list_debug_sessions_failed", &e.to_string(), None, None),
         }
@@ -1511,10 +1519,21 @@ async fn end_or_resolve_inner(daemon: &DaemonMcp, intent: EndIntent) -> String {
         "kind": "session_summary",
         "id": summary_memory_id.clone(),
     });
+    let (code, message) = match outcome {
+        daemon8_types::DebugSessionOutcome::Resolved => {
+            ("debug_session_resolved", "debug session resolved")
+        }
+        daemon8_types::DebugSessionOutcome::Abandoned
+        | daemon8_types::DebugSessionOutcome::InProgress => {
+            ("debug_session_ended", "debug session ended")
+        }
+    };
     let next_actions = vec!["start_debug_session", "list_debug_sessions"];
     let hint = "session closed; start_debug_session for the next investigation";
 
-    daemon.ok_with(
+    daemon.ok_with_code(
+        code,
+        message,
         serde_json::json!({
             "debug_session_id": active.id.as_ref(),
             "summary_memory_id": summary_memory_id,
@@ -1613,7 +1632,11 @@ fn alpha_status_str(status: AlphaStatus) -> &'static str {
 
 impl DaemonMcp {
     pub(crate) fn ok(&self, value: serde_json::Value) -> String {
-        AlphaEnvelope::success("ok", "ok", self.with_session_context(value)).render()
+        self.ok_code("ok", "ok", value)
+    }
+
+    pub(crate) fn ok_code(&self, code: &str, message: &str, value: serde_json::Value) -> String {
+        AlphaEnvelope::success(code, message, self.with_session_context(value)).render()
     }
 
     pub(crate) fn ok_with(
@@ -1622,7 +1645,18 @@ impl DaemonMcp {
         next_actions: Vec<&str>,
         hint: Option<&str>,
     ) -> String {
-        let mut envelope = AlphaEnvelope::success("ok", "ok", self.with_session_context(value));
+        self.ok_with_code("ok", "ok", value, next_actions, hint)
+    }
+
+    pub(crate) fn ok_with_code(
+        &self,
+        code: &str,
+        message: &str,
+        value: serde_json::Value,
+        next_actions: Vec<&str>,
+        hint: Option<&str>,
+    ) -> String {
+        let mut envelope = AlphaEnvelope::success(code, message, self.with_session_context(value));
         for action in next_actions {
             envelope = envelope.with_next_action(NextAction::new(
                 action,
@@ -1783,42 +1817,42 @@ impl DaemonMcp {
     }
 
     fn connect_preflight(&self, tool: &str) -> Option<String> {
-        if !tool_requires_connection(tool) || self.has_connection() {
-            if tool_requires_project(tool) && self.connection_mode() == Some(ScopeMode::General) {
-                return Some(
-                    AlphaEnvelope::non_success(
-                        AlphaStatus::Blocked,
-                        "project_required",
-                        "project scope required",
-                        "reconnect with daemon8_connect using a project path before using this tool",
-                    )
-                    .with_data(self.session_context())
-                    .with_next_action(NextAction::new(
-                        "daemon8_connect",
-                        "bind this MCP session to a project scope",
-                        serde_json::json!({}),
-                    ))
-                    .render(),
-                );
-            }
-            return None;
+        let policy = tool_policy(tool)?;
+        match policy {
+            ToolPolicy::PreConnectAllowed => None,
+            ToolPolicy::GeneralSafe if self.has_connection() => None,
+            ToolPolicy::ProjectOnly if self.connection_mode() == Some(ScopeMode::Project) => None,
+            ToolPolicy::ProjectOnly if self.connection_mode() == Some(ScopeMode::General) => Some(
+                AlphaEnvelope::non_success(
+                    AlphaStatus::Blocked,
+                    "project_required",
+                    "project scope required",
+                    "reconnect with daemon8_connect using a project path before using this tool",
+                )
+                .with_data(self.session_context())
+                .with_next_action(NextAction::new(
+                    "daemon8_connect",
+                    "bind this MCP session to a project scope",
+                    serde_json::json!({}),
+                ))
+                .render(),
+            ),
+            ToolPolicy::GeneralSafe | ToolPolicy::ProjectOnly => Some(
+                AlphaEnvelope::non_success(
+                    AlphaStatus::ConnectRequired,
+                    "connect_required",
+                    "daemon8_connect required",
+                    "call daemon8_connect before using runtime tools in this MCP session",
+                )
+                .with_data(self.session_context())
+                .with_next_action(NextAction::new(
+                    "daemon8_connect",
+                    "bind this MCP session to a project or general scope",
+                    serde_json::json!({}),
+                ))
+                .render(),
+            ),
         }
-
-        Some(
-            AlphaEnvelope::non_success(
-                AlphaStatus::ConnectRequired,
-                "connect_required",
-                "daemon8_connect required",
-                "call daemon8_connect before using runtime tools in this MCP session",
-            )
-            .with_data(self.session_context())
-            .with_next_action(NextAction::new(
-                "daemon8_connect",
-                "bind this MCP session to a project or general scope",
-                serde_json::json!({}),
-            ))
-            .render(),
-        )
     }
 
     fn blocked(
@@ -1846,15 +1880,38 @@ impl DaemonMcp {
     }
 }
 
-fn tool_requires_connection(tool: &str) -> bool {
-    !matches!(tool, "daemon8_connect" | "daemon8_init" | "daemon8_status")
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolPolicy {
+    PreConnectAllowed,
+    GeneralSafe,
+    ProjectOnly,
 }
 
-fn tool_requires_project(tool: &str) -> bool {
-    matches!(
-        tool,
-        "start_debug_session" | "create_checkpoint" | "resolve_debug_session" | "end_debug_session"
-    )
+pub const TOOL_POLICY_TABLE: &[(&str, ToolPolicy)] = &[
+    ("daemon8_connect", ToolPolicy::PreConnectAllowed),
+    ("daemon8_init", ToolPolicy::PreConnectAllowed),
+    ("daemon8_status", ToolPolicy::PreConnectAllowed),
+    ("read_live_feed", ToolPolicy::GeneralSafe),
+    ("list_connections", ToolPolicy::GeneralSafe),
+    ("write_to_live_feed", ToolPolicy::GeneralSafe),
+    ("watch_live_feed", ToolPolicy::GeneralSafe),
+    ("issue_command", ToolPolicy::GeneralSafe),
+    ("connect_browser", ToolPolicy::GeneralSafe),
+    ("set_lens", ToolPolicy::GeneralSafe),
+    ("clear_lens", ToolPolicy::GeneralSafe),
+    ("lens_status", ToolPolicy::GeneralSafe),
+    ("daemon8_help", ToolPolicy::GeneralSafe),
+    ("list_debug_sessions", ToolPolicy::GeneralSafe),
+    ("start_debug_session", ToolPolicy::ProjectOnly),
+    ("create_checkpoint", ToolPolicy::ProjectOnly),
+    ("resolve_debug_session", ToolPolicy::ProjectOnly),
+    ("end_debug_session", ToolPolicy::ProjectOnly),
+];
+
+pub fn tool_policy(tool: &str) -> Option<ToolPolicy> {
+    TOOL_POLICY_TABLE
+        .iter()
+        .find_map(|(name, policy)| (*name == tool).then_some(*policy))
 }
 
 // Command handler implementations (inner methods, not registered with tool_router).
@@ -2823,6 +2880,7 @@ mod logging_tests {
             }))
             .await;
         let started: serde_json::Value = serde_json::from_str(&start_res).unwrap();
+        assert_eq!(started["code"], "debug_session_started");
         let session_id = started["data"]["debug_session_id"]
             .as_str()
             .unwrap()
@@ -2843,6 +2901,7 @@ mod logging_tests {
             }))
             .await;
         let resolved: serde_json::Value = serde_json::from_str(&resolve_res).unwrap();
+        assert_eq!(resolved["code"], "debug_session_resolved");
         assert_eq!(resolved["data"]["debug_session_id"], session_id);
         assert_eq!(resolved["data"]["project_slug"], "daemon8");
         let memory_id = resolved["data"]["summary_memory_id"].as_str().unwrap();
@@ -2933,6 +2992,7 @@ mod logging_tests {
             .await;
         let parsed: serde_json::Value = serde_json::from_str(&res).unwrap();
         let result = &parsed["data"];
+        assert_eq!(parsed["code"], "checkpoint_created");
         let cp_id = result["checkpoint_id"].as_str().unwrap();
         assert!(result["seq_at_creation"].is_number());
         // Envelope echoes the active session.
@@ -2996,6 +3056,7 @@ mod logging_tests {
             }))
             .await;
         let parsed: serde_json::Value = serde_json::from_str(&active_only).unwrap();
+        assert_eq!(parsed["code"], "debug_sessions_listed");
         assert_eq!(parsed["data"]["count"], 1);
 
         let all = mcp
@@ -3281,6 +3342,7 @@ mod logging_tests {
                 .await,
         )
         .unwrap();
+        assert_eq!(end_res["code"], "debug_session_ended");
         assert!(
             end_res["data"]["debug_session_id"].is_string(),
             "end must succeed: {end_res}"

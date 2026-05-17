@@ -26,4 +26,4 @@ Branch on `status`, then `code`.
 
 ## Connect-first flow
 
-`daemon8_connect` binds the MCP session to project or general mode. `daemon8_status` is the diagnostic exception and may be called before connect.
+`daemon8_connect` binds the MCP session to project or general mode. `daemon8_status` is the diagnostic pre-connect exception. `daemon8_init` is also allowed before connect when setup is required or the user explicitly asks to initialize a path. All other tools start with `daemon8_connect`.

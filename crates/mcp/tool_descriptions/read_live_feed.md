@@ -29,4 +29,4 @@ Common envelope with `data.observations`, `data.total`, optional `data.lens_obse
 
 ## Next
 
-Create a checkpoint before testing a fix. Treat returned observations as runtime signals only; record durable memory only after interpreting what the signal means.
+Create a checkpoint before testing a fix. Treat returned observations as runtime signals only; record durable conclusions through `resolve_debug_session` after interpreting what the signal means.

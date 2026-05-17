@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: LicenseRef-FCL-1.0-ALv2
 // Copyright (c) 2026 Havy.tech, LLC
 
-use std::sync::Arc;
+use std::{borrow::Cow, sync::Arc};
 
 use daemon8_chrome::ConnectionState;
 use daemon8_mcp::{
     ActParams, Daemon8ConnectParams, Daemon8InitParams, DaemonMcp, DaemonMcpConfig, DebugAction,
-    ObserveParams,
+    ObserveParams, TOOL_POLICY_TABLE, ToolPolicy, tool_policy,
 };
 use daemon8_types::Filter;
 use rmcp::ServiceExt as _;
@@ -27,6 +27,13 @@ const EXPECTED_TOOLS: [&str; 14] = [
     "clear_lens",
     "lens_status",
     "daemon8_help",
+];
+
+const DEBUG_TOOLS: [&str; 4] = [
+    "start_debug_session",
+    "list_debug_sessions",
+    "resolve_debug_session",
+    "end_debug_session",
 ];
 
 fn tool_names(router: &rmcp::handler::server::router::tool::ToolRouter<DaemonMcp>) -> Vec<String> {
@@ -68,6 +75,62 @@ async fn make_mcp_with_cancel(cancel: CancellationToken) -> DaemonMcp {
     })
 }
 
+async fn make_mcp_with_debug() -> DaemonMcp {
+    let store = Arc::new(SurrealStore::memory().await.unwrap());
+    let memory_store = store.memory_store();
+    memory_store.init_schema().await.unwrap();
+    let debug_session_store = store.debug_session_store();
+    debug_session_store.init_schema().await.unwrap();
+    let scope_ledger_store = store.scope_ledger_store();
+    let (obs_tx, _) = tokio::sync::mpsc::unbounded_channel();
+    let (chrome_tx, _) = tokio::sync::mpsc::channel(16);
+    let (_, chrome_state_rx) = tokio::sync::watch::channel(ConnectionState::Disconnected);
+    let (broadcast_tx, _) = tokio::sync::broadcast::channel(16);
+    let lens = Arc::new(daemon8_store::LensManager::new(broadcast_tx.subscribe()));
+    DaemonMcp::new(DaemonMcpConfig {
+        store,
+        memory_store: Some(Arc::new(memory_store)),
+        debug_session_store: Some(Arc::new(debug_session_store)),
+        scope_ledger_store: Some(Arc::new(scope_ledger_store)),
+        obs_tx,
+        chrome_tx,
+        chrome_state: chrome_state_rx,
+        chrome_endpoint: Arc::new(std::sync::Mutex::new(None)),
+        device_screenshot_fn: None,
+        screenshot_dir: std::env::temp_dir().join("daemon8-test-screenshots"),
+        broadcast_tx,
+        lens,
+        cancel: CancellationToken::new(),
+    })
+}
+
+async fn make_mcp_with_debug_without_memory() -> DaemonMcp {
+    let store = Arc::new(SurrealStore::memory().await.unwrap());
+    let debug_session_store = store.debug_session_store();
+    debug_session_store.init_schema().await.unwrap();
+    let scope_ledger_store = store.scope_ledger_store();
+    let (obs_tx, _) = tokio::sync::mpsc::unbounded_channel();
+    let (chrome_tx, _) = tokio::sync::mpsc::channel(16);
+    let (_, chrome_state_rx) = tokio::sync::watch::channel(ConnectionState::Disconnected);
+    let (broadcast_tx, _) = tokio::sync::broadcast::channel(16);
+    let lens = Arc::new(daemon8_store::LensManager::new(broadcast_tx.subscribe()));
+    DaemonMcp::new(DaemonMcpConfig {
+        store,
+        memory_store: None,
+        debug_session_store: Some(Arc::new(debug_session_store)),
+        scope_ledger_store: Some(Arc::new(scope_ledger_store)),
+        obs_tx,
+        chrome_tx,
+        chrome_state: chrome_state_rx,
+        chrome_endpoint: Arc::new(std::sync::Mutex::new(None)),
+        device_screenshot_fn: None,
+        screenshot_dir: std::env::temp_dir().join("daemon8-test-screenshots"),
+        broadcast_tx,
+        lens,
+        cancel: CancellationToken::new(),
+    })
+}
+
 use daemon8_store::SurrealStore;
 
 #[derive(Clone, Default)]
@@ -105,6 +168,100 @@ fn mark_project(root: &std::path::Path) {
     std::fs::create_dir(root.join(".git")).unwrap();
 }
 
+fn tool_request(
+    name: impl Into<Cow<'static, str>>,
+    arguments: serde_json::Value,
+) -> rmcp::model::CallToolRequestParams {
+    let mut request = rmcp::model::CallToolRequestParams::new(name);
+    request.arguments = match arguments {
+        serde_json::Value::Object(map) => Some(map),
+        serde_json::Value::Null => None,
+        other => panic!("tool arguments must be a JSON object or null, got {other}"),
+    };
+    request
+}
+
+fn result_text(result: &rmcp::model::CallToolResult) -> &str {
+    result
+        .content
+        .first()
+        .and_then(|content| content.raw.as_text())
+        .map(|text| text.text.as_str())
+        .expect("tool response should contain text content")
+}
+
+fn result_json(result: &rmcp::model::CallToolResult) -> serde_json::Value {
+    serde_json::from_str(result_text(result)).expect("tool text must be JSON")
+}
+
+#[test]
+fn current_tool_policy_is_explicit() {
+    for tool in ["daemon8_connect", "daemon8_init", "daemon8_status"] {
+        assert_eq!(
+            tool_policy(tool),
+            Some(ToolPolicy::PreConnectAllowed),
+            "{tool}"
+        );
+    }
+
+    for tool in [
+        "read_live_feed",
+        "list_connections",
+        "write_to_live_feed",
+        "watch_live_feed",
+        "issue_command",
+        "connect_browser",
+        "set_lens",
+        "clear_lens",
+        "lens_status",
+        "daemon8_help",
+        "list_debug_sessions",
+    ] {
+        assert_eq!(tool_policy(tool), Some(ToolPolicy::GeneralSafe), "{tool}");
+    }
+
+    for tool in [
+        "start_debug_session",
+        "create_checkpoint",
+        "resolve_debug_session",
+        "end_debug_session",
+    ] {
+        assert_eq!(tool_policy(tool), Some(ToolPolicy::ProjectOnly), "{tool}");
+    }
+
+    assert_eq!(tool_policy("definitely_unknown"), None);
+}
+
+#[tokio::test]
+async fn tool_policy_table_covers_the_public_tool_surface() {
+    let mcp = make_mcp_with_debug().await;
+    let names: Vec<String> = mcp
+        .tools_for_client()
+        .iter()
+        .map(|t| t.name.to_string())
+        .collect();
+
+    assert_eq!(
+        TOOL_POLICY_TABLE.len(),
+        names.len(),
+        "policy table and debug-enabled public surface must have the same size"
+    );
+
+    for name in &names {
+        assert!(
+            tool_policy(name).is_some(),
+            "public tool {name} must have an explicit policy"
+        );
+    }
+
+    for (name, _) in TOOL_POLICY_TABLE {
+        assert!(
+            names.iter().any(|tool| tool == name),
+            "policy table contains non-public tool {name}"
+        );
+    }
+}
+
 #[test]
 fn composed_router_has_full_tool_surface() {
     let router =
@@ -126,6 +283,28 @@ fn composed_router_has_full_tool_surface() {
             "router missing expected tool '{}'. Present: {:?}",
             expected,
             names
+        );
+    }
+}
+
+#[tokio::test]
+async fn memory_tools_are_not_public_in_afl_02d() {
+    let mcp = make_mcp().await;
+    let names: Vec<String> = mcp
+        .tools_for_client()
+        .iter()
+        .map(|t| t.name.to_string())
+        .collect();
+
+    for removed in [
+        "save_memory",
+        "search_memory",
+        "query_memory",
+        "forget_memory",
+    ] {
+        assert!(
+            !names.iter().any(|name| name == removed),
+            "{removed} must remain absent from the AFL-02d public MCP surface"
         );
     }
 }
@@ -153,6 +332,49 @@ async fn live_mcp_exposes_full_tool_surface() {
             "tools_for_client() missing '{}'. Present: {:?}",
             expected,
             names
+        );
+    }
+}
+
+#[tokio::test]
+async fn debug_enabled_mcp_exposes_debug_tool_surface() {
+    let mcp = make_mcp_with_debug().await;
+    let names: Vec<String> = mcp
+        .tools_for_client()
+        .iter()
+        .map(|t| t.name.to_string())
+        .collect();
+
+    assert_eq!(
+        names.len(),
+        EXPECTED_TOOLS.len() + DEBUG_TOOLS.len(),
+        "debug-enabled tools_for_client() must expose core + debug tools, got {}: {:?}",
+        names.len(),
+        names
+    );
+    for expected in EXPECTED_TOOLS.into_iter().chain(DEBUG_TOOLS) {
+        assert!(
+            names.iter().any(|n| n == expected),
+            "tools_for_client() missing '{}'. Present: {:?}",
+            expected,
+            names
+        );
+    }
+}
+
+#[tokio::test]
+async fn debug_ledger_store_exposes_debug_tool_surface_without_memory() {
+    let mcp = make_mcp_with_debug_without_memory().await;
+    let names: Vec<String> = mcp
+        .tools_for_client()
+        .iter()
+        .map(|t| t.name.to_string())
+        .collect();
+
+    for expected in DEBUG_TOOLS {
+        assert!(
+            names.iter().any(|n| n == expected),
+            "debug session ledger should expose '{expected}' even when memory storage is absent"
         );
     }
 }
@@ -262,10 +484,12 @@ async fn runtime_tools_require_connect_first() {
         );
     }
 
-    assert!(
-        mcp.connect_preflight_for_tests("daemon8_help").is_some(),
-        "daemon8_help should require daemon8_connect"
-    );
+    for tool in ["daemon8_help", "list_debug_sessions"] {
+        assert!(
+            mcp.connect_preflight_for_tests(tool).is_some(),
+            "{tool} should require daemon8_connect"
+        );
+    }
 }
 
 #[tokio::test]
@@ -293,6 +517,90 @@ async fn runtime_tools_require_connect_first_through_real_mcp_call() -> anyhow::
     assert_eq!(parsed["status"], "connect_required");
     assert_eq!(parsed["code"], "connect_required");
     assert_eq!(parsed["next_actions"][0]["tool"], "daemon8_connect");
+
+    client.cancel().await?;
+    server.await??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn unknown_tools_are_not_masked_by_connect_preflight() -> anyhow::Result<()> {
+    let mcp = make_mcp().await;
+    let general = tempfile::tempdir().unwrap();
+    let path = general.path().display().to_string();
+    let (server_transport, client_transport) = tokio::io::duplex(8192);
+
+    let server = tokio::spawn(async move {
+        mcp.serve(server_transport).await?.waiting().await?;
+        anyhow::Ok(())
+    });
+
+    let client = TestClient.serve(client_transport).await?;
+    let pre_connect = client
+        .call_tool(rmcp::model::CallToolRequestParams::new(
+            "definitely_unknown",
+        ))
+        .await;
+    if let Ok(result) = pre_connect {
+        let parsed = serde_json::from_str::<serde_json::Value>(result_text(&result))
+            .unwrap_or(serde_json::Value::Null);
+        assert_ne!(parsed["code"], "connect_required");
+    }
+
+    let connect = client
+        .call_tool(tool_request(
+            "daemon8_connect",
+            serde_json::json!({
+                "provider": "codex",
+                "project_path": path,
+                "agent_name": null,
+                "transcript_path": null,
+            }),
+        ))
+        .await?;
+    let parsed = result_json(&connect);
+    assert_eq!(parsed["status"], "success");
+
+    let post_connect = client
+        .call_tool(rmcp::model::CallToolRequestParams::new(
+            "definitely_unknown",
+        ))
+        .await;
+    if let Ok(result) = post_connect {
+        let parsed = serde_json::from_str::<serde_json::Value>(result_text(&result))
+            .unwrap_or(serde_json::Value::Null);
+        assert_ne!(parsed["code"], "connect_required");
+    }
+
+    client.cancel().await?;
+    server.await??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn pre_connect_status_exception_runs_through_real_mcp_call() -> anyhow::Result<()> {
+    let mcp = make_mcp().await;
+    let (server_transport, client_transport) = tokio::io::duplex(8192);
+
+    let server = tokio::spawn(async move {
+        mcp.serve(server_transport).await?.waiting().await?;
+        anyhow::Ok(())
+    });
+
+    let client = TestClient.serve(client_transport).await?;
+    let result = client
+        .call_tool(rmcp::model::CallToolRequestParams::new("daemon8_status"))
+        .await?;
+
+    let text = result
+        .content
+        .first()
+        .and_then(|content| content.raw.as_text())
+        .map(|text| text.text.as_str())
+        .expect("status response should be text content");
+    let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(parsed["status"], "success");
+    assert_eq!(parsed["code"], "status");
 
     client.cancel().await?;
     server.await??;
@@ -361,12 +669,254 @@ async fn general_mode_blocks_project_only_tools() {
     let parsed: serde_json::Value = serde_json::from_str(&connected).unwrap();
     assert_eq!(parsed["data"]["mode"], "general");
 
-    let blocked = mcp
-        .connect_preflight_for_tests("create_checkpoint")
-        .expect("create_checkpoint should require project scope in general mode");
-    let parsed: serde_json::Value = serde_json::from_str(&blocked).unwrap();
+    assert!(
+        mcp.connect_preflight_for_tests("list_debug_sessions")
+            .is_none()
+    );
+
+    for tool in [
+        "start_debug_session",
+        "create_checkpoint",
+        "resolve_debug_session",
+        "end_debug_session",
+    ] {
+        let blocked = mcp
+            .connect_preflight_for_tests(tool)
+            .unwrap_or_else(|| panic!("{tool} should require project scope in general mode"));
+        let parsed: serde_json::Value = serde_json::from_str(&blocked).unwrap();
+        assert_eq!(parsed["status"], "blocked");
+        assert_eq!(parsed["code"], "project_required");
+        assert_eq!(parsed["next_actions"][0]["tool"], "daemon8_connect");
+    }
+}
+
+#[tokio::test]
+async fn debug_tools_obey_policy_through_real_mcp_calls() -> anyhow::Result<()> {
+    let mcp = make_mcp_with_debug().await;
+    let general = tempfile::tempdir().unwrap();
+    let path = general.path().display().to_string();
+    let (server_transport, client_transport) = tokio::io::duplex(8192);
+
+    let server = tokio::spawn(async move {
+        mcp.serve(server_transport).await?.waiting().await?;
+        anyhow::Ok(())
+    });
+
+    let client = TestClient.serve(client_transport).await?;
+    let pre_connect = client
+        .call_tool(tool_request(
+            "start_debug_session",
+            serde_json::json!({
+                "project": "daemon8",
+                "description": "pre-connect guard",
+                "agent_id": ":host/codex+worker>",
+                "feature": null,
+            }),
+        ))
+        .await?;
+    let parsed = result_json(&pre_connect);
+    assert_eq!(parsed["status"], "connect_required");
+    assert_eq!(parsed["code"], "connect_required");
+
+    let connect = client
+        .call_tool(tool_request(
+            "daemon8_connect",
+            serde_json::json!({
+                "provider": "codex",
+                "project_path": path,
+                "agent_name": null,
+                "transcript_path": null,
+            }),
+        ))
+        .await?;
+    let parsed = result_json(&connect);
+    assert_eq!(parsed["status"], "success");
+    assert_eq!(parsed["data"]["mode"], "general");
+
+    let listed = client
+        .call_tool(tool_request(
+            "list_debug_sessions",
+            serde_json::json!({
+                "status": null,
+                "feature": null,
+            }),
+        ))
+        .await?;
+    let parsed = result_json(&listed);
+    assert_eq!(parsed["status"], "success");
+    assert_eq!(parsed["code"], "debug_sessions_listed");
+
+    let blocked = client
+        .call_tool(tool_request(
+            "start_debug_session",
+            serde_json::json!({
+                "project": "daemon8",
+                "description": "general guard",
+                "agent_id": ":host/codex+worker>",
+                "feature": null,
+            }),
+        ))
+        .await?;
+    let parsed = result_json(&blocked);
     assert_eq!(parsed["status"], "blocked");
     assert_eq!(parsed["code"], "project_required");
+
+    client.cancel().await?;
+    server.await??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn debug_lifecycle_codes_are_stable_through_real_mcp_calls() -> anyhow::Result<()> {
+    let mcp = make_mcp_with_debug().await;
+    let project = tempfile::tempdir().unwrap();
+    mark_project(project.path());
+    let path = project.path().display().to_string();
+    let (server_transport, client_transport) = tokio::io::duplex(8192);
+
+    let server = tokio::spawn(async move {
+        mcp.serve(server_transport).await?.waiting().await?;
+        anyhow::Ok(())
+    });
+
+    let client = TestClient.serve(client_transport).await?;
+    let init = client
+        .call_tool(tool_request(
+            "daemon8_init",
+            serde_json::json!({
+                "project_path": path.clone(),
+                "name": "daemon8-test",
+                "overwrite": null,
+            }),
+        ))
+        .await?;
+    let parsed = result_json(&init);
+    assert_eq!(parsed["status"], "success");
+    assert_eq!(parsed["code"], "initialized");
+
+    let connect = client
+        .call_tool(tool_request(
+            "daemon8_connect",
+            serde_json::json!({
+                "provider": "codex",
+                "project_path": path,
+                "agent_name": null,
+                "transcript_path": null,
+            }),
+        ))
+        .await?;
+    let parsed = result_json(&connect);
+    assert_eq!(parsed["status"], "success");
+    assert_eq!(parsed["data"]["mode"], "project");
+
+    let started = client
+        .call_tool(tool_request(
+            "start_debug_session",
+            serde_json::json!({
+                "project": "daemon8",
+                "description": "router lifecycle",
+                "agent_id": ":host/codex+worker>",
+                "feature": "mcp",
+            }),
+        ))
+        .await?;
+    let parsed = result_json(&started);
+    assert_eq!(parsed["status"], "success");
+    assert_eq!(parsed["code"], "debug_session_started");
+
+    let checkpoint = client
+        .call_tool(tool_request(
+            "create_checkpoint",
+            serde_json::json!({
+                "description": "before resolve",
+            }),
+        ))
+        .await?;
+    let parsed = result_json(&checkpoint);
+    assert_eq!(parsed["status"], "success");
+    assert_eq!(parsed["code"], "checkpoint_created");
+
+    let resolved = client
+        .call_tool(tool_request(
+            "resolve_debug_session",
+            serde_json::json!({
+                "summary": "router lifecycle verified",
+                "root_cause": null,
+                "fix_diff": null,
+                "commands_used": null,
+                "related_errors": null,
+                "tags": ["test"]
+            }),
+        ))
+        .await?;
+    let parsed = result_json(&resolved);
+    assert_eq!(parsed["status"], "success");
+    assert_eq!(parsed["code"], "debug_session_resolved");
+
+    let restarted = client
+        .call_tool(tool_request(
+            "start_debug_session",
+            serde_json::json!({
+                "project": "daemon8",
+                "description": "router end lifecycle",
+                "agent_id": ":host/codex+worker>",
+                "feature": "mcp",
+            }),
+        ))
+        .await?;
+    let parsed = result_json(&restarted);
+    assert_eq!(parsed["code"], "debug_session_started");
+
+    let ended = client
+        .call_tool(tool_request(
+            "end_debug_session",
+            serde_json::json!({
+                "outcome": null,
+            }),
+        ))
+        .await?;
+    let parsed = result_json(&ended);
+    assert_eq!(parsed["status"], "success");
+    assert_eq!(parsed["code"], "debug_session_ended");
+
+    client.cancel().await?;
+    server.await??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn project_mode_allows_project_only_debug_tools() {
+    let mcp = make_mcp().await;
+    let project = tempfile::tempdir().unwrap();
+    mark_project(project.path());
+
+    let init = mcp
+        .daemon8_init_for_tests(Daemon8InitParams {
+            project_path: project.path().display().to_string(),
+            name: None,
+            overwrite: None,
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&init).unwrap();
+    assert_eq!(parsed["status"], "success");
+
+    let connected = mcp
+        .daemon8_connect_for_tests(Daemon8ConnectParams {
+            provider: "codex".into(),
+            project_path: project.path().display().to_string(),
+            agent_name: None,
+            transcript_path: None,
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&connected).unwrap();
+    assert_eq!(parsed["data"]["mode"], "project");
+
+    for tool in DEBUG_TOOLS.into_iter().chain(["create_checkpoint"]) {
+        assert!(
+            mcp.connect_preflight_for_tests(tool).is_none(),
+            "{tool} should pass preflight in project mode"
+        );
+    }
 }
 
 #[tokio::test]

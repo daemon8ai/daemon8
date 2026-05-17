@@ -66,6 +66,8 @@ sources:
 
 ## MCP Surface
 
+Except for `daemon8_connect`, `daemon8_init`, and `daemon8_status`, MCP tools require an established `daemon8_connect` session. Debug lifecycle tools require project mode.
+
 Core runtime tools:
 
 | Tool | Purpose |
@@ -115,7 +117,7 @@ MCP responses use a common envelope:
 }
 ```
 
-The envelope is part of the control flow. `status`, `code`, and structured `next_actions` guide the model at decision points. Successful connection state should not be repeated until it changes.
+The envelope is part of the control flow. `status`, `code`, and structured `next_actions` guide the model at decision points. Connection context may appear in `data.connection`; clients should branch on `status`, `code`, and `next_actions`.
 
 ## Reset Safety
 

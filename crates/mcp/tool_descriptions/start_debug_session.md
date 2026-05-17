@@ -10,7 +10,7 @@ At the start of any non-trivial debugging task. Errors observed, tests failing, 
 
 ## Prereq
 
-A connected MCP session and no other debug session currently active IN THIS MCP SESSION. Call `daemon8_connect` first. Other agents/connections can each have their own active session. If one is active here, end_debug_session or resolve_debug_session must close it first.
+A connected project-scope MCP session (`data.connection.mode == "project"`) and no other debug session currently active IN THIS MCP SESSION. Call `daemon8_connect` with a project path first. Other agents/connections can each have their own active session. If one is active here, end_debug_session or resolve_debug_session must close it first.
 
 ## Args
   - agent_id: REQUIRED string. Agent identity in format :host/tool+role> (e.g. :mbp/claude+plan-agent>). Identifies who is running this investigation.
@@ -19,7 +19,7 @@ A connected MCP session and no other debug session currently active IN THIS MCP 
   - feature: optional string. The feature being investigated (e.g. "auth", "search"). Other agents can discover overlapping work via list_debug_sessions(feature="auth").
 
 ## Returns
-Common envelope with `data.debug_session_id`, `data.started_at`, and `data.active_debug_session`.
+Common envelope with `code="debug_session_started"`, `data.debug_session_id`, `data.started_at`, and `data.active_debug_session`.
 
 ## Errors
   - invalid_agent_id: agent_id does not match format :host/tool+role>. hint: use the convention.

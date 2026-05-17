@@ -8,7 +8,7 @@ You found the fix. The bug is understood, the change is applied, the test passes
 
 ## Prereq
 
-A connected MCP session and an active debug session. Call `daemon8_connect` first; call start_debug_session if no debug session is active.
+A connected project-scope MCP session (`data.connection.mode == "project"`) and an active debug session. Call `daemon8_connect` with a project path first; call start_debug_session if no debug session is active.
 
 ## Args
   - summary: REQUIRED. One paragraph in your own words: what was wrong, what you tried, what fixed it. The single field that future search will hit hardest. Be specific.
@@ -19,7 +19,7 @@ A connected MCP session and an active debug session. Call `daemon8_connect` firs
   - tags: optional array of additional tags ("auth", "race-condition", "flaky-test"). These join automatic tags ("kind:debug_session_summary", project_slug) on the SessionSummary.
 
 ## Returns
-Common envelope with `data.debug_session_id`, `data.summary_memory_id`, `data.project_slug`, `data.evidence_ref`, and `data.checkpoint_count`.
+Common envelope with `code="debug_session_resolved"`, `data.debug_session_id`, `data.summary_memory_id`, `data.project_slug`, `data.evidence_ref`, and `data.checkpoint_count`.
 
 ## Errors
   - no_active_debug_session: nothing to resolve; `next_actions[].tool` points to start_debug_session.
