@@ -58,6 +58,9 @@ pub fn normalize(mut raw: Value) -> Observation {
         data,
         severity,
         source_location,
+        service: meta.service.map(Arc::from),
+        source: meta.source.map(Arc::from),
+        source_instance: meta.source_instance.map(Arc::from),
         timestamp_ns,
         correlation_id: meta.correlation_id.map(Arc::from),
         parent_id: meta.parent_id,
@@ -77,6 +80,9 @@ struct ObsMeta {
     tags: Option<Vec<String>>,
     session_id: Option<String>,
     node_id: Option<String>,
+    service: Option<String>,
+    source: Option<String>,
+    source_instance: Option<String>,
 }
 
 type MetaFields = (
@@ -130,6 +136,15 @@ fn extract_meta(map: &mut Map<String, Value>) -> MetaFields {
     let node_id = map
         .remove("node_id")
         .and_then(|v| v.as_str().map(String::from));
+    let service = map
+        .remove("service")
+        .and_then(|v| v.as_str().map(String::from));
+    let source = map
+        .remove("source")
+        .and_then(|v| v.as_str().map(String::from));
+    let source_instance = map
+        .remove("source_instance")
+        .and_then(|v| v.as_str().map(String::from));
 
     let meta = ObsMeta {
         correlation_id,
@@ -137,6 +152,9 @@ fn extract_meta(map: &mut Map<String, Value>) -> MetaFields {
         tags,
         session_id,
         node_id,
+        service,
+        source,
+        source_instance,
     };
 
     (

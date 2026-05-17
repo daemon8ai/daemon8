@@ -6,7 +6,7 @@ use std::{borrow::Cow, sync::Arc};
 use daemon8_chrome::ConnectionState;
 use daemon8_mcp::{
     ActParams, Daemon8ConnectParams, Daemon8InitParams, DaemonMcp, DaemonMcpConfig, DebugAction,
-    ObserveParams, TOOL_POLICY_TABLE, ToolPolicy, tool_policy,
+    IngestParams, ObserveParams, TOOL_POLICY_TABLE, ToolPolicy, tool_policy,
 };
 use daemon8_types::Filter;
 use rmcp::ServiceExt as _;
@@ -131,7 +131,41 @@ async fn make_mcp_with_debug_without_memory() -> DaemonMcp {
     })
 }
 
-use daemon8_store::SurrealStore;
+async fn make_mcp_with_writer() -> DaemonMcp {
+    let store = Arc::new(SurrealStore::memory().await.unwrap());
+    let memory_store = store.memory_store();
+    memory_store.init_schema().await.unwrap();
+    let scope_ledger_store = store.scope_ledger_store();
+    let (obs_tx, mut obs_rx) = tokio::sync::mpsc::unbounded_channel();
+    let store_for_writer = store.clone();
+    tokio::spawn(async move {
+        while let Some(obs) = obs_rx.recv().await {
+            let _ = store_for_writer.insert(obs).await;
+        }
+    });
+
+    let (chrome_tx, _) = tokio::sync::mpsc::channel(16);
+    let (_, chrome_state_rx) = tokio::sync::watch::channel(ConnectionState::Disconnected);
+    let (broadcast_tx, _) = tokio::sync::broadcast::channel(16);
+    let lens = Arc::new(daemon8_store::LensManager::new(broadcast_tx.subscribe()));
+    DaemonMcp::new(DaemonMcpConfig {
+        store,
+        memory_store: Some(Arc::new(memory_store)),
+        debug_session_store: None,
+        scope_ledger_store: Some(Arc::new(scope_ledger_store)),
+        obs_tx,
+        chrome_tx,
+        chrome_state: chrome_state_rx,
+        chrome_endpoint: Arc::new(std::sync::Mutex::new(None)),
+        device_screenshot_fn: None,
+        screenshot_dir: std::env::temp_dir().join("daemon8-test-screenshots"),
+        broadcast_tx,
+        lens,
+        cancel: CancellationToken::new(),
+    })
+}
+
+use daemon8_store::{StateModel, SurrealStore};
 
 #[derive(Clone, Default)]
 struct TestClient;
@@ -714,6 +748,79 @@ async fn general_mode_blocks_unfiltered_live_feed_reads() {
         .await;
     let parsed: serde_json::Value = serde_json::from_str(&narrowed).unwrap();
     assert_eq!(parsed["status"], "success");
+
+    let narrowed = mcp
+        .read_live_feed_for_tests_with(ObserveParams {
+            service: Some(vec!["cargo".into()]),
+            ..Default::default()
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&narrowed).unwrap();
+    assert_eq!(parsed["status"], "success");
+}
+
+#[tokio::test]
+async fn mcp_live_feed_filters_by_provenance() {
+    let mcp = make_mcp_with_writer().await;
+    let general = tempfile::tempdir().unwrap();
+    let connected = mcp
+        .daemon8_connect_for_tests(Daemon8ConnectParams {
+            provider: "codex".into(),
+            project_path: general.path().display().to_string(),
+            agent_name: None,
+            transcript_path: None,
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&connected).unwrap();
+    assert_eq!(parsed["status"], "success");
+
+    mcp.write_to_live_feed_for_tests(IngestParams {
+        kind: Some("log".into()),
+        severity: Some("info".into()),
+        app: Some("cargo".into()),
+        channel: None,
+        correlation_id: None,
+        parent_id: None,
+        tags: None,
+        session_id: None,
+        node_id: None,
+        service: Some("cargo".into()),
+        source: Some("cargo.check".into()),
+        source_instance: Some("target/daemon8/cargo-check.log".into()),
+        data: serde_json::json!({"msg": "cargo check failed"}),
+    })
+    .await;
+    mcp.write_to_live_feed_for_tests(IngestParams {
+        kind: Some("log".into()),
+        severity: Some("info".into()),
+        app: Some("claude".into()),
+        channel: None,
+        correlation_id: None,
+        parent_id: None,
+        tags: None,
+        session_id: None,
+        node_id: None,
+        service: Some("claude".into()),
+        source: Some("claude.conversations".into()),
+        source_instance: Some("session.jsonl".into()),
+        data: serde_json::json!({"msg": "assistant turn"}),
+    })
+    .await;
+    tokio::task::yield_now().await;
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+    let filtered = mcp
+        .read_live_feed_for_tests_with(ObserveParams {
+            service: Some(vec!["cargo".into()]),
+            source: Some(vec!["cargo.check".into()]),
+            source_instance: Some(vec!["target/daemon8/cargo-check.log".into()]),
+            ..Default::default()
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&filtered).unwrap();
+    assert_eq!(parsed["status"], "success");
+    assert_eq!(parsed["data"]["observations"].as_array().unwrap().len(), 1);
+    assert_eq!(parsed["data"]["observations"][0]["service"], "cargo");
 }
 
 #[tokio::test]

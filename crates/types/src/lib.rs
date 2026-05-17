@@ -344,6 +344,12 @@ pub struct Observation {
     pub data: serde_json::Value,
     pub severity: Severity,
     pub source_location: Option<SourceLocation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service: Option<Arc<str>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<Arc<str>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_instance: Option<Arc<str>>,
     pub timestamp_ns: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub correlation_id: Option<Arc<str>>,
@@ -386,6 +392,9 @@ impl Observation {
             data,
             severity,
             source_location,
+            service: None,
+            source: None,
+            source_instance: None,
             timestamp_ns,
             correlation_id: None,
             parent_id: None,
@@ -431,6 +440,16 @@ pub fn observation_search_text(obs: &Observation) -> String {
         if let Some(ref function) = location.function {
             push_search_part(&mut text, function);
         }
+    }
+
+    if let Some(ref service) = obs.service {
+        push_search_part(&mut text, service);
+    }
+    if let Some(ref source) = obs.source {
+        push_search_part(&mut text, source);
+    }
+    if let Some(ref source_instance) = obs.source_instance {
+        push_search_part(&mut text, source_instance);
     }
 
     if let Some(ref correlation_id) = obs.correlation_id {
@@ -526,6 +545,9 @@ pub struct Filter {
     pub limit: Option<usize>,
     pub correlation_id: Option<String>,
     pub tags: Option<Vec<String>>,
+    pub service: Option<Vec<String>>,
+    pub source: Option<Vec<String>>,
+    pub source_instance: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub include_system: Option<bool>,
 }
@@ -583,6 +605,27 @@ impl Filter {
             }
         }
 
+        if let Some(ref services) = self.service
+            && !services.is_empty()
+            && !matches_arc_str_filter(&obs.service, services)
+        {
+            return false;
+        }
+
+        if let Some(ref sources) = self.source
+            && !sources.is_empty()
+            && !matches_arc_str_filter(&obs.source, sources)
+        {
+            return false;
+        }
+
+        if let Some(ref source_instances) = self.source_instance
+            && !source_instances.is_empty()
+            && !matches_arc_str_filter(&obs.source_instance, source_instances)
+        {
+            return false;
+        }
+
         if let Some(ref required_tags) = self.tags
             && !required_tags.is_empty()
         {
@@ -616,6 +659,10 @@ impl Filter {
     }
 
     pub fn parse_tags(raw: &str) -> Vec<String> {
+        Self::parse_string_list(raw)
+    }
+
+    pub fn parse_string_list(raw: &str) -> Vec<String> {
         raw.split(',')
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
@@ -632,6 +679,13 @@ impl Filter {
         v.into_iter()
             .map(|s| OriginPattern::parse(s.trim()))
             .collect()
+    }
+}
+
+fn matches_arc_str_filter(value: &Option<Arc<str>>, allowed: &[String]) -> bool {
+    match value {
+        Some(value) => allowed.iter().any(|candidate| candidate == value.as_ref()),
+        None => false,
     }
 }
 
@@ -751,36 +805,6 @@ impl std::str::FromStr for DebugSessionOutcome {
     }
 }
 
-// What kind of runtime data a source_template points to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum SourceKind {
-    Log,
-    Conversation,
-}
-
-impl fmt::Display for SourceKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let s = match self {
-            Self::Log => "log",
-            Self::Conversation => "conversation",
-        };
-        f.write_str(s)
-    }
-}
-
-impl std::str::FromStr for SourceKind {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_ascii_lowercase().as_str() {
-            "log" => Ok(Self::Log),
-            "conversation" => Ok(Self::Conversation),
-            other => Err(format!("unknown source kind: {other}")),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SliceSummary {
     pub total: usize,
@@ -841,6 +865,9 @@ mod tests {
             data: json!({"note": "roundtrip fixture"}),
             severity: Severity::Info,
             source_location: None,
+            service: None,
+            source: None,
+            source_instance: None,
             timestamp_ns: 0,
             correlation_id: None,
             parent_id: None,
@@ -1051,6 +1078,9 @@ mod tests {
             function: Some("render_overlay".into()),
         });
         observation.tags = Some(vec!["project:daemon8".into(), "domain:device".into()]);
+        observation.service = Some(Arc::from("adb"));
+        observation.source = Some(Arc::from("device.logs"));
+        observation.source_instance = Some(Arc::from("ABC123/loggingctl"));
         observation.correlation_id = Some(Arc::from("corr-1"));
         observation.session_id = Some(Arc::from("session-1"));
         observation.node_id = Some(Arc::from("node-1"));
@@ -1060,9 +1090,39 @@ mod tests {
         assert!(search_text.contains("device:ABC123"));
         assert!(search_text.contains("project:daemon8"));
         assert!(search_text.contains("corr-1"));
+        assert!(search_text.contains("adb"));
+        assert!(search_text.contains("device.logs"));
+        assert!(search_text.contains("ABC123/loggingctl"));
         assert!(search_text.contains("src/device.rs"));
         assert!(search_text.contains("surface failed"));
         assert!(search_text.len() <= OBSERVATION_SEARCH_TEXT_LIMIT_BYTES);
+    }
+
+    #[test]
+    fn filter_matches_provenance_fields() {
+        let mut matching = obs(
+            Origin::Application {
+                name: AppName::from("cargo"),
+            },
+            ObservationKind::Log,
+        );
+        matching.service = Some(Arc::from("cargo"));
+        matching.source = Some(Arc::from("cargo.check"));
+        matching.source_instance = Some(Arc::from("target/daemon8/cargo-check.log"));
+
+        let mut other = matching.clone();
+        other.service = Some(Arc::from("claude"));
+        other.source = Some(Arc::from("claude.conversations"));
+        other.source_instance = Some(Arc::from("session.jsonl"));
+
+        let filter = Filter {
+            service: Some(vec!["cargo".into()]),
+            source: Some(vec!["cargo.check".into()]),
+            source_instance: Some(vec!["target/daemon8/cargo-check.log".into()]),
+            ..Filter::default()
+        };
+        assert!(filter.matches(&matching));
+        assert!(!filter.matches(&other));
     }
 
     #[test]

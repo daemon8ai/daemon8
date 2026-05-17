@@ -17,10 +17,11 @@ use daemon8_types::{
 };
 
 use crate::{
-    StateModel, StoreError, debug_session::SurrealDebugSessionStore, memory::SurrealMemoryStore,
+    StateModel, StoreError, cursor::SurrealCursorStore, debug_session::SurrealDebugSessionStore,
+    memory::SurrealMemoryStore,
 };
 
-pub const SCHEMA_VERSION: &str = "0.4.0-alpha";
+pub const SCHEMA_VERSION: &str = "0.4.0-alpha.afl03";
 
 const NAMESPACE: &str = "daemon8";
 const DATABASE: &str = "observations";
@@ -28,6 +29,7 @@ const DATABASE: &str = "observations";
 pub struct ResetReport {
     pub observations_dropped: usize,
     pub scope_ledger_records_dropped: usize,
+    pub cursor_states_dropped: usize,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -49,6 +51,12 @@ struct ObsRecord {
     source_file: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     source_line: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    service: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_instance: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     correlation_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -83,6 +91,9 @@ impl ObsRecord {
             data: obs.data.clone(),
             source_file: obs.source_location.as_ref().map(|l| l.file.clone()),
             source_line: obs.source_location.as_ref().map(|l| l.line as i32),
+            service: obs.service.as_deref().map(String::from),
+            source: obs.source.as_deref().map(String::from),
+            source_instance: obs.source_instance.as_deref().map(String::from),
             correlation_id: obs.correlation_id.as_deref().map(String::from),
             parent_id: obs.parent_id,
             tags: obs.tags.clone(),
@@ -117,6 +128,9 @@ impl ObsRecord {
             data: self.data,
             severity,
             source_location,
+            service: self.service.map(Into::into),
+            source: self.source.map(Into::into),
+            source_instance: self.source_instance.map(Into::into),
             timestamp_ns: self.timestamp_ns,
             correlation_id: self.correlation_id.map(Into::into),
             parent_id: self.parent_id,
@@ -154,11 +168,26 @@ impl SurrealStore {
             next_id: AtomicU64::new(1),
             connections: Mutex::new(Vec::new()),
         };
-        store.init_schema().await?;
-        store.memory_store().init_schema().await?;
-        store.debug_session_store().init_schema().await?;
-        store.scope_ledger_store().init_schema().await?;
+        store.select_db().await?;
+        store.ensure_schema_compatible().await?;
+        store.init_all_schemas().await?;
         store.recover_seq().await?;
+        Ok(store)
+    }
+
+    pub async fn open_for_reset(path: &Path) -> Result<Self, StoreError> {
+        use surrealdb::engine::local::SurrealKv;
+
+        let db = Surreal::new::<SurrealKv>(path)
+            .await
+            .map_err(|e| StoreError::Db(format!("opening database: {e}")))?;
+
+        let store = Self {
+            db,
+            next_id: AtomicU64::new(1),
+            connections: Mutex::new(Vec::new()),
+        };
+        store.select_db().await?;
         Ok(store)
     }
 
@@ -174,10 +203,7 @@ impl SurrealStore {
             next_id: AtomicU64::new(1),
             connections: Mutex::new(Vec::new()),
         };
-        store.init_schema().await?;
-        store.memory_store().init_schema().await?;
-        store.debug_session_store().init_schema().await?;
-        store.scope_ledger_store().init_schema().await?;
+        store.init_all_schemas().await?;
         Ok(store)
     }
 
@@ -196,19 +222,48 @@ impl SurrealStore {
         crate::SurrealScopeLedgerStore::new(self.db.clone())
     }
 
+    pub fn cursor_store(&self) -> SurrealCursorStore {
+        SurrealCursorStore::new(self.db.clone())
+    }
+
     pub async fn schema_version(&self) -> Option<String> {
+        self.read_schema_version().await.ok().flatten()
+    }
+
+    async fn ensure_schema_compatible(&self) -> Result<(), StoreError> {
+        if let Some(version) = self.read_schema_version().await?
+            && version != SCHEMA_VERSION
+        {
+            return Err(StoreError::Db(format!(
+                "incompatible database schema: found {version}, need {SCHEMA_VERSION}; run `daemon8 reset --yes` to wipe and reinitialize daemon-owned state"
+            )));
+        }
+
+        Ok(())
+    }
+
+    async fn read_schema_version(&self) -> Result<Option<String>, StoreError> {
         let mut result = self
             .db
-            .query("SELECT value FROM _meta:schema_version")
+            .query("SELECT * FROM daemon_meta WHERE key = 'schema_version' LIMIT 1")
             .await
-            .ok()?;
-        let row: Option<serde_json::Value> = result.take(0).ok()?;
-        row.and_then(|v| v.get("value").and_then(|s| s.as_str()).map(String::from))
+            .map_err(|e| StoreError::Db(format!("read schema version: {e}")))?;
+        let rows: Vec<serde_json::Value> = match result.take(0) {
+            Ok(rows) => rows,
+            Err(err) if err.to_string().contains("does not exist") => return Ok(None),
+            Err(err) => {
+                return Err(StoreError::Db(format!("read schema version row: {err}")));
+            }
+        };
+        Ok(rows
+            .into_iter()
+            .find_map(|v| v.get("value").and_then(|s| s.as_str()).map(String::from)))
     }
 
     pub async fn reset(&self) -> Result<ResetReport, StoreError> {
         let obs_count = self.count_table("observation").await.unwrap_or(0);
         let scope_ledger_records = self.count_scope_ledger_records().await.unwrap_or(0);
+        let cursor_states = self.count_table("cursor_state").await.unwrap_or(0);
 
         self.db
             .query(
@@ -220,7 +275,8 @@ impl SurrealStore {
                  REMOVE TABLE IF EXISTS scope_session;
                  REMOVE TABLE IF EXISTS recent_scope;
                  REMOVE TABLE IF EXISTS scope_connect_failure;
-                 REMOVE TABLE IF EXISTS _meta;",
+                 REMOVE TABLE IF EXISTS cursor_state;
+                 REMOVE TABLE IF EXISTS daemon_meta;",
             )
             .await
             .map_err(|e| StoreError::Db(format!("reset drop tables: {e}")))?
@@ -228,14 +284,12 @@ impl SurrealStore {
             .map_err(|e| StoreError::Db(format!("reset drop check: {e}")))?;
 
         self.next_id.store(1, Ordering::SeqCst);
-        self.init_schema().await?;
-        self.memory_store().init_schema().await?;
-        self.debug_session_store().init_schema().await?;
-        self.scope_ledger_store().init_schema().await?;
+        self.init_all_schemas().await?;
 
         Ok(ResetReport {
             observations_dropped: obs_count,
             scope_ledger_records_dropped: scope_ledger_records,
+            cursor_states_dropped: cursor_states,
         })
     }
 
@@ -261,12 +315,26 @@ impl SurrealStore {
             .unwrap_or(0))
     }
 
-    async fn init_schema(&self) -> Result<(), StoreError> {
+    async fn init_all_schemas(&self) -> Result<(), StoreError> {
+        self.init_schema().await?;
+        self.memory_store().init_schema().await?;
+        self.debug_session_store().init_schema().await?;
+        self.scope_ledger_store().init_schema().await?;
+        self.cursor_store().init_schema().await?;
+        Ok(())
+    }
+
+    async fn select_db(&self) -> Result<(), StoreError> {
         self.db
             .use_ns(NAMESPACE)
             .use_db(DATABASE)
             .await
-            .map_err(|e| StoreError::Db(format!("selecting namespace/database: {e}")))?;
+            .map(|_| ())
+            .map_err(|e| StoreError::Db(format!("selecting namespace/database: {e}")))
+    }
+
+    async fn init_schema(&self) -> Result<(), StoreError> {
+        self.select_db().await?;
 
         self.db
             .query(
@@ -286,6 +354,9 @@ impl SurrealStore {
                  DEFINE FIELD IF NOT EXISTS data           ON observation TYPE object FLEXIBLE;
                  DEFINE FIELD IF NOT EXISTS source_file    ON observation TYPE option<string>;
                  DEFINE FIELD IF NOT EXISTS source_line    ON observation TYPE option<int>;
+                 DEFINE FIELD IF NOT EXISTS service        ON observation TYPE option<string>;
+                 DEFINE FIELD IF NOT EXISTS source         ON observation TYPE option<string>;
+                 DEFINE FIELD IF NOT EXISTS source_instance ON observation TYPE option<string>;
                  DEFINE FIELD IF NOT EXISTS correlation_id ON observation TYPE option<string>;
                  DEFINE FIELD IF NOT EXISTS parent_id      ON observation TYPE option<int>;
                  DEFINE FIELD IF NOT EXISTS tags           ON observation TYPE option<array>;
@@ -301,6 +372,9 @@ impl SurrealStore {
                  DEFINE INDEX IF NOT EXISTS idx_kind        ON observation FIELDS kind_tag;
                  DEFINE INDEX IF NOT EXISTS idx_correlation ON observation FIELDS correlation_id;
                  DEFINE INDEX IF NOT EXISTS idx_session     ON observation FIELDS session_id;
+                 DEFINE INDEX IF NOT EXISTS idx_obs_service ON observation FIELDS service;
+                 DEFINE INDEX IF NOT EXISTS idx_obs_source ON observation FIELDS source;
+                 DEFINE INDEX IF NOT EXISTS idx_obs_source_instance ON observation FIELDS source_instance;
                  DEFINE INDEX IF NOT EXISTS idx_obs_severity_seq
                    ON observation FIELDS severity, seq CONCURRENTLY;
                  DEFINE INDEX IF NOT EXISTS idx_obs_kind_seq
@@ -325,11 +399,11 @@ impl SurrealStore {
 
         self.db
             .query(
-                "DEFINE TABLE IF NOT EXISTS _meta SCHEMAFULL;
-                 DEFINE FIELD IF NOT EXISTS key ON _meta TYPE string;
-                 DEFINE FIELD IF NOT EXISTS value ON _meta TYPE string;
-                 DEFINE INDEX IF NOT EXISTS idx_meta_key ON _meta FIELDS key UNIQUE;
-                 UPSERT _meta:schema_version SET key = 'schema_version', value = $version;",
+                "DEFINE TABLE IF NOT EXISTS daemon_meta SCHEMAFULL;
+                 DEFINE FIELD IF NOT EXISTS key ON daemon_meta TYPE string;
+                 DEFINE FIELD IF NOT EXISTS value ON daemon_meta TYPE string;
+                 DEFINE INDEX IF NOT EXISTS idx_daemon_meta_key ON daemon_meta FIELDS key UNIQUE;
+                 UPSERT daemon_meta:schema_version SET key = 'schema_version', value = $version;",
             )
             .bind(("version", SCHEMA_VERSION))
             .await
@@ -402,11 +476,38 @@ impl SurrealStore {
             binds.push(("corr_id".into(), serde_json::json!(cid)));
         }
 
+        if let Some(ref services) = filter.service
+            && !services.is_empty()
+        {
+            conditions.push("service IN $services".to_string());
+            binds.push(("services".into(), serde_json::json!(services)));
+        }
+
+        if let Some(ref sources) = filter.source
+            && !sources.is_empty()
+        {
+            conditions.push("source IN $sources".to_string());
+            binds.push(("sources".into(), serde_json::json!(sources)));
+        }
+
+        if let Some(ref source_instances) = filter.source_instance
+            && !source_instances.is_empty()
+        {
+            conditions.push("source_instance IN $source_instances".to_string());
+            binds.push((
+                "source_instances".into(),
+                serde_json::json!(source_instances),
+            ));
+        }
+
         if let Some(ref required_tags) = filter.tags
             && !required_tags.is_empty()
         {
-            conditions.push("tags CONTAINSANY $required_tags".to_string());
-            binds.push(("required_tags".into(), serde_json::json!(required_tags)));
+            for (idx, tag) in required_tags.iter().enumerate() {
+                let bind_name = format!("required_tag_{idx}");
+                conditions.push(format!("tags CONTAINS ${bind_name}"));
+                binds.push((bind_name, serde_json::json!(tag)));
+            }
         }
 
         if let Some(ref origins) = filter.origins
@@ -747,7 +848,10 @@ fn build_slice_summary(observations: &[Observation]) -> SliceSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{DebugCheckpoint, DebugSession, DebugSessionStore, Memory, MemoryStore};
+    use crate::{
+        CursorState, CursorStore, DebugCheckpoint, DebugSession, DebugSessionStore, Memory,
+        MemoryStore,
+    };
     use daemon8_types::{DebugSessionStatus, MemoryKind, ObservationKind};
 
     fn make_obs(severity: Severity, ts: u64) -> Observation {
@@ -760,6 +864,9 @@ mod tests {
             data: serde_json::json!({"msg": "hello"}),
             severity,
             source_location: None,
+            service: None,
+            source: None,
+            source_instance: None,
             timestamp_ns: ts,
             correlation_id: None,
             parent_id: None,
@@ -781,6 +888,9 @@ mod tests {
         };
         obs.data = serde_json::json!({"message": "Connection timeout on HDMI overlay"});
         obs.tags = Some(vec!["project:daemon8".into(), "domain:device".into()]);
+        obs.service = Some("adb".into());
+        obs.source = Some("device.logs".into());
+        obs.source_instance = Some("ABC123/loggingctl".into());
         obs.correlation_id = Some("corr-1".into());
 
         let record = ObsRecord::from_observation(&obs, 42).unwrap();
@@ -791,6 +901,9 @@ mod tests {
         assert!(search_text.contains("Connection timeout"));
         assert!(search_text.contains("project:daemon8"));
         assert!(search_text.contains("device:ABC123"));
+        assert!(search_text.contains("adb"));
+        assert!(search_text.contains("device.logs"));
+        assert!(search_text.contains("ABC123/loggingctl"));
         assert!(search_text.len() <= daemon8_types::OBSERVATION_SEARCH_TEXT_LIMIT_BYTES);
     }
 
@@ -805,6 +918,39 @@ mod tests {
         assert_eq!(slice.observations.len(), 1);
         assert_eq!(slice.observations[0].id, id);
         assert_eq!(slice.observations[0].severity, Severity::Info);
+    }
+
+    #[tokio::test]
+    async fn observation_provenance_round_trips_and_filters() {
+        let store = SurrealStore::memory().await.unwrap();
+
+        let mut matching = make_obs(Severity::Info, 1_000);
+        matching.service = Some("cargo".into());
+        matching.source = Some("cargo.check".into());
+        matching.source_instance = Some("target/daemon8/cargo-check.log".into());
+        store.insert(matching).await.unwrap();
+
+        let mut other = make_obs(Severity::Info, 2_000);
+        other.service = Some("claude".into());
+        other.source = Some("claude.conversations".into());
+        other.source_instance = Some("session.jsonl".into());
+        store.insert(other).await.unwrap();
+
+        let filter = Filter {
+            service: Some(vec!["cargo".into()]),
+            source: Some(vec!["cargo.check".into()]),
+            source_instance: Some(vec!["target/daemon8/cargo-check.log".into()]),
+            ..Default::default()
+        };
+        let slice = store.query(&filter).await.unwrap();
+
+        assert_eq!(slice.observations.len(), 1);
+        assert_eq!(slice.observations[0].service.as_deref(), Some("cargo"));
+        assert_eq!(slice.observations[0].source.as_deref(), Some("cargo.check"));
+        assert_eq!(
+            slice.observations[0].source_instance.as_deref(),
+            Some("target/daemon8/cargo-check.log")
+        );
     }
 
     #[tokio::test]
@@ -879,6 +1025,78 @@ mod tests {
                 .await
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn reset_clears_cursor_state() {
+        let store = SurrealStore::memory().await.unwrap();
+        let cursors = store.cursor_store();
+        cursors
+            .upsert_cursor(CursorState {
+                id: None,
+                scope_root: "scope:daemon8".into(),
+                source: "cargo.check".into(),
+                source_instance: "target/daemon8/cargo-check.log".into(),
+                position: 128,
+                updated_at: 100,
+                metadata: None,
+            })
+            .await
+            .unwrap();
+
+        let report = store.reset().await.unwrap();
+        let found = cursors
+            .get_cursor(
+                "scope:daemon8",
+                "cargo.check",
+                "target/daemon8/cargo-check.log",
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(report.cursor_states_dropped, 1);
+        assert!(found.is_none());
+    }
+
+    #[tokio::test]
+    async fn schema_check_rejects_incompatible_version() {
+        let store = SurrealStore::memory().await.unwrap();
+        store
+            .db
+            .query(
+                "UPSERT daemon_meta:schema_version SET key = 'schema_version', value = '0.4.0-alpha.old'",
+            )
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+
+        let result = store.ensure_schema_compatible().await;
+        match result {
+            Ok(_) => panic!("stale schema should not open"),
+            Err(err) => assert!(err.to_string().contains("incompatible database schema")),
+        }
+    }
+
+    #[tokio::test]
+    async fn reset_reinitializes_incompatible_schema() {
+        let store = SurrealStore::memory().await.unwrap();
+        store
+            .db
+            .query(
+                "UPSERT daemon_meta:schema_version SET key = 'schema_version', value = '0.4.0-alpha.old'",
+            )
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+
+        store.reset().await.unwrap();
+
+        assert_eq!(
+            store.schema_version().await.as_deref(),
+            Some(SCHEMA_VERSION)
         );
     }
 
@@ -1123,6 +1341,9 @@ mod tests {
             function: Some("render_overlay".into()),
         });
         obs.tags = Some(vec!["project:daemon8".into(), "domain:device".into()]);
+        obs.service = Some("adb".into());
+        obs.source = Some("device.logs".into());
+        obs.source_instance = Some("ABC123/loggingctl".into());
         obs.correlation_id = Some("corr-1".into());
         obs.session_id = Some("session-1".into());
         obs.node_id = Some("node-1".into());
@@ -1135,6 +1356,9 @@ mod tests {
             "session-1",
             "node-1",
             "src/device.rs",
+            "adb",
+            "device.logs",
+            "ABC123/loggingctl",
         ] {
             let filter = Filter {
                 text_match: Some(text.to_string()),
@@ -1142,6 +1366,99 @@ mod tests {
             };
             let slice = store.query(&filter).await.unwrap();
             assert_eq!(slice.observations.len(), 1, "text_match={text}");
+        }
+    }
+
+    #[tokio::test]
+    async fn cursor_state_upserts_and_lists_by_scope() {
+        let store = SurrealStore::memory().await.unwrap();
+        let cursors = store.cursor_store();
+
+        cursors
+            .upsert_cursor(CursorState {
+                id: None,
+                scope_root: "scope:daemon8".into(),
+                source: "cargo.check".into(),
+                source_instance: "target/daemon8/cargo-check.log".into(),
+                position: 128,
+                updated_at: 100,
+                metadata: Some(serde_json::json!({"reader": "file"})),
+            })
+            .await
+            .unwrap();
+        cursors
+            .upsert_cursor(CursorState {
+                id: None,
+                scope_root: "scope:daemon8".into(),
+                source: "cargo.check".into(),
+                source_instance: "target/daemon8/cargo-test.log".into(),
+                position: 64,
+                updated_at: 150,
+                metadata: Some(serde_json::json!({"reader": "file"})),
+            })
+            .await
+            .unwrap();
+        cursors
+            .upsert_cursor(CursorState {
+                id: None,
+                scope_root: "scope:daemon8".into(),
+                source: "cargo.check".into(),
+                source_instance: "target/daemon8/cargo-check.log".into(),
+                position: 256,
+                updated_at: 200,
+                metadata: Some(serde_json::json!({"reader": "file"})),
+            })
+            .await
+            .unwrap();
+
+        let cursor = cursors
+            .get_cursor(
+                "scope:daemon8",
+                "cargo.check",
+                "target/daemon8/cargo-check.log",
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(cursor.position, 256);
+        assert_eq!(cursor.updated_at, 200);
+
+        let listed = cursors
+            .list_cursors_for_scope("scope:daemon8")
+            .await
+            .unwrap();
+        assert_eq!(listed.len(), 2);
+        assert!(listed.iter().all(|cursor| cursor.source == "cargo.check"));
+        assert!(
+            listed
+                .iter()
+                .any(|cursor| cursor.source_instance == "target/daemon8/cargo-test.log")
+        );
+    }
+
+    #[tokio::test]
+    async fn cursor_state_rejects_blank_identity_parts() {
+        let store = SurrealStore::memory().await.unwrap();
+        let cursors = store.cursor_store();
+
+        for (scope_root, source, source_instance) in [
+            ("", "cargo.check", "target/daemon8/cargo-check.log"),
+            ("scope:daemon8", " ", "target/daemon8/cargo-check.log"),
+            ("scope:daemon8", "cargo.check", ""),
+        ] {
+            let result = cursors
+                .upsert_cursor(CursorState {
+                    id: None,
+                    scope_root: scope_root.into(),
+                    source: source.into(),
+                    source_instance: source_instance.into(),
+                    position: 0,
+                    updated_at: 0,
+                    metadata: None,
+                })
+                .await;
+
+            assert!(result.is_err());
         }
     }
 
@@ -1184,6 +1501,28 @@ mod tests {
         };
         let slice = store.query(&filter).await.unwrap();
         assert_eq!(slice.observations.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn tags_filter_requires_all_tags() {
+        let store = SurrealStore::memory().await.unwrap();
+
+        let mut matching = make_obs(Severity::Info, 1_000);
+        matching.tags = Some(vec!["project:daemon8".into(), "domain:runtime".into()]);
+        store.insert(matching).await.unwrap();
+
+        let mut partial = make_obs(Severity::Info, 2_000);
+        partial.tags = Some(vec!["project:daemon8".into()]);
+        store.insert(partial).await.unwrap();
+
+        let filter = Filter {
+            tags: Some(vec!["project:daemon8".into(), "domain:runtime".into()]),
+            ..Default::default()
+        };
+        let slice = store.query(&filter).await.unwrap();
+
+        assert_eq!(slice.observations.len(), 1);
+        assert_eq!(slice.observations[0].timestamp_ns, 1_000);
     }
 
     #[tokio::test]

@@ -351,11 +351,8 @@ mod tests {
 
     #[test]
     fn decode_project_slug_valid() {
-        let path = decode_project_slug("-Users-jhavens-Code-Me-Rust-daemon8");
-        assert_eq!(
-            path,
-            Some(PathBuf::from("/Users/jhavens/Code/Me/Rust/daemon8"))
-        );
+        let path = decode_project_slug("-workspace-daemon8");
+        assert_eq!(path, Some(PathBuf::from("/workspace/daemon8")));
     }
 
     #[test]

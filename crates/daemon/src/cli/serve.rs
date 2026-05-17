@@ -518,6 +518,9 @@ mod writer_tests {
             data: serde_json::json!({"msg": "x"}),
             severity,
             source_location: None,
+            service: None,
+            source: None,
+            source_instance: None,
             timestamp_ns: 0,
             correlation_id: None,
             parent_id: None,
@@ -600,7 +603,7 @@ mod writer_tests {
 
         let exc = ObservationKind::Exception {
             message: "DB timeout after 5000ms on conn 7".into(),
-            trace: Some("at db::query in /Users/x/proj/src/db.rs:42".into()),
+            trace: Some("at db::query in /workspace/x/proj/src/db.rs:42".into()),
         };
         let mut obs1 = fresh_obs(Severity::Error, exc.clone());
         obs1.tags = Some(vec!["project:daemon8".into()]);
@@ -608,7 +611,7 @@ mod writer_tests {
         // Same shape — should bump seen, not create a new memory.
         let exc2 = ObservationKind::Exception {
             message: "DB timeout after 9999ms on conn 12".into(),
-            trace: Some("at db::query in /Users/y/other/src/db.rs:42".into()),
+            trace: Some("at db::query in /workspace/y/other/src/db.rs:42".into()),
         };
         let mut obs2 = fresh_obs(Severity::Error, exc2);
         obs2.tags = Some(vec!["project:daemon8".into()]);

@@ -59,6 +59,9 @@ pub struct ObserveQueryParams {
     pub limit: Option<u64>,
     pub correlation_id: Option<String>,
     pub tags: Option<String>,
+    pub service: Option<String>,
+    pub source: Option<String>,
+    pub source_instance: Option<String>,
     pub include_system: Option<bool>,
 }
 
@@ -73,6 +76,9 @@ pub struct StreamQueryParams {
     pub text_match: Option<String>,
     pub correlation_id: Option<String>,
     pub tags: Option<String>,
+    pub service: Option<String>,
+    pub source: Option<String>,
+    pub source_instance: Option<String>,
     pub include_system: Option<bool>,
 }
 
@@ -210,6 +216,9 @@ struct FilterInput {
     limit: Option<usize>,
     correlation_id: Option<String>,
     tags: Option<String>,
+    service: Option<String>,
+    source: Option<String>,
+    source_instance: Option<String>,
     include_system: Option<bool>,
 }
 
@@ -223,6 +232,9 @@ fn parse_filter(input: FilterInput) -> Filter {
         limit,
         correlation_id,
         tags,
+        service,
+        source,
+        source_instance,
         include_system,
     } = input;
 
@@ -235,6 +247,9 @@ fn parse_filter(input: FilterInput) -> Filter {
         limit,
         correlation_id,
         tags: tags.map(|raw| Filter::parse_tags(&raw)),
+        service: service.map(|raw| Filter::parse_string_list(&raw)),
+        source: source.map(|raw| Filter::parse_string_list(&raw)),
+        source_instance: source_instance.map(|raw| Filter::parse_string_list(&raw)),
         include_system,
     }
 }
@@ -257,6 +272,9 @@ async fn handle_observe(
         limit: Some(params.limit.unwrap_or(50).min(500) as usize),
         correlation_id: params.correlation_id,
         tags: params.tags,
+        service: params.service,
+        source: params.source,
+        source_instance: params.source_instance,
         include_system: params.include_system,
     });
 
@@ -286,6 +304,10 @@ pub struct LensSetBody {
     pub text_match: Option<String>,
     pub correlation_id: Option<String>,
     pub tags: Option<String>,
+    pub service: Option<String>,
+    pub source: Option<String>,
+    pub source_instance: Option<String>,
+    pub include_system: Option<bool>,
     pub capacity: Option<usize>,
 }
 
@@ -299,7 +321,10 @@ async fn handle_lens_set(State(state): State<ApiState>, Json(body): Json<LensSet
         limit: None,
         correlation_id: body.correlation_id,
         tags: body.tags,
-        include_system: None,
+        service: body.service,
+        source: body.source,
+        source_instance: body.source_instance,
+        include_system: body.include_system,
     });
     let capacity = body.capacity.unwrap_or(200).min(1000);
     state.lens.set_with_capacity(filter, capacity).await;
@@ -429,6 +454,9 @@ async fn handle_stream(
         limit: None,
         correlation_id: params.correlation_id,
         tags: params.tags,
+        service: params.service,
+        source: params.source,
+        source_instance: params.source_instance,
         include_system: params.include_system,
     });
 

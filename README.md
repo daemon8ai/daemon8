@@ -64,6 +64,8 @@ sources:
 
 `vars.PRJ_ROOT` is declared in the config frontmatter and points at the absolute project root.
 
+Observation records include optional `service`, `source`, and `source_instance` provenance for live-feed filtering. Cursor state uses the same source identity.
+
 ## MCP Surface
 
 Except for `daemon8_connect`, `daemon8_init`, and `daemon8_status`, MCP tools require an established `daemon8_connect` session. Debug lifecycle tools require project mode.

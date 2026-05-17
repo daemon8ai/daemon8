@@ -17,6 +17,9 @@ A connected MCP session. Call `daemon8_connect` first. Setting a lens replaces a
   - text_match: optional string.
   - correlation_id: optional string.
   - tags: optional list.
+  - service: optional list.
+  - source: optional list.
+  - source_instance: optional list.
   - include_system: optional bool.
   - capacity: optional integer. Ring buffer capacity, default 200, max 1000.
 

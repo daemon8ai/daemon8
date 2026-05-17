@@ -15,12 +15,20 @@ pub struct LensSetArgs {
     pub severity_min: Option<String>,
     #[arg(long)]
     pub origin: Option<String>,
+    #[arg(long)]
+    pub service: Option<String>,
+    #[arg(long)]
+    pub source: Option<String>,
+    #[arg(long)]
+    pub source_instance: Option<String>,
     #[arg(long, help = "Search across materialized observation text")]
     pub text: Option<String>,
     #[arg(long)]
     pub correlation_id: Option<String>,
     #[arg(long, value_delimiter = ',')]
     pub tags: Option<Vec<String>>,
+    #[arg(long)]
+    pub include_system: bool,
     #[arg(long)]
     pub capacity: Option<usize>,
     #[command(flatten)]
@@ -32,7 +40,7 @@ pub enum LensSubcommand {
     /// Show current lens status (filter, buffer depth, cursor)
     Status(ClientArgs),
     /// Set or replace the active lens filter
-    Set(LensSetArgs),
+    Set(Box<LensSetArgs>),
     /// Remove the active lens
     Clear(ClientArgs),
 }
@@ -40,7 +48,7 @@ pub enum LensSubcommand {
 pub async fn cmd_lens(sub: LensSubcommand) -> Result<()> {
     match sub {
         LensSubcommand::Status(args) => cmd_lens_status(args).await,
-        LensSubcommand::Set(args) => cmd_lens_set(args).await,
+        LensSubcommand::Set(args) => cmd_lens_set(*args).await,
         LensSubcommand::Clear(args) => cmd_lens_clear(args).await,
     }
 }
@@ -105,6 +113,15 @@ async fn cmd_lens_set(args: LensSetArgs) -> Result<()> {
     if let Some(v) = args.origin {
         body.insert("origins".into(), serde_json::json!(v));
     }
+    if let Some(v) = args.service {
+        body.insert("service".into(), serde_json::json!(v));
+    }
+    if let Some(v) = args.source {
+        body.insert("source".into(), serde_json::json!(v));
+    }
+    if let Some(v) = args.source_instance {
+        body.insert("source_instance".into(), serde_json::json!(v));
+    }
     if let Some(v) = args.text {
         body.insert("text_match".into(), serde_json::json!(v));
     }
@@ -113,6 +130,9 @@ async fn cmd_lens_set(args: LensSetArgs) -> Result<()> {
     }
     if let Some(v) = args.tags {
         body.insert("tags".into(), serde_json::json!(v.join(",")));
+    }
+    if args.include_system {
+        body.insert("include_system".into(), serde_json::json!(true));
     }
     if let Some(v) = args.capacity {
         body.insert("capacity".into(), serde_json::json!(v));

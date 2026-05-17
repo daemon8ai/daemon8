@@ -10,7 +10,7 @@ A lens is a daemon-side filter that buffers matching observations between query 
 
 ## Filter shape
 
-Same shape as `read_live_feed`: `kinds`, `severity_min`, `origins`, `text_match`, `correlation_id`, `tags`, `include_system`. NOT supported: `since`, `limit`.
+Same shape as `read_live_feed`: `kinds`, `severity_min`, `origins`, `service`, `source`, `source_instance`, `text_match`, `correlation_id`, `tags`, `include_system`. NOT supported: `since`, `limit`.
 
 ## Why
 

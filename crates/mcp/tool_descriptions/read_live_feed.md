@@ -19,13 +19,16 @@ A connected MCP session. Call `daemon8_connect` first. Observations are live; re
   - limit: optional integer. Default 50.
   - correlation_id: optional string. Exact match (Pre/PostToolUse pair on tool_use_id).
   - tags: optional list. All listed tags must be present.
+  - service: optional list. Filter by service provenance.
+  - source: optional list. Filter by logical source id from `.daemon8/config.md`.
+  - source_instance: optional list. Filter by concrete file/transcript/source instance.
   - include_system: optional bool. Default excludes "_system"-tagged rows.
 
 ## Returns
 Common envelope with `data.observations`, `data.total`, optional `data.lens_observations`, `data.lens_count`, `data.browser_state`, and session context.
 
 ## Errors
-  - narrow_filter_required: in general mode, add `kinds`, `severity_min`, `origins`, `text_match`, `since_checkpoint`, `correlation_id`, or `tags`.
+  - narrow_filter_required: in general mode, add `kinds`, `severity_min`, `origins`, `service`, `source`, `source_instance`, `text_match`, `since_checkpoint`, `correlation_id`, or `tags`.
   - query_failed: db query error. hint: check daemon logs.
 
 ## Next

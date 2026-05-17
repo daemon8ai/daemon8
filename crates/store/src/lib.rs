@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Havy.tech, LLC
 
 pub mod active_session;
+pub mod cursor;
 pub mod debug_session;
 pub mod error_hash;
 pub mod hash_cache;
@@ -11,6 +12,7 @@ pub mod scope_ledger;
 mod surreal;
 
 pub use active_session::{ActiveDebugSession, ActiveSessionState};
+pub use cursor::SurrealCursorStore;
 pub use debug_session::SurrealDebugSessionStore;
 pub use hash_cache::ObservationHashCache;
 pub use lens::{LensManager, LensStatus};
@@ -75,6 +77,34 @@ pub struct Memory {
     /// commands_used, related_errors). Other memory kinds may leave it empty.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CursorState {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub scope_root: String,
+    pub source: String,
+    pub source_instance: String,
+    pub position: u64,
+    pub updated_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
+}
+
+#[async_trait::async_trait]
+pub trait CursorStore: Send + Sync {
+    async fn upsert_cursor(&self, cursor: CursorState) -> Result<(), StoreError>;
+    async fn get_cursor(
+        &self,
+        scope_root: &str,
+        source: &str,
+        source_instance: &str,
+    ) -> Result<Option<CursorState>, StoreError>;
+    async fn list_cursors_for_scope(
+        &self,
+        scope_root: &str,
+    ) -> Result<Vec<CursorState>, StoreError>;
 }
 
 #[derive(Debug, Clone, Default)]

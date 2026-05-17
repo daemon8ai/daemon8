@@ -17,7 +17,7 @@ Observations are the raw runtime telemetry stream — logs, queries, exceptions,
 
 ## Querying
 
-`read_live_feed(kinds?, severity_min?, origins?, text_match?, since_checkpoint?, limit?, correlation_id?, tags?, include_system?)`. Most filters are AND-ed.
+`read_live_feed(kinds?, severity_min?, origins?, service?, source?, source_instance?, text_match?, since_checkpoint?, limit?, correlation_id?, tags?, include_system?)`. Most filters are AND-ed.
 
 ## Subscribing
 
@@ -29,4 +29,4 @@ While an active debug session exists, observations ingested through that session
 
 ## Search
 
-`text_match` searches a denormalized `search_text` field that includes severity, kind, origin, tags, source location, correlation/session ids, and the data blob.
+`text_match` searches a denormalized `search_text` field that includes severity, kind, origin, service/source provenance, tags, source location, correlation/session ids, and the data blob.

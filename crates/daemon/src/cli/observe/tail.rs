@@ -19,6 +19,12 @@ pub struct TailArgs {
     pub severity: Option<String>,
     #[arg(long)]
     pub origin: Option<String>,
+    #[arg(long)]
+    pub service: Option<String>,
+    #[arg(long)]
+    pub source: Option<String>,
+    #[arg(long)]
+    pub source_instance: Option<String>,
     #[arg(long, help = "Search across materialized observation text")]
     pub text: Option<String>,
     #[arg(long)]
@@ -43,6 +49,15 @@ pub async fn cmd_tail(args: TailArgs) -> Result<()> {
     }
     if let Some(ref origin) = args.origin {
         params.push(format!("origins={}", urlenc(origin)));
+    }
+    if let Some(ref service) = args.service {
+        params.push(format!("service={}", urlenc(service)));
+    }
+    if let Some(ref source) = args.source {
+        params.push(format!("source={}", urlenc(source)));
+    }
+    if let Some(ref source_instance) = args.source_instance {
+        params.push(format!("source_instance={}", urlenc(source_instance)));
     }
     if let Some(ref text) = args.text {
         params.push(format!("text_match={}", urlenc(text)));

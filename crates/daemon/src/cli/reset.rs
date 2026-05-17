@@ -15,7 +15,7 @@ pub(crate) struct ResetArgs {
 pub(crate) async fn cmd_reset(config_path: Option<String>, args: ResetArgs) -> Result<()> {
     if !args.yes {
         eprint!(
-            "Wipe daemon-owned state (observations, memory, debug sessions/checkpoints, session/scope ledger, schema metadata)? [y/N] "
+            "Wipe daemon-owned state (observations, memory, debug sessions/checkpoints, session/scope ledger, cursors, schema metadata)? [y/N] "
         );
         let mut input = String::new();
         std::io::stdin().read_line(&mut input)?;
@@ -36,16 +36,17 @@ pub(crate) async fn cmd_reset(config_path: Option<String>, args: ResetArgs) -> R
         return Ok(());
     }
 
-    let store = SurrealStore::open(&db_path)
+    let store = SurrealStore::open_for_reset(&db_path)
         .await
         .with_context(|| format!("opening database: {}", db_path.display()))?;
 
     let report = store.reset().await.context("reset failed")?;
 
     eprintln!(
-        "daemon8 reset complete: cleared observations/live feed, memories, debug sessions/checkpoints, session/scope ledger, and schema metadata; {} observations dropped, {} session/scope ledger records dropped; schema re-initialized at {}; project files were untouched",
+        "daemon8 reset complete: cleared observations/live feed, memories, debug sessions/checkpoints, session/scope ledger, cursors, and schema metadata; {} observations dropped, {} session/scope ledger records dropped, {} cursor records dropped; schema re-initialized at {}; project files were untouched",
         report.observations_dropped,
         report.scope_ledger_records_dropped,
+        report.cursor_states_dropped,
         daemon8_store::SCHEMA_VERSION,
     );
     Ok(())

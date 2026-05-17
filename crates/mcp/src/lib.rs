@@ -91,15 +91,21 @@ pub struct ObserveParams {
     #[schemars(description = "Filter by tags (all listed tags must be present)")]
     pub tags: Option<Vec<String>>,
 
+    #[schemars(description = "Filter by service provenance, such as cargo, claude, or app.")]
+    pub service: Option<Vec<String>>,
+
+    #[schemars(description = "Filter by logical source id from .daemon8/config.md.")]
+    pub source: Option<Vec<String>>,
+
+    #[schemars(
+        description = "Filter by concrete source instance, such as a file path or transcript id."
+    )]
+    pub source_instance: Option<Vec<String>>,
+
     #[schemars(
         description = "Include system/infrastructure observations (tagged '_system'). These are excluded by default to reduce noise from internal tooling."
     )]
     pub include_system: Option<bool>,
-
-    #[schemars(
-        description = "Explicit project root for project-aware path hints. When omitted, daemon8 uses this MCP session's cached project context or active debug session."
-    )]
-    pub project_root: Option<String>,
 }
 
 impl ObserveParams {
@@ -120,6 +126,12 @@ impl ObserveParams {
                 .as_ref()
                 .is_some_and(|s| !s.trim().is_empty())
             || self.tags.as_ref().is_some_and(|items| !items.is_empty())
+            || self.service.as_ref().is_some_and(|items| !items.is_empty())
+            || self.source.as_ref().is_some_and(|items| !items.is_empty())
+            || self
+                .source_instance
+                .as_ref()
+                .is_some_and(|items| !items.is_empty())
     }
 }
 
@@ -302,6 +314,15 @@ pub struct IngestParams {
 
     #[schemars(description = "Daemon instance node ID")]
     pub node_id: Option<String>,
+
+    #[schemars(description = "Service provenance for this observation.")]
+    pub service: Option<String>,
+
+    #[schemars(description = "Logical source id for this observation.")]
+    pub source: Option<String>,
+
+    #[schemars(description = "Concrete source instance for this observation.")]
+    pub source_instance: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -332,6 +353,15 @@ pub struct SubscribeParams {
     #[schemars(description = "Filter by tags (all listed tags must be present)")]
     pub tags: Option<Vec<String>>,
 
+    #[schemars(description = "Filter by service provenance.")]
+    pub service: Option<Vec<String>>,
+
+    #[schemars(description = "Filter by logical source id.")]
+    pub source: Option<Vec<String>>,
+
+    #[schemars(description = "Filter by concrete source instance.")]
+    pub source_instance: Option<Vec<String>>,
+
     #[schemars(
         description = "Include system/infrastructure observations (tagged '_system'). Excluded by default."
     )]
@@ -359,6 +389,15 @@ pub struct LensParams {
 
     #[schemars(description = "Filter by tags (all listed tags must be present)")]
     pub tags: Option<Vec<String>>,
+
+    #[schemars(description = "Filter by service provenance.")]
+    pub service: Option<Vec<String>>,
+
+    #[schemars(description = "Filter by logical source id.")]
+    pub source: Option<Vec<String>>,
+
+    #[schemars(description = "Filter by concrete source instance.")]
+    pub source_instance: Option<Vec<String>>,
 
     #[schemars(
         description = "Include system/infrastructure observations (tagged '_system'). Excluded by default."
@@ -547,6 +586,11 @@ impl DaemonMcp {
     }
 
     #[cfg(feature = "test-util")]
+    pub async fn write_to_live_feed_for_tests(&self, params: IngestParams) -> String {
+        self.write_to_live_feed(Parameters(params)).await
+    }
+
+    #[cfg(feature = "test-util")]
     pub async fn daemon8_connect_for_tests(&self, params: Daemon8ConnectParams) -> String {
         self.daemon8_connect(Parameters(params)).await
     }
@@ -650,7 +694,7 @@ impl DaemonMcp {
             return self.blocked(
                 "narrow_filter_required",
                 "general mode read_live_feed requires a narrowing filter",
-                Some("add kinds, severity_min, origins, text_match, since_checkpoint, correlation_id, or tags"),
+                Some("add kinds, severity_min, origins, service, source, source_instance, text_match, since_checkpoint, correlation_id, or tags"),
                 None,
             );
         }
@@ -687,6 +731,9 @@ impl DaemonMcp {
             limit: Some(params.limit.unwrap_or(50).min(500)),
             correlation_id: params.correlation_id,
             tags: params.tags,
+            service: params.service,
+            source: params.source,
+            source_instance: params.source_instance,
             include_system: params.include_system,
         };
 
@@ -868,6 +915,18 @@ impl DaemonMcp {
         if let Some(nid) = params.node_id {
             body.insert("node_id".into(), serde_json::Value::String(nid));
         }
+        if let Some(service) = params.service {
+            body.insert("service".into(), serde_json::Value::String(service));
+        }
+        if let Some(source) = params.source {
+            body.insert("source".into(), serde_json::Value::String(source));
+        }
+        if let Some(source_instance) = params.source_instance {
+            body.insert(
+                "source_instance".into(),
+                serde_json::Value::String(source_instance),
+            );
+        }
         body.insert("data".into(), params.data);
 
         let mut obs = daemon8_ingest::normalize::normalize(serde_json::Value::Object(body));
@@ -928,6 +987,9 @@ impl DaemonMcp {
             limit: None,
             correlation_id: params.correlation_id,
             tags: params.tags,
+            service: params.service,
+            source: params.source,
+            source_instance: params.source_instance,
             include_system: params.include_system,
         };
 
@@ -937,6 +999,9 @@ impl DaemonMcp {
             && filter.text_match.is_none()
             && filter.correlation_id.is_none()
             && filter.tags.is_none()
+            && filter.service.is_none()
+            && filter.source.is_none()
+            && filter.source_instance.is_none()
             && filter.include_system.is_none();
 
         if is_default {
@@ -985,6 +1050,9 @@ impl DaemonMcp {
             limit: None,
             correlation_id: params.correlation_id,
             tags: params.tags,
+            service: params.service,
+            source: params.source,
+            source_instance: params.source_instance,
             include_system: params.include_system,
         };
 
@@ -3070,6 +3138,9 @@ mod logging_tests {
             parent_id: None,
             node_id: None,
             session_id: None,
+            service: None,
+            source: None,
+            source_instance: None,
             tags: None,
             data: serde_json::json!({"msg": "from agent A"}),
         }))
@@ -3084,6 +3155,9 @@ mod logging_tests {
             parent_id: None,
             node_id: None,
             session_id: None,
+            service: None,
+            source: None,
+            source_instance: None,
             tags: None,
             data: serde_json::json!({"msg": "from agent B"}),
         }))

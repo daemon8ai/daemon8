@@ -11,12 +11,15 @@ Logging a debugging note, sending an alert (severity=warn|error), recording a st
 A connected MCP session. Call `daemon8_connect` first.
 
 ## Args
-  - kind: required string. One of log, query, http_exchange, exception, state_snapshot, metric, custom, js_exception, lifecycle, tool_call.
-  - severity: required string. trace | debug | info | warn | error.
+  - kind: optional string. One of log, query, http_exchange, exception, state_snapshot, metric, custom, js_exception, lifecycle, tool_call. Defaults to log.
+  - severity: optional string. trace | debug | info | warn | error. Defaults to debug.
   - app: optional string. Origin tag (e.g. "my-api", "agent-name"). Defaults to MCP session app.
-  - data: optional object. Free-form payload. Conventional `data.message` for a clean log line.
+  - data: required object. Free-form payload. Conventional `data.message` for a clean log line.
   - tags: optional list. Retrieval tags.
   - correlation_id: optional string. Ties multiple observations to one logical operation.
+  - service: optional string. Service provenance.
+  - source: optional string. Logical source id.
+  - source_instance: optional string. Concrete source instance.
 
 ## Returns
 Common envelope with `data.ok=true` and session context. If a debug session is active, the observation is stamped with its `debug_session_id`.

@@ -247,6 +247,28 @@ fn cli_status_json_uses_global_config_file() {
 }
 
 #[test]
+fn cli_observe_and_lens_help_include_provenance_filters() {
+    for args in [
+        ["query", "--help"].as_slice(),
+        ["tail", "--help"].as_slice(),
+        ["lens", "set", "--help"].as_slice(),
+    ] {
+        let out = run_daemon8(args);
+        assert!(out.status.success(), "command failed: {args:?}");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            stdout.contains("--service"),
+            "missing --service in {args:?}"
+        );
+        assert!(stdout.contains("--source"), "missing --source in {args:?}");
+        assert!(
+            stdout.contains("--source-instance"),
+            "missing --source-instance in {args:?}"
+        );
+    }
+}
+
+#[test]
 fn cli_install_hooks_flag_is_removed() {
     let (_tmp, work, home) = setup_dirs();
     let out = run_init(&work, &home, &["--install-hooks", "local"]);
