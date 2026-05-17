@@ -6,8 +6,10 @@ use std::time::SystemTime;
 
 use serde_json::{Value, json};
 
-use crate::control::{AlphaEnvelope, AlphaStatus, NextAction, ScopeMode};
-use crate::project_config::{PROJECT_CONFIG_SCHEMA, parse_project_config_file};
+use crate::control::{
+    AlphaEnvelope, AlphaStatus, NextAction, ScopeCandidate, ScopeMode, classify_scope,
+};
+use crate::project_config::{PROJECT_CONFIG_SCHEMA, parse_project_config_str};
 
 pub const PROJECT_CONFIG_DIR: &str = ".daemon8";
 pub const PROJECT_CONFIG_FILENAME: &str = "config.md";
@@ -34,7 +36,7 @@ pub struct DetectedStack {
 
 pub fn init_project(request: InitRequest) -> InitOutcome {
     let requested_path = request.project_path.display().to_string();
-    let scope_root = match canonical_project_dir(&request.project_path) {
+    let canonical = match canonical_project_dir(&request.project_path) {
         Ok(path) => path,
         Err(reason) => {
             return InitOutcome {
@@ -47,6 +49,25 @@ pub fn init_project(request: InitRequest) -> InitOutcome {
                 .with_data(json!({
                     "mode": ScopeMode::Invalid,
                     "requested_path": requested_path,
+                })),
+                config_path: None,
+            };
+        }
+    };
+    let scope_root = match classify_scope(&canonical) {
+        ScopeCandidate::Project(path) => path,
+        ScopeCandidate::General(scope) => {
+            return InitOutcome {
+                envelope: AlphaEnvelope::non_success(
+                    AlphaStatus::Blocked,
+                    "general_scope",
+                    "project marker is missing",
+                    "daemon8_init writes project config only; run it from a directory with .git, Cargo.toml, package.json, composer.json, pyproject.toml, go.mod, artisan, or bin/console",
+                )
+                .with_data(json!({
+                    "mode": ScopeMode::General,
+                    "requested_path": requested_path,
+                    "scope_root": scope.display().to_string(),
                 })),
                 config_path: None,
             };
@@ -83,9 +104,42 @@ pub fn init_project(request: InitRequest) -> InitOutcome {
         };
     }
 
-    let name = request.name.unwrap_or_else(|| derive_name(&scope_root));
+    let name = match request.name {
+        Some(name) => {
+            let trimmed = name.trim();
+            if trimmed.is_empty() {
+                return InitOutcome {
+                    envelope: AlphaEnvelope::non_success(
+                        AlphaStatus::Error,
+                        "invalid_project_name",
+                        "project name is empty",
+                        "daemon8_init requires a non-empty project name",
+                    )
+                    .with_data(common_data),
+                    config_path: None,
+                };
+            }
+            trimmed.to_string()
+        }
+        None => derive_name(&scope_root),
+    };
     let stack = detect_stack(&scope_root);
     let contents = render_project_config(&name, &scope_root, &stack);
+    let config = match parse_project_config_str(&contents) {
+        Ok(config) => config,
+        Err(err) => {
+            return InitOutcome {
+                envelope: AlphaEnvelope::non_success(
+                    AlphaStatus::Error,
+                    "generated_config_invalid",
+                    "generated project config did not validate",
+                    err.to_string(),
+                )
+                .with_data(common_data),
+                config_path: None,
+            };
+        }
+    };
 
     if let Err(err) = std::fs::create_dir_all(&config_dir) {
         return InitOutcome {
@@ -112,22 +166,6 @@ pub fn init_project(request: InitRequest) -> InitOutcome {
             config_path: Some(config_path),
         };
     }
-
-    let config = match parse_project_config_file(&config_path) {
-        Ok(config) => config,
-        Err(err) => {
-            return InitOutcome {
-                envelope: AlphaEnvelope::non_success(
-                    AlphaStatus::Error,
-                    "generated_config_invalid",
-                    "generated project config did not validate",
-                    err.to_string(),
-                )
-                .with_data(common_data),
-                config_path: Some(config_path),
-            };
-        }
-    };
 
     let data = merge_data(
         common_data,
@@ -255,6 +293,10 @@ mod tests {
     use super::*;
     use crate::project_config::parse_project_config_str;
 
+    fn mark_project(root: &Path) {
+        std::fs::create_dir(root.join(".git")).unwrap();
+    }
+
     #[test]
     fn template_includes_project_name_and_schema() {
         let root = Path::new("/tmp/my-proj");
@@ -321,6 +363,7 @@ mod tests {
     #[test]
     fn init_writes_project_config() {
         let tmp = tempfile::tempdir().unwrap();
+        mark_project(tmp.path());
         let outcome = init_project(InitRequest {
             project_path: tmp.path().to_path_buf(),
             name: Some("alpha".into()),
@@ -371,5 +414,33 @@ mod tests {
         let contents = std::fs::read_to_string(config_path).unwrap();
         let parsed = parse_project_config_str(&contents).unwrap();
         assert_eq!(parsed.project.name, "replacement");
+    }
+
+    #[test]
+    fn init_refuses_general_scope_without_writing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let outcome = init_project(InitRequest {
+            project_path: tmp.path().to_path_buf(),
+            name: Some("alpha".into()),
+            overwrite: false,
+        });
+        assert_eq!(outcome.envelope.status, AlphaStatus::Blocked);
+        assert_eq!(outcome.envelope.code, "general_scope");
+        assert!(!tmp.path().join(".daemon8").exists());
+    }
+
+    #[test]
+    fn init_rejects_empty_project_name_without_writing() {
+        let tmp = tempfile::tempdir().unwrap();
+        mark_project(tmp.path());
+
+        let outcome = init_project(InitRequest {
+            project_path: tmp.path().to_path_buf(),
+            name: Some("   ".into()),
+            overwrite: false,
+        });
+        assert_eq!(outcome.envelope.status, AlphaStatus::Error);
+        assert_eq!(outcome.envelope.code, "invalid_project_name");
+        assert!(!tmp.path().join(".daemon8").exists());
     }
 }

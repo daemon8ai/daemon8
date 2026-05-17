@@ -16,7 +16,7 @@ Returns only what arrived after the checkpoint — typically the relevant error/
 
 ## Constraints
 
-- Requires an active debug session. Without one, returns a structured `no_active_debug_session` error with `fix.tool: "start_debug_session"`.
+- Requires an active debug session. Without one, returns a structured `no_active_debug_session` envelope with `next_actions[].tool="start_debug_session"`.
 - Persisted as a row in the `checkpoint` table; survives daemon restart.
 - Linked to its parent session via `debug_session_id`.
 
@@ -31,4 +31,4 @@ Returns only what arrived after the checkpoint — typically the relevant error/
 }
 ```
 
-The envelope's `daemon8.next_actions` will hint `read_live_feed` as the natural follow-up.
+The envelope's `next_actions` will hint `read_live_feed` as the natural follow-up.

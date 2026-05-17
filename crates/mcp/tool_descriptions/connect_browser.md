@@ -8,13 +8,13 @@ Browser is on a non-standard port, you're targeting a remote DevTools endpoint o
 
 ## Prereq
 
-None.
+A connected MCP session. Call `daemon8_connect` first.
 
 ## Args
   - endpoint: required string. Full URL including scheme (e.g. "http://localhost:9222").
 
 ## Returns
-  result: {status: "connecting", endpoint}.
+Common envelope with `data.status="connecting"` and `data.endpoint`.
 
 ## Errors
   - daemon_shutting_down: connect command channel closed.

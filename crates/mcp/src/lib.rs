@@ -337,6 +337,11 @@ pub struct LensParams {
     #[schemars(description = "Filter by tags (all listed tags must be present)")]
     pub tags: Option<Vec<String>>,
 
+    #[schemars(
+        description = "Include system/infrastructure observations (tagged '_system'). Excluded by default."
+    )]
+    pub include_system: Option<bool>,
+
     #[schemars(description = "Maximum observations to buffer (default 200)")]
     pub capacity: Option<usize>,
 }
@@ -590,6 +595,16 @@ impl DaemonMcp {
     }
 
     #[cfg(feature = "test-util")]
+    pub async fn issue_command_for_tests(&self, params: ActParams) -> String {
+        self.issue_command(Parameters(params)).await
+    }
+
+    #[cfg(feature = "test-util")]
+    pub fn connect_preflight_for_tests(&self, tool: &str) -> Option<String> {
+        self.connect_preflight(tool)
+    }
+
+    #[cfg(feature = "test-util")]
     pub fn help_topic_body(&self, topic: &str) -> (String, String) {
         match help::find_topic(topic, &self.enabled_features) {
             Some(t) => (t.name.to_string(), t.body.to_string()),
@@ -747,9 +762,7 @@ impl DaemonMcp {
             transcript_path: params.transcript_path.map(PathBuf::from),
         });
 
-        if let Some(connection) = outcome.connection.clone() {
-            *self.connection.lock().expect("connection mutex poisoned") = Some(connection);
-        }
+        *self.connection.lock().expect("connection mutex poisoned") = outcome.connection.clone();
 
         outcome.envelope.render()
     }
@@ -1016,7 +1029,8 @@ impl DaemonMcp {
     #[doc = include_str!("../tool_descriptions/issue_command.md")]
     #[tool(name = "issue_command")]
     async fn issue_command(&self, Parameters(params): Parameters<ActParams>) -> String {
-        self.issue_command_inner(params).await
+        let raw = self.issue_command_inner(params).await;
+        wrap_inner_result(self, &raw)
     }
 }
 
@@ -1034,7 +1048,7 @@ impl DaemonMcp {
             limit: None,
             correlation_id: params.correlation_id,
             tags: params.tags,
-            include_system: None,
+            include_system: params.include_system,
         };
 
         if let Some(ref sa) = self.source_activator {
@@ -1499,12 +1513,12 @@ impl DaemonMcp {
         code: &str,
         message: &str,
         hint: Option<&str>,
-        fix_tool: Option<&str>,
+        next_tool: Option<&str>,
     ) -> String {
         let mut envelope =
             AlphaEnvelope::non_success(AlphaStatus::Error, code, message, hint.unwrap_or(message))
                 .with_data(self.session_context());
-        if let Some(tool) = fix_tool {
+        if let Some(tool) = next_tool {
             envelope = envelope.with_next_action(NextAction::new(
                 tool,
                 "call this tool to continue",
@@ -1550,6 +1564,42 @@ impl DaemonMcp {
 
         data
     }
+
+    fn has_connection(&self) -> bool {
+        self.connection
+            .lock()
+            .expect("connection mutex poisoned")
+            .is_some()
+    }
+
+    fn connect_preflight(&self, tool: &str) -> Option<String> {
+        if !tool_requires_connection(tool) || self.has_connection() {
+            return None;
+        }
+
+        Some(
+            AlphaEnvelope::non_success(
+                AlphaStatus::ConnectRequired,
+                "connect_required",
+                "daemon8_connect required",
+                "call daemon8_connect before using runtime tools in this MCP session",
+            )
+            .with_data(self.session_context())
+            .with_next_action(NextAction::new(
+                "daemon8_connect",
+                "bind this MCP session to a project or general scope",
+                serde_json::json!({}),
+            ))
+            .render(),
+        )
+    }
+}
+
+fn tool_requires_connection(tool: &str) -> bool {
+    !matches!(
+        tool,
+        "daemon8_connect" | "daemon8_init" | "daemon8_status" | "daemon8_help"
+    )
 }
 
 // Command handler implementations (inner methods, not registered with tool_router).
@@ -1594,11 +1644,15 @@ impl DaemonMcp {
             return self.handle_device_screenshot(&params).await;
         }
 
+        if let Some(error) = validate_action_params(&params) {
+            return error;
+        }
+
         if let Err(e) = self
             .ensure_chrome_connected(std::time::Duration::from_secs(10))
             .await
         {
-            return error_json(&e);
+            return error_json("browser_not_connected", &e);
         }
 
         let (reply_tx, reply_rx) =
@@ -1610,7 +1664,7 @@ impl DaemonMcp {
             DebugAction::EvalJs => {
                 let expression = match params.expression {
                     Some(expr) => expr,
-                    None => return error_json("eval_js requires 'expression' parameter"),
+                    None => return missing_param_json("eval_js requires 'expression' parameter"),
                 };
                 let (tx, rx) = tokio::sync::oneshot::channel();
                 let reply_tx = reply_tx;
@@ -1659,7 +1713,7 @@ impl DaemonMcp {
             DebugAction::InjectCss => {
                 let css = match params.css {
                     Some(css) => css,
-                    None => return error_json("inject_css requires 'css' parameter"),
+                    None => return missing_param_json("inject_css requires 'css' parameter"),
                 };
                 let temporary = params.temporary.unwrap_or(true);
                 let (tx, rx) = tokio::sync::oneshot::channel();
@@ -1822,7 +1876,7 @@ impl DaemonMcp {
             DebugAction::Navigate => {
                 let url = match params.url {
                     Some(u) => u,
-                    None => return error_json("navigate requires 'url' parameter"),
+                    None => return missing_param_json("navigate requires 'url' parameter"),
                 };
                 let (tx, rx) = tokio::sync::oneshot::channel();
                 let reply_tx = reply_tx;
@@ -1876,11 +1930,15 @@ impl DaemonMcp {
             DebugAction::StorageSet => {
                 let store_type = match params.store_type {
                     Some(t) => t.as_str().to_string(),
-                    None => return error_json("storage_set requires 'store_type' parameter"),
+                    None => {
+                        return missing_param_json("storage_set requires 'store_type' parameter");
+                    }
                 };
                 let key = match params.storage_key {
                     Some(k) => k,
-                    None => return error_json("storage_set requires 'storage_key' parameter"),
+                    None => {
+                        return missing_param_json("storage_set requires 'storage_key' parameter");
+                    }
                 };
                 let value = params.storage_value.unwrap_or_default();
                 let (tx, rx) = tokio::sync::oneshot::channel();
@@ -1904,11 +1962,11 @@ impl DaemonMcp {
             DebugAction::ElementAtPoint => {
                 let x = match params.x {
                     Some(v) => v,
-                    None => return error_json("element_at_point requires 'x' parameter"),
+                    None => return missing_param_json("element_at_point requires 'x' parameter"),
                 };
                 let y = match params.y {
                     Some(v) => v,
-                    None => return error_json("element_at_point requires 'y' parameter"),
+                    None => return missing_param_json("element_at_point requires 'y' parameter"),
                 };
                 let (tx, rx) = tokio::sync::oneshot::channel();
                 let reply_tx = reply_tx;
@@ -1943,7 +2001,7 @@ impl DaemonMcp {
             DebugAction::CloseTab => {
                 let tab_id = match params.tab_id {
                     Some(id) => id,
-                    None => return error_json("close_tab requires 'tab_id' parameter"),
+                    None => return missing_param_json("close_tab requires 'tab_id' parameter"),
                 };
                 let (tx, rx) = tokio::sync::oneshot::channel();
                 let reply_tx = reply_tx;
@@ -1966,16 +2024,18 @@ impl DaemonMcp {
             .is_err()
         {
             tracing::warn!("browser action command rejected: daemon shutting down");
-            return error_json("Daemon is shutting down.");
+            return error_json("daemon_shutting_down", "Daemon is shutting down.");
         }
 
         match tokio::time::timeout(std::time::Duration::from_secs(30), reply_rx).await {
             Err(_) => error_json(
+                "action_failed",
                 "Browser action timed out (30s). The daemon is still connected and will recover.",
             ),
             Ok(Ok(Ok(value))) => serde_json::to_string(&value).unwrap_or_default(),
-            Ok(Ok(Err(e))) => error_json(&format!("{e}")),
+            Ok(Ok(Err(e))) => error_json("action_failed", &format!("{e}")),
             Ok(Err(_)) => error_json(
+                "browser_not_connected",
                 "Browser connection lost during action. The daemon is reconnecting automatically.",
             ),
         }
@@ -1990,7 +2050,10 @@ impl DaemonMcp {
                 tracing::warn!(
                     "device screenshot requested but ADB screenshot support is unavailable"
                 );
-                return error_json("device screenshots not available (ADB not enabled)");
+                return error_json(
+                    "device_screenshot_unavailable",
+                    "device screenshots not available (ADB not enabled)",
+                );
             }
         };
 
@@ -2009,17 +2072,23 @@ impl DaemonMcp {
         match result {
             Err(_) => {
                 tracing::warn!(serial, platform = ?platform, "device screenshot timed out");
-                error_json("device screenshot timed out (15s)")
+                error_json("action_failed", "device screenshot timed out (15s)")
             }
             Ok(Err(e)) => {
                 tracing::warn!(serial, platform = ?platform, error = %e, "device screenshot failed");
-                error_json(&format!("device screenshot failed for {serial}: {e}"))
+                error_json(
+                    "action_failed",
+                    &format!("device screenshot failed for {serial}: {e}"),
+                )
             }
             Ok(Ok(shot)) => {
                 let path = screenshot_path(&self.screenshot_dir, &serial, Some(&shot.source));
                 if let Err(e) = std::fs::write(&path, &shot.png_bytes) {
                     tracing::warn!(serial, path = %path.display(), error = %e, "failed to write device screenshot");
-                    return error_json(&format!("failed to write screenshot: {e}"));
+                    return error_json(
+                        "action_failed",
+                        &format!("failed to write screenshot: {e}"),
+                    );
                 }
                 tracing::info!(
                     serial,
@@ -2051,8 +2120,42 @@ fn screenshot_path(dir: &std::path::Path, target: &str, label: Option<&str>) -> 
 }
 
 /// Standalone error builder for code paths without &self access.
-fn error_json(msg: &str) -> String {
-    AlphaEnvelope::non_success(AlphaStatus::Error, "internal_error", msg, msg).render()
+fn validate_action_params(params: &ActParams) -> Option<String> {
+    match params.action {
+        DebugAction::EvalJs if params.expression.is_none() => Some(missing_param_json(
+            "eval_js requires 'expression' parameter",
+        )),
+        DebugAction::InjectCss if params.css.is_none() => {
+            Some(missing_param_json("inject_css requires 'css' parameter"))
+        }
+        DebugAction::Navigate if params.url.is_none() => {
+            Some(missing_param_json("navigate requires 'url' parameter"))
+        }
+        DebugAction::StorageSet if params.store_type.is_none() => Some(missing_param_json(
+            "storage_set requires 'store_type' parameter",
+        )),
+        DebugAction::StorageSet if params.storage_key.is_none() => Some(missing_param_json(
+            "storage_set requires 'storage_key' parameter",
+        )),
+        DebugAction::ElementAtPoint if params.x.is_none() => Some(missing_param_json(
+            "element_at_point requires 'x' parameter",
+        )),
+        DebugAction::ElementAtPoint if params.y.is_none() => Some(missing_param_json(
+            "element_at_point requires 'y' parameter",
+        )),
+        DebugAction::CloseTab if params.tab_id.is_none() => {
+            Some(missing_param_json("close_tab requires 'tab_id' parameter"))
+        }
+        _ => None,
+    }
+}
+
+fn missing_param_json(msg: &str) -> String {
+    error_json("missing_param", msg)
+}
+
+fn error_json(code: &str, msg: &str) -> String {
+    AlphaEnvelope::non_success(AlphaStatus::Error, code, msg, msg).render()
 }
 
 impl DaemonMcp {
@@ -2077,8 +2180,12 @@ impl DaemonMcp {
             result["applications"] = serde_json::to_value(&summary.connections).unwrap_or_default();
         }
 
-        serde_json::to_string_pretty(&result)
-            .unwrap_or_else(|e| error_json(&format!("serialization failed: {e}")))
+        serde_json::to_string_pretty(&result).unwrap_or_else(|e| {
+            error_json(
+                "serialization_failed",
+                &format!("serialization failed: {e}"),
+            )
+        })
     }
 
     pub fn tools_for_client(&self) -> Vec<Tool> {
@@ -2244,6 +2351,13 @@ impl ServerHandler for DaemonMcp {
         let started = Instant::now();
         tracing::debug!(tool = %tool, "MCP tool call started");
 
+        if let Some(body) = self.connect_preflight(&tool) {
+            tracing::info!(tool = %tool, "MCP tool call blocked until daemon8_connect");
+            return Ok(rmcp::model::CallToolResult::success(vec![
+                rmcp::model::Content::text(body),
+            ]));
+        }
+
         let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
         let result = self.tool_router.call(tcc).await;
         let duration_ms = started.elapsed().as_millis();
@@ -2298,7 +2412,7 @@ pub async fn save_memory_inner(mem_store: &dyn MemoryStore, params: SaveMemoryPa
 
     match mem_store.save_memory(memory).await {
         Ok(id) => serde_json::to_string(&serde_json::json!({ "id": id })).unwrap_or_default(),
-        Err(e) => error_json(&format!("save_memory failed: {e}")),
+        Err(e) => error_json("save_memory_failed", &format!("save_memory failed: {e}")),
     }
 }
 
@@ -2321,9 +2435,13 @@ pub async fn query_memory_inner(mem_store: &dyn MemoryStore, params: QueryMemory
     };
 
     match mem_store.query_memory(&filter).await {
-        Ok(memories) => serde_json::to_string_pretty(&memories)
-            .unwrap_or_else(|e| error_json(&format!("serialization failed: {e}"))),
-        Err(e) => error_json(&format!("query_memory failed: {e}")),
+        Ok(memories) => serde_json::to_string_pretty(&memories).unwrap_or_else(|e| {
+            error_json(
+                "serialization_failed",
+                &format!("serialization failed: {e}"),
+            )
+        }),
+        Err(e) => error_json("query_memory_failed", &format!("query_memory failed: {e}")),
     }
 }
 

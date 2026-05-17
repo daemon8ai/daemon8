@@ -1,6 +1,6 @@
 # Lens
 
-A lens is a daemon-side filter that buffers matching observations between query calls. Useful when the observation stream is high-volume but you only care about a narrow slice — set the lens once, then `read_live_feed` returns a `lens_observations` array of new matches alongside the regular query result.
+A lens is a daemon-side filter that buffers matching observations between query calls. Useful when the observation stream is high-volume but you only care about a narrow slice — set the lens once, then `read_live_feed` returns a `lens_observations` array of new matches alongside the regular query payload.
 
 ## Lifecycle
 

@@ -8,7 +8,7 @@ Logging a debugging note, sending an alert (severity=warn|error), recording a st
 
 ## Prereq
 
-None.
+A connected MCP session. Call `daemon8_connect` first.
 
 ## Args
   - kind: required string. One of log, query, http_exchange, exception, js_exception, lifecycle, state_snapshot, metric, custom, tool_call.
@@ -19,8 +19,7 @@ None.
   - correlation_id: optional string. Ties multiple observations to one logical operation.
 
 ## Returns
-  result: {"ok": true}.
-  daemon8.active_debug_session: present if a session is active (which case the obs is auto-stamped with debug_session_id).
+Common envelope with `data.ok=true` and session context. If a debug session is active, the observation is stamped with its `debug_session_id`.
 
 ## Errors
   - daemon_shutting_down: ingest channel closed. hint: not retryable in the same session.

@@ -80,7 +80,6 @@ anyhow = "1"
 
 # HTTP client
 reqwest = { version = "0.13", features = ["json", "stream"] }
-ureq = { version = "3", features = ["json"] }
 reqwest-eventsource = "0.6"
 
 # Streaming
@@ -93,7 +92,6 @@ clap_complete = "4"
 owo-colors = "4"
 comfy-table = "7"
 toml = "0.8"
-cliclack = "0.3"
 dirs = "6"
 
 # Async traits
@@ -112,15 +110,6 @@ sha2 = "0.10"
 
 # Concurrent cache (observation dedupe)
 quick_cache = "0.6"
-
-# File watching
-notify = { version = "8", features = ["macos_fsevent"] }
-glob = "0.3"
-
-# Version constraint matching (D3 discovery scanner)
-semver = "1"
-
-# SQLite (read-only polling)
 
 # Utilities
 futures = "0.3"

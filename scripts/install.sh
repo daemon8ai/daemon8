@@ -181,6 +181,8 @@ case ":${PATH}:" in
     ;;
 esac
 
-step 4 $TOTAL_STEPS "Setup"
+step 4 $TOTAL_STEPS "Next steps"
 echo ""
-"$INSTALL_DIR/$BINARY" setup
+dim "Start daemon8: daemon8 serve"
+dim "Install the login service when wanted: daemon8 service install"
+dim "Inside a project, initialize alpha config: daemon8 init"

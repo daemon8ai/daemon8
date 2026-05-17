@@ -8,7 +8,7 @@ Diagnosing a runtime symptom, scanning for a specific error, monitoring a servic
 
 ## Prereq
 
-None. Observations are live; re-call to refresh.
+A connected MCP session. Call `daemon8_connect` first. Observations are live; re-call to refresh.
 
 ## Args
   - kinds: optional list. Filter by kind (log, query, http_exchange, exception, js_exception, lifecycle, state_snapshot, metric, custom, tool_call).
@@ -22,9 +22,7 @@ None. Observations are live; re-call to refresh.
   - include_system: optional bool. Default excludes "_system"-tagged rows.
 
 ## Returns
-  result: {observations: [...], total, lens_observations?, lens_count?, browser_state?}.
-  daemon8.active_debug_session: present if a debug session is active (and stamping new obs).
-  daemon8.active_debug_session: present if a debug session is active.
+Common envelope with `data.observations`, `data.total`, optional `data.lens_observations`, `data.lens_count`, `data.browser_state`, and session context.
 
 ## Errors
   - query_failed: db query error. hint: check daemon logs.

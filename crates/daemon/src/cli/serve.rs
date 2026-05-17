@@ -185,23 +185,7 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
         );
     }
 
-    let source_activator: Option<Arc<dyn daemon8_types::SourceActivator>> =
-        if !cfg.sources.is_empty() {
-            tracing::info!(
-                count = cfg.sources.len(),
-                "registering file sources (lazy activation)"
-            );
-            let mgr = crate::sources::SourceManager::new(
-                cfg.sources.clone(),
-                obs_tx.clone(),
-                cfg.source_config.idle_ttl_secs,
-            );
-            let activator: Arc<dyn daemon8_types::SourceActivator> = Arc::new(mgr.clone());
-            mgr.spawn_reaper_task(&mut tasks, cancel.clone());
-            Some(activator)
-        } else {
-            None
-        };
+    let source_activator: Option<Arc<dyn daemon8_types::SourceActivator>> = None;
 
     // Only start MCP stdio when stdin is a real FIFO from an MCP client.
     // A plain "not a TTY" check is insufficient: launchd, nohup, and shell

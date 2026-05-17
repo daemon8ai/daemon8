@@ -6,7 +6,6 @@ mod cli;
 mod cli_config;
 mod config;
 mod screenshot;
-mod sources;
 pub(crate) mod style;
 
 use std::path::PathBuf;
@@ -73,12 +72,6 @@ enum Commands {
     Reset(cli::reset::ResetArgs),
     /// Real-time alert relay for MCP clients (experimental)
     Channel,
-    /// Diagnose common configuration and environment issues
-    Doctor {
-        /// Attempt to fix issues that can be repaired automatically
-        #[arg(long)]
-        fix: bool,
-    },
 }
 
 #[derive(Subcommand)]
@@ -133,7 +126,6 @@ async fn main() -> Result<()> {
         },
         Commands::Reset(args) => cli::reset::cmd_reset(cli.config, args).await,
         Commands::Channel => cli::channel::cmd_channel().await,
-        Commands::Doctor { fix } => cli::doctor::cmd_doctor(cli.config, fix).await,
     }
 }
 

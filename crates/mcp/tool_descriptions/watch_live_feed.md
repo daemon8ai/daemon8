@@ -8,7 +8,7 @@ Watching for a specific failure pattern, monitoring a particular app, listening 
 
 ## Prereq
 
-None.
+A connected MCP session. Call `daemon8_connect` first.
 
 ## Args
   - kinds: optional list. (See read_live_feed.)
@@ -20,7 +20,7 @@ None.
   - include_system: optional bool.
 
 ## Returns
-  result: {subscribed: true, filter: "default (severity >= warn)" | "custom"}.
+Common envelope with `data.subscribed=true` and `data.filter`.
 
 ## Errors
 

@@ -105,12 +105,17 @@ fn project_config_path(root: &Path) -> PathBuf {
     root.join(".daemon8").join("config.md")
 }
 
+fn mark_project(root: &Path) {
+    std::fs::create_dir(root.join(".git")).unwrap();
+}
+
 // ---------------------------------------------------------------------------
 
 #[test]
-fn cli_yes_writes_project_config_only() {
+fn cli_init_writes_project_config_only() {
     let (_tmp, work, home) = setup_dirs();
-    let out = run_init(&work, &home, &["--yes"]);
+    mark_project(&work);
+    let out = run_init(&work, &home, &[]);
     assert!(
         out.status.success(),
         "stderr: {}",
@@ -176,7 +181,7 @@ fn config_env_nested_override_applies() {
 #[test]
 fn cli_install_hooks_flag_is_removed() {
     let (_tmp, work, home) = setup_dirs();
-    let out = run_init(&work, &home, &["--yes", "--install-hooks", "local"]);
+    let out = run_init(&work, &home, &["--install-hooks", "local"]);
     assert!(!out.status.success(), "hook install flag must be removed");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
@@ -210,6 +215,31 @@ fn cli_setup_command_is_removed() {
 }
 
 #[test]
+fn cli_doctor_command_is_removed() {
+    let out = run_daemon8(&["doctor", "--help"]);
+    assert!(!out.status.success());
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("unrecognized subcommand") || stderr.contains("unexpected argument"),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
+fn cli_init_yes_flag_is_removed() {
+    let (_tmp, work, home) = setup_dirs();
+    mark_project(&work);
+    let out = run_init(&work, &home, &["--yes"]);
+    assert!(!out.status.success(), "legacy --yes flag must be removed");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("unexpected argument") || stderr.contains("unrecognized"),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
 fn cli_hidden_service_aliases_are_removed() {
     let install = run_daemon8(&["install", "--help"]);
     assert!(!install.status.success());
@@ -221,7 +251,7 @@ fn cli_hidden_service_aliases_are_removed() {
 #[test]
 fn cli_init_providers_flag_is_removed() {
     let (_tmp, work, home) = setup_dirs();
-    let out = run_init(&work, &home, &["--yes", "--providers", "codex-cli"]);
+    let out = run_init(&work, &home, &["--providers", "codex-cli"]);
     assert!(!out.status.success(), "provider setup moved out of init");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
@@ -233,7 +263,7 @@ fn cli_init_providers_flag_is_removed() {
 #[test]
 fn cli_init_slug_flag_is_removed() {
     let (_tmp, work, home) = setup_dirs();
-    let out = run_init(&work, &home, &["--yes", "--slug", "old-name"]);
+    let out = run_init(&work, &home, &["--slug", "old-name"]);
     assert!(!out.status.success(), "legacy slug flag must be removed");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
@@ -245,7 +275,8 @@ fn cli_init_slug_flag_is_removed() {
 #[test]
 fn cli_init_name_sets_project_name() {
     let (_tmp, work, home) = setup_dirs();
-    let out = run_init(&work, &home, &["--yes", "--name", "alpha-name"]);
+    mark_project(&work);
+    let out = run_init(&work, &home, &["--name", "alpha-name"]);
     assert!(
         out.status.success(),
         "stderr: {}",
@@ -260,7 +291,8 @@ fn cli_init_name_sets_project_name() {
 #[test]
 fn cli_init_json_uses_common_envelope() {
     let (_tmp, work, home) = setup_dirs();
-    let out = run_init(&work, &home, &["--yes", "--json"]);
+    mark_project(&work);
+    let out = run_init(&work, &home, &["--json"]);
     assert!(
         out.status.success(),
         "stderr: {}",
@@ -276,10 +308,43 @@ fn cli_init_json_uses_common_envelope() {
 }
 
 #[test]
-fn cli_noninteractive_when_stdin_not_tty() {
-    // No --yes, no CI var, but stdin is /dev/null via Stdio::null() → must not hang
-    // and must write defaults. (If it tried to prompt, it would either hang or fail.)
+fn cli_init_refuses_general_scope_without_writing() {
     let (_tmp, work, home) = setup_dirs();
+    let out = run_init(&work, &home, &["--json"]);
+    assert!(
+        out.status.success(),
+        "json blocked responses still exit 0; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let parsed: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(parsed["status"], "blocked");
+    assert_eq!(parsed["code"], "general_scope");
+    assert!(!project_config_path(&work).exists());
+}
+
+#[test]
+fn cli_init_rejects_empty_name_without_writing() {
+    let (_tmp, work, home) = setup_dirs();
+    mark_project(&work);
+    let out = run_init(&work, &home, &["--name", "", "--json"]);
+    assert!(
+        out.status.success(),
+        "json error responses still exit 0; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let parsed: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(parsed["status"], "error");
+    assert_eq!(parsed["code"], "invalid_project_name");
+    assert!(!project_config_path(&work).exists());
+}
+
+#[test]
+fn cli_noninteractive_when_stdin_not_tty() {
+    // Stdin is /dev/null via Stdio::null(); init must not try to prompt.
+    let (_tmp, work, home) = setup_dirs();
+    mark_project(&work);
     let out = run_init(&work, &home, &[]);
     assert!(
         out.status.success(),
@@ -295,6 +360,7 @@ fn cli_ci_env_forces_noninteractive() {
     // skip prompting (important if someone runs the binary from an interactive
     // terminal inside a CI container image).
     let (_tmp, work, home) = setup_dirs();
+    mark_project(&work);
     let out = run_init_with_env(&work, &home, &[("CI", "1")], &[]);
     assert!(
         out.status.success(),
@@ -311,7 +377,7 @@ fn cli_skips_existing_project_config_without_force() {
     std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
     std::fs::write(&config_path, "# pre-existing\n").unwrap();
 
-    let out = run_init(&work, &home, &["--yes"]);
+    let out = run_init(&work, &home, &[]);
     assert!(
         out.status.success(),
         "expected success (graceful skip); stderr: {}",
@@ -356,7 +422,8 @@ fn cli_connect_missing_config_returns_setup_required_json() {
 #[test]
 fn cli_connect_after_init_returns_connected_json() {
     let (_tmp, work, home) = setup_dirs();
-    let init = run_init(&work, &home, &["--yes"]);
+    mark_project(&work);
+    let init = run_init(&work, &home, &[]);
     assert!(
         init.status.success(),
         "stderr: {}",
@@ -394,7 +461,7 @@ fn cli_force_overwrites_existing_project_config() {
     std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
     std::fs::write(&config_path, "# pre-existing\n").unwrap();
 
-    let out = run_init(&work, &home, &["--yes", "--force"]);
+    let out = run_init(&work, &home, &["--force"]);
     assert!(
         out.status.success(),
         "stderr: {}",

@@ -101,6 +101,8 @@ Write-Host "  + Installed to $InstallDir\$Binary.exe" -ForegroundColor Green
 Remove-Item -Recurse -Force $Tmp -ErrorAction SilentlyContinue
 
 Write-Host ""
-Write-Host "[4/4] Setup" -ForegroundColor Cyan
+Write-Host "[4/4] Next steps" -ForegroundColor Cyan
 Write-Host ""
-& (Join-Path $InstallDir "$Binary.exe") setup
+Write-Host "  Start daemon8: daemon8 serve" -ForegroundColor DarkGray
+Write-Host "  Install the login service when wanted: daemon8 service install" -ForegroundColor DarkGray
+Write-Host "  Inside a project, initialize alpha config: daemon8 init" -ForegroundColor DarkGray

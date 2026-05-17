@@ -30,7 +30,6 @@ Useful CLI checks:
 ```bash
 daemon8 status
 daemon8 connections
-daemon8 doctor
 daemon8 logs --follow
 ```
 
@@ -39,7 +38,7 @@ daemon8 logs --follow
 Create the project-local alpha config:
 
 ```bash
-daemon8 init --yes
+daemon8 init
 ```
 
 This writes `.daemon8/config.md`. The file is Markdown with YAML frontmatter so daemon8 can parse it and the LLM can read it directly.
@@ -48,16 +47,18 @@ Source entries use `kind`, not `type`. The alpha source kinds are strict:
 
 ```yaml
 sources:
-  app-logs:
+  - id: app.logs
+    service: app
     kind: file
     path: "$PRJ_ROOT/logs/app.log"
     parser: line
     tags: ["app"]
 
-  claude:
+  - id: claude.conversations
+    service: claude
     kind: conversation
     provider: claude
-    parser: line
+    path: "/absolute/path/to/claude/sessions"
     tags: ["conversation"]
 ```
 

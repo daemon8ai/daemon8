@@ -3,7 +3,7 @@
 
 // Integration tests that exercise cross-feature interactions.
 // Each test spins up the actual Axum server stack (ingest + API) backed by
-// a real SQLite store, then exercises the pipeline end-to-end.
+// a real SurrealDB store, then exercises the pipeline end-to-end.
 
 use std::sync::Arc;
 use std::time::Duration;

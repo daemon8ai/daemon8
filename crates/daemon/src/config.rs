@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: LicenseRef-FCL-1.0-ALv2
 // Copyright (c) 2026 Havy.tech, LLC
 
-use std::collections::BTreeMap;
 use std::net::{IpAddr, SocketAddr, SocketAddrV4};
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -28,11 +27,7 @@ pub struct Config {
     #[serde(default)]
     pub logging: LoggingConfig,
     #[serde(default)]
-    pub sources: BTreeMap<String, SourceConfig>,
-    #[serde(default)]
     pub debug_session: DebugSessionConfig,
-    #[serde(default)]
-    pub source_config: SourceManagerConfig,
     #[serde(skip)]
     pub config_dir: PathBuf,
 }
@@ -179,56 +174,6 @@ impl FromStr for LogLevel {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "lowercase")]
-pub enum SourceConfig {
-    File(FileSourceConfig),
-    Conversation(ConversationSourceConfig),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct FileSourceConfig {
-    pub path: String,
-    #[serde(default = "default_line_parser")]
-    pub parser: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parser_pattern: Option<String>,
-    #[serde(default)]
-    pub tags: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ConversationSourceConfig {
-    pub provider: String,
-    #[serde(default)]
-    pub tags: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SourceManagerConfig {
-    #[serde(default = "default_idle_ttl_secs")]
-    pub idle_ttl_secs: u64,
-}
-
-impl Default for SourceManagerConfig {
-    fn default() -> Self {
-        Self {
-            idle_ttl_secs: default_idle_ttl_secs(),
-        }
-    }
-}
-
-fn default_idle_ttl_secs() -> u64 {
-    900
-}
-
-fn default_line_parser() -> String {
-    "line".into()
-}
-
 fn deser_optional_path<'de, D: Deserializer<'de>>(d: D) -> Result<Option<PathBuf>, D::Error> {
     let s: Option<String> = Option::deserialize(d)?;
     Ok(s.filter(|s| !s.is_empty()).map(PathBuf::from))
@@ -282,9 +227,7 @@ impl Default for Config {
             adb: AdbConfig::default(),
             ingestion: IngestionConfig::default(),
             logging: LoggingConfig::default(),
-            sources: BTreeMap::new(),
             debug_session: DebugSessionConfig::default(),
-            source_config: SourceManagerConfig::default(),
             config_dir: project_dirs()
                 .map(|d| d.config_dir().to_path_buf())
                 .unwrap_or_else(|| PathBuf::from(".")),
@@ -402,16 +345,7 @@ fn is_config_env_key(key: &str) -> bool {
         .unwrap_or(key);
     matches!(
         root.to_ascii_lowercase().as_str(),
-        "version"
-            | "server"
-            | "storage"
-            | "browser"
-            | "mcp"
-            | "adb"
-            | "ingestion"
-            | "logging"
-            | "sources"
-            | "source_config"
+        "version" | "server" | "storage" | "browser" | "mcp" | "adb" | "ingestion" | "logging"
     )
 }
 
@@ -744,56 +678,31 @@ bind = "0.0.0.0:8889"
     }
 
     #[test]
-    fn sources_default_is_empty() {
-        let cfg = Config::default();
-        assert!(cfg.sources.is_empty());
-    }
-
-    #[test]
-    fn sources_file_type_parses() {
-        let cfg: Config = toml::from_str(
-            r#"
-[sources.laravel]
-kind = "file"
-path = "/var/log/laravel/*.log"
-parser = "monolog"
-tags = ["php", "laravel"]
-
-[sources.nginx]
-kind = "file"
-path = "/var/log/nginx/access.log"
-parser = "clf"
-"#,
-        )
-        .unwrap();
-        assert_eq!(cfg.sources.len(), 2);
-        let SourceConfig::File(f) = &cfg.sources["laravel"] else {
-            panic!("expected File source");
-        };
-        assert_eq!(f.path, "/var/log/laravel/*.log");
-        assert_eq!(f.parser, "monolog");
-        assert_eq!(f.tags, vec!["php", "laravel"]);
-
-        let SourceConfig::File(f) = &cfg.sources["nginx"] else {
-            panic!("expected File source");
-        };
-        assert_eq!(f.parser, "clf");
-        assert!(f.tags.is_empty());
-    }
-
-    #[test]
-    fn sources_file_defaults_parser_to_line() {
-        let cfg: Config = toml::from_str(
+    fn removed_sources_config_is_rejected() {
+        let result: Result<Config, _> = toml::from_str(
             r#"
 [sources.raw]
 kind = "file"
 path = "/tmp/test.log"
 "#,
-        )
-        .unwrap();
-        let SourceConfig::File(f) = &cfg.sources["raw"] else {
-            panic!("expected File source");
-        };
-        assert_eq!(f.parser, "line");
+        );
+        assert!(
+            result.is_err(),
+            "global sources config must not be accepted in alpha"
+        );
+    }
+
+    #[test]
+    fn removed_source_config_is_rejected() {
+        let result: Result<Config, _> = toml::from_str(
+            r#"
+[source_config]
+idle_ttl_secs = 1
+"#,
+        );
+        assert!(
+            result.is_err(),
+            "source manager runtime config must not be accepted in alpha"
+        );
     }
 }

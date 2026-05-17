@@ -10,19 +10,16 @@ Inside an active debug session, immediately before any action whose effects you'
 
 ## Prereq
 
-An active debug session (call start_debug_session first). Checkpoints cannot exist outside a session.
+A connected MCP session and an active debug session. Call `daemon8_connect` first, then start_debug_session. Checkpoints cannot exist outside a session.
 
 ## Args
   - description: optional one-line note. Recommended — future you will want to know why this checkpoint mattered.
 
 ## Returns
-  result.checkpoint_id: opaque id; pass to read_live_feed(since_checkpoint=...).
-  result.debug_session_id: parent session id.
-  result.seq_at_creation: integer observation seq at the moment of creation.
-  result.created_at: integer ns since epoch.
+Common envelope with `data.checkpoint_id`, `data.debug_session_id`, `data.seq_at_creation`, and `data.created_at`.
 
 ## Errors
-  - no_active_debug_session: no session is open. hint: call start_debug_session first; fix.tool: start_debug_session.
+  - no_active_debug_session: no session is open; `next_actions[].tool` points to start_debug_session.
   - create_checkpoint failed: db write failed. hint: check daemon logs.
 
 ## Next

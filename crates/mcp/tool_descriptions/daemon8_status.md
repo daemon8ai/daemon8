@@ -20,4 +20,4 @@ Common envelope with summary data in `data`.
 
 ## Next
 
-If `data.connection` is absent, call `daemon8_connect` before project-aware work.
+If `data.connection` is null or absent, call `daemon8_connect` before project-aware work.

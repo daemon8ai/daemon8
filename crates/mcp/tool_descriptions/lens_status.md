@@ -8,15 +8,14 @@ Verifying the lens filter matches expectations, checking buffer depth before `re
 
 ## Prereq
 
-None.
+A connected MCP session. Call `daemon8_connect` first.
 
 ## Args
 
 none.
 
 ## Returns
-  result: {active, filter, buffered, capacity, cursor}.
-  cursor = highest seq processed; buffered = current ring count.
+Common envelope with `data.active`, `data.filter`, `data.buffered`, `data.capacity`, and `data.cursor`. `cursor` is the highest seq processed; `buffered` is the current ring count.
 
 ## Errors
 

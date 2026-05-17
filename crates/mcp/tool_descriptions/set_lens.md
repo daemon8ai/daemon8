@@ -8,7 +8,7 @@ Watching for a specific event over time without polling, focusing on one origin/
 
 ## Prereq
 
-None. Setting a lens replaces any existing lens; `clear_lens` to remove.
+A connected MCP session. Call `daemon8_connect` first. Setting a lens replaces any existing lens; `clear_lens` to remove.
 
 ## Args
   - kinds: optional list. (Same vocabulary as read_live_feed.)
@@ -17,10 +17,11 @@ None. Setting a lens replaces any existing lens; `clear_lens` to remove.
   - text_match: optional string.
   - correlation_id: optional string.
   - tags: optional list.
+  - include_system: optional bool.
   - capacity: optional integer. Ring buffer capacity, default 200, max 1000.
 
 ## Returns
-  result: {active: true, filter, capacity, buffered, cursor}.
+Common envelope with `data.active`, `data.filter`, `data.capacity`, `data.buffered`, and `data.cursor`.
 
 ## Errors
 

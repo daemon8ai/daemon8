@@ -27,10 +27,6 @@ pub struct InitArgs {
     /// Emit the common alpha JSON envelope.
     #[arg(long)]
     pub json: bool,
-
-    /// Accept defaults without prompting.
-    #[arg(short = 'y', long, visible_alias = "no-interaction")]
-    pub yes: bool,
 }
 
 pub fn cmd_init(args: InitArgs) -> Result<()> {

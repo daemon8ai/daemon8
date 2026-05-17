@@ -10,7 +10,7 @@ At the start of any non-trivial debugging task. Errors observed, tests failing, 
 
 ## Prereq
 
-No other debug session is currently active IN THIS MCP SESSION. Other agents/connections can each have their own active session. If one is active here, end_debug_session or resolve_debug_session must close it first.
+A connected MCP session and no other debug session currently active IN THIS MCP SESSION. Call `daemon8_connect` first. Other agents/connections can each have their own active session. If one is active here, end_debug_session or resolve_debug_session must close it first.
 
 ## Args
   - agent_id: REQUIRED string. Agent identity in format :host/tool+role> (e.g. :mbp/claude+plan-agent>). Identifies who is running this investigation.
@@ -19,13 +19,11 @@ No other debug session is currently active IN THIS MCP SESSION. Other agents/con
   - feature: optional string. The feature being investigated (e.g. "auth", "search"). Other agents can discover overlapping work via list_debug_sessions(feature="auth").
 
 ## Returns
-  result.debug_session_id: opaque id; pass to create_checkpoint, resolve, end.
-  result.started_at: integer ns since epoch.
-  daemon8.active_debug_session: the session you just opened.
+Common envelope with `data.debug_session_id`, `data.started_at`, and `data.active_debug_session`.
 
 ## Errors
   - invalid_agent_id: agent_id does not match format :host/tool+role>. hint: use the convention.
-  - already_active_debug_session: another session is open IN THIS MCP SESSION. hint: call end_debug_session(outcome="abandoned") or resolve_debug_session first; fix.tool: end_debug_session.
+  - already_active_debug_session: another session is open IN THIS MCP SESSION. `next_actions[].tool` points to the close/resolve step.
   - debug_session_unavailable: daemon was started without debug-session storage. hint: restart daemon8 with debug-session storage enabled.
 
 ## Next

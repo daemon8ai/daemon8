@@ -8,7 +8,7 @@ You found the fix. The bug is understood, the change is applied, the test passes
 
 ## Prereq
 
-A debug session must be active. Call start_debug_session first if not.
+A connected MCP session and an active debug session. Call `daemon8_connect` first; call start_debug_session if no debug session is active.
 
 ## Args
   - summary: REQUIRED. One paragraph in your own words: what was wrong, what you tried, what fixed it. The single field that future search will hit hardest. Be specific.
@@ -19,15 +19,10 @@ A debug session must be active. Call start_debug_session first if not.
   - tags: optional array of additional tags ("auth", "race-condition", "flaky-test"). These join automatic tags ("kind:debug_session_summary", project_slug) on the SessionSummary.
 
 ## Returns
-  result.debug_session_id: id of the session that was just resolved.
-  result.summary_memory_id: id of the internal typed SessionSummary record written for future error/session recall.
-  result.project_slug: project slug attached to the resolved session.
-  result.evidence_ref: durable `{kind:"session_summary", id}` ref for the written summary.
-  result.checkpoint_count: number of checkpoints considered while writing the durable session summary.
-  daemon8.active_debug_session: null after this call.
+Common envelope with `data.debug_session_id`, `data.summary_memory_id`, `data.project_slug`, `data.evidence_ref`, and `data.checkpoint_count`.
 
 ## Errors
-  - no_active_debug_session: nothing to resolve. hint: call start_debug_session first; fix.tool: start_debug_session.
+  - no_active_debug_session: nothing to resolve; `next_actions[].tool` points to start_debug_session.
   - debug_session_unavailable: see start_debug_session.
 
 ## Next

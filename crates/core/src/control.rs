@@ -152,7 +152,7 @@ pub struct ConnectOutcome {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum ScopeCandidate {
+pub enum ScopeCandidate {
     Project(PathBuf),
     General(PathBuf),
 }
@@ -318,7 +318,7 @@ fn canonical_project_dir(path: &Path) -> Result<PathBuf, String> {
         .map_err(|err| format!("failed to canonicalize {}: {err}", path.display()))
 }
 
-fn classify_scope(path: &Path) -> ScopeCandidate {
+pub fn classify_scope(path: &Path) -> ScopeCandidate {
     let mut current = path.to_path_buf();
     loop {
         if is_project_marker_dir(&current) {

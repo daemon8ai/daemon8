@@ -4,7 +4,9 @@
 use std::sync::Arc;
 
 use daemon8_chrome::ConnectionState;
-use daemon8_mcp::{Daemon8ConnectParams, Daemon8InitParams, DaemonMcp, DaemonMcpConfig};
+use daemon8_mcp::{
+    ActParams, Daemon8ConnectParams, Daemon8InitParams, DaemonMcp, DaemonMcpConfig, DebugAction,
+};
 use daemon8_types::Filter;
 use tokio_util::sync::CancellationToken;
 
@@ -67,6 +69,36 @@ async fn make_mcp_with_cancel(cancel: CancellationToken) -> DaemonMcp {
 }
 
 use daemon8_store::SurrealStore;
+
+fn act_params(action: DebugAction) -> ActParams {
+    ActParams {
+        action,
+        tab_id: None,
+        expression: None,
+        selector: None,
+        css: None,
+        temporary: None,
+        device_serial: None,
+        device_platform: None,
+        viewport_width: None,
+        viewport_height: None,
+        viewport_scale: None,
+        viewport_mobile: None,
+        viewport_ua: None,
+        network_preset: None,
+        store_type: None,
+        storage_key: None,
+        storage_value: None,
+        storage_types: None,
+        x: None,
+        y: None,
+        url: None,
+    }
+}
+
+fn mark_project(root: &std::path::Path) {
+    std::fs::create_dir(root.join(".git")).unwrap();
+}
 
 #[test]
 fn composed_router_has_full_tool_surface() {
@@ -144,6 +176,7 @@ async fn daemon8_connect_missing_config_guides_to_init() {
 async fn daemon8_init_then_connect_sets_session_connection() {
     let mcp = make_mcp().await;
     let tmp = tempfile::tempdir().unwrap();
+    mark_project(tmp.path());
 
     let init = mcp
         .daemon8_init_for_tests(Daemon8InitParams {
@@ -173,6 +206,101 @@ async fn daemon8_init_then_connect_sets_session_connection() {
     assert_eq!(parsed["status"], "success");
     assert_eq!(parsed["data"]["connection"]["mode"], "project");
     assert_eq!(parsed["data"]["connection"]["provider"], "codex");
+}
+
+#[tokio::test]
+async fn runtime_tools_require_connect_first() {
+    let mcp = make_mcp().await;
+
+    let body = mcp
+        .connect_preflight_for_tests("read_live_feed")
+        .expect("read_live_feed should require daemon8_connect");
+    let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(parsed["status"], "connect_required");
+    assert_eq!(parsed["code"], "connect_required");
+    assert_eq!(parsed["next_actions"][0]["tool"], "daemon8_connect");
+
+    for tool in [
+        "daemon8_connect",
+        "daemon8_init",
+        "daemon8_status",
+        "daemon8_help",
+    ] {
+        assert!(
+            mcp.connect_preflight_for_tests(tool).is_none(),
+            "{tool} should be a connect-first exception"
+        );
+    }
+}
+
+#[tokio::test]
+async fn connected_session_passes_runtime_tool_preflight() {
+    let mcp = make_mcp().await;
+    let general = tempfile::tempdir().unwrap();
+    let connected = mcp
+        .daemon8_connect_for_tests(Daemon8ConnectParams {
+            provider: "codex".into(),
+            project_path: general.path().display().to_string(),
+            agent_name: None,
+            transcript_path: None,
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&connected).unwrap();
+    assert_eq!(parsed["status"], "success");
+    assert!(mcp.connect_preflight_for_tests("read_live_feed").is_none());
+}
+
+#[tokio::test]
+async fn issue_command_missing_param_uses_alpha_envelope() {
+    let mcp = make_mcp().await;
+    let body = mcp
+        .issue_command_for_tests(act_params(DebugAction::EvalJs))
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(parsed["status"], "error");
+    assert_eq!(parsed["code"], "missing_param");
+    assert!(parsed.get("result").is_none());
+    assert!(parsed.get("error").is_none());
+}
+
+#[tokio::test]
+async fn daemon8_failed_reconnect_clears_previous_session_connection() {
+    let mcp = make_mcp().await;
+    let general = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(
+        project.path().join("Cargo.toml"),
+        "[package]\nname = \"x\"\n",
+    )
+    .unwrap();
+
+    let connected = mcp
+        .daemon8_connect_for_tests(Daemon8ConnectParams {
+            provider: "codex".into(),
+            project_path: general.path().display().to_string(),
+            agent_name: None,
+            transcript_path: None,
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&connected).unwrap();
+    assert_eq!(parsed["status"], "success");
+    assert_eq!(parsed["data"]["mode"], "general");
+
+    let blocked = mcp
+        .daemon8_connect_for_tests(Daemon8ConnectParams {
+            provider: "codex".into(),
+            project_path: project.path().display().to_string(),
+            agent_name: None,
+            transcript_path: None,
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&blocked).unwrap();
+    assert_eq!(parsed["status"], "setup_required");
+    assert_eq!(parsed["code"], "missing_config");
+
+    let status = mcp.daemon8_status_for_tests().await;
+    let parsed: serde_json::Value = serde_json::from_str(&status).unwrap();
+    assert!(parsed["data"]["connection"].is_null());
 }
 
 #[tokio::test]
@@ -309,4 +437,38 @@ async fn help_unknown_topic_falls_back_to_index() {
         result.1.contains("## Topics"),
         "fallback body must be the index"
     );
+}
+
+#[test]
+fn tool_descriptions_do_not_describe_removed_envelope() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tool_descriptions");
+    let mut stack = vec![dir];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().and_then(|ext| ext.to_str()) != Some("md") {
+                continue;
+            }
+            let body = std::fs::read_to_string(&path).unwrap();
+            for stale in [
+                "daemon8.active_debug_session",
+                "daemon8.next_actions",
+                "fix.tool",
+                "error.message",
+                "result:",
+                "result.",
+            ] {
+                assert!(
+                    !body.contains(stale),
+                    "{} still mentions removed envelope fragment {stale:?}",
+                    path.display()
+                );
+            }
+        }
+    }
 }

@@ -8,14 +8,14 @@ Done with the focused-watch session for which the lens was set, or you want to s
 
 ## Prereq
 
-None. No-op if no lens is active.
+A connected MCP session. Call `daemon8_connect` first. No-op if no lens is active.
 
 ## Args
 
 none.
 
 ## Returns
-  result: {cleared: true}.
+Common envelope with `data.cleared=true`.
 
 ## Errors
 
