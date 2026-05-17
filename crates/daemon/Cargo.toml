@@ -38,6 +38,7 @@ serde_json.workspace = true
 rmcp.workspace = true
 daemon8-api.workspace = true
 daemon8-parse.workspace = true
+daemon8-core.workspace = true
 reqwest.workspace = true
 reqwest-eventsource.workspace = true
 tokio-stream.workspace = true

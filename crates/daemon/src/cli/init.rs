@@ -5,8 +5,10 @@
 
 use std::env;
 use std::path::Path;
+use std::time::SystemTime;
 
 use anyhow::{Context, Result};
+use daemon8_core::project_config::PROJECT_CONFIG_SCHEMA;
 
 use crate::cli_config::{PROJECT_CONFIG_DIR, PROJECT_CONFIG_FILENAME};
 
@@ -16,9 +18,9 @@ pub struct InitArgs {
     #[arg(long)]
     pub force: bool,
 
-    /// Explicit project slug. Defaults to the cwd basename
+    /// Explicit project name. Defaults to the cwd basename
     #[arg(long)]
-    pub slug: Option<String>,
+    pub name: Option<String>,
 
     /// Accept defaults without prompting.
     #[arg(short = 'y', long, visible_alias = "no-interaction")]
@@ -38,12 +40,12 @@ pub fn cmd_init(args: InitArgs) -> Result<()> {
         return Ok(());
     }
 
-    let slug = args.slug.clone().unwrap_or_else(|| derive_slug(&cwd));
+    let name = args.name.clone().unwrap_or_else(|| derive_name(&cwd));
     let stack = detect_stack(&cwd);
     let root = cwd
         .canonicalize()
         .with_context(|| format!("failed to canonicalize {}", cwd.display()))?;
-    let contents = render_template(&slug, &root, &stack);
+    let contents = render_template(&name, &root, &stack);
 
     std::fs::create_dir_all(&config_dir)
         .with_context(|| format!("failed to create {}", config_dir.display()))?;
@@ -51,94 +53,102 @@ pub fn cmd_init(args: InitArgs) -> Result<()> {
         .with_context(|| format!("failed to write {}", target.display()))?;
 
     println!("wrote {}", target.display());
-    println!("slug: {slug}");
+    println!("name: {name}");
 
     Ok(())
 }
 
-fn derive_slug(cwd: &Path) -> String {
+fn derive_name(cwd: &Path) -> String {
     cwd.file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("project")
         .to_string()
 }
 
-fn detect_stack(cwd: &Path) -> Vec<&'static str> {
-    let mut stack = Vec::new();
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DetectedStack {
+    languages: Vec<&'static str>,
+    frameworks: Vec<&'static str>,
+    tools: Vec<&'static str>,
+}
+
+fn detect_stack(cwd: &Path) -> DetectedStack {
+    let mut languages = Vec::new();
+    let mut frameworks = Vec::new();
+    let mut tools = Vec::new();
+
     if cwd.join("artisan").exists() {
-        stack.push("php");
-        stack.push("laravel");
+        languages.push("php");
+        frameworks.push("laravel");
     }
     if cwd.join("bin/console").exists() {
-        stack.push("php");
-        stack.push("symfony");
+        languages.push("php");
+        frameworks.push("symfony");
     }
     if cwd.join("package.json").exists() {
-        stack.push("javascript");
-        stack.push("node");
+        languages.push("javascript");
+        tools.push("node");
     }
     if cwd.join("Cargo.toml").exists() {
-        stack.push("rust");
-        stack.push("cargo");
+        languages.push("rust");
+        tools.push("cargo");
     }
-    if stack.is_empty() {
-        stack.push("generic");
+    if languages.is_empty() && frameworks.is_empty() && tools.is_empty() {
+        languages.push("generic");
     }
-    stack.sort_unstable();
-    stack.dedup();
-    stack
+
+    languages.sort_unstable();
+    languages.dedup();
+    frameworks.sort_unstable();
+    frameworks.dedup();
+    tools.sort_unstable();
+    tools.dedup();
+
+    DetectedStack {
+        languages,
+        frameworks,
+        tools,
+    }
 }
 
 fn yaml_string(value: &str) -> String {
     serde_json::to_string(value).expect("JSON string serialization cannot fail")
 }
 
-fn render_stack(stack: &[&str]) -> String {
-    stack
-        .iter()
-        .map(|item| format!("    - {}", yaml_string(item)))
-        .collect::<Vec<_>>()
-        .join("\n")
+fn yaml_array(values: &[&str]) -> String {
+    serde_json::to_string(values).expect("JSON array serialization cannot fail")
 }
 
-fn render_template(slug: &str, root: &Path, stack: &[&str]) -> String {
+fn render_template(name: &str, root: &Path, stack: &DetectedStack) -> String {
     let root = root.display().to_string();
-    let stack = render_stack(stack);
+    let now = humantime::format_rfc3339(SystemTime::now()).to_string();
     format!(
         r##"---
-version: 1
+daemon8_schema: {schema}
+created_at: {created_at}
+updated_at: {updated_at}
 project:
-  slug: {slug}
-  root: {root}
+  name: {name}
   stack:
-{stack}
+    languages: {languages}
+    frameworks: {frameworks}
+    tools: {tools}
 vars:
   PRJ_ROOT: {root}
-sources: {{}}
+sources: []
 ---
 # daemon8 project config
 
-This is the only project-local daemon8 file. The frontmatter is read by daemon8 and by the LLM in the session.
-
-Source entries are intentionally explicit. Use `kind: file` for logs/files and `kind: conversation` for provider transcripts. Keep `parser` separate from `kind`.
-
-```yaml
-# sources:
-#   app-logs:
-#     kind: file
-#     path: "$PRJ_ROOT/logs/app.log"
-#     parser: line
-#     tags: ["app"]
-#
-#   claude:
-#     kind: conversation
-#     provider: claude
-#     parser: line
-#     tags: ["conversation"]
-```
+daemon8 and LLM sessions read the YAML frontmatter above. Keep runtime behavior in frontmatter.
 "##,
-        slug = yaml_string(slug),
+        schema = PROJECT_CONFIG_SCHEMA,
+        created_at = yaml_string(&now),
+        updated_at = yaml_string(&now),
+        name = yaml_string(name),
         root = yaml_string(&root),
+        languages = yaml_array(&stack.languages),
+        frameworks = yaml_array(&stack.frameworks),
+        tools = yaml_array(&stack.tools),
     )
 }
 
@@ -147,22 +157,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn template_includes_slug_without_role() {
+    fn template_includes_project_name_and_schema() {
         let root = std::path::Path::new("/tmp/my-proj");
-        let out = render_template("my-proj", root, &["generic"]);
-        assert!(out.contains(r#"slug: "my-proj""#));
+        let stack = DetectedStack {
+            languages: vec!["generic"],
+            frameworks: Vec::new(),
+            tools: Vec::new(),
+        };
+        let out = render_template("my-proj", root, &stack);
+        assert!(out.contains("daemon8_schema: 1"));
+        assert!(out.contains(r#"name: "my-proj""#));
         assert!(out.contains(r#"PRJ_ROOT: "/tmp/my-proj""#));
-        assert!(!out.contains("role_default"));
+        assert!(!out.contains("root:"));
     }
 
     #[test]
-    fn template_uses_alpha_source_vocabulary() {
+    fn template_uses_empty_alpha_sources_array() {
         let root = std::path::Path::new("/tmp/my-app");
-        let out = render_template("my-app", root, &["cargo", "rust"]);
-        assert!(out.contains("kind: file"));
-        assert!(out.contains("kind: conversation"));
-        assert!(out.contains("logs/app.log"));
-        assert!(out.contains("parser: line"));
+        let stack = DetectedStack {
+            languages: vec!["rust"],
+            frameworks: Vec::new(),
+            tools: vec!["cargo"],
+        };
+        let out = render_template("my-app", root, &stack);
+        assert!(out.contains("sources: []"));
+        assert!(!out.contains("kind: sqlite"));
+        assert!(!out.contains("kind: log"));
         assert!(!out.contains("type ="));
     }
 
@@ -170,7 +190,14 @@ mod tests {
     fn detect_stack_defaults_to_generic() {
         let tmp = std::env::temp_dir().join("daemon8-test-empty");
         let _ = std::fs::create_dir_all(&tmp);
-        assert_eq!(detect_stack(&tmp), vec!["generic"]);
+        assert_eq!(
+            detect_stack(&tmp),
+            DetectedStack {
+                languages: vec!["generic"],
+                frameworks: Vec::new(),
+                tools: Vec::new(),
+            }
+        );
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -178,12 +205,19 @@ mod tests {
     fn detect_stack_identifies_rust_project() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
-        assert_eq!(detect_stack(tmp.path()), vec!["cargo", "rust"]);
+        assert_eq!(
+            detect_stack(tmp.path()),
+            DetectedStack {
+                languages: vec!["rust"],
+                frameworks: Vec::new(),
+                tools: vec!["cargo"],
+            }
+        );
     }
 
     #[test]
-    fn derive_slug_uses_basename() {
+    fn derive_name_uses_basename() {
         let p = std::path::PathBuf::from("/tmp/foo/bar");
-        assert_eq!(derive_slug(&p), "bar");
+        assert_eq!(derive_name(&p), "bar");
     }
 }

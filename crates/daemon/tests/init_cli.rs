@@ -9,6 +9,7 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use daemon8_core::project_config::parse_project_config_str;
 use serde_json::Value;
 
 fn binary() -> PathBuf {
@@ -127,12 +128,20 @@ fn cli_yes_writes_project_config_only() {
     let config_path = project_config_path(&work);
     assert!(config_path.exists());
     let config = std::fs::read_to_string(config_path).unwrap();
+    let parsed = parse_project_config_str(&config).unwrap();
+    assert_eq!(parsed.daemon8_schema, 1);
+    assert_eq!(parsed.project.name, "work");
+    assert_eq!(parsed.project.stack.languages, vec!["generic"]);
+    assert!(parsed.project.stack.frameworks.is_empty());
+    assert!(parsed.project.stack.tools.is_empty());
+    assert!(parsed.sources.is_empty());
     assert!(config.contains("project:"));
-    assert!(config.contains("stack:"));
-    assert!(config.contains("PRJ_ROOT:"));
-    assert!(config.contains("kind: file"));
-    assert!(config.contains("kind: conversation"));
+    assert!(config.contains("daemon8_schema: 1"));
+    assert!(config.contains(r#"PRJ_ROOT: ""#));
+    assert!(config.contains("sources: []"));
     assert!(!config.contains("role_default"));
+    assert!(!config.contains("kind: sqlite"));
+    assert!(!config.contains("kind: log"));
     assert!(!config.contains("[enrollment]"));
     assert!(!config.contains("cli-hook"));
     assert!(
@@ -206,6 +215,33 @@ fn cli_init_providers_flag_is_removed() {
         stderr.contains("unexpected argument") || stderr.contains("unrecognized"),
         "stderr: {stderr}"
     );
+}
+
+#[test]
+fn cli_init_slug_flag_is_removed() {
+    let (_tmp, work, home) = setup_dirs();
+    let out = run_init(&work, &home, &["--yes", "--slug", "old-name"]);
+    assert!(!out.status.success(), "legacy slug flag must be removed");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("unexpected argument") || stderr.contains("unrecognized"),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
+fn cli_init_name_sets_project_name() {
+    let (_tmp, work, home) = setup_dirs();
+    let out = run_init(&work, &home, &["--yes", "--name", "alpha-name"]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let config = std::fs::read_to_string(project_config_path(&work)).unwrap();
+    let parsed = parse_project_config_str(&config).unwrap();
+    assert_eq!(parsed.project.name, "alpha-name");
 }
 
 #[test]
@@ -291,6 +327,7 @@ fn cli_force_overwrites_existing_project_config() {
     );
 
     let content = std::fs::read_to_string(config_path).unwrap();
+    parse_project_config_str(&content).unwrap();
     assert!(
         content.contains("project:"),
         "template should replace the pre-existing stub"

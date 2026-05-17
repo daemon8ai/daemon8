@@ -9,6 +9,7 @@ members = [
     "crates/mcp",
     "crates/parse",
     "crates/providers",
+    "crates/core",
     "crates/daemon",
     "tools/vda-probe",
     "xtask",
@@ -37,10 +38,12 @@ daemon8-adb = { version = "0.3.4", path = "crates/adb" }
 daemon8-api = { version = "0.3.4", path = "crates/api" }
 daemon8-parse = { version = "0.3.4", path = "crates/parse" }
 daemon8-providers = { version = "0.3.4", path = "crates/providers" }
+daemon8-core = { version = "0.3.4", path = "crates/core" }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+serde_norway = "0.9.42"
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }

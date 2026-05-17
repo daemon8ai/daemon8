@@ -1,0 +1,15 @@
+[package]
+name = "daemon8-core"
+version.workspace = true
+edition.workspace = true
+license-file.workspace = true
+description = "Shared alpha core logic for daemon8 CLI and MCP surfaces"
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_norway.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
