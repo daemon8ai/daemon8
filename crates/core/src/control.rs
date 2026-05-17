@@ -381,21 +381,18 @@ pub fn resolve_connect_transcript(
         Ok(TranscriptResolution::NotFound) => {
             connect_outcome_with_transcript(outcome, "not_found", None)
         }
-        Ok(TranscriptResolution::Ambiguous(candidates)) => {
-            let retry_path = candidates.first().map(|candidate| candidate.path.clone());
-            transcript_blocked_outcome(
-                outcome,
-                "transcript_ambiguous",
-                "multiple provider transcripts match this session",
-                "daemon8 found more than one provider transcript for this project and will not choose implicitly",
-                json!({
-                    "status": "ambiguous",
-                    "provider": provider,
-                    "candidates": candidates,
-                }),
-                retry_path,
-            )
-        }
+        Ok(TranscriptResolution::Ambiguous(candidates)) => transcript_blocked_outcome(
+            outcome,
+            "transcript_ambiguous",
+            "multiple provider transcripts match this session",
+            "daemon8 found more than one provider transcript for this project and will not choose implicitly",
+            json!({
+                "status": "ambiguous",
+                "provider": provider,
+                "candidates": candidates,
+            }),
+            None,
+        ),
         Err(err) => transcript_error_outcome(
             outcome,
             err.code.as_str(),
@@ -547,6 +544,7 @@ fn is_project_marker_dir(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::init::{InitRequest, init_project};
 
     fn request(path: &Path) -> ConnectRequest {
         ConnectRequest {
@@ -556,6 +554,26 @@ mod tests {
             agent_name: None,
             transcript_path: None,
         }
+    }
+
+    fn write_project_config(root: &Path) {
+        let outcome = init_project(InitRequest {
+            project_path: root.to_path_buf(),
+            name: None,
+            overwrite: false,
+        });
+        assert_eq!(outcome.envelope.status, AlphaStatus::Success);
+    }
+
+    fn write_codex_session(path: &Path, session_id: &str, cwd: &Path) {
+        std::fs::write(
+            path,
+            format!(
+                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{session_id}\",\"cwd\":\"{}\"}}}}\n",
+                cwd.display()
+            ),
+        )
+        .unwrap();
     }
 
     #[test]
@@ -615,5 +633,89 @@ mod tests {
         let outcome = connect(request(&file));
         assert_eq!(outcome.envelope.status, AlphaStatus::Error);
         assert_eq!(outcome.envelope.code, "invalid_scope");
+    }
+
+    #[test]
+    fn resolve_connect_transcript_binds_explicit_provider_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project");
+        let home = tmp.path().join("home");
+        let sessions = home.join(".codex/sessions");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::write(project.join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
+        write_project_config(&project);
+        let transcript = sessions.join("one.jsonl");
+        write_codex_session(&transcript, "s1", &project);
+
+        let mut req = request(&project);
+        req.transcript_path = Some(transcript.clone());
+        let outcome = resolve_connect_transcript(connect(req), Some(&transcript), &home);
+
+        assert_eq!(outcome.envelope.status, AlphaStatus::Success);
+        let connection = outcome.connection.unwrap();
+        let expected = transcript.canonicalize().unwrap().display().to_string();
+        assert_eq!(
+            connection.transcript_path.as_deref(),
+            Some(expected.as_str())
+        );
+        assert_eq!(
+            outcome.envelope.data.unwrap()["transcript"]["status"],
+            "bound"
+        );
+    }
+
+    #[test]
+    fn resolve_connect_transcript_rejects_different_scope() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project");
+        let other_project = tmp.path().join("other-project");
+        let home = tmp.path().join("home");
+        let sessions = home.join(".codex/sessions");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(&other_project).unwrap();
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::write(project.join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
+        write_project_config(&project);
+        let transcript = sessions.join("other.jsonl");
+        write_codex_session(&transcript, "s1", &other_project);
+
+        let mut req = request(&project);
+        req.transcript_path = Some(transcript.clone());
+        let outcome = resolve_connect_transcript(connect(req), Some(&transcript), &home);
+
+        assert_eq!(outcome.envelope.status, AlphaStatus::Error);
+        assert_eq!(outcome.envelope.code, "transcript_scope_mismatch");
+        assert!(outcome.connection.is_none());
+    }
+
+    #[test]
+    fn resolve_connect_transcript_blocks_ambiguous_scope_matches() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project");
+        let home = tmp.path().join("home");
+        let sessions = home.join(".codex/sessions");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::write(project.join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
+        write_project_config(&project);
+        write_codex_session(&sessions.join("one.jsonl"), "s1", &project);
+        write_codex_session(&sessions.join("two.jsonl"), "s2", &project);
+
+        let outcome = resolve_connect_transcript(connect(request(&project)), None, &home);
+
+        assert_eq!(outcome.envelope.status, AlphaStatus::Blocked);
+        assert_eq!(outcome.envelope.code, "transcript_ambiguous");
+        assert!(outcome.connection.is_none());
+        let data = outcome.envelope.data.unwrap();
+        assert_eq!(data["transcript"]["status"], "ambiguous");
+        assert_eq!(
+            data["transcript"]["candidates"].as_array().unwrap().len(),
+            2
+        );
+        assert_eq!(
+            outcome.envelope.next_actions[0].params["transcript_path"],
+            "<candidate path>"
+        );
     }
 }

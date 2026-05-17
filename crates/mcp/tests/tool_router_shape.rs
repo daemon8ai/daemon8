@@ -907,6 +907,44 @@ async fn daemon8_connect_rejects_transcript_provider_mismatch() {
 }
 
 #[tokio::test]
+async fn daemon8_connect_rejects_transcript_scope_mismatch() {
+    let home = test_home_dir();
+    let mcp = make_mcp_with_cancel_and_home(CancellationToken::new(), home.clone()).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let other_project = tmp.path().join("other-project");
+    mark_project(tmp.path());
+    write_empty_project_config(tmp.path());
+    std::fs::create_dir_all(&other_project).unwrap();
+    let sessions = home.join(".codex/sessions");
+    std::fs::create_dir_all(&sessions).unwrap();
+    let transcript = sessions.join("other.jsonl");
+    std::fs::write(
+        &transcript,
+        format!(
+            "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"s1\",\"cwd\":\"{}\"}}}}\n",
+            other_project.display()
+        ),
+    )
+    .unwrap();
+
+    let connect = mcp
+        .daemon8_connect_for_tests(Daemon8ConnectParams {
+            provider: "codex".into(),
+            project_path: tmp.path().display().to_string(),
+            agent_name: None,
+            transcript_path: Some(transcript.display().to_string()),
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&connect).unwrap();
+    assert_eq!(parsed["status"], "error");
+    assert_eq!(parsed["code"], "transcript_scope_mismatch");
+
+    let status = mcp.daemon8_status_for_tests().await;
+    let parsed: serde_json::Value = serde_json::from_str(&status).unwrap();
+    assert!(parsed["data"]["connection"].is_null());
+}
+
+#[tokio::test]
 async fn daemon8_connect_invalid_provider_clears_previous_connection() {
     let mcp = make_mcp().await;
     let general = tempfile::tempdir().unwrap();

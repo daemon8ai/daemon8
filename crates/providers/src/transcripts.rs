@@ -45,6 +45,7 @@ pub struct TranscriptResolutionError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TranscriptResolutionErrorCode {
     InvalidProvider,
+    TranscriptScopeMismatch,
     TranscriptUnreadable,
     TranscriptProviderMismatch,
 }
@@ -53,6 +54,7 @@ impl TranscriptResolutionErrorCode {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::InvalidProvider => "invalid_provider",
+            Self::TranscriptScopeMismatch => "transcript_scope_mismatch",
             Self::TranscriptUnreadable => "transcript_unreadable",
             Self::TranscriptProviderMismatch => "transcript_provider_mismatch",
         }
@@ -78,7 +80,8 @@ pub fn resolve_transcript(
     let provider_id = provider.as_provider().id();
 
     if let Some(path) = input.transcript_path {
-        return explicit_transcript(provider, input.home, path).map(TranscriptResolution::Bound);
+        return explicit_transcript(provider, input.home, input.scope_root, path)
+            .map(TranscriptResolution::Bound);
     }
 
     let Some(root) = provider.as_provider().conversation_dir(input.home) else {
@@ -104,7 +107,7 @@ pub fn resolve_transcript(
 
     let session_id = provider.as_provider().session_id_from_env();
     if let Some(session_id) = session_id.as_deref() {
-        let session_matches = matching_session_candidates(&candidates, session_id);
+        let session_matches = matching_session_candidates(&candidates, session_id, &scope_root);
         if session_matches.len() == 1 {
             return Ok(TranscriptResolution::Bound(session_matches[0].clone()));
         }
@@ -122,7 +125,14 @@ pub fn resolve_transcript(
     }
 
     if candidates.len() == 1 {
-        return Ok(TranscriptResolution::Bound(candidates.remove(0)));
+        let candidate = candidates.remove(0);
+        if candidate
+            .cwd
+            .as_deref()
+            .is_none_or(|cwd| cwd_matches_scope(cwd, &scope_root))
+        {
+            return Ok(TranscriptResolution::Bound(candidate));
+        }
     }
 
     Ok(TranscriptResolution::NotFound)
@@ -140,6 +150,7 @@ pub fn normalize_provider_id(raw: &str) -> Result<&'static str, TranscriptResolu
 fn explicit_transcript(
     provider: Provider,
     home: &Path,
+    scope_root: &Path,
     path: &Path,
 ) -> Result<TranscriptCandidate, TranscriptResolutionError> {
     let provider_id = provider.as_provider().id();
@@ -213,7 +224,21 @@ fn explicit_transcript(
             });
         }
     }
+    let scope_root = fs::canonicalize(scope_root).unwrap_or_else(|_| scope_root.to_path_buf());
     let candidate = candidate_from_path(provider_id, Some(&root), &path, &metadata)?;
+    if candidate
+        .cwd
+        .as_deref()
+        .is_some_and(|cwd| !cwd_matches_scope(cwd, &scope_root))
+    {
+        return Err(TranscriptResolutionError {
+            code: TranscriptResolutionErrorCode::TranscriptScopeMismatch,
+            message: format!(
+                "transcript path {} belongs to a different project scope",
+                path.display()
+            ),
+        });
+    }
     Ok(candidate)
 }
 
@@ -313,10 +338,17 @@ fn ambiguous(
 fn matching_session_candidates(
     candidates: &[TranscriptCandidate],
     session_id: &str,
+    scope_root: &Path,
 ) -> Vec<TranscriptCandidate> {
     candidates
         .iter()
-        .filter(|candidate| candidate.provider_session_id.as_deref() == Some(session_id))
+        .filter(|candidate| {
+            candidate.provider_session_id.as_deref() == Some(session_id)
+                && candidate
+                    .cwd
+                    .as_deref()
+                    .is_none_or(|cwd| cwd_matches_scope(cwd, scope_root))
+        })
         .cloned()
         .collect()
 }
@@ -357,7 +389,9 @@ fn provider_path_matches(provider: &str, root: &Path, path: &Path) -> bool {
 
 fn known_provider_root(home: &Path, path: &Path) -> Option<&'static str> {
     for provider in ALL_PROVIDERS {
-        let root = provider.as_provider().conversation_dir(home)?;
+        let Some(root) = provider.as_provider().conversation_dir(home) else {
+            continue;
+        };
         if let Ok(root) = fs::canonicalize(root)
             && path.starts_with(root)
         {
@@ -524,6 +558,17 @@ mod tests {
         .unwrap();
     }
 
+    fn transcript_candidate(session_id: &str, cwd: Option<&Path>) -> TranscriptCandidate {
+        TranscriptCandidate {
+            provider: "codex".into(),
+            path: "session.jsonl".into(),
+            provider_session_id: Some(session_id.into()),
+            cwd: cwd.map(|path| path.display().to_string()),
+            modified_at_ms: None,
+            size_bytes: None,
+        }
+    }
+
     #[test]
     fn provider_id_normalizes_aliases() {
         assert_eq!(normalize_provider_id("codex-cli").unwrap(), "codex");
@@ -614,6 +659,162 @@ mod tests {
             err.code,
             TranscriptResolutionErrorCode::TranscriptUnreadable
         );
+    }
+
+    #[test]
+    fn explicit_transcript_rejects_wrong_provider_content_in_provider_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let project = tmp.path().join("project");
+        let sessions = home.join(".codex/sessions");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&sessions).unwrap();
+        let transcript = sessions.join("claude-shaped.jsonl");
+        fs::write(
+            &transcript,
+            "{\"type\":\"permission-mode\",\"sessionId\":\"c1\",\"cwd\":\"/tmp/project\"}\n",
+        )
+        .unwrap();
+
+        let err = resolve_transcript(TranscriptResolver {
+            provider: "codex",
+            scope_root: &project,
+            home: &home,
+            transcript_path: Some(&transcript),
+        })
+        .unwrap_err();
+
+        assert_eq!(
+            err.code,
+            TranscriptResolutionErrorCode::TranscriptProviderMismatch
+        );
+    }
+
+    #[test]
+    fn explicit_transcript_rejects_different_scope() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let project = tmp.path().join("project");
+        let other_project = tmp.path().join("other-project");
+        let sessions = home.join(".codex/sessions");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&other_project).unwrap();
+        fs::create_dir_all(&sessions).unwrap();
+        let transcript = sessions.join("other.jsonl");
+        write_codex_session(&transcript, "s1", &other_project);
+
+        let err = resolve_transcript(TranscriptResolver {
+            provider: "codex",
+            scope_root: &project,
+            home: &home,
+            transcript_path: Some(&transcript),
+        })
+        .unwrap_err();
+
+        assert_eq!(
+            err.code,
+            TranscriptResolutionErrorCode::TranscriptScopeMismatch
+        );
+    }
+
+    #[test]
+    fn single_candidate_binds_without_explicit_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project");
+        let home = tmp.path().join("home");
+        let sessions = home.join(".codex/sessions");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&sessions).unwrap();
+        write_codex_session(&sessions.join("one.jsonl"), "s1", &project);
+
+        let resolution = resolve_transcript(TranscriptResolver {
+            provider: "codex",
+            scope_root: &project,
+            home: &home,
+            transcript_path: None,
+        })
+        .unwrap();
+
+        let TranscriptResolution::Bound(candidate) = resolution else {
+            panic!("expected bound transcript");
+        };
+        assert_eq!(candidate.provider_session_id.as_deref(), Some("s1"));
+    }
+
+    #[test]
+    fn single_candidate_for_different_scope_does_not_bind() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project");
+        let other_project = tmp.path().join("other-project");
+        let home = tmp.path().join("home");
+        let sessions = home.join(".codex/sessions");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&other_project).unwrap();
+        fs::create_dir_all(&sessions).unwrap();
+        write_codex_session(&sessions.join("one.jsonl"), "s1", &other_project);
+
+        let resolution = resolve_transcript(TranscriptResolver {
+            provider: "codex",
+            scope_root: &project,
+            home: &home,
+            transcript_path: None,
+        })
+        .unwrap();
+
+        assert_eq!(resolution, TranscriptResolution::NotFound);
+    }
+
+    #[test]
+    fn scope_match_selects_matching_candidate() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project");
+        let other_project = tmp.path().join("other-project");
+        let home = tmp.path().join("home");
+        let sessions = home.join(".codex/sessions");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&other_project).unwrap();
+        fs::create_dir_all(&sessions).unwrap();
+        write_codex_session(&sessions.join("one.jsonl"), "s1", &project);
+        write_codex_session(&sessions.join("two.jsonl"), "s2", &other_project);
+
+        let resolution = resolve_transcript(TranscriptResolver {
+            provider: "codex",
+            scope_root: &project,
+            home: &home,
+            transcript_path: None,
+        })
+        .unwrap();
+
+        let TranscriptResolution::Bound(candidate) = resolution else {
+            panic!("expected bound transcript");
+        };
+        assert_eq!(candidate.provider_session_id.as_deref(), Some("s1"));
+    }
+
+    #[test]
+    fn session_match_ignores_different_scope() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project");
+        let other_project = tmp.path().join("other-project");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&other_project).unwrap();
+        let candidates = vec![transcript_candidate("s1", Some(&other_project))];
+
+        let matches = matching_session_candidates(&candidates, "s1", &project);
+
+        assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn session_match_keeps_unknown_scope() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project");
+        fs::create_dir_all(&project).unwrap();
+        let candidates = vec![transcript_candidate("s1", None)];
+
+        let matches = matching_session_candidates(&candidates, "s1", &project);
+
+        assert_eq!(matches.len(), 1);
     }
 
     #[test]

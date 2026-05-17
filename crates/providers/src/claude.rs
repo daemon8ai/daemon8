@@ -196,7 +196,9 @@ impl AiProvider for ClaudeCodeProvider {
         Some("**/*.jsonl")
     }
     fn session_id_from_env(&self) -> Option<String> {
-        std::env::var("CLAUDE_CODE_SESSION_ID").ok()
+        std::env::var("CLAUDE_SESSION_ID")
+            .or_else(|_| std::env::var("CLAUDE_CODE_SESSION_ID"))
+            .ok()
     }
     fn memory_dir(&self, home: &Path) -> Option<PathBuf> {
         Some(home.join(".claude/projects"))

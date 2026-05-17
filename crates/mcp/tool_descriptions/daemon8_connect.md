@@ -23,4 +23,4 @@ Common envelope with `status`, `code`, `message`, `data`, and structured `next_a
 
 ## Next
 
-If `status=success`, continue. If `status=setup_required`, call `daemon8_init` with the supplied project path, then retry `daemon8_connect`. If `code=transcript_provider_mismatch`, retry with a transcript from the requested provider.
+If `status=success`, continue. If `status=setup_required`, call `daemon8_init` with the supplied project path, then retry `daemon8_connect`. If `code=transcript_provider_mismatch`, retry with a transcript from the requested provider. If `code=transcript_scope_mismatch`, retry with a transcript for the connected project.

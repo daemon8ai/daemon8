@@ -695,6 +695,11 @@ fn cli_connect_blocks_ambiguous_transcripts() {
     let parsed: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(parsed["status"], "blocked");
     assert_eq!(parsed["code"], "transcript_ambiguous");
+    assert_eq!(parsed["next_actions"][0]["tool"], "daemon8_connect");
+    assert_eq!(
+        parsed["next_actions"][0]["params"]["transcript_path"],
+        "<candidate path>"
+    );
     assert_eq!(
         parsed["data"]["transcript"]["candidates"]
             .as_array()
@@ -702,6 +707,49 @@ fn cli_connect_blocks_ambiguous_transcripts() {
             .len(),
         2
     );
+}
+
+#[test]
+fn cli_connect_rejects_transcript_scope_mismatch() {
+    let (_tmp, work, home) = setup_dirs();
+    let other_work = home.join("other-work");
+    mark_project(&work);
+    std::fs::create_dir_all(&other_work).unwrap();
+    run_init(&work, &home, &[]);
+    let sessions = home.join(".codex/sessions");
+    std::fs::create_dir_all(&sessions).unwrap();
+    let transcript = sessions.join("other.jsonl");
+    std::fs::write(
+        &transcript,
+        format!(
+            "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"s1\",\"cwd\":\"{}\"}}}}\n",
+            other_work.display()
+        ),
+    )
+    .unwrap();
+
+    let out = run_connect(
+        &work,
+        &home,
+        &[
+            "--path",
+            work.to_str().unwrap(),
+            "--provider",
+            "codex",
+            "--transcript-path",
+            transcript.to_str().unwrap(),
+            "--json",
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let parsed: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(parsed["status"], "error");
+    assert_eq!(parsed["code"], "transcript_scope_mismatch");
 }
 
 #[test]

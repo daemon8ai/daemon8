@@ -156,7 +156,9 @@ pub struct Daemon8ConnectParams {
     #[schemars(description = "Optional human-readable agent name.")]
     pub agent_name: Option<String>,
 
-    #[schemars(description = "Optional provider transcript path for conversation-source binding.")]
+    #[schemars(
+        description = "Optional provider transcript path for runtime conversation binding."
+    )]
     pub transcript_path: Option<String>,
 }
 
