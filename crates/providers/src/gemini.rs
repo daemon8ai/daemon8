@@ -326,7 +326,7 @@ mod tests {
     #[test]
     fn hooks_path_routes_by_scope() {
         let cwd = Path::new("/project");
-        let home = Path::new("/home/user");
+        let home = Path::new("/tmp/daemon8-test-home");
         assert_eq!(
             GeminiProvider.hooks_path(HookScope::Shared, cwd, home),
             cwd.join(".gemini/settings.json")

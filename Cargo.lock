@@ -1287,6 +1287,7 @@ name = "daemon8"
 version = "0.3.4"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
  "clap",
  "clap_complete",
@@ -1344,17 +1345,22 @@ dependencies = [
 name = "daemon8-api"
 version = "0.3.4"
 dependencies = [
+ "async-trait",
  "axum",
  "daemon8-chrome",
+ "daemon8-ingest",
  "daemon8-mcp",
  "daemon8-store",
  "daemon8-types",
  "futures",
+ "http-body-util",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tokio-stream",
+ "tower",
  "tracing",
 ]
 
@@ -1393,11 +1399,16 @@ dependencies = [
 name = "daemon8-ingest"
 version = "0.3.4"
 dependencies = [
+ "async-trait",
  "axum",
+ "daemon8-core",
+ "daemon8-parse",
+ "daemon8-store",
  "daemon8-types",
  "http-body-util",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
@@ -1410,6 +1421,7 @@ name = "daemon8-mcp"
 version = "0.3.4"
 dependencies = [
  "anyhow",
+ "async-trait",
  "daemon8-chrome",
  "daemon8-core",
  "daemon8-ingest",

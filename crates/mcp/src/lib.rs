@@ -13,6 +13,7 @@ use daemon8_core::control::{
     connect as connect_scope, status_envelope,
 };
 use daemon8_core::init::{InitRequest, init_project};
+use daemon8_ingest::source_sync::{SourceSyncReport, SourceTrigger, SourceTriggerRequest};
 use daemon8_store::{
     ActiveSessionState, DebugSessionStore, LensManager, MemoryStore, RecentScopeRecord,
     ScopeConnectFailureRecord, ScopeLedgerStore, ScopeSessionRecord, StateModel,
@@ -489,6 +490,7 @@ pub struct DaemonMcp {
     screenshot_dir: std::path::PathBuf,
     subscription_tx: tokio::sync::watch::Sender<Option<Filter>>,
     broadcast_tx: broadcast::Sender<(Arc<Observation>, Arc<str>)>,
+    source_trigger: Option<Arc<dyn SourceTrigger>>,
     lens: Arc<LensManager>,
     cancel: tokio_util::sync::CancellationToken,
     enabled_features: Vec<FeatureGate>,
@@ -509,6 +511,7 @@ pub struct DaemonMcpConfig {
     pub device_screenshot_fn: Option<DeviceScreenshotFn>,
     pub screenshot_dir: std::path::PathBuf,
     pub broadcast_tx: broadcast::Sender<(Arc<Observation>, Arc<str>)>,
+    pub source_trigger: Option<Arc<dyn SourceTrigger>>,
     pub lens: Arc<LensManager>,
     pub cancel: tokio_util::sync::CancellationToken,
 }
@@ -542,6 +545,7 @@ impl DaemonMcp {
             screenshot_dir: cfg.screenshot_dir,
             subscription_tx,
             broadcast_tx: cfg.broadcast_tx,
+            source_trigger: cfg.source_trigger,
             lens: cfg.lens,
             cancel: cfg.cancel,
             enabled_features,
@@ -618,6 +622,11 @@ impl DaemonMcp {
     #[cfg(feature = "test-util")]
     pub async fn create_checkpoint_for_tests(&self, params: CreateCheckpointParams) -> String {
         self.create_checkpoint(Parameters(params)).await
+    }
+
+    #[cfg(feature = "test-util")]
+    pub async fn start_debug_session_for_tests(&self, params: StartDebugSessionParams) -> String {
+        self.start_debug_session(Parameters(params)).await
     }
 
     #[cfg(feature = "test-util")]
@@ -737,9 +746,14 @@ impl DaemonMcp {
             include_system: params.include_system,
         };
 
+        let source_report = self.trigger_project_sources().await;
+
         match self.store.query(&filter).await {
             Ok(slice) => {
                 let mut result = serde_json::to_value(&slice).unwrap_or_default();
+                if let Some(report) = source_report {
+                    result["triggered_ingestion"] = source_report_value(&report);
+                }
 
                 if wants_browser {
                     let chrome_state = *self.chrome_state.borrow();
@@ -800,7 +814,19 @@ impl DaemonMcp {
         )
         .await;
 
-        outcome.envelope.render()
+        let mut envelope = outcome.envelope;
+        if envelope.status == AlphaStatus::Success
+            && let Some(report) = self.trigger_project_sources().await
+        {
+            let mut data = envelope
+                .data
+                .take()
+                .unwrap_or_else(|| serde_json::json!({}));
+            data["triggered_ingestion"] = source_report_value(&report);
+            envelope.data = Some(data);
+        }
+
+        envelope.render()
     }
 
     #[doc = include_str!("../tool_descriptions/daemon8_init.md")]
@@ -1170,6 +1196,27 @@ impl DaemonMcp {
             }
         };
 
+        let source_report = self.trigger_project_sources().await;
+        if let Some(report) = &source_report
+            && report.has_failures()
+        {
+            let mut data = self.session_context();
+            data["triggered_ingestion"] = source_report_value(report);
+            return AlphaEnvelope::non_success(
+                AlphaStatus::Blocked,
+                "checkpoint_source_refresh_failed",
+                "checkpoint source refresh failed",
+                "configured project sources must refresh before daemon8 can create a checkpoint",
+            )
+            .with_data(data)
+            .with_next_action(NextAction::new(
+                "read_live_feed",
+                "inspect source refresh failures before creating a checkpoint",
+                serde_json::json!({}),
+            ))
+            .render();
+        }
+
         let seq = self.store.checkpoint().await;
         let now = current_ns();
         let cp = daemon8_store::DebugCheckpoint {
@@ -1190,15 +1237,19 @@ impl DaemonMcp {
             .last_checkpoint
             .lock()
             .expect("last_checkpoint mutex poisoned") = seq;
+        let mut data = serde_json::json!({
+            "checkpoint_id": cp_id,
+            "debug_session_id": active.id.as_ref(),
+            "seq_at_creation": seq.0,
+            "created_at": now
+        });
+        if let Some(report) = source_report {
+            data["triggered_ingestion"] = source_report_value(&report);
+        }
         self.ok_with_code(
             "checkpoint_created",
             "checkpoint created",
-            serde_json::json!({
-                "checkpoint_id": cp_id,
-                "debug_session_id": active.id.as_ref(),
-                "seq_at_creation": seq.0,
-                "created_at": now
-            }),
+            data,
             vec!["read_live_feed"],
             Some("checkpoint set; read_live_feed(since_checkpoint=...) returns new entries since this point"),
         )
@@ -1573,6 +1624,10 @@ fn current_ns() -> u64 {
         .as_nanos() as u64
 }
 
+fn source_report_value(report: &SourceSyncReport) -> serde_json::Value {
+    serde_json::to_value(report).unwrap_or_else(|_| serde_json::json!({}))
+}
+
 fn scope_session_record(
     connection: &SessionConnection,
     envelope: &AlphaEnvelope,
@@ -1834,6 +1889,24 @@ impl DaemonMcp {
             .expect("connection mutex poisoned")
             .as_ref()
             .map(|connection| connection.mode)
+    }
+
+    async fn trigger_project_sources(&self) -> Option<SourceSyncReport> {
+        let trigger = self.source_trigger.as_ref()?;
+        let scope_root = {
+            let connection = self.connection.lock().expect("connection mutex poisoned");
+            let connection = connection.as_ref()?;
+            if connection.mode != ScopeMode::Project {
+                return None;
+            }
+            PathBuf::from(connection.scope_root.as_ref()?)
+        };
+
+        Some(
+            trigger
+                .trigger_sources(SourceTriggerRequest { scope_root })
+                .await,
+        )
     }
 
     fn connect_preflight(&self, tool: &str) -> Option<String> {
@@ -2777,6 +2850,7 @@ mod logging_tests {
             device_screenshot_fn: None,
             screenshot_dir: std::env::temp_dir().join("daemon8-test"),
             broadcast_tx,
+            source_trigger: None,
             lens,
             cancel: tokio_util::sync::CancellationToken::new(),
         })
@@ -3049,6 +3123,7 @@ mod logging_tests {
                 device_screenshot_fn: None,
                 screenshot_dir: std::env::temp_dir().join("daemon8-test"),
                 broadcast_tx,
+                source_trigger: None,
                 lens,
                 cancel: tokio_util::sync::CancellationToken::new(),
             })

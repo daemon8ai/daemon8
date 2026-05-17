@@ -5,6 +5,7 @@ use anyhow::Result;
 use daemon8_types::{Observation, Severity};
 use owo_colors::OwoColorize;
 use reqwest_eventsource::{Event, EventSource};
+use std::path::PathBuf;
 use tokio_stream::StreamExt;
 
 use super::{base_url, format_origin, format_severity, format_timestamp, truncate, urlenc};
@@ -35,6 +36,11 @@ pub struct TailArgs {
     pub no_color: bool,
     #[arg(long)]
     pub include_system: bool,
+    #[arg(
+        long,
+        help = "Project path whose configured sources should refresh before streaming"
+    )]
+    pub project_path: Option<PathBuf>,
 }
 
 pub async fn cmd_tail(args: TailArgs) -> Result<()> {
@@ -70,6 +76,12 @@ pub async fn cmd_tail(args: TailArgs) -> Result<()> {
     }
     if args.include_system {
         params.push("include_system=true".to_string());
+    }
+    if let Some(ref project_path) = args.project_path {
+        params.push(format!(
+            "project_path={}",
+            urlenc(&project_path.display().to_string())
+        ));
     }
     let query = if params.is_empty() {
         String::new()

@@ -31,3 +31,4 @@ test-util = []
 daemon8-mcp = { path = ".", features = ["test-util"] }
 rmcp = { workspace = true, features = ["client"] }
 tempfile = "3"
+async-trait.workspace = true

@@ -13,6 +13,7 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post};
 use daemon8_chrome::BrowserAction;
+use daemon8_ingest::source_sync::{SourceSyncReport, SourceTrigger, SourceTriggerRequest};
 use daemon8_mcp::ChromeCommand;
 use daemon8_store::{LensManager, StateModel};
 use daemon8_types::{Checkpoint, Filter, Observation};
@@ -29,6 +30,7 @@ pub struct ApiState {
     pub chrome_state: tokio::sync::watch::Receiver<daemon8_chrome::ConnectionState>,
     pub chrome_endpoint: Arc<std::sync::Mutex<Option<Arc<str>>>>,
     pub lens: Arc<LensManager>,
+    pub source_trigger: Option<Arc<dyn SourceTrigger>>,
 }
 
 pub fn api_router(state: ApiState) -> Router {
@@ -63,6 +65,7 @@ pub struct ObserveQueryParams {
     pub source: Option<String>,
     pub source_instance: Option<String>,
     pub include_system: Option<bool>,
+    pub project_path: Option<String>,
 }
 
 /// Query params for the live SSE stream. `since` and `limit` are deliberately
@@ -80,6 +83,7 @@ pub struct StreamQueryParams {
     pub source: Option<String>,
     pub source_instance: Option<String>,
     pub include_system: Option<bool>,
+    pub project_path: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -254,15 +258,170 @@ fn parse_filter(input: FilterInput) -> Filter {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use daemon8_ingest::source_sync::{
+        ConfiguredSourceTrigger, ObservationWriteResult, ObservationWriteStatus, ObservationWriter,
+    };
+    use daemon8_store::SurrealStore;
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    struct DirectStoreWriter {
+        store: Arc<dyn StateModel>,
+    }
+
+    #[async_trait::async_trait]
+    impl ObservationWriter for DirectStoreWriter {
+        async fn write_observation(
+            &self,
+            obs: Observation,
+        ) -> Result<ObservationWriteResult, String> {
+            let id = self
+                .store
+                .insert(obs)
+                .await
+                .map_err(|err| err.to_string())?;
+            Ok(ObservationWriteResult {
+                status: ObservationWriteStatus::Inserted,
+                id: Some(id),
+            })
+        }
+    }
+
+    async fn app_with_source_trigger() -> (Router, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join(".git")).unwrap();
+        std::fs::write(tmp.path().join("cargo.log"), "cargo check one\n").unwrap();
+        std::fs::create_dir(tmp.path().join(".daemon8")).unwrap();
+        std::fs::write(
+            tmp.path().join(".daemon8/config.md"),
+            format!(
+                r#"---
+daemon8_schema: 1
+created_at: "2026-05-17T00:00:00Z"
+updated_at: "2026-05-17T00:00:00Z"
+project:
+  name: api-project
+  stack:
+    languages: [rust]
+    frameworks: [tokio]
+    tools: [cargo]
+vars:
+  PRJ_ROOT: "{}"
+sources:
+  - id: cargo.check
+    service: cargo
+    kind: file
+    parser: line
+    path: "$PRJ_ROOT/cargo.log"
+---
+# daemon8
+"#,
+                tmp.path().display()
+            ),
+        )
+        .unwrap();
+
+        let store = Arc::new(SurrealStore::memory().await.unwrap());
+        let store_model: Arc<dyn StateModel> = store.clone();
+        let source_trigger = ConfiguredSourceTrigger::new(
+            Arc::new(store.cursor_store()),
+            Arc::new(DirectStoreWriter {
+                store: store_model.clone(),
+            }),
+        );
+        let (stream_tx, _) = tokio::sync::broadcast::channel(16);
+        let (chrome_cmd_tx, _) = tokio::sync::mpsc::channel(16);
+        let (_, chrome_state) =
+            tokio::sync::watch::channel(daemon8_chrome::ConnectionState::Disconnected);
+        let state = ApiState {
+            store: store_model,
+            stream_tx: stream_tx.clone(),
+            chrome_cmd_tx,
+            chrome_state,
+            chrome_endpoint: Arc::new(std::sync::Mutex::new(None)),
+            lens: Arc::new(LensManager::new(stream_tx.subscribe())),
+            source_trigger: Some(Arc::new(source_trigger)),
+        };
+        (api_router(state), tmp)
+    }
+
+    #[tokio::test]
+    async fn observe_triggers_sources_when_project_path_is_explicit() {
+        let (app, tmp) = app_with_source_trigger().await;
+        let uri = format!(
+            "/api/observe?project_path={}&source=cargo.check",
+            tmp.path().display()
+        );
+        let resp = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri(uri)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: serde_json::Value =
+            serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        assert_eq!(body["triggered_ingestion"]["observations_written"], 1);
+        assert_eq!(body["observations"].as_array().unwrap().len(), 1);
+        assert_eq!(body["observations"][0]["source"], "cargo.check");
+    }
+
+    #[tokio::test]
+    async fn observe_without_project_path_does_not_trigger_sources() {
+        let (app, _tmp) = app_with_source_trigger().await;
+        let resp = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/observe?source=cargo.check")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: serde_json::Value =
+            serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        assert!(body.get("triggered_ingestion").is_none());
+        assert_eq!(body["observations"].as_array().unwrap().len(), 0);
+    }
+}
+
 fn error_json(status: StatusCode, message: impl Into<String>) -> Response {
     let body = serde_json::json!({ "error": message.into() });
     (status, Json(body)).into_response()
+}
+
+async fn trigger_project_sources(
+    state: &ApiState,
+    project_path: Option<&str>,
+) -> Option<SourceSyncReport> {
+    let project_path = project_path?;
+    let trigger = state.source_trigger.as_ref()?;
+    Some(
+        trigger
+            .trigger_sources(SourceTriggerRequest {
+                scope_root: std::path::PathBuf::from(project_path),
+            })
+            .await,
+    )
+}
+
+fn source_report_value(report: &SourceSyncReport) -> serde_json::Value {
+    serde_json::to_value(report).unwrap_or_else(|_| serde_json::json!({}))
 }
 
 async fn handle_observe(
     State(state): State<ApiState>,
     Query(params): Query<ObserveQueryParams>,
 ) -> Response {
+    let source_report = trigger_project_sources(&state, params.project_path.as_deref()).await;
     let filter = parse_filter(FilterInput {
         kinds: params.kinds,
         severity_min: params.severity_min,
@@ -279,7 +438,13 @@ async fn handle_observe(
     });
 
     match state.store.query(&filter).await {
-        Ok(slice) => (StatusCode::OK, Json(slice)).into_response(),
+        Ok(slice) => {
+            let mut body = serde_json::to_value(slice).unwrap_or_default();
+            if let Some(report) = source_report {
+                body["triggered_ingestion"] = source_report_value(&report);
+            }
+            (StatusCode::OK, Json(body)).into_response()
+        }
         Err(e) => error_json(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("query failed: {e}"),
@@ -444,6 +609,7 @@ async fn handle_stream(
     // live recv() buffer in the broadcast receiver; Lagged recovery handles
     // overflow.
     let mut broadcast_rx = state.stream_tx.subscribe();
+    let project_path = params.project_path.clone();
 
     let filter = parse_filter(FilterInput {
         kinds: params.kinds,
@@ -466,11 +632,28 @@ async fn handle_stream(
         .and_then(|s| s.trim().parse().ok());
 
     let store = state.store.clone();
+    let source_trigger = state.source_trigger.clone();
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(256);
 
     tokio::spawn(async move {
         let mut max_replayed_id: u64 = 0;
         let mut last_sent_id: u64 = 0;
+
+        if let Some(project_path) = project_path.as_deref()
+            && let Some(trigger) = source_trigger.as_ref()
+        {
+            let report = trigger
+                .trigger_sources(SourceTriggerRequest {
+                    scope_root: std::path::PathBuf::from(project_path),
+                })
+                .await;
+            let event = Event::default()
+                .event("triggered_ingestion")
+                .data(source_report_value(&report).to_string());
+            if tx.send(Ok(event)).await.is_err() {
+                return;
+            }
+        }
 
         // Phase 1 — historical replay driven by Last-Event-ID.
         if let Some(since_id) = last_event_id {

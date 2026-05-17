@@ -4,11 +4,15 @@
 use std::{borrow::Cow, sync::Arc};
 
 use daemon8_chrome::ConnectionState;
-use daemon8_mcp::{
-    ActParams, Daemon8ConnectParams, Daemon8InitParams, DaemonMcp, DaemonMcpConfig, DebugAction,
-    IngestParams, ObserveParams, TOOL_POLICY_TABLE, ToolPolicy, tool_policy,
+use daemon8_ingest::source_sync::{
+    ConfiguredSourceTrigger, ObservationWriteResult, ObservationWriteStatus, ObservationWriter,
 };
-use daemon8_types::Filter;
+use daemon8_mcp::{
+    ActParams, CreateCheckpointParams, Daemon8ConnectParams, Daemon8InitParams, DaemonMcp,
+    DaemonMcpConfig, DebugAction, IngestParams, ObserveParams, StartDebugSessionParams,
+    TOOL_POLICY_TABLE, ToolPolicy, tool_policy,
+};
+use daemon8_types::{Filter, Observation};
 use rmcp::ServiceExt as _;
 use tokio_util::sync::CancellationToken;
 
@@ -70,6 +74,7 @@ async fn make_mcp_with_cancel(cancel: CancellationToken) -> DaemonMcp {
         device_screenshot_fn: None,
         screenshot_dir: std::env::temp_dir().join("daemon8-test-screenshots"),
         broadcast_tx,
+        source_trigger: None,
         lens,
         cancel,
     })
@@ -82,6 +87,12 @@ async fn make_mcp_with_debug() -> DaemonMcp {
     let debug_session_store = store.debug_session_store();
     debug_session_store.init_schema().await.unwrap();
     let scope_ledger_store = store.scope_ledger_store();
+    let source_trigger = ConfiguredSourceTrigger::new(
+        Arc::new(store.cursor_store()),
+        Arc::new(DirectStoreWriter {
+            store: store.clone(),
+        }),
+    );
     let (obs_tx, _) = tokio::sync::mpsc::unbounded_channel();
     let (chrome_tx, _) = tokio::sync::mpsc::channel(16);
     let (_, chrome_state_rx) = tokio::sync::watch::channel(ConnectionState::Disconnected);
@@ -99,6 +110,7 @@ async fn make_mcp_with_debug() -> DaemonMcp {
         device_screenshot_fn: None,
         screenshot_dir: std::env::temp_dir().join("daemon8-test-screenshots"),
         broadcast_tx,
+        source_trigger: Some(Arc::new(source_trigger)),
         lens,
         cancel: CancellationToken::new(),
     })
@@ -126,6 +138,7 @@ async fn make_mcp_with_debug_without_memory() -> DaemonMcp {
         device_screenshot_fn: None,
         screenshot_dir: std::env::temp_dir().join("daemon8-test-screenshots"),
         broadcast_tx,
+        source_trigger: None,
         lens,
         cancel: CancellationToken::new(),
     })
@@ -136,6 +149,12 @@ async fn make_mcp_with_writer() -> DaemonMcp {
     let memory_store = store.memory_store();
     memory_store.init_schema().await.unwrap();
     let scope_ledger_store = store.scope_ledger_store();
+    let source_trigger = ConfiguredSourceTrigger::new(
+        Arc::new(store.cursor_store()),
+        Arc::new(DirectStoreWriter {
+            store: store.clone(),
+        }),
+    );
     let (obs_tx, mut obs_rx) = tokio::sync::mpsc::unbounded_channel();
     let store_for_writer = store.clone();
     tokio::spawn(async move {
@@ -160,12 +179,32 @@ async fn make_mcp_with_writer() -> DaemonMcp {
         device_screenshot_fn: None,
         screenshot_dir: std::env::temp_dir().join("daemon8-test-screenshots"),
         broadcast_tx,
+        source_trigger: Some(Arc::new(source_trigger)),
         lens,
         cancel: CancellationToken::new(),
     })
 }
 
 use daemon8_store::{StateModel, SurrealStore};
+
+struct DirectStoreWriter {
+    store: Arc<dyn StateModel>,
+}
+
+#[async_trait::async_trait]
+impl ObservationWriter for DirectStoreWriter {
+    async fn write_observation(&self, obs: Observation) -> Result<ObservationWriteResult, String> {
+        let id = self
+            .store
+            .insert(obs)
+            .await
+            .map_err(|err| err.to_string())?;
+        Ok(ObservationWriteResult {
+            status: ObservationWriteStatus::Inserted,
+            id: Some(id),
+        })
+    }
+}
 
 #[derive(Clone, Default)]
 struct TestClient;
@@ -200,6 +239,39 @@ fn act_params(action: DebugAction) -> ActParams {
 
 fn mark_project(root: &std::path::Path) {
     std::fs::create_dir(root.join(".git")).unwrap();
+}
+
+fn write_file_source_config(root: &std::path::Path, source_id: &str, log_name: &str) {
+    let daemon_dir = root.join(".daemon8");
+    std::fs::create_dir_all(&daemon_dir).unwrap();
+    std::fs::write(
+        daemon_dir.join("config.md"),
+        format!(
+            r#"---
+daemon8_schema: 1
+created_at: "2026-05-17T00:00:00Z"
+updated_at: "2026-05-17T00:00:00Z"
+project:
+  name: mcp-project
+  stack:
+    languages: [rust]
+    frameworks: [tokio]
+    tools: [cargo]
+vars:
+  PRJ_ROOT: "{}"
+sources:
+  - id: {source_id}
+    service: cargo
+    kind: file
+    parser: line
+    path: "$PRJ_ROOT/{log_name}"
+---
+# daemon8
+"#,
+            root.display()
+        ),
+    )
+    .unwrap();
 }
 
 fn tool_request(
@@ -559,6 +631,50 @@ async fn daemon8_init_then_connect_sets_session_connection() {
 }
 
 #[tokio::test]
+async fn daemon8_connect_triggers_configured_file_source_ingestion() {
+    let mcp = make_mcp_with_writer().await;
+    let tmp = tempfile::tempdir().unwrap();
+    mark_project(tmp.path());
+    std::fs::write(tmp.path().join("cargo.log"), "cargo check one\n").unwrap();
+    write_file_source_config(tmp.path(), "cargo.check", "cargo.log");
+
+    let config_before = std::fs::read_to_string(tmp.path().join(".daemon8/config.md")).unwrap();
+    let connect = mcp
+        .daemon8_connect_for_tests(Daemon8ConnectParams {
+            provider: "codex".into(),
+            project_path: tmp.path().display().to_string(),
+            agent_name: None,
+            transcript_path: None,
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&connect).unwrap();
+    assert_eq!(parsed["status"], "success");
+    assert_eq!(
+        parsed["data"]["triggered_ingestion"]["observations_written"],
+        1
+    );
+
+    let filtered = mcp
+        .read_live_feed_for_tests_with(ObserveParams {
+            service: Some(vec!["cargo".into()]),
+            source: Some(vec!["cargo.check".into()]),
+            ..Default::default()
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&filtered).unwrap();
+    assert_eq!(parsed["status"], "success");
+    assert_eq!(parsed["data"]["observations"].as_array().unwrap().len(), 1);
+    assert_eq!(parsed["data"]["observations"][0]["service"], "cargo");
+    assert_eq!(parsed["data"]["observations"][0]["source"], "cargo.check");
+    assert_eq!(
+        parsed["data"]["observations"][0]["source_instance"],
+        tmp.path().join("cargo.log").display().to_string()
+    );
+    let config_after = std::fs::read_to_string(tmp.path().join(".daemon8/config.md")).unwrap();
+    assert_eq!(config_after, config_before);
+}
+
+#[tokio::test]
 async fn runtime_tools_require_connect_first() {
     let mcp = make_mcp().await;
     let debug_mcp = make_mcp_with_debug().await;
@@ -824,6 +940,49 @@ async fn mcp_live_feed_filters_by_provenance() {
 }
 
 #[tokio::test]
+async fn read_live_feed_triggers_configured_file_source_append() {
+    let mcp = make_mcp_with_writer().await;
+    let tmp = tempfile::tempdir().unwrap();
+    mark_project(tmp.path());
+    let log = tmp.path().join("cargo.log");
+    std::fs::write(&log, "first\n").unwrap();
+    write_file_source_config(tmp.path(), "cargo.check", "cargo.log");
+
+    let connected = mcp
+        .daemon8_connect_for_tests(Daemon8ConnectParams {
+            provider: "codex".into(),
+            project_path: tmp.path().display().to_string(),
+            agent_name: None,
+            transcript_path: None,
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&connected).unwrap();
+    assert_eq!(parsed["status"], "success");
+
+    std::fs::write(&log, "first\nsecond\n").unwrap();
+    let feed = mcp
+        .read_live_feed_for_tests_with(ObserveParams {
+            source: Some(vec!["cargo.check".into()]),
+            ..Default::default()
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&feed).unwrap();
+    assert_eq!(parsed["status"], "success");
+    assert_eq!(
+        parsed["data"]["triggered_ingestion"]["observations_written"],
+        1
+    );
+    assert_eq!(parsed["data"]["observations"].as_array().unwrap().len(), 2);
+    assert!(
+        parsed["data"]["observations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|obs| obs["data"]["message"] == "second")
+    );
+}
+
+#[tokio::test]
 async fn general_mode_blocks_project_only_tools() {
     let mcp = make_mcp_with_debug().await;
     let general = tempfile::tempdir().unwrap();
@@ -857,6 +1016,67 @@ async fn general_mode_blocks_project_only_tools() {
         assert_eq!(parsed["code"], "project_required");
         assert_eq!(parsed["next_actions"][0]["tool"], "daemon8_connect");
     }
+}
+
+#[tokio::test]
+async fn create_checkpoint_refreshes_project_sources_before_sequence_capture() {
+    let mcp = make_mcp_with_debug().await;
+    let tmp = tempfile::tempdir().unwrap();
+    mark_project(tmp.path());
+    let log = tmp.path().join("cargo.log");
+    std::fs::write(&log, "first\n").unwrap();
+    write_file_source_config(tmp.path(), "cargo.check", "cargo.log");
+
+    let connected = mcp
+        .daemon8_connect_for_tests(Daemon8ConnectParams {
+            provider: "codex".into(),
+            project_path: tmp.path().display().to_string(),
+            agent_name: None,
+            transcript_path: None,
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&connected).unwrap();
+    assert_eq!(parsed["status"], "success");
+
+    let started = mcp
+        .start_debug_session_for_tests(StartDebugSessionParams {
+            project: Some("daemon8".into()),
+            description: Some("source checkpoint".into()),
+            agent_id: ":host/codex+worker>".into(),
+            feature: None,
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&started).unwrap();
+    assert_eq!(parsed["status"], "success");
+
+    std::fs::write(&log, "first\nsecond\n").unwrap();
+    let checkpoint = mcp
+        .create_checkpoint_for_tests(CreateCheckpointParams {
+            description: Some("after source append".into()),
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&checkpoint).unwrap();
+    assert_eq!(parsed["status"], "success");
+    assert_eq!(
+        parsed["data"]["triggered_ingestion"]["observations_written"],
+        1
+    );
+    let seq_at_creation = parsed["data"]["seq_at_creation"].as_u64().unwrap();
+
+    let all = mcp
+        .read_live_feed_for_tests_with(ObserveParams {
+            source: Some(vec!["cargo.check".into()]),
+            ..Default::default()
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&all).unwrap();
+    let observations = parsed["data"]["observations"].as_array().unwrap();
+    assert_eq!(observations.len(), 2);
+    assert!(
+        observations
+            .iter()
+            .all(|obs| obs["id"].as_u64().unwrap() <= seq_at_creation)
+    );
 }
 
 #[tokio::test]

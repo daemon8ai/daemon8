@@ -4,6 +4,7 @@
 use anyhow::{Context, Result};
 use comfy_table::{Cell, ContentArrangement, Table, presets::UTF8_FULL_CONDENSED};
 use daemon8_types::StateSlice;
+use std::path::PathBuf;
 
 use super::{
     base_url, check_response, format_origin, format_timestamp, handle_reqwest_error, truncate,
@@ -38,6 +39,11 @@ pub struct QueryArgs {
     pub limit: usize,
     #[arg(long)]
     pub include_system: bool,
+    #[arg(
+        long,
+        help = "Project path whose configured sources should refresh before querying"
+    )]
+    pub project_path: Option<PathBuf>,
 }
 
 pub async fn cmd_query(args: QueryArgs) -> Result<()> {
@@ -75,6 +81,12 @@ pub async fn cmd_query(args: QueryArgs) -> Result<()> {
     }
     if args.include_system {
         params.push("include_system=true".to_string());
+    }
+    if let Some(ref project_path) = args.project_path {
+        params.push(format!(
+            "project_path={}",
+            urlenc(&project_path.display().to_string())
+        ));
     }
     params.push(format!("limit={}", args.limit));
 

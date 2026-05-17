@@ -104,6 +104,37 @@ pub fn parse_project_config_file(path: &Path) -> Result<ProjectConfig> {
     parse_project_config_str(&input)
 }
 
+pub fn resolve_project_source_path(
+    config: &ProjectConfig,
+    source: &ProjectSource,
+) -> Result<PathBuf> {
+    resolve_declared_path("source.path", source.path(), &config.vars)
+}
+
+pub fn resolve_declared_path(
+    field: &str,
+    value: &str,
+    vars: &BTreeMap<String, String>,
+) -> Result<PathBuf> {
+    validate_declared_path(field, value)?;
+    let references = collect_var_references(field, value)?;
+    for name in &references {
+        if !vars.contains_key(name) {
+            return Err(ProjectConfigError::Invalid(format!(
+                "{field} references undeclared variable ${name}"
+            )));
+        }
+    }
+
+    let expanded = expand_vars(value, vars, &references);
+    if !is_absolute_path(&expanded) {
+        return Err(ProjectConfigError::Invalid(format!(
+            "{field} must be absolute or expand to an absolute path"
+        )));
+    }
+    Ok(PathBuf::from(expanded))
+}
+
 pub fn validate_project_config(config: &ProjectConfig) -> Result<()> {
     if config.daemon8_schema != PROJECT_CONFIG_SCHEMA {
         return Err(ProjectConfigError::Invalid(format!(
@@ -304,22 +335,7 @@ fn validate_var_path(field: &str, value: &str) -> Result<()> {
 }
 
 fn validate_path_vars(field: &str, value: &str, vars: &BTreeMap<String, String>) -> Result<()> {
-    let references = collect_var_references(field, value)?;
-    for name in &references {
-        if !vars.contains_key(name) {
-            return Err(ProjectConfigError::Invalid(format!(
-                "{field} references undeclared variable ${name}"
-            )));
-        }
-    }
-
-    let expanded = expand_vars(value, vars, &references);
-    if !is_absolute_path(&expanded) {
-        return Err(ProjectConfigError::Invalid(format!(
-            "{field} must be absolute or expand to an absolute path"
-        )));
-    }
-    Ok(())
+    resolve_declared_path(field, value, vars).map(|_| ())
 }
 
 fn collect_var_references(field: &str, value: &str) -> Result<Vec<String>> {
@@ -594,5 +610,22 @@ sources:
         let input = valid_config().replace("    provider: claude\n", "");
         let err = parse(input).unwrap_err();
         assert!(err.to_string().contains("missing field `provider`"));
+    }
+
+    #[test]
+    fn resolves_declared_source_path_with_vars() {
+        let config = parse(valid_config()).unwrap();
+        let path = resolve_project_source_path(&config, &config.sources[0]).unwrap();
+        assert_eq!(
+            path,
+            PathBuf::from("/tmp/daemon8/target/daemon8/cargo-check.log")
+        );
+    }
+
+    #[test]
+    fn rejects_undeclared_vars_during_path_resolution() {
+        let vars = BTreeMap::new();
+        let err = resolve_declared_path("path", "$NOPE/file.log", &vars).unwrap_err();
+        assert!(err.to_string().contains("undeclared variable"));
     }
 }
