@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: LicenseRef-FCL-1.0-ALv2
 // Copyright (c) 2026 Havy.tech, LLC
 
-use std::collections::VecDeque;
+use std::collections::{VecDeque, hash_map::DefaultHasher};
 use std::fs::File;
+use std::hash::{Hash, Hasher};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -25,6 +26,7 @@ use serde_json::{Value, json};
 const CONFIG_PATH: &str = ".daemon8/config.md";
 const MAX_LINES_PER_TRIGGER: usize = 500;
 const MAX_BYTES_PER_TRIGGER: u64 = 256 * 1024;
+const CURSOR_MARKER_BYTES: u64 = 256;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SourceSyncReport {
@@ -567,7 +569,7 @@ impl ConfiguredSourceTrigger {
             .cursors
             .get_cursor(&scope_root, source, &source_instance)
             .await?;
-        Ok(cursor.and_then(|cursor| valid_cursor_position(cursor, fingerprint)))
+        Ok(cursor.and_then(|cursor| valid_cursor_position(cursor, path, fingerprint)))
     }
 
     async fn upsert_cursor(
@@ -578,6 +580,7 @@ impl ConfiguredSourceTrigger {
         position: u64,
         fingerprint: &SourceFileFingerprint,
     ) -> Result<(), StoreError> {
+        let marker = source_cursor_marker(path, position).ok().flatten();
         self.cursors
             .upsert_cursor(CursorState {
                 id: None,
@@ -589,6 +592,7 @@ impl ConfiguredSourceTrigger {
                 metadata: Some(json!({
                     "reader": "triggered",
                     "file": fingerprint,
+                    "marker": marker,
                     "max_lines": MAX_LINES_PER_TRIGGER,
                     "max_bytes": MAX_BYTES_PER_TRIGGER
                 })),
@@ -859,6 +863,13 @@ struct SourceFileFingerprint {
     ino: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct SourceCursorMarker {
+    position: u64,
+    window_start: u64,
+    hash: String,
+}
+
 fn canonical_source_path(path: &Path) -> std::io::Result<PathBuf> {
     std::fs::canonicalize(path)
 }
@@ -887,16 +898,57 @@ fn system_time_ns(time: std::time::SystemTime) -> Option<u64> {
         .map(|duration| duration.as_nanos() as u64)
 }
 
-fn valid_cursor_position(cursor: CursorState, fingerprint: &SourceFileFingerprint) -> Option<u64> {
+fn source_cursor_marker(path: &Path, position: u64) -> std::io::Result<Option<SourceCursorMarker>> {
+    if position == 0 {
+        return Ok(None);
+    }
+
+    let window_start = position.saturating_sub(CURSOR_MARKER_BYTES);
+    let window_len = position - window_start;
+    let mut file = File::open(path)?;
+    file.seek(SeekFrom::Start(window_start))?;
+    let mut bytes = Vec::with_capacity(window_len as usize);
+    file.take(window_len).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 != window_len {
+        return Ok(None);
+    }
+
+    let mut hasher = DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    Ok(Some(SourceCursorMarker {
+        position,
+        window_start,
+        hash: format!("{:016x}", hasher.finish()),
+    }))
+}
+
+fn valid_cursor_position(
+    cursor: CursorState,
+    path: &Path,
+    fingerprint: &SourceFileFingerprint,
+) -> Option<u64> {
     if cursor.position > fingerprint.len {
         return None;
     }
-    let stored = cursor
-        .metadata
-        .as_ref()
-        .and_then(|metadata| metadata.get("file"))
+    let metadata = cursor.metadata.as_ref()?;
+    let stored = metadata
+        .get("file")
         .and_then(|value| serde_json::from_value::<SourceFileFingerprint>(value.clone()).ok())?;
-    if same_source_file(&stored, fingerprint) {
+    if !same_source_file(&stored, fingerprint) {
+        return None;
+    }
+    if cursor.position == 0 {
+        return Some(0);
+    }
+
+    let stored_marker = metadata
+        .get("marker")
+        .and_then(|value| serde_json::from_value::<SourceCursorMarker>(value.clone()).ok())?;
+    if stored_marker.position != cursor.position {
+        return None;
+    }
+    let current_marker = source_cursor_marker(path, cursor.position).ok().flatten()?;
+    if stored_marker == current_marker {
         Some(cursor.position)
     } else {
         None
@@ -1671,6 +1723,35 @@ sources:
             .trigger_sources(SourceTriggerRequest::project(tmp.path().to_path_buf()))
             .await;
         std::fs::remove_file(&log).unwrap();
+        std::fs::write(&log, "fresh\nnew\n").unwrap();
+        let report = trigger
+            .trigger_sources(SourceTriggerRequest::project(tmp.path().to_path_buf()))
+            .await;
+
+        assert_eq!(report.observations_written, 2);
+        assert_eq!(writer.observations().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn same_inode_overwrite_resets_cursor() {
+        let tmp = tempfile::tempdir().unwrap();
+        let log = tmp.path().join("app.log");
+        std::fs::write(&log, "first\n").unwrap();
+        write_config(
+            tmp.path(),
+            r#"  - id: app.logs
+    service: app
+    kind: file
+    path: "$PRJ_ROOT/app.log"
+"#,
+        );
+        let store = SurrealStore::memory().await.unwrap();
+        let writer = Arc::new(VecWriter::default());
+        let trigger = ConfiguredSourceTrigger::new(Arc::new(store.cursor_store()), writer.clone());
+
+        trigger
+            .trigger_sources(SourceTriggerRequest::project(tmp.path().to_path_buf()))
+            .await;
         std::fs::write(&log, "fresh\nnew\n").unwrap();
         let report = trigger
             .trigger_sources(SourceTriggerRequest::project(tmp.path().to_path_buf()))

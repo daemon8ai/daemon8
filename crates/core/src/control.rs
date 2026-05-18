@@ -63,13 +63,11 @@ pub struct AlphaEnvelope {
     pub status: AlphaStatus,
     pub code: String,
     pub message: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub why: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub data: Option<Value>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub hints: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub next_actions: Vec<NextAction>,
 }
 
@@ -121,7 +119,7 @@ impl AlphaEnvelope {
     pub fn render(&self) -> String {
         serde_json::to_string_pretty(self).unwrap_or_else(|err| {
             format!(
-                "{{\"status\":\"error\",\"code\":\"serialization_failed\",\"message\":\"envelope serialization failed\",\"why\":\"{err}\"}}"
+                "{{\"status\":\"error\",\"code\":\"serialization_failed\",\"message\":\"envelope serialization failed\",\"why\":\"{err}\",\"data\":null,\"hints\":[],\"next_actions\":[]}}"
             )
         })
     }
@@ -583,11 +581,27 @@ mod tests {
         let value: Value = serde_json::from_str(&envelope.render()).unwrap();
         assert_eq!(value["status"], "success");
         assert_eq!(value["code"], "connected");
+        assert!(value["why"].is_null());
         assert_eq!(value["data"]["x"], 1);
+        assert_eq!(value["hints"], json!([]));
         assert_eq!(value["next_actions"][0]["tool"], "daemon8_status");
         assert!(value.get("result").is_none());
         assert!(value.get("daemon8").is_none());
         assert!(value.get("error").is_none());
+    }
+
+    #[test]
+    fn envelope_serializes_empty_alpha_fields() {
+        let envelope = AlphaEnvelope::success("status", "daemon status", json!({}));
+        let value: Value = serde_json::from_str(&envelope.render()).unwrap();
+
+        assert!(value.as_object().unwrap().contains_key("why"));
+        assert!(value.as_object().unwrap().contains_key("data"));
+        assert!(value.as_object().unwrap().contains_key("hints"));
+        assert!(value.as_object().unwrap().contains_key("next_actions"));
+        assert!(value["why"].is_null());
+        assert_eq!(value["hints"], json!([]));
+        assert_eq!(value["next_actions"], json!([]));
     }
 
     #[test]

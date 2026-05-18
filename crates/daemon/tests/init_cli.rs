@@ -10,6 +10,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use daemon8_core::project_config::parse_project_config_str;
+use daemon8_store::{StateModel, SurrealStore};
+use daemon8_types::Filter;
 use serde_json::Value;
 
 fn binary() -> PathBuf {
@@ -92,6 +94,30 @@ fn run_connect(dir: &Path, fake_home: &Path, args: &[&str]) -> std::process::Out
         .expect("spawn daemon8 connect")
 }
 
+fn run_connect_with_env(
+    dir: &Path,
+    fake_home: &Path,
+    extra_env: &[(&str, &str)],
+    args: &[&str],
+) -> std::process::Output {
+    let mut cmd = Command::new(binary());
+    cmd.arg("connect")
+        .args(args)
+        .current_dir(dir)
+        .env("HOME", fake_home)
+        .env_remove("CI")
+        .stdin(Stdio::null());
+    for (key, _) in std::env::vars() {
+        if key.starts_with("DAEMON8_") {
+            cmd.env_remove(key);
+        }
+    }
+    for (key, value) in extra_env {
+        cmd.env(key, value);
+    }
+    cmd.output().expect("spawn daemon8 connect")
+}
+
 fn setup_dirs() -> (tempfile::TempDir, PathBuf, PathBuf) {
     let tmp = tempfile::tempdir().expect("mk tempdir");
     let workdir = tmp.path().join("work");
@@ -107,6 +133,39 @@ fn project_config_path(root: &Path) -> PathBuf {
 
 fn mark_project(root: &Path) {
     std::fs::create_dir(root.join(".git")).unwrap();
+}
+
+fn write_source_config(root: &Path) {
+    std::fs::create_dir_all(root.join(".daemon8")).unwrap();
+    std::fs::write(
+        project_config_path(root),
+        format!(
+            r#"---
+daemon8_schema: 1
+created_at: "2026-05-17T00:00:00Z"
+updated_at: "2026-05-17T00:00:00Z"
+project:
+  name: work
+  stack:
+    languages: [rust]
+    frameworks: [tokio]
+    tools: [cargo]
+vars:
+  PRJ_ROOT: "{}"
+sources:
+  - id: app.logs
+    service: app
+    kind: file
+    parser: line
+    path: "$PRJ_ROOT/app.log"
+    tags: [runtime]
+---
+# daemon8
+"#,
+            root.display()
+        ),
+    )
+    .unwrap();
 }
 
 // ---------------------------------------------------------------------------
@@ -729,6 +788,62 @@ fn cli_connect_after_init_returns_connected_json() {
         parsed["data"]["scope_ledger"]["recent_scopes"][0]["provider"],
         "codex"
     );
+}
+
+#[tokio::test]
+async fn cli_connect_triggers_project_source_ingestion() {
+    let (_tmp, work, home) = setup_dirs();
+    mark_project(&work);
+    std::fs::write(work.join("app.log"), "first\n").unwrap();
+    write_source_config(&work);
+    let store_path = home.join("source-store");
+    let store_path_value = store_path.to_str().unwrap();
+
+    let out = run_connect_with_env(
+        &work,
+        &home,
+        &[("DAEMON8_STORAGE__PATH", store_path_value)],
+        &[
+            "--path",
+            work.to_str().unwrap(),
+            "--provider",
+            "codex",
+            "--json",
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let parsed: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(parsed["status"], "success");
+    assert_eq!(
+        parsed["data"]["triggered_ingestion"]["observations_written"],
+        1
+    );
+
+    let store = SurrealStore::open(&store_path).await.unwrap();
+    let slice = store
+        .query(&Filter {
+            kinds: None,
+            severity_min: None,
+            origins: None,
+            text_match: None,
+            since: None,
+            limit: Some(10),
+            correlation_id: None,
+            tags: None,
+            service: None,
+            source: Some(vec!["app.logs".into()]),
+            source_instance: None,
+            include_system: Some(true),
+        })
+        .await
+        .unwrap();
+    assert_eq!(slice.observations.len(), 1);
+    assert_eq!(slice.observations[0].data["message"], "first");
 }
 
 #[test]

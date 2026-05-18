@@ -1,5 +1,5 @@
 # Daemon8 configuration
-# Location: ~/.config/daemon8/config.toml (macOS/Linux)
+# Print the active config path with: daemon8 config path
 # Reference: https://daemon8.ai/docs/configuration
 #
 # All values shown are defaults. Uncomment to override.
@@ -21,7 +21,7 @@
 # path = ""
 
 # [adb]
-# enabled = true
+# enabled = false
 # server_addr = "127.0.0.1:5037"
 # scan_interval_secs = 10
 

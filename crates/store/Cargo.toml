@@ -5,6 +5,7 @@ edition.workspace = true
 license-file.workspace = true
 description = "SurrealDB storage backend for daemon8 observations"
 repository.workspace = true
+publish.workspace = true
 
 [dependencies]
 daemon8-types.workspace = true

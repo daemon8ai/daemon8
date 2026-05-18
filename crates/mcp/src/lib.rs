@@ -2187,8 +2187,8 @@ impl DaemonMcp {
             return self.handle_device_screenshot(&params).await;
         }
 
-        if let Some(error) = validate_action_params(&params) {
-            return error;
+        if let Some(message) = validate_action_params(&params) {
+            return self.err("missing_param", message, None, None);
         }
 
         if let Err(e) = self
@@ -2662,32 +2662,30 @@ fn screenshot_path(dir: &std::path::Path, target: &str, label: Option<&str>) -> 
     dir.join(format!("daemon8-screenshot-{ts}-{safe_target}{suffix}.png"))
 }
 
-/// Standalone error builder for code paths without &self access.
-fn validate_action_params(params: &ActParams) -> Option<String> {
+/// Validate action-specific required parameters before browser connection work.
+fn validate_action_params(params: &ActParams) -> Option<&'static str> {
     match params.action {
-        DebugAction::EvalJs if params.expression.is_none() => Some(missing_param_json(
-            "eval_js requires 'expression' parameter",
-        )),
+        DebugAction::EvalJs if params.expression.is_none() => {
+            Some("eval_js requires 'expression' parameter")
+        }
         DebugAction::InjectCss if params.css.is_none() => {
-            Some(missing_param_json("inject_css requires 'css' parameter"))
+            Some("inject_css requires 'css' parameter")
         }
-        DebugAction::Navigate if params.url.is_none() => {
-            Some(missing_param_json("navigate requires 'url' parameter"))
+        DebugAction::Navigate if params.url.is_none() => Some("navigate requires 'url' parameter"),
+        DebugAction::StorageSet if params.store_type.is_none() => {
+            Some("storage_set requires 'store_type' parameter")
         }
-        DebugAction::StorageSet if params.store_type.is_none() => Some(missing_param_json(
-            "storage_set requires 'store_type' parameter",
-        )),
-        DebugAction::StorageSet if params.storage_key.is_none() => Some(missing_param_json(
-            "storage_set requires 'storage_key' parameter",
-        )),
-        DebugAction::ElementAtPoint if params.x.is_none() => Some(missing_param_json(
-            "element_at_point requires 'x' parameter",
-        )),
-        DebugAction::ElementAtPoint if params.y.is_none() => Some(missing_param_json(
-            "element_at_point requires 'y' parameter",
-        )),
+        DebugAction::StorageSet if params.storage_key.is_none() => {
+            Some("storage_set requires 'storage_key' parameter")
+        }
+        DebugAction::ElementAtPoint if params.x.is_none() => {
+            Some("element_at_point requires 'x' parameter")
+        }
+        DebugAction::ElementAtPoint if params.y.is_none() => {
+            Some("element_at_point requires 'y' parameter")
+        }
         DebugAction::CloseTab if params.tab_id.is_none() => {
-            Some(missing_param_json("close_tab requires 'tab_id' parameter"))
+            Some("close_tab requires 'tab_id' parameter")
         }
         _ => None,
     }

@@ -648,7 +648,7 @@ async fn debug_lifecycle_tools_require_memory_for_summary_capture() {
             serde_json::json!({
                 "project": "daemon8",
                 "description": "hidden without memory",
-                "agent_id": ":host/codex+worker>",
+                "agent_id": ":host/codex+agent>",
                 "feature": null,
             }),
         ))
@@ -679,7 +679,7 @@ async fn debug_lifecycle_tools_require_memory_for_summary_capture() {
             serde_json::json!({
                 "project": "daemon8",
                 "description": "hidden without memory",
-                "agent_id": ":host/codex+worker>",
+                "agent_id": ":host/codex+agent>",
                 "feature": null,
             }),
         ))
@@ -1461,7 +1461,7 @@ async fn live_feed_warning_since_checkpoint_in_active_project_debug_session_can_
         .start_debug_session_for_tests(StartDebugSessionParams {
             project: Some("daemon8".into()),
             description: Some("warning follow-up".into()),
-            agent_id: ":host/codex+worker>".into(),
+            agent_id: ":host/codex+agent>".into(),
             feature: None,
         })
         .await;
@@ -1607,7 +1607,7 @@ async fn create_checkpoint_refreshes_project_sources_before_sequence_capture() {
         .start_debug_session_for_tests(StartDebugSessionParams {
             project: Some("daemon8".into()),
             description: Some("source checkpoint".into()),
-            agent_id: ":host/codex+worker>".into(),
+            agent_id: ":host/codex+agent>".into(),
             feature: None,
         })
         .await;
@@ -1666,7 +1666,7 @@ async fn create_checkpoint_blocks_when_source_refresh_fails() {
         .start_debug_session_for_tests(StartDebugSessionParams {
             project: Some("daemon8".into()),
             description: Some("source checkpoint failure".into()),
-            agent_id: ":host/codex+worker>".into(),
+            agent_id: ":host/codex+agent>".into(),
             feature: None,
         })
         .await;
@@ -1707,7 +1707,7 @@ async fn debug_tools_obey_policy_through_real_mcp_calls() -> anyhow::Result<()> 
             serde_json::json!({
                 "project": "daemon8",
                 "description": "pre-connect guard",
-                "agent_id": ":host/codex+worker>",
+                "agent_id": ":host/codex+agent>",
                 "feature": null,
             }),
         ))
@@ -1750,7 +1750,7 @@ async fn debug_tools_obey_policy_through_real_mcp_calls() -> anyhow::Result<()> 
             serde_json::json!({
                 "project": "daemon8",
                 "description": "general guard",
-                "agent_id": ":host/codex+worker>",
+                "agent_id": ":host/codex+agent>",
                 "feature": null,
             }),
         ))
@@ -1821,7 +1821,7 @@ async fn debug_lifecycle_codes_are_stable_through_real_mcp_calls() -> anyhow::Re
             serde_json::json!({
                 "project": "daemon8",
                 "description": "router lifecycle",
-                "agent_id": ":host/codex+worker>",
+                "agent_id": ":host/codex+agent>",
                 "feature": "mcp",
             }),
         ))
@@ -1893,7 +1893,7 @@ async fn debug_lifecycle_codes_are_stable_through_real_mcp_calls() -> anyhow::Re
             serde_json::json!({
                 "project": "daemon8",
                 "description": "router end lifecycle",
-                "agent_id": ":host/codex+worker>",
+                "agent_id": ":host/codex+agent>",
                 "feature": "mcp",
             }),
         ))
@@ -1985,7 +1985,7 @@ async fn already_active_debug_session_prefers_resolution_before_abandoning() {
         .start_debug_session_for_tests(StartDebugSessionParams {
             project: Some("daemon8".into()),
             description: Some("first".into()),
-            agent_id: ":host/codex+worker>".into(),
+            agent_id: ":host/codex+agent>".into(),
             feature: None,
         })
         .await;
@@ -1996,7 +1996,7 @@ async fn already_active_debug_session_prefers_resolution_before_abandoning() {
         .start_debug_session_for_tests(StartDebugSessionParams {
             project: Some("daemon8".into()),
             description: Some("second".into()),
-            agent_id: ":host/codex+worker>".into(),
+            agent_id: ":host/codex+agent>".into(),
             feature: None,
         })
         .await;

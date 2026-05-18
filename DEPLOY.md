@@ -71,9 +71,11 @@ The launchd plist uses `KeepAlive: true`, which means `kill <pid>` does
 `daemon8 service uninstall` (or `launchctl bootout` on the plist) to
 actually stop.
 
-The generated service only passes `serve` as an argument. Chrome
-endpoint, ADB settings, ingestion listeners — all configured via
-`config.toml`, not via service-file arguments.
+The generated service runs `daemon8 serve`. When `browser.auto_connect`
+is true at install time, the generated service also snapshots the current
+browser endpoint as `--browser <endpoint>`, which overrides later
+`config.toml` browser endpoint changes until the service is reinstalled.
+ADB settings and ingestion listeners stay configured through `config.toml`.
 
 ## Upgrading
 

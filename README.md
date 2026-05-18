@@ -135,6 +135,7 @@ MCP responses and CLI `--json` output use a common envelope:
   "status": "success",
   "code": "connected",
   "message": "connected to project",
+  "why": null,
   "data": {},
   "hints": [],
   "next_actions": []
@@ -155,8 +156,8 @@ The daemon serves local HTTP endpoints on the configured server port:
 | `/api/checkpoint` | `GET` | Read the current observation sequence. |
 | `/api/summary` | `GET` | Snapshot daemon health and source summary. |
 | `/api/connections` | `GET` | Inspect browser/app connection state. |
-| `/api/connect` | `POST` | Trigger configured source ingestion for a project path. |
-| `/api/stream` | `GET` | Stream observations over SSE. |
+| `/api/connect` | `POST` | Connect the browser/CDP endpoint. |
+| `/api/stream` | `GET` | Stream observations over SSE; `project_path` refreshes configured project sources before replay. |
 | `/api/lens` | `GET`/`PUT`/`DELETE` | Inspect, set, or clear the observation lens. |
 | `/api/browser/act` | `POST` | Run a browser/device action. |
 

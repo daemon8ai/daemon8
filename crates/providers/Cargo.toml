@@ -5,6 +5,7 @@ edition.workspace = true
 license-file.workspace = true
 description = "AI coding tool provider detection, configuration, and hook management for daemon8"
 repository.workspace = true
+publish.workspace = true
 
 [dependencies]
 anyhow.workspace = true

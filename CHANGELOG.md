@@ -4,9 +4,26 @@ This changelog summarizes major repository changes by release phase.
 For full commit-by-commit detail, use `git log` and
 [daemon8ai/daemon8/releases](https://github.com/daemon8ai/daemon8/releases).
 
+## v0.4.0-alpha.1 - Unreleased
+
+- Replaced the pre-alpha setup flow with the alpha control surface:
+  `daemon8 init`, `daemon8 connect`, `daemon8 status`, and the MCP
+  `daemon8_init` / `daemon8_connect` / `daemon8_status` tools.
+- Project config is now `.daemon8/config.md` with YAML frontmatter.
+  Legacy TOML project config is not an alpha input.
+- Runtime state, cursors, debug sessions, and the session/scope ledger are
+  daemon-owned SurrealDB state. `daemon8 reset --yes` clears daemon-owned
+  state only and leaves project files untouched.
+- Memory is internal to debug-session summaries in the alpha MCP surface;
+  no public memory CLI or MCP tools ship in this release.
+- Service removal is `daemon8 service uninstall`.
+
 ## v0.3.0 - 2026-05-08
 
 ### Upgrading from v0.2.x
+
+Historical notes below describe pre-alpha releases. Use the
+`v0.4.0-alpha.1` section above for current alpha commands and config.
 
 The lean MVP cull tightened TOML config parsing to reject unknown keys via `deny_unknown_fields`. Existing global and project configs that contain removed sections will fail to parse and the daemon will refuse to start until the stale keys are removed.
 

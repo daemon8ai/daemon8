@@ -26,6 +26,7 @@ homepage = "https://daemon8.ai"
 documentation = "https://daemon8.ai/docs"
 keywords = ["observability", "debugging", "ai-agents", "mcp"]
 categories = ["development-tools::debugging", "command-line-utilities"]
+publish = false
 
 [workspace.dependencies]
 # Internal crates

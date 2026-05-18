@@ -51,9 +51,9 @@ jobs:
       matrix:
         include:
           - target: aarch64-apple-darwin
-            os: macos-latest
+            os: macos-14
             archive: tar.gz
-            smoke: false
+            smoke: true
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             archive: tar.gz
@@ -63,13 +63,13 @@ jobs:
             archive: zip
             smoke: true
           - target: x86_64-apple-darwin
-            os: macos-14
+            os: macos-15-intel
             archive: tar.gz
-            smoke: false
+            smoke: true
           - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: ubuntu-24.04-arm
             archive: tar.gz
-            smoke: false
+            smoke: true
 
     runs-on: ${{ matrix.os }}
 
@@ -92,24 +92,12 @@ jobs:
           RELEASE_REF: ${{ needs.prepare.outputs.release_ref }}
         run: bash scripts/release-check.sh
 
-      - name: Install cross-compilation tools
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
-          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
-
       - name: Build
         run: cargo build --release --target ${{ matrix.target }} -p daemon8
 
       - name: Strip binary (unix)
         if: matrix.archive == 'tar.gz'
-        run: |
-          if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-gnu" ]]; then
-            aarch64-linux-gnu-strip target/${{ matrix.target }}/release/${{ env.BINARY_NAME }}
-          else
-            strip target/${{ matrix.target }}/release/${{ env.BINARY_NAME }}
-          fi
+        run: strip target/${{ matrix.target }}/release/${{ env.BINARY_NAME }}
 
       - name: Package (unix)
         if: matrix.archive == 'tar.gz'
@@ -227,12 +215,18 @@ jobs:
           cd artifacts
           sha256sum * > checksums.sha256
 
-      - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ needs.prepare.outputs.release_tag }}
-          files: artifacts/*
-          generate_release_notes: true
+      - name: Validate server upload configuration
+        run: |
+          set_count=0
+          for name in DEPLOY_HOST DEPLOY_USER DEPLOY_KEY DEPLOY_PATH; do
+            if [ -n "${!name}" ]; then
+              set_count=$((set_count + 1))
+            fi
+          done
+          if [ "$set_count" -ne 0 ] && [ "$set_count" -ne 4 ]; then
+            echo "DEPLOY_HOST, DEPLOY_USER, DEPLOY_KEY, and DEPLOY_PATH must be set together" >&2
+            exit 1
+          fi
 
       - name: Upload to server
         if: env.DEPLOY_HOST != ''
@@ -244,3 +238,10 @@ jobs:
           ssh -o StrictHostKeyChecking=no -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p $DEPLOY_PATH/$VERSION"
           scp -o StrictHostKeyChecking=no -i ~/.ssh/deploy_key artifacts/* "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/$VERSION/"
           ssh -o StrictHostKeyChecking=no -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" "ln -sfn $DEPLOY_PATH/$VERSION $DEPLOY_PATH/latest"
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare.outputs.release_tag }}
+          files: artifacts/*
+          generate_release_notes: true
