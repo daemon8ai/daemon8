@@ -417,25 +417,14 @@ mod tests {
         std::fs::write(&recent_file, b"recent").unwrap();
         std::fs::write(&unrelated_file, b"keep").unwrap();
 
-        // Set old file mtime to 48h ago via touch command
-        let past = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let past = SystemTime::now() - Duration::from_secs(SCREENSHOT_RETENTION_SECS + 3600);
+        let times = std::fs::FileTimes::new().set_modified(past);
+        std::fs::File::options()
+            .write(true)
+            .open(&old_file)
             .unwrap()
-            .as_secs()
-            - (SCREENSHOT_RETENTION_SECS + 3600);
-        let ts = format!("{past}");
-        // Use touch -t with a formatted timestamp
-        let formatted = std::process::Command::new("date")
-            .args(["-r", &ts, "+%Y%m%d%H%M.%S"])
-            .output()
-            .expect("date command should work");
-        let touch_ts = String::from_utf8_lossy(&formatted.stdout);
-        let touch_ts = touch_ts.trim();
-
-        std::process::Command::new("touch")
-            .args(["-t", touch_ts, old_file.to_str().unwrap()])
-            .status()
-            .expect("touch should work");
+            .set_times(times)
+            .unwrap();
 
         cleanup_screenshots(dir);
 
