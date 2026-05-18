@@ -708,12 +708,19 @@ impl DaemonMcp {
     #[tool(name = "read_live_feed")]
     async fn read_live_feed(&self, Parameters(params): Parameters<ObserveParams>) -> String {
         if self.connection_mode() == Some(ScopeMode::General) && !params.has_narrowing_filter() {
-            return self.blocked(
+            return AlphaEnvelope::non_success(
+                AlphaStatus::Blocked,
                 "narrow_filter_required",
                 "general mode read_live_feed requires a narrowing filter",
-                Some("add kinds, severity_min, origins, service, source, source_instance, text_match, since_checkpoint, correlation_id, or tags"),
-                None,
-            );
+                "add kinds, severity_min, origins, service, source, source_instance, text_match, since_checkpoint, correlation_id, or tags",
+            )
+            .with_data(self.session_context())
+            .with_next_action(NextAction::new(
+                "read_live_feed",
+                "retry with at least one narrowing filter",
+                serde_json::json!({"severity_min": "warn"}),
+            ))
+            .render();
         }
 
         // If the caller wants browser observations, ensure Chrome is connected.
@@ -737,7 +744,8 @@ impl DaemonMcp {
 
         let origins = params.origins.map(Filter::origins_from_vec);
 
-        let since = params.since_checkpoint.map(Checkpoint);
+        let since_checkpoint = params.since_checkpoint;
+        let since = since_checkpoint.map(Checkpoint);
 
         let filter = Filter {
             kinds,
@@ -781,9 +789,27 @@ impl DaemonMcp {
                         .iter()
                         .any(|obs| obs.severity.level() >= daemon8_types::Severity::Warn.level());
                 if warned_since_checkpoint {
-                    return self.ok_with(
+                    return self.ok_with_actions(
+                        "ok",
+                        "ok",
                         result,
-                        vec!["read_live_feed", "resolve_debug_session"],
+                        vec![
+                            NextAction::new(
+                                "read_live_feed",
+                                "inspect additional runtime signals with a narrower filter if needed",
+                                serde_json::json!({
+                                    "since_checkpoint": since_checkpoint,
+                                    "severity_min": "warn",
+                                }),
+                            ),
+                            NextAction::new(
+                                "resolve_debug_session",
+                                "record the durable conclusion after interpreting the runtime signal",
+                                serde_json::json!({
+                                    "summary": "<durable conclusion after interpreting the runtime signal>",
+                                }),
+                            ),
+                        ],
                         Some("runtime signal found; interpret the live-feed entries before recording any durable conclusion"),
                     );
                 }
@@ -912,10 +938,8 @@ impl DaemonMcp {
         }
     }
 
-    #[tool(
-        name = "daemon8_help",
-        description = "Narrative documentation for daemon8 protocols. Pass topic='index' (or omit) for the topic list. Returns markdown."
-    )]
+    #[doc = include_str!("../tool_descriptions/daemon8_help.md")]
+    #[tool(name = "daemon8_help")]
     async fn daemon8_help(&self, Parameters(params): Parameters<HelpParams>) -> String {
         let topic = params.topic.as_deref().unwrap_or("index");
         if topic == "index" {
@@ -1142,11 +1166,12 @@ impl DaemonMcp {
 /// error.
 fn wrap_inner_result(daemon: &DaemonMcp, raw: &str) -> String {
     match serde_json::from_str::<serde_json::Value>(raw) {
-        Ok(v) => {
+        Ok(mut v) => {
             // If the inner function already produced an alpha envelope
             // (i.e. `error_json(...)` from inside the inner), pass it through.
             // Otherwise it's a raw success payload to wrap as `data`.
             if v.get("status").is_some() && v.get("code").is_some() {
+                enrich_envelope_data(daemon, &mut v);
                 return serde_json::to_string_pretty(&v)
                     .unwrap_or_else(|_| daemon.err("serialization_failed", raw, None, None));
             }
@@ -1165,6 +1190,16 @@ fn wrap_inner_result(daemon: &DaemonMcp, raw: &str) -> String {
         }
         Err(_) => daemon.ok(serde_json::json!({"raw": raw})),
     }
+}
+
+fn enrich_envelope_data(daemon: &DaemonMcp, envelope: &mut serde_json::Value) {
+    let Some(object) = envelope.as_object_mut() else {
+        return;
+    };
+    let data = object
+        .entry("data")
+        .or_insert_with(|| serde_json::json!({}));
+    *data = daemon.with_session_context(data.take());
 }
 
 /// Validate agent_id against the `:host/tool+role>` convention.
@@ -1278,11 +1313,15 @@ impl DaemonMcp {
         if let Some(report) = source_report {
             data["triggered_ingestion"] = source_report_value(&report);
         }
-        self.ok_with_code(
+        self.ok_with_actions(
             "checkpoint_created",
             "checkpoint created",
             data,
-            vec!["read_live_feed"],
+            vec![NextAction::new(
+                "read_live_feed",
+                "read observations captured after this checkpoint",
+                serde_json::json!({"since_checkpoint": seq.0}),
+            )],
             Some("checkpoint set; read_live_feed(since_checkpoint=...) returns new entries since this point"),
         )
     }
@@ -1347,14 +1386,18 @@ impl DaemonMcp {
                         agent_id: Arc::from(params.agent_id.as_str()),
                         feature: params.feature.as_deref().map(Arc::from),
                     }));
-                self.ok_with_code(
+                self.ok_with_actions(
                     "debug_session_started",
                     "debug session started",
                     serde_json::json!({
                         "debug_session_id": id,
                         "started_at": now,
                     }),
-                    vec!["create_checkpoint"],
+                    vec![NextAction::new(
+                        "create_checkpoint",
+                        "bookmark the stream before the action you want to verify",
+                        serde_json::json!({}),
+                    )],
                     Some("debug session opened; create a checkpoint before the action you want to verify"),
                 )
             }
@@ -1631,10 +1674,21 @@ async fn end_or_resolve_inner(daemon: &DaemonMcp, intent: EndIntent) -> String {
             ("debug_session_ended", "debug session ended")
         }
     };
-    let next_actions = vec!["start_debug_session", "list_debug_sessions"];
+    let next_actions = vec![
+        NextAction::new(
+            "start_debug_session",
+            "open a new scoped investigation when follow-up work begins",
+            serde_json::json!({}),
+        ),
+        NextAction::new(
+            "list_debug_sessions",
+            "confirm recent debug session state if needed",
+            serde_json::json!({}),
+        ),
+    ];
     let hint = "session closed; start_debug_session for the next investigation";
 
-    daemon.ok_with_code(
+    daemon.ok_with_actions(
         code,
         message,
         serde_json::json!({
@@ -1746,30 +1800,17 @@ impl DaemonMcp {
         AlphaEnvelope::success(code, message, self.with_session_context(value)).render()
     }
 
-    pub(crate) fn ok_with(
-        &self,
-        value: serde_json::Value,
-        next_actions: Vec<&str>,
-        hint: Option<&str>,
-    ) -> String {
-        self.ok_with_code("ok", "ok", value, next_actions, hint)
-    }
-
-    pub(crate) fn ok_with_code(
+    pub(crate) fn ok_with_actions(
         &self,
         code: &str,
         message: &str,
         value: serde_json::Value,
-        next_actions: Vec<&str>,
+        next_actions: Vec<NextAction>,
         hint: Option<&str>,
     ) -> String {
         let mut envelope = AlphaEnvelope::success(code, message, self.with_session_context(value));
         for action in next_actions {
-            envelope = envelope.with_next_action(NextAction::new(
-                action,
-                "recommended next tool",
-                serde_json::json!({}),
-            ));
+            envelope = envelope.with_next_action(action);
         }
         if let Some(hint) = hint {
             envelope = envelope.with_hint(hint);
@@ -1788,11 +1829,7 @@ impl DaemonMcp {
             AlphaEnvelope::non_success(AlphaStatus::Error, code, message, hint.unwrap_or(message))
                 .with_data(self.session_context());
         if let Some(tool) = next_tool {
-            envelope = envelope.with_next_action(NextAction::new(
-                tool,
-                "call this tool to continue",
-                serde_json::json!({}),
-            ));
+            envelope = envelope.with_next_action(next_action_for_tool(tool));
         }
         envelope.render()
     }
@@ -1812,6 +1849,7 @@ impl DaemonMcp {
     fn session_context(&self) -> serde_json::Value {
         let mut data = serde_json::json!({
             "session_id": self.session_id,
+            "connection": serde_json::Value::Null,
         });
 
         let connection = self
@@ -1820,6 +1858,11 @@ impl DaemonMcp {
             .expect("connection mutex poisoned")
             .clone();
         if let Some(connection) = connection {
+            data["mode"] = serde_json::json!(connection.mode);
+            data["requested_path"] = serde_json::json!(&connection.requested_path);
+            if let Some(scope_root) = &connection.scope_root {
+                data["scope_root"] = serde_json::json!(scope_root);
+            }
             data["connection"] = serde_json::to_value(connection).unwrap_or_default();
         }
 
@@ -1973,7 +2016,7 @@ impl DaemonMcp {
                 .with_next_action(NextAction::new(
                     "daemon8_connect",
                     "bind this MCP session to a project scope",
-                    serde_json::json!({}),
+                    serde_json::json!({"provider": "<provider>", "project_path": "<project path>"}),
                 ))
                 .render(),
             ),
@@ -1985,38 +2028,60 @@ impl DaemonMcp {
                     "call daemon8_connect before using runtime tools in this MCP session",
                 )
                 .with_data(self.session_context())
-                .with_next_action(NextAction::new(
-                    "daemon8_connect",
-                    "bind this MCP session to a project or general scope",
-                    serde_json::json!({}),
-                ))
+                .with_next_action(next_action_for_tool("daemon8_connect"))
                 .render(),
             ),
         }
     }
+}
 
-    fn blocked(
-        &self,
-        code: &str,
-        message: &str,
-        hint: Option<&str>,
-        next_tool: Option<&str>,
-    ) -> String {
-        let mut envelope = AlphaEnvelope::non_success(
-            AlphaStatus::Blocked,
-            code,
-            message,
-            hint.unwrap_or(message),
-        )
-        .with_data(self.session_context());
-        if let Some(tool) = next_tool {
-            envelope = envelope.with_next_action(NextAction::new(
-                tool,
-                "call this tool to continue",
-                serde_json::json!({}),
-            ));
-        }
-        envelope.render()
+fn next_action_for_tool(tool: &str) -> NextAction {
+    match tool {
+        "daemon8_connect" => NextAction::new(
+            "daemon8_connect",
+            "bind this MCP session to a project or general scope",
+            serde_json::json!({"provider": "<provider>", "project_path": "<path>"}),
+        ),
+        "daemon8_init" => NextAction::new(
+            "daemon8_init",
+            "write .daemon8/config.md for the project path, then retry daemon8_connect",
+            serde_json::json!({"project_path": "<project path>"}),
+        ),
+        "start_debug_session" => NextAction::new(
+            "start_debug_session",
+            "open a scoped debug session before checkpointing or resolving an investigation",
+            serde_json::json!({"agent_id": ":host/tool+role>"}),
+        ),
+        "create_checkpoint" => NextAction::new(
+            "create_checkpoint",
+            "bookmark the live feed before the action you want to verify",
+            serde_json::json!({}),
+        ),
+        "read_live_feed" => NextAction::new(
+            "read_live_feed",
+            "inspect runtime observations using the current session context",
+            serde_json::json!({}),
+        ),
+        "resolve_debug_session" => NextAction::new(
+            "resolve_debug_session",
+            "close the active debug session with the durable fix summary",
+            serde_json::json!({"summary": "<what changed and why it fixed the issue>"}),
+        ),
+        "end_debug_session" => NextAction::new(
+            "end_debug_session",
+            "close the active debug session without recording a fix",
+            serde_json::json!({"outcome": "abandoned"}),
+        ),
+        "list_debug_sessions" => NextAction::new(
+            "list_debug_sessions",
+            "review active or recent debug sessions",
+            serde_json::json!({}),
+        ),
+        other => NextAction::new(
+            other,
+            "continue with the indicated daemon8 tool",
+            serde_json::json!({}),
+        ),
     }
 }
 
@@ -2031,6 +2096,7 @@ pub const TOOL_POLICY_TABLE: &[(&str, ToolPolicy)] = &[
     ("daemon8_connect", ToolPolicy::PreConnectAllowed),
     ("daemon8_init", ToolPolicy::PreConnectAllowed),
     ("daemon8_status", ToolPolicy::PreConnectAllowed),
+    ("daemon8_help", ToolPolicy::PreConnectAllowed),
     ("read_live_feed", ToolPolicy::GeneralSafe),
     ("list_connections", ToolPolicy::GeneralSafe),
     ("write_to_live_feed", ToolPolicy::GeneralSafe),
@@ -2040,7 +2106,6 @@ pub const TOOL_POLICY_TABLE: &[(&str, ToolPolicy)] = &[
     ("set_lens", ToolPolicy::GeneralSafe),
     ("clear_lens", ToolPolicy::GeneralSafe),
     ("lens_status", ToolPolicy::GeneralSafe),
-    ("daemon8_help", ToolPolicy::GeneralSafe),
     ("list_debug_sessions", ToolPolicy::GeneralSafe),
     ("start_debug_session", ToolPolicy::ProjectOnly),
     ("create_checkpoint", ToolPolicy::ProjectOnly),

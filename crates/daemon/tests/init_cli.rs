@@ -559,6 +559,28 @@ fn cli_connect_missing_config_returns_setup_required_json() {
 }
 
 #[test]
+fn cli_connect_missing_config_human_prints_next_action_and_exits_cleanly() {
+    let (_tmp, work, home) = setup_dirs();
+    std::fs::write(work.join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
+
+    let out = run_connect(
+        &work,
+        &home,
+        &["--path", work.to_str().unwrap(), "--provider", "codex"],
+    );
+    assert!(
+        out.status.success(),
+        "setup_required is expected control flow; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("project config is missing"));
+    assert!(stdout.contains("daemon8 project mode requires .daemon8/config.md"));
+    assert!(stdout.contains("next: daemon8_init"));
+}
+
+#[test]
 fn cli_connect_after_init_returns_connected_json() {
     let (_tmp, work, home) = setup_dirs();
     mark_project(&work);
@@ -710,6 +732,41 @@ fn cli_connect_blocks_ambiguous_transcripts() {
 }
 
 #[test]
+fn cli_connect_blocks_ambiguous_transcripts_human_exits_cleanly() {
+    let (_tmp, work, home) = setup_dirs();
+    mark_project(&work);
+    run_init(&work, &home, &[]);
+    let sessions = home.join(".codex/sessions");
+    std::fs::create_dir_all(&sessions).unwrap();
+    for name in ["one.jsonl", "two.jsonl"] {
+        std::fs::write(
+            sessions.join(name),
+            format!(
+                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{name}\",\"cwd\":\"{}\"}}}}\n",
+                work.display()
+            ),
+        )
+        .unwrap();
+    }
+
+    let out = run_connect(
+        &work,
+        &home,
+        &["--path", work.to_str().unwrap(), "--provider", "codex"],
+    );
+    assert!(
+        out.status.success(),
+        "blocked transcript ambiguity is expected control flow; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("multiple provider transcripts match this session"));
+    assert!(stdout.contains("daemon8 found more than one provider transcript"));
+    assert!(stdout.contains("next: daemon8_connect"));
+}
+
+#[test]
 fn cli_connect_rejects_transcript_scope_mismatch() {
     let (_tmp, work, home) = setup_dirs();
     let other_work = home.join("other-work");
@@ -750,6 +807,47 @@ fn cli_connect_rejects_transcript_scope_mismatch() {
     let parsed: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(parsed["status"], "error");
     assert_eq!(parsed["code"], "transcript_scope_mismatch");
+}
+
+#[test]
+fn cli_connect_scope_mismatch_human_exits_nonzero() {
+    let (_tmp, work, home) = setup_dirs();
+    let other_work = home.join("other-work");
+    mark_project(&work);
+    std::fs::create_dir_all(&other_work).unwrap();
+    run_init(&work, &home, &[]);
+    let sessions = home.join(".codex/sessions");
+    std::fs::create_dir_all(&sessions).unwrap();
+    let transcript = sessions.join("other.jsonl");
+    std::fs::write(
+        &transcript,
+        format!(
+            "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"s1\",\"cwd\":\"{}\"}}}}\n",
+            other_work.display()
+        ),
+    )
+    .unwrap();
+
+    let out = run_connect(
+        &work,
+        &home,
+        &[
+            "--path",
+            work.to_str().unwrap(),
+            "--provider",
+            "codex",
+            "--transcript-path",
+            transcript.to_str().unwrap(),
+        ],
+    );
+    assert!(
+        !out.status.success(),
+        "error statuses should exit nonzero in human mode"
+    );
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("transcript_scope_mismatch"));
+    assert!(stderr.contains("belongs to a different project scope"));
 }
 
 #[test]

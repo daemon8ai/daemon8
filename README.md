@@ -106,7 +106,7 @@ daemon8_connect -> start_debug_session -> create_checkpoint -> change/repro/test
 
 ## Response Shape
 
-MCP responses use a common envelope:
+MCP responses and CLI `--json` output use a common envelope:
 
 ```json
 {
@@ -119,7 +119,7 @@ MCP responses use a common envelope:
 }
 ```
 
-The envelope is part of the control flow. `status`, `code`, and structured `next_actions` guide the model at decision points. Connection context may appear in `data.connection`; clients should branch on `status`, `code`, and `next_actions`.
+The envelope is part of the control flow. `status`, `code`, and structured `next_actions` guide the model at decision points. Session context appears in `data.session_id`; connected responses also expose `data.mode`, `data.requested_path`, `data.scope_root`, and the full `data.connection` object. Clients should branch on `status`, `code`, and `next_actions`.
 
 ## Reset Safety
 

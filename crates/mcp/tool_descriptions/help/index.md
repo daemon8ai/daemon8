@@ -4,7 +4,7 @@
 
 # daemon8 help index
 
-Available topics (after `daemon8_connect`, call `daemon8_help(topic="<name>")`):
+Available topics (`daemon8_help` is available before and after `daemon8_connect`):
 
 - `observations` — querying, filtering, subscribing to runtime telemetry
 - `envelope` — the common alpha response envelope

@@ -117,14 +117,11 @@ pub async fn cmd_connect(config_path: Option<String>, args: ConnectArgs) -> Resu
     }
 
     match outcome.envelope.status {
-        AlphaStatus::Success | AlphaStatus::SetupRequired | AlphaStatus::ConnectRequired => {
-            println!("{}", outcome.envelope.message);
-            if let Some(why) = &outcome.envelope.why {
-                println!("{why}");
-            }
-            for action in &outcome.envelope.next_actions {
-                println!("next: {} ({})", action.tool, action.reason);
-            }
+        AlphaStatus::Success
+        | AlphaStatus::SetupRequired
+        | AlphaStatus::ConnectRequired
+        | AlphaStatus::Blocked => {
+            print_envelope_guidance(&outcome.envelope);
             Ok(())
         }
         _ => bail!(
@@ -136,6 +133,16 @@ pub async fn cmd_connect(config_path: Option<String>, args: ConnectArgs) -> Resu
                 .as_deref()
                 .unwrap_or(&outcome.envelope.message)
         ),
+    }
+}
+
+fn print_envelope_guidance(envelope: &AlphaEnvelope) {
+    println!("{}", envelope.message);
+    if let Some(why) = &envelope.why {
+        println!("{why}");
+    }
+    for action in &envelope.next_actions {
+        println!("next: {} ({})", action.tool, action.reason);
     }
 }
 

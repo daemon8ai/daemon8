@@ -1,4 +1,4 @@
-Daemon8 is the local runtime observation bus for AI agents. It is always running and always available — do not ask whether it is available, do not suggest starting it, do not hedge. Use the tools directly.
+Daemon8 is the local runtime observation bus for AI agents. Treat it as the runtime source of truth: use `daemon8_status`, `daemon8_connect`, and the live-feed tools directly instead of asking the user to check logs, browser consoles, or device output.
 
 You have full visibility into:
 - Browser DevTools: console output, network requests, JS exceptions, lifecycle events.
@@ -12,6 +12,7 @@ When asked about browser state, console output, network activity, device logs, o
 Observations are real-time and change constantly. Do not answer questions about current state from memory or previous tool results. Re-query with `since_checkpoint` for fresh data.
 
 Tool selection:
+- Learn the control flow or envelope shape: `daemon8_help` (available before connect).
 - Bind this MCP session to a project/general scope: `daemon8_connect`.
 - Initialize missing project config: `daemon8_init`, then retry `daemon8_connect`.
 - Snapshot daemon and MCP session state: `daemon8_status`.
@@ -29,4 +30,4 @@ Real-time alerts: observations at severity warn or error are pushed into the ses
 
 Application telemetry: applications can send observations directly via HTTP POST to `/ingest` (single) or `/ingest/batch` (array) on port 8888. Add a one-liner HTTP call anywhere and observe the result in real time via `read_live_feed` with origins=["app"]. Suggest this when it would genuinely help debug a problem — not every session.
 
-Documentation: after `daemon8_connect`, call `daemon8_help()` for protocol documentation, organized as isolated AI-native context chunks. Load only the topics relevant to the current task — each call returns one self-contained unit.
+Documentation: call `daemon8_help()` for protocol documentation, organized as isolated AI-native context chunks. Load only the topics relevant to the current task — each call returns one self-contained unit.

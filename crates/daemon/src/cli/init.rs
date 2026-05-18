@@ -70,6 +70,7 @@ pub async fn cmd_init(config_path: Option<String>, args: InitArgs) -> Result<()>
             {
                 println!("name: {name}");
             }
+            print_next_actions(&outcome.envelope);
             Ok(())
         }
         AlphaStatus::Blocked => {
@@ -77,6 +78,7 @@ pub async fn cmd_init(config_path: Option<String>, args: InitArgs) -> Result<()>
             if let Some(why) = &outcome.envelope.why {
                 println!("{why}");
             }
+            print_next_actions(&outcome.envelope);
             Ok(())
         }
         _ => bail!(
@@ -88,6 +90,12 @@ pub async fn cmd_init(config_path: Option<String>, args: InitArgs) -> Result<()>
                 .as_deref()
                 .unwrap_or(&outcome.envelope.message)
         ),
+    }
+}
+
+fn print_next_actions(envelope: &AlphaEnvelope) {
+    for action in &envelope.next_actions {
+        println!("next: {} ({})", action.tool, action.reason);
     }
 }
 

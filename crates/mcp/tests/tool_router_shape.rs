@@ -387,7 +387,12 @@ fn result_json(result: &rmcp::model::CallToolResult) -> serde_json::Value {
 
 #[test]
 fn current_tool_policy_is_explicit() {
-    for tool in ["daemon8_connect", "daemon8_init", "daemon8_status"] {
+    for tool in [
+        "daemon8_connect",
+        "daemon8_init",
+        "daemon8_status",
+        "daemon8_help",
+    ] {
         assert_eq!(
             tool_policy(tool),
             Some(ToolPolicy::PreConnectAllowed),
@@ -405,7 +410,6 @@ fn current_tool_policy_is_explicit() {
         "set_lens",
         "clear_lens",
         "lens_status",
-        "daemon8_help",
         "list_debug_sessions",
     ] {
         assert_eq!(tool_policy(tool), Some(ToolPolicy::GeneralSafe), "{tool}");
@@ -449,6 +453,22 @@ async fn tool_policy_table_covers_the_public_tool_surface() {
         assert!(
             names.iter().any(|tool| tool == name),
             "policy table contains non-public tool {name}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn every_public_tool_has_a_file_backed_description() {
+    let mcp = make_mcp_with_debug().await;
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tool_descriptions");
+
+    for tool in mcp.tools_for_client() {
+        let path = dir.join(format!("{}.md", tool.name));
+        assert!(
+            path.exists(),
+            "public tool {} must have a source-reviewed description at {}",
+            tool.name,
+            path.display()
         );
     }
 }
@@ -992,19 +1012,30 @@ async fn runtime_tools_require_connect_first() {
     let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(parsed["status"], "connect_required");
     assert_eq!(parsed["code"], "connect_required");
+    assert!(parsed["data"]["session_id"].is_string());
+    assert!(parsed["data"]["connection"].is_null());
     assert_eq!(parsed["next_actions"][0]["tool"], "daemon8_connect");
+    assert_eq!(
+        parsed["next_actions"][0]["reason"],
+        "bind this MCP session to a project or general scope"
+    );
+    assert_eq!(
+        parsed["next_actions"][0]["params"]["project_path"],
+        "<path>"
+    );
 
-    for tool in ["daemon8_connect", "daemon8_init", "daemon8_status"] {
+    for tool in [
+        "daemon8_connect",
+        "daemon8_init",
+        "daemon8_status",
+        "daemon8_help",
+    ] {
         assert!(
             mcp.connect_preflight_for_tests(tool).is_none(),
             "{tool} should be a connect-first exception"
         );
     }
 
-    assert!(
-        mcp.connect_preflight_for_tests("daemon8_help").is_some(),
-        "daemon8_help should require daemon8_connect"
-    );
     assert!(
         debug_mcp
             .connect_preflight_for_tests("list_debug_sessions")
@@ -1127,6 +1158,39 @@ async fn pre_connect_status_exception_runs_through_real_mcp_call() -> anyhow::Re
 }
 
 #[tokio::test]
+async fn pre_connect_help_exception_runs_through_real_mcp_call() -> anyhow::Result<()> {
+    let mcp = make_mcp().await;
+    let (server_transport, client_transport) = tokio::io::duplex(8192);
+
+    let server = tokio::spawn(async move {
+        mcp.serve(server_transport).await?.waiting().await?;
+        anyhow::Ok(())
+    });
+
+    let client = TestClient.serve(client_transport).await?;
+    let result = client
+        .call_tool(tool_request(
+            "daemon8_help",
+            serde_json::json!({"topic": "envelope"}),
+        ))
+        .await?;
+    let parsed = result_json(&result);
+    assert_eq!(parsed["status"], "success");
+    assert_eq!(parsed["code"], "ok");
+    assert_eq!(parsed["data"]["topic"], "envelope");
+    assert!(
+        parsed["data"]["body"]
+            .as_str()
+            .unwrap()
+            .contains("connect_required")
+    );
+
+    client.cancel().await?;
+    server.await??;
+    Ok(())
+}
+
+#[tokio::test]
 async fn connected_session_passes_runtime_tool_preflight() {
     let mcp = make_mcp().await;
     let general = tempfile::tempdir().unwrap();
@@ -1162,6 +1226,14 @@ async fn general_mode_blocks_unfiltered_live_feed_reads() {
     let parsed: serde_json::Value = serde_json::from_str(&blocked).unwrap();
     assert_eq!(parsed["status"], "blocked");
     assert_eq!(parsed["code"], "narrow_filter_required");
+    assert_eq!(parsed["data"]["mode"], "general");
+    assert!(parsed["data"]["scope_root"].is_string());
+    assert_eq!(parsed["next_actions"][0]["tool"], "read_live_feed");
+    assert_eq!(
+        parsed["next_actions"][0]["reason"],
+        "retry with at least one narrowing filter"
+    );
+    assert_eq!(parsed["next_actions"][0]["params"]["severity_min"], "warn");
 
     let narrowed = mcp
         .read_live_feed_for_tests_with(ObserveParams {
@@ -1171,6 +1243,8 @@ async fn general_mode_blocks_unfiltered_live_feed_reads() {
         .await;
     let parsed: serde_json::Value = serde_json::from_str(&narrowed).unwrap();
     assert_eq!(parsed["status"], "success");
+    assert_eq!(parsed["data"]["mode"], "general");
+    assert!(parsed["data"]["connection"]["scope_root"].is_string());
 
     let narrowed = mcp
         .read_live_feed_for_tests_with(ObserveParams {
@@ -1244,6 +1318,59 @@ async fn mcp_live_feed_filters_by_provenance() {
     assert_eq!(parsed["status"], "success");
     assert_eq!(parsed["data"]["observations"].as_array().unwrap().len(), 1);
     assert_eq!(parsed["data"]["observations"][0]["service"], "cargo");
+}
+
+#[tokio::test]
+async fn live_feed_warning_since_checkpoint_has_specific_next_actions() {
+    let mcp = make_mcp_with_writer().await;
+    let general = tempfile::tempdir().unwrap();
+    let connected = mcp
+        .daemon8_connect_for_tests(Daemon8ConnectParams {
+            provider: "codex".into(),
+            project_path: general.path().display().to_string(),
+            agent_name: None,
+            transcript_path: None,
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&connected).unwrap();
+    assert_eq!(parsed["status"], "success");
+
+    mcp.write_to_live_feed_for_tests(IngestParams {
+        kind: Some("log".into()),
+        severity: Some("warn".into()),
+        app: Some("agent".into()),
+        channel: None,
+        correlation_id: None,
+        parent_id: None,
+        tags: None,
+        session_id: None,
+        node_id: None,
+        service: Some("agent".into()),
+        source: Some("agent.notes".into()),
+        source_instance: Some("mcp".into()),
+        data: serde_json::json!({"message": "warn after checkpoint"}),
+    })
+    .await;
+    tokio::task::yield_now().await;
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+    let feed = mcp
+        .read_live_feed_for_tests_with(ObserveParams {
+            since_checkpoint: Some(0),
+            service: Some(vec!["agent".into()]),
+            ..Default::default()
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&feed).unwrap();
+    assert_eq!(parsed["status"], "success");
+    assert_eq!(parsed["next_actions"][0]["tool"], "read_live_feed");
+    assert_eq!(parsed["next_actions"][0]["params"]["since_checkpoint"], 0);
+    assert_eq!(parsed["next_actions"][0]["params"]["severity_min"], "warn");
+    assert_eq!(parsed["next_actions"][1]["tool"], "resolve_debug_session");
+    assert_eq!(
+        parsed["next_actions"][1]["params"]["summary"],
+        "<durable conclusion after interpreting the runtime signal>"
+    );
 }
 
 #[tokio::test]
@@ -1500,6 +1627,14 @@ async fn debug_tools_obey_policy_through_real_mcp_calls() -> anyhow::Result<()> 
     let parsed = result_json(&blocked);
     assert_eq!(parsed["status"], "blocked");
     assert_eq!(parsed["code"], "project_required");
+    assert_eq!(
+        parsed["next_actions"][0]["reason"],
+        "bind this MCP session to a project scope"
+    );
+    assert_eq!(
+        parsed["next_actions"][0]["params"]["provider"],
+        "<provider>"
+    );
 
     client.cancel().await?;
     server.await??;
@@ -1563,6 +1698,8 @@ async fn debug_lifecycle_codes_are_stable_through_real_mcp_calls() -> anyhow::Re
     let parsed = result_json(&started);
     assert_eq!(parsed["status"], "success");
     assert_eq!(parsed["code"], "debug_session_started");
+    assert_eq!(parsed["data"]["mode"], "project");
+    assert!(parsed["data"]["scope_root"].is_string());
     let first_session_id = parsed["data"]["debug_session_id"]
         .as_str()
         .expect("start response must include debug_session_id")
@@ -1580,6 +1717,8 @@ async fn debug_lifecycle_codes_are_stable_through_real_mcp_calls() -> anyhow::Re
     assert_eq!(parsed["status"], "success");
     assert_eq!(parsed["code"], "checkpoint_created");
     assert_eq!(parsed["data"]["debug_session_id"], first_session_id);
+    assert_eq!(parsed["next_actions"][0]["tool"], "read_live_feed");
+    assert!(parsed["next_actions"][0]["params"]["since_checkpoint"].is_u64());
 
     let resolved = client
         .call_tool(tool_request(
@@ -1600,6 +1739,8 @@ async fn debug_lifecycle_codes_are_stable_through_real_mcp_calls() -> anyhow::Re
     assert_eq!(parsed["data"]["debug_session_id"], first_session_id);
     assert_eq!(parsed["data"]["checkpoint_count"], 1);
     assert_eq!(parsed["data"]["evidence_ref"]["kind"], "session_summary");
+    assert_eq!(parsed["next_actions"][0]["tool"], "start_debug_session");
+    assert_eq!(parsed["next_actions"][1]["tool"], "list_debug_sessions");
 
     let completed = client
         .call_tool(tool_request(
@@ -1645,6 +1786,10 @@ async fn debug_lifecycle_codes_are_stable_through_real_mcp_calls() -> anyhow::Re
     assert_eq!(parsed["status"], "error");
     assert_eq!(parsed["code"], "bad_outcome");
     assert_eq!(parsed["next_actions"][0]["tool"], "resolve_debug_session");
+    assert_eq!(
+        parsed["next_actions"][0]["params"]["summary"],
+        "<what changed and why it fixed the issue>"
+    );
 
     let ended = client
         .call_tool(tool_request(
