@@ -1731,6 +1731,10 @@ fn live_chrome_pid_for_user_data_dir(user_data_dir: &std::path::Path) -> Option<
 // signaling or requiring any TCC grant.
 #[cfg(target_os = "macos")]
 fn pid_alive(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+
     use std::mem::MaybeUninit;
     const PROC_PIDTBSDINFO: libc::c_int = 3;
     let mut info = MaybeUninit::<libc::proc_bsdinfo>::uninit();
@@ -1749,11 +1753,19 @@ fn pid_alive(pid: u32) -> bool {
 
 #[cfg(all(unix, not(target_os = "macos")))]
 fn pid_alive(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+
     unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
 }
 
 #[cfg(windows)]
 fn pid_alive(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+
     use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
     use windows_sys::Win32::System::Threading::{
         GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
@@ -2105,8 +2117,8 @@ mod pid_alive_tests {
 
     #[test]
     fn impossible_pid_is_dead() {
-        // PID 0 is the kernel scheduler on macOS/Linux; userland procinfo
-        // lookups return zero bytes and the libc liveness probe reports dead.
+        // PID 0 is not a real Chrome process. On Unix, `kill(0, 0)` probes the
+        // current process group instead, so reject it before platform probing.
         assert!(!pid_alive(0));
     }
 
