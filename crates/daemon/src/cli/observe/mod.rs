@@ -48,7 +48,7 @@ pub fn encoded_project_path(project_path: &Path) -> Result<String> {
 pub fn handle_reqwest_error(e: reqwest::Error, port: u16) -> anyhow::Error {
     if e.is_connect() {
         anyhow::anyhow!(
-            "Cannot connect to daemon at localhost:{port}. Is it running? Start with: daemon8 serve"
+            "Cannot connect to daemon at localhost:{port}. Is it running? Start with: daemon8 service install"
         )
     } else {
         anyhow::anyhow!("HTTP request failed: {e}")

@@ -132,7 +132,7 @@ pub async fn cmd_tail(args: TailArgs) -> Result<()> {
             Err(reqwest_eventsource::Error::Transport(e)) => {
                 if e.is_connect() {
                     eprintln!(
-                        "Cannot connect to daemon at localhost:{}. Is it running? Start with: daemon8 serve",
+                        "Cannot connect to daemon at localhost:{}. Is it running? Start with: daemon8 service install",
                         args.client.resolved_port()
                     );
                     return Ok(());

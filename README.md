@@ -22,7 +22,7 @@ Windows PowerShell:
 iwr https://daemon8.ai/install.ps1 -UseB | iex
 ```
 
-The installer downloads the latest release, verifies `checksums.sha256`, installs the `daemon8` binary, updates PATH when needed, and registers daemon8 as the machine-level service.
+The installer downloads the latest release, verifies `checksums.sha256`, installs the `daemon8` binary, updates PATH when needed, and registers daemon8 as the user-level service.
 
 After install, daemon8 is running as the global MCP server on your machine. Start a fresh AI CLI/REPL session and check that `daemon8` appears in the provider's MCP server list.
 

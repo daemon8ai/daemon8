@@ -74,7 +74,9 @@ pub async fn cmd_channel() -> Result<()> {
     }
 
     if !connected {
-        anyhow::bail!("daemon8 is not running — start the daemon with 'daemon8 serve' first");
+        anyhow::bail!(
+            "daemon8 is not running — install/start the service with 'daemon8 service install' first"
+        );
     }
 
     // Start MCP stdio server
