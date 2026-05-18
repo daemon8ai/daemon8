@@ -748,6 +748,7 @@ async fn daemon8_init_then_connect_sets_session_connection() {
             project_path: tmp.path().display().to_string(),
             name: Some("mcp-project".into()),
             overwrite: None,
+            ignore: None,
         })
         .await;
     let parsed: serde_json::Value = serde_json::from_str(&init).unwrap();
@@ -1441,6 +1442,7 @@ async fn live_feed_warning_since_checkpoint_in_active_project_debug_session_can_
             project_path: project.path().display().to_string(),
             name: Some("mcp-project".into()),
             overwrite: None,
+            ignore: None,
         })
         .await;
     let parsed: serde_json::Value = serde_json::from_str(&init).unwrap();
@@ -1965,6 +1967,7 @@ async fn already_active_debug_session_prefers_resolution_before_abandoning() {
             project_path: project.path().display().to_string(),
             name: None,
             overwrite: None,
+            ignore: None,
         })
         .await;
     let parsed: serde_json::Value = serde_json::from_str(&init).unwrap();
@@ -2018,6 +2021,7 @@ async fn project_mode_allows_project_only_debug_tools() {
             project_path: project.path().display().to_string(),
             name: None,
             overwrite: None,
+            ignore: None,
         })
         .await;
     let parsed: serde_json::Value = serde_json::from_str(&init).unwrap();
@@ -2265,4 +2269,96 @@ fn tool_descriptions_do_not_describe_removed_envelope() {
             }
         }
     }
+}
+
+#[tokio::test]
+async fn daemon8_init_ignore_true_returns_project_ignored() {
+    let mcp = make_mcp().await;
+    let tmp = tempfile::tempdir().unwrap();
+    mark_project(tmp.path());
+
+    let init = mcp
+        .daemon8_init_for_tests(Daemon8InitParams {
+            project_path: tmp.path().display().to_string(),
+            name: None,
+            overwrite: None,
+            ignore: Some(true),
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&init).unwrap();
+    assert_eq!(parsed["status"], "success");
+    assert_eq!(parsed["code"], "project_ignored");
+    assert!(parsed["data"]["scope_root"].is_string());
+    assert!(!tmp.path().join(".daemon8").join("config.md").exists());
+}
+
+#[tokio::test]
+async fn daemon8_connect_ignored_project_returns_blocked() {
+    let mcp = make_mcp().await;
+    let tmp = tempfile::tempdir().unwrap();
+    mark_project(tmp.path());
+
+    let init = mcp
+        .daemon8_init_for_tests(Daemon8InitParams {
+            project_path: tmp.path().display().to_string(),
+            name: None,
+            overwrite: None,
+            ignore: Some(true),
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&init).unwrap();
+    assert_eq!(parsed["code"], "project_ignored");
+
+    let connect = mcp
+        .daemon8_connect_for_tests(Daemon8ConnectParams {
+            provider: "codex".into(),
+            project_path: tmp.path().display().to_string(),
+            agent_name: None,
+            transcript_path: None,
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&connect).unwrap();
+    assert_eq!(parsed["status"], "blocked");
+    assert_eq!(parsed["code"], "project_ignored");
+    assert!(parsed["data"]["connection"].is_null());
+}
+
+#[tokio::test]
+async fn daemon8_init_ignore_false_then_connect_returns_setup_required() {
+    let mcp = make_mcp().await;
+    let tmp = tempfile::tempdir().unwrap();
+    mark_project(tmp.path());
+
+    mcp.daemon8_init_for_tests(Daemon8InitParams {
+        project_path: tmp.path().display().to_string(),
+        name: None,
+        overwrite: None,
+        ignore: Some(true),
+    })
+    .await;
+
+    let unignore = mcp
+        .daemon8_init_for_tests(Daemon8InitParams {
+            project_path: tmp.path().display().to_string(),
+            name: None,
+            overwrite: None,
+            ignore: Some(false),
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&unignore).unwrap();
+    assert_eq!(parsed["status"], "success");
+    assert_eq!(parsed["code"], "project_unignored");
+    assert_eq!(parsed["next_actions"][0]["tool"], "daemon8_connect");
+
+    let connect = mcp
+        .daemon8_connect_for_tests(Daemon8ConnectParams {
+            provider: "codex".into(),
+            project_path: tmp.path().display().to_string(),
+            agent_name: None,
+            transcript_path: None,
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&connect).unwrap();
+    assert_eq!(parsed["status"], "setup_required");
+    assert_eq!(parsed["code"], "missing_config");
 }

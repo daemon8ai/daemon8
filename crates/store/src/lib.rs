@@ -255,6 +255,14 @@ pub struct ScopeConnectFailureRecord {
     pub last_seen_at: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScopeIgnoreRecord {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub scope_root: String,
+    pub ignored_at: u64,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ScopeLedgerSummary {
     pub recent_scopes: Vec<RecentScopeRecord>,
@@ -270,4 +278,7 @@ pub trait ScopeLedgerStore: Send + Sync {
         record: ScopeConnectFailureRecord,
     ) -> Result<(), StoreError>;
     async fn scope_ledger_summary(&self, limit: usize) -> Result<ScopeLedgerSummary, StoreError>;
+    async fn is_scope_ignored(&self, scope_root: &str) -> Result<bool, StoreError>;
+    async fn set_scope_ignored(&self, scope_root: &str) -> Result<(), StoreError>;
+    async fn remove_scope_ignored(&self, scope_root: &str) -> Result<(), StoreError>;
 }

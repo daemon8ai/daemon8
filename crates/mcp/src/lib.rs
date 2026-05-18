@@ -174,6 +174,11 @@ pub struct Daemon8InitParams {
 
     #[schemars(description = "Replace an existing .daemon8/config.md when true.")]
     pub overwrite: Option<bool>,
+
+    #[schemars(
+        description = "When true, mark this project as ignored instead of initializing it. daemon8_connect will skip setup_required for ignored projects. Call again with ignore=false to re-enable."
+    )]
+    pub ignore: Option<bool>,
 }
 
 pub use daemon8_types::DebugAction;
@@ -874,6 +879,40 @@ impl DaemonMcp {
         let outcome =
             resolve_connect_transcript(outcome, transcript_path_buf.as_deref(), &self.home_dir);
 
+        if outcome.envelope.status == AlphaStatus::SetupRequired
+            && let Some(ledger) = &self.scope_ledger_store
+        {
+            let scope_root = outcome
+                .envelope
+                .data
+                .as_ref()
+                .and_then(|d| d["scope_root"].as_str())
+                .map(str::to_owned)
+                .unwrap_or_else(|| project_path.clone());
+            if let Ok(true) = ledger.is_scope_ignored(&scope_root).await {
+                let mut envelope = AlphaEnvelope::non_success(
+                    AlphaStatus::Blocked,
+                    "project_ignored",
+                    "this project is explicitly ignored -- daemon8 will not prompt for setup",
+                    "do not call daemon8 tools for this project; no connection was established",
+                );
+                envelope.data = outcome.envelope.data;
+                envelope = envelope.with_hint(
+                    "to re-enable daemon8 for this project, call daemon8_init with project_path and ignore=false",
+                );
+                *self.connection.lock().expect("connection mutex poisoned") = None;
+                envelope.data = Some(
+                    self.with_session_context(
+                        envelope
+                            .data
+                            .take()
+                            .unwrap_or_else(|| serde_json::json!({})),
+                    ),
+                );
+                return envelope.render();
+            }
+        }
+
         *self.connection.lock().expect("connection mutex poisoned") = outcome.connection.clone();
         self.record_connect_outcome(
             &provider,
@@ -910,6 +949,55 @@ impl DaemonMcp {
     #[doc = include_str!("../tool_descriptions/daemon8_init.md")]
     #[tool(name = "daemon8_init")]
     async fn daemon8_init(&self, Parameters(params): Parameters<Daemon8InitParams>) -> String {
+        let scope_root_str = std::path::Path::new(&params.project_path)
+            .canonicalize()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| params.project_path.clone());
+
+        if let Some(ledger) = &self.scope_ledger_store {
+            match params.ignore {
+                Some(true) => {
+                    if let Err(e) = ledger.set_scope_ignored(&scope_root_str).await {
+                        return error_json(
+                            "ignore_failed",
+                            &format!("failed to persist ignore: {e}"),
+                        );
+                    }
+                    return AlphaEnvelope::success(
+                        "project_ignored",
+                        format!(
+                            "{scope_root_str} is now ignored. daemon8_connect will skip setup for this project.",
+                        ),
+                        serde_json::json!({"scope_root": scope_root_str}),
+                    )
+                    .with_hint(
+                        "call daemon8_init with ignore=false to re-enable daemon8 for this project",
+                    )
+                    .render();
+                }
+                Some(false) => {
+                    if let Err(e) = ledger.remove_scope_ignored(&scope_root_str).await {
+                        return error_json(
+                            "unignore_failed",
+                            &format!("failed to remove ignore: {e}"),
+                        );
+                    }
+                    return AlphaEnvelope::success(
+                        "project_unignored",
+                        format!("{scope_root_str} is no longer ignored"),
+                        serde_json::json!({"scope_root": scope_root_str}),
+                    )
+                    .with_next_action(NextAction::new(
+                        "daemon8_connect",
+                        "reconnect to pick up the project",
+                        serde_json::json!({"project_path": scope_root_str}),
+                    ))
+                    .render();
+                }
+                None => {}
+            }
+        }
+
         let outcome = init_project(InitRequest {
             project_path: PathBuf::from(params.project_path),
             name: params.name,

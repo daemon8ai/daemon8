@@ -4,9 +4,34 @@
 
 # daemon8
 
-daemon8 gives AI coding agents runtime awareness while the work is happening: browser console/network/DOM, app telemetry, device logs, and provider transcripts stream into one local observation bus. Lenses, checkpoints, and debug sessions let the agent pull the exact slice it needs instead of guessing from stale context.
+daemon8 gives AI coding agents runtime awareness _while the work is happening_.
 
-It also gives the agent a foundation for better project awareness over time: which log sources matter here, which docs are worth checking, and how to review the active conversation transcript across Codex, Claude Code, and Gemini CLI.
+Static context is not enough. daemon8 keeps the agent connected to what is actually happening.
+
+1. Runtime signals stream into one queryable feed.
+2. Lenses, checkpoints, and debug sessions create boundaries and controlled context while debugging.
+3. An _awareness profile_ - managed without manual intervention - keeps the project's docs, sources, and metadata close at hand.
+4. Provider-agnostic conversation sync helps agents pick up where you left off - _**across** the vendor divide_.
+
+**Awareness profile:** A small project-local profile that points daemon8 at the debugging/logging context the agent needs:
+
+```plaintext
+your-project/
+`-- .daemon8/
+    |-- config.md
+    |-- conversations/
+    |-- knowledge/
+    |   |-- DOCS.md
+    |   |-- fixes/
+    |   |-- patterns/
+    |   |-- sessions/
+    |   `-- services/
+    `-- sources/
+```
+
+Daemon8 uses [SurrealDB](https://surrealdb.com/) for the high-demand persistence: live-feed history, cursor state, debug sessions, checkpoints, and the query layer behind the lenses. Your project's awareness profile stays small (by design); SurrealDB carries the context for agents to search, slice, and traverse as needed. It's the real workhorse behind daemon8's existing features - both now, and for the ambitious roadmap ahead.
+
+---
 
 ## Install
 
@@ -37,13 +62,33 @@ Important note: daemon8 is built to be a self-guided and evolving MCP experience
 As daemon8's MCP tools are called, your agent receives guidance to steer debugging sessions. If needed, your agent can call `daemon8_help` for additional insight on specific daemon8 topics.
 
 ```markdown
-## Daemon8 MCP - Cross-provider awareness & debugging
+## Daemon8 -- Runtime Observation Layer (ALWAYS ON)
 
-Use daemon8 for ALL non-trivial debugging, Chromium control, ADB logging, Vega OS VVD logs, and project awareness tracking. For Claude Code, use daemon8's browser/Chromium tools instead of Claude for Chrome. Call `daemon8_connect` at the start of every REPL session for AI-provider conversation sync. If the project's awareness profile has not been set up yet, daemon8's tool calls will guide the LLM through setup.
+Daemon8 is the runtime source of truth. Use it for ALL debugging, browser control, ADB/device logs, and application telemetry. Never guess console output, network activity, or runtime state -- query daemon8.
 
-All non-trivial debug sessions should call the `start_debug_session` tool. This provides a starting point and allows debug checkpoints throughout, giving high-signal lenses into the errors/logs flowing into daemon8. Call `resolve_debug_session` when the bug has been fixed.
+Call `daemon8_connect` once at session start. All tools and decisions depend on it.
 
-Daemon8 provides a `daemon8_help` tool to guide keeping the project's awareness profile clean and up to date over time.
+**Debug loop:**
+`start_debug_session`
+  -> [review DOCS.md/review knowledge]
+  -> start loop
+    -> `create_checkpoint`
+    -> [make changes]
+    -> [run/test]
+    -> `read_live_feed` (with `since_checkpoint`)
+    -> [review results / update knowledge]
+    -> fixed? end loop
+  -> `resolve_debug_session`
+  -> [sync knowledge/sync DOCS.md]
+
+**Primary tools:**
+- `read_live_feed` -- console, network, errors, app telemetry (use `since_checkpoint` for incremental reads)
+- `list_connections` -- see active input sources (browsers, devices, apps)
+- `issue_command` -- browser control (eval_js, screenshot, navigate, viewport, storage, network throttle)
+- `write_to_live_feed` -- emit notes, metrics, or agent-to-agent messages
+- `set_lens` / `clear_lens` -- persistent filters that surface matching observations automatically
+- `daemon8_connect` -- bind the session to a project scope and provider transcript (call once at start)
+- `daemon8_help` -- guidance on any daemon8 topic
 ```
 
 That note is the whole trick. It turns daemon8 from "a tool the model may discover" into a standing operating rule: connect first, debug with checkpoints, resolve the session when the fix is real.

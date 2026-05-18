@@ -7,8 +7,8 @@ use surrealdb::Surreal;
 use surrealdb::engine::local::Db;
 
 use crate::{
-    RecentScopeRecord, ScopeConnectFailureRecord, ScopeLedgerStore, ScopeLedgerSummary,
-    ScopeSessionRecord, StoreError,
+    RecentScopeRecord, ScopeConnectFailureRecord, ScopeIgnoreRecord, ScopeLedgerStore,
+    ScopeLedgerSummary, ScopeSessionRecord, StoreError,
 };
 
 const NAMESPACE: &str = "daemon8";
@@ -79,7 +79,12 @@ impl SurrealScopeLedgerStore {
                  DEFINE FIELD IF NOT EXISTS first_seen_at   ON scope_connect_failure TYPE int;
                  DEFINE FIELD IF NOT EXISTS last_seen_at    ON scope_connect_failure TYPE int;
                  DEFINE INDEX IF NOT EXISTS idx_scope_failure_identity ON scope_connect_failure FIELDS provider, requested_path, code UNIQUE;
-                 DEFINE INDEX IF NOT EXISTS idx_scope_failure_seen ON scope_connect_failure FIELDS last_seen_at;",
+                 DEFINE INDEX IF NOT EXISTS idx_scope_failure_seen ON scope_connect_failure FIELDS last_seen_at;
+
+                 DEFINE TABLE IF NOT EXISTS scope_ignore SCHEMAFULL;
+                 DEFINE FIELD IF NOT EXISTS scope_root  ON scope_ignore TYPE string;
+                 DEFINE FIELD IF NOT EXISTS ignored_at  ON scope_ignore TYPE int;
+                 DEFINE INDEX IF NOT EXISTS idx_scope_ignore_root ON scope_ignore FIELDS scope_root UNIQUE;",
             )
             .await
             .map_err(|e| StoreError::Db(format!("scope ledger schema init: {e}")))?
@@ -202,6 +207,40 @@ impl ScopeLedgerStore for SurrealScopeLedgerStore {
         self.upsert_content("scope_connect_failure", &key, &record)
             .await?;
         self.prune_failures().await
+    }
+
+    async fn is_scope_ignored(&self, scope_root: &str) -> Result<bool, StoreError> {
+        let key = ledger_key(&["scope_ignore", scope_root]);
+        Ok(self
+            .select_one::<ScopeIgnoreRecord>("scope_ignore", &key)
+            .await?
+            .is_some())
+    }
+
+    async fn set_scope_ignored(&self, scope_root: &str) -> Result<(), StoreError> {
+        let key = ledger_key(&["scope_ignore", scope_root]);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+        let record = ScopeIgnoreRecord {
+            id: None,
+            scope_root: scope_root.to_string(),
+            ignored_at: now,
+        };
+        self.upsert_content("scope_ignore", &key, &record).await
+    }
+
+    async fn remove_scope_ignored(&self, scope_root: &str) -> Result<(), StoreError> {
+        let key = ledger_key(&["scope_ignore", scope_root]);
+        self.db
+            .query("DELETE type::record('scope_ignore', $id)")
+            .bind(("id", serde_json::json!(key)))
+            .await
+            .map_err(|e| StoreError::Db(format!("delete scope_ignore: {e}")))?
+            .check()
+            .map_err(|e| StoreError::Db(format!("delete scope_ignore check: {e}")))?;
+        Ok(())
     }
 
     async fn scope_ledger_summary(&self, limit: usize) -> Result<ScopeLedgerSummary, StoreError> {
@@ -495,12 +534,48 @@ mod tests {
             .record_connect_success(success_record(100))
             .await
             .unwrap();
+        ledger.set_scope_ignored("/tmp/ignored").await.unwrap();
 
         let report = store.reset().await.unwrap();
         let summary = ledger.scope_ledger_summary(5).await.unwrap();
 
-        assert_eq!(report.scope_ledger_records_dropped, 2);
+        assert_eq!(report.scope_ledger_records_dropped, 3);
         assert!(summary.recent_scopes.is_empty());
         assert!(summary.recent_failures.is_empty());
+        assert!(!ledger.is_scope_ignored("/tmp/ignored").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn scope_ignore_roundtrip() {
+        let store = SurrealStore::memory().await.unwrap();
+        let ledger = store.scope_ledger_store();
+
+        assert!(!ledger.is_scope_ignored("/tmp/project").await.unwrap());
+
+        ledger.set_scope_ignored("/tmp/project").await.unwrap();
+        assert!(ledger.is_scope_ignored("/tmp/project").await.unwrap());
+        assert!(!ledger.is_scope_ignored("/tmp/other").await.unwrap());
+
+        ledger.remove_scope_ignored("/tmp/project").await.unwrap();
+        assert!(!ledger.is_scope_ignored("/tmp/project").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn set_scope_ignored_is_idempotent() {
+        let store = SurrealStore::memory().await.unwrap();
+        let ledger = store.scope_ledger_store();
+
+        ledger.set_scope_ignored("/tmp/project").await.unwrap();
+        ledger.set_scope_ignored("/tmp/project").await.unwrap();
+        assert!(ledger.is_scope_ignored("/tmp/project").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn remove_nonexistent_ignore_is_noop() {
+        let store = SurrealStore::memory().await.unwrap();
+        let ledger = store.scope_ledger_store();
+
+        ledger.remove_scope_ignored("/tmp/nowhere").await.unwrap();
+        assert!(!ledger.is_scope_ignored("/tmp/nowhere").await.unwrap());
     }
 }

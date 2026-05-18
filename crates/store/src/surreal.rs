@@ -282,6 +282,7 @@ impl SurrealStore {
                  REMOVE TABLE IF EXISTS scope_session;
                  REMOVE TABLE IF EXISTS recent_scope;
                  REMOVE TABLE IF EXISTS scope_connect_failure;
+                 REMOVE TABLE IF EXISTS scope_ignore;
                  REMOVE TABLE IF EXISTS cursor_state;
                  REMOVE TABLE IF EXISTS daemon_meta;",
             )
@@ -304,7 +305,8 @@ impl SurrealStore {
         let session = self.count_table("scope_session").await?;
         let recent = self.count_table("recent_scope").await?;
         let failures = self.count_table("scope_connect_failure").await?;
-        Ok(session + recent + failures)
+        let ignores = self.count_table("scope_ignore").await?;
+        Ok(session + recent + failures + ignores)
     }
 
     async fn has_daemon_state_records(&self) -> Result<bool, StoreError> {
@@ -317,6 +319,7 @@ impl SurrealStore {
             "scope_session",
             "recent_scope",
             "scope_connect_failure",
+            "scope_ignore",
             "cursor_state",
         ] {
             if self.count_table(table).await? > 0 {
