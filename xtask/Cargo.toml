@@ -6,4 +6,5 @@ publish = false
 license-file.workspace = true
 
 [dependencies]
+daemon8-providers.workspace = true
 directories.workspace = true

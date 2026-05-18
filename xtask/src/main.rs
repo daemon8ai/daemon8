@@ -9,12 +9,24 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use daemon8_providers::{Provider, ServiceIdentity};
+
+const SERVICE: ServiceIdentity = ServiceIdentity {
+    name: "daemon8",
+    channel_name: Some("daemon8-channel"),
+    display_name: "Daemon8",
+    hook_marker: "daemon8",
+    status_message: Some("daemon8 telemetry"),
+};
+
+const MCP_PROVIDERS: &[Provider] = &[Provider::ClaudeCode, Provider::Gemini, Provider::Codex];
+
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
     let task = args.first().map(|s| s.as_str()).unwrap_or("");
 
     match task {
-        "backup-install" => backup_install(&args[1..]),
+        "uninstall" => uninstall(&args[1..]),
         "deploy-local" => deploy_local(),
         "" | "--help" | "-h" | "help" => print_help(ExitCode::SUCCESS),
         _ => print_help(ExitCode::FAILURE),
@@ -25,23 +37,23 @@ fn print_help(code: ExitCode) -> ExitCode {
     eprintln!("Usage: cargo xtask <task>");
     eprintln!();
     eprintln!("Tasks:");
-    eprintln!("  backup-install  Move local daemon8 install/state into ./backups/installs");
-    eprintln!("                  Options: --dry-run, --yes");
+    eprintln!("  uninstall     Remove local daemon8 install/state and provider MCP settings");
+    eprintln!("                Options: --dry-run, --yes, --backup, --no-backup");
     eprintln!("  deploy-local    Build release binary and install to ~/.cargo/bin");
     code
 }
 
-fn backup_install(args: &[String]) -> ExitCode {
-    let args = match BackupInstallArgs::parse(args) {
-        BackupInstallParse::Run(args) => args,
-        BackupInstallParse::Help => {
-            print_backup_install_help(ExitCode::SUCCESS);
+fn uninstall(args: &[String]) -> ExitCode {
+    let args = match UninstallArgs::parse(args) {
+        UninstallParse::Run(args) => args,
+        UninstallParse::Help => {
+            print_uninstall_help(ExitCode::SUCCESS);
             return ExitCode::SUCCESS;
         }
-        BackupInstallParse::Error(err) => {
+        UninstallParse::Error(err) => {
             eprintln!("{err}");
             eprintln!();
-            print_backup_install_help(ExitCode::FAILURE);
+            print_uninstall_help(ExitCode::FAILURE);
             return ExitCode::FAILURE;
         }
     };
@@ -50,19 +62,19 @@ fn backup_install(args: &[String]) -> ExitCode {
         .join("backups")
         .join("installs")
         .join(format!("install-{}", unix_timestamp()));
-    let plan = InstallBackupPlan::discover(&workspace_dir, backup_dir);
+    let plan = UninstallPlan::discover(&workspace_dir, backup_dir);
 
     if args.dry_run {
-        print_backup_plan(&plan, true);
+        print_uninstall_plan(&plan, true, args.backup_choice);
         return ExitCode::SUCCESS;
     }
 
     if !args.yes {
-        print_backup_plan(&plan, false);
-        match confirm_backup_install() {
+        print_uninstall_plan(&plan, false, args.backup_choice);
+        match confirm_uninstall() {
             Ok(true) => {}
             Ok(false) => {
-                eprintln!("Aborted. No files were moved.");
+                eprintln!("Aborted. No files were removed.");
                 return ExitCode::FAILURE;
             }
             Err(err) => {
@@ -72,66 +84,171 @@ fn backup_install(args: &[String]) -> ExitCode {
         }
     }
 
-    if let Err(err) = plan.execute() {
-        eprintln!("backup-install failed: {err}");
+    let backup = match args.backup_choice {
+        BackupChoice::Backup => true,
+        BackupChoice::NoBackup => false,
+        BackupChoice::Prompt if args.yes => true,
+        BackupChoice::Prompt => match confirm_backup() {
+            Ok(value) => value,
+            Err(err) => {
+                eprintln!("Failed to read backup choice: {err}");
+                return ExitCode::FAILURE;
+            }
+        },
+    };
+
+    if let Err(err) = plan.execute(backup) {
+        eprintln!("uninstall failed: {err}");
         return ExitCode::FAILURE;
     }
 
-    eprintln!("Backed up daemon8 install to {}", plan.backup_dir.display());
+    if backup {
+        eprintln!(
+            "Uninstalled daemon8 and backed up files to {}",
+            plan.backup_dir.display()
+        );
+    } else {
+        eprintln!("Uninstalled daemon8 without backup.");
+    }
     ExitCode::SUCCESS
 }
 
-struct BackupInstallArgs {
+struct UninstallArgs {
     dry_run: bool,
     yes: bool,
+    backup_choice: BackupChoice,
 }
 
-enum BackupInstallParse {
-    Run(BackupInstallArgs),
+enum UninstallParse {
+    Run(UninstallArgs),
     Help,
     Error(String),
 }
 
-impl BackupInstallArgs {
-    fn parse(args: &[String]) -> BackupInstallParse {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BackupChoice {
+    Prompt,
+    Backup,
+    NoBackup,
+}
+
+impl UninstallArgs {
+    fn parse(args: &[String]) -> UninstallParse {
         let mut dry_run = false;
         let mut yes = false;
+        let mut backup_choice = None;
 
         for arg in args {
             match arg.as_str() {
                 "--dry-run" => dry_run = true,
                 "--yes" | "-y" => yes = true,
-                "--help" | "-h" => return BackupInstallParse::Help,
+                "--backup" => {
+                    if backup_choice.is_some() {
+                        return UninstallParse::Error(
+                            "--backup and --no-backup cannot be combined".into(),
+                        );
+                    }
+                    backup_choice = Some(BackupChoice::Backup);
+                }
+                "--no-backup" => {
+                    if backup_choice.is_some() {
+                        return UninstallParse::Error(
+                            "--backup and --no-backup cannot be combined".into(),
+                        );
+                    }
+                    backup_choice = Some(BackupChoice::NoBackup);
+                }
+                "--help" | "-h" => return UninstallParse::Help,
                 _ => {
-                    return BackupInstallParse::Error(format!(
-                        "unknown backup-install argument: {arg}"
-                    ));
+                    return UninstallParse::Error(format!("unknown uninstall argument: {arg}"));
                 }
             }
         }
 
-        BackupInstallParse::Run(Self { dry_run, yes })
+        UninstallParse::Run(Self {
+            dry_run,
+            yes,
+            backup_choice: backup_choice.unwrap_or(BackupChoice::Prompt),
+        })
     }
 }
 
-fn print_backup_install_help(code: ExitCode) -> ExitCode {
-    eprintln!("Usage: cargo xtask backup-install [--dry-run] [--yes]");
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn uninstall_args_default_to_prompted_backup() {
+        let UninstallParse::Run(args) = UninstallArgs::parse(&[]) else {
+            panic!("expected uninstall args to parse");
+        };
+
+        assert!(!args.dry_run);
+        assert!(!args.yes);
+        assert_eq!(args.backup_choice, BackupChoice::Prompt);
+    }
+
+    #[test]
+    fn uninstall_args_accept_explicit_backup_modes() {
+        let UninstallParse::Run(args) = UninstallArgs::parse(&strings(&["--backup"])) else {
+            panic!("expected --backup to parse");
+        };
+        assert_eq!(args.backup_choice, BackupChoice::Backup);
+
+        let UninstallParse::Run(args) = UninstallArgs::parse(&strings(&["--no-backup"])) else {
+            panic!("expected --no-backup to parse");
+        };
+        assert_eq!(args.backup_choice, BackupChoice::NoBackup);
+    }
+
+    #[test]
+    fn uninstall_args_reject_conflicting_backup_modes() {
+        let UninstallParse::Error(err) =
+            UninstallArgs::parse(&strings(&["--backup", "--no-backup"]))
+        else {
+            panic!("expected conflicting backup flags to fail");
+        };
+
+        assert!(err.contains("cannot be combined"));
+    }
+
+    #[test]
+    fn uninstall_args_accept_dry_run_and_yes() {
+        let UninstallParse::Run(args) = UninstallArgs::parse(&strings(&["--dry-run", "--yes"]))
+        else {
+            panic!("expected --dry-run --yes to parse");
+        };
+
+        assert!(args.dry_run);
+        assert!(args.yes);
+    }
+
+    fn strings(args: &[&str]) -> Vec<String> {
+        args.iter().map(ToString::to_string).collect()
+    }
+}
+
+fn print_uninstall_help(code: ExitCode) -> ExitCode {
+    eprintln!("Usage: cargo xtask uninstall [--dry-run] [--yes] [--backup|--no-backup]");
     eprintln!();
     eprintln!("Options:");
-    eprintln!("  --dry-run  Print the backup/removal plan without mutating anything");
-    eprintln!("  --yes, -y  Skip the interactive confirmation prompt");
+    eprintln!("  --dry-run   Print the uninstall plan without mutating anything");
+    eprintln!("  --yes, -y   Skip the destructive confirmation prompt");
+    eprintln!("  --backup    Back up install/state and provider configs before removal");
+    eprintln!("  --no-backup Remove without creating ./backups/installs output");
     code
 }
 
-struct InstallBackupPlan {
+struct UninstallPlan {
     backup_dir: PathBuf,
     moves: Vec<MoveTarget>,
+    provider_configs: Vec<ProviderConfigTarget>,
     snapshots: Vec<ServiceSnapshot>,
     unloads: Vec<ServiceUnload>,
     reloads: Vec<ServiceReload>,
 }
 
-impl InstallBackupPlan {
+impl UninstallPlan {
     fn discover(workspace_dir: &Path, backup_dir: PathBuf) -> Self {
         let mut targets = Vec::new();
 
@@ -142,36 +259,58 @@ impl InstallBackupPlan {
         let snapshots = service_snapshots();
         let unloads = service_unloads();
         let reloads = service_reloads();
+        let provider_configs = provider_config_targets();
 
         Self {
             backup_dir,
             moves: dedupe_targets(workspace_dir, targets),
+            provider_configs,
             snapshots,
             unloads,
             reloads,
         }
     }
 
-    fn execute(&self) -> io::Result<()> {
-        fs::create_dir_all(&self.backup_dir)?;
-        self.write_manifest()?;
+    fn execute(&self, backup: bool) -> Result<(), String> {
+        if backup {
+            fs::create_dir_all(&self.backup_dir).map_err(|err| err.to_string())?;
+            self.write_manifest().map_err(|err| err.to_string())?;
 
-        for snapshot in &self.snapshots {
-            snapshot.capture(&self.backup_dir)?;
+            for snapshot in &self.snapshots {
+                snapshot
+                    .capture(&self.backup_dir)
+                    .map_err(|err| err.to_string())?;
+            }
+
+            self.backup_provider_configs()
+                .map_err(|err| err.to_string())?;
         }
 
         for unload in &self.unloads {
-            unload.run(&self.backup_dir)?;
+            unload
+                .run(backup.then_some(self.backup_dir.as_path()))
+                .map_err(|err| err.to_string())?;
+        }
+
+        for provider in &self.provider_configs {
+            provider.remove_mcp_config(backup.then_some(self.backup_dir.as_path()))?;
         }
 
         for target in &self.moves {
             if target.source.exists() {
-                move_path(&target.source, &self.backup_dir.join(&target.destination))?;
+                if backup {
+                    move_path(&target.source, &self.backup_dir.join(&target.destination))
+                        .map_err(|err| err.to_string())?;
+                } else {
+                    remove_install_path(&target.source).map_err(|err| err.to_string())?;
+                }
             }
         }
 
         for reload in &self.reloads {
-            reload.run(&self.backup_dir)?;
+            reload
+                .run(backup.then_some(self.backup_dir.as_path()))
+                .map_err(|err| err.to_string())?;
         }
 
         Ok(())
@@ -200,7 +339,25 @@ impl InstallBackupPlan {
             ));
         }
 
+        out.push('\n');
+        out.push_str("[provider_mcp_configs]\n");
+        for provider in &self.provider_configs {
+            out.push_str(&format!(
+                "{} = {} ({})\n",
+                provider.provider.label(),
+                provider.config_path.display(),
+                provider.status()
+            ));
+        }
+
         fs::write(self.backup_dir.join("manifest.txt"), out)
+    }
+
+    fn backup_provider_configs(&self) -> io::Result<()> {
+        for provider in &self.provider_configs {
+            provider.backup_config(&self.backup_dir)?;
+        }
+        Ok(())
     }
 }
 
@@ -240,16 +397,19 @@ struct ServiceUnload {
 }
 
 impl ServiceUnload {
-    fn run(&self, backup_dir: &Path) -> io::Result<()> {
+    fn run(&self, backup_dir: Option<&Path>) -> io::Result<()> {
         let output = Command::new(self.command).args(&self.args).output();
-        let text = render_command_output(self.command, &self.args, output);
-        fs::create_dir_all(backup_dir.join("metadata"))?;
-        fs::write(
-            backup_dir
-                .join("metadata")
-                .join(format!("unload-{}.txt", self.command)),
-            text,
-        )
+        if let Some(backup_dir) = backup_dir {
+            let text = render_command_output(self.command, &self.args, output);
+            fs::create_dir_all(backup_dir.join("metadata"))?;
+            fs::write(
+                backup_dir
+                    .join("metadata")
+                    .join(format!("unload-{}.txt", self.command)),
+                text,
+            )?;
+        }
+        Ok(())
     }
 }
 
@@ -259,15 +419,101 @@ struct ServiceReload {
 }
 
 impl ServiceReload {
-    fn run(&self, backup_dir: &Path) -> io::Result<()> {
+    fn run(&self, backup_dir: Option<&Path>) -> io::Result<()> {
         let output = Command::new(self.command).args(&self.args).output();
-        let text = render_command_output(self.command, &self.args, output);
+        if let Some(backup_dir) = backup_dir {
+            let text = render_command_output(self.command, &self.args, output);
+            fs::create_dir_all(backup_dir.join("metadata"))?;
+            fs::write(
+                backup_dir
+                    .join("metadata")
+                    .join(format!("reload-{}.txt", self.command)),
+                text,
+            )?;
+        }
+        Ok(())
+    }
+}
+
+struct ProviderConfigTarget {
+    provider: Provider,
+    config_path: PathBuf,
+    configured: bool,
+}
+
+impl ProviderConfigTarget {
+    fn backup_config(&self, backup_dir: &Path) -> io::Result<()> {
+        if !self.config_path.exists() {
+            return Ok(());
+        }
+
+        let destination = backup_dir
+            .join("provider-configs")
+            .join(self.provider.as_provider().id())
+            .join(safe_component(&self.config_path));
+
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::copy(&self.config_path, destination)?;
+        Ok(())
+    }
+
+    fn remove_mcp_config(&self, backup_dir: Option<&Path>) -> Result<(), String> {
+        if !self.config_path.exists() {
+            return Ok(());
+        }
+
+        let result = self
+            .provider
+            .as_provider()
+            .remove_mcp_config(&self.config_path, &SERVICE);
+
+        match result {
+            Ok(true) => {
+                if let Some(backup_dir) = backup_dir {
+                    self.write_provider_report(backup_dir, "removed")
+                        .map_err(|err| err.to_string())?;
+                }
+                Ok(())
+            }
+            Ok(false) => {
+                if let Some(backup_dir) = backup_dir {
+                    self.write_provider_report(backup_dir, "not configured")
+                        .map_err(|err| err.to_string())?;
+                }
+                Ok(())
+            }
+            Err(err) => Err(format!(
+                "{} MCP cleanup failed for {}: {err}",
+                self.provider.label(),
+                self.config_path.display()
+            )),
+        }
+    }
+
+    fn status(&self) -> &'static str {
+        if !self.config_path.exists() {
+            "missing"
+        } else if self.configured {
+            "configured"
+        } else {
+            "not configured"
+        }
+    }
+
+    fn write_provider_report(&self, backup_dir: &Path, status: &str) -> io::Result<()> {
         fs::create_dir_all(backup_dir.join("metadata"))?;
         fs::write(
-            backup_dir
-                .join("metadata")
-                .join(format!("reload-{}.txt", self.command)),
-            text,
+            backup_dir.join("metadata").join(format!(
+                "provider-{}-mcp.txt",
+                self.provider.as_provider().id()
+            )),
+            format!(
+                "provider = {}\nconfig = {}\nstatus = {status}\n",
+                self.provider.label(),
+                self.config_path.display()
+            ),
         )
     }
 }
@@ -469,6 +715,23 @@ fn service_reloads() -> Vec<ServiceReload> {
     }
 }
 
+fn provider_config_targets() -> Vec<ProviderConfigTarget> {
+    let home = daemon8_providers::dirs_home();
+    MCP_PROVIDERS
+        .iter()
+        .map(|&provider| {
+            let config_path = provider.config_path(&home);
+            let configured = provider.as_provider().is_configured(&config_path, &SERVICE);
+
+            ProviderConfigTarget {
+                provider,
+                config_path,
+                configured,
+            }
+        })
+        .collect()
+}
+
 fn binary_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
 
@@ -532,6 +795,18 @@ fn move_path(source: &Path, destination: &Path) -> io::Result<()> {
     }
 }
 
+fn remove_install_path(path: &Path) -> io::Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+
+    if path.is_dir() {
+        fs::remove_dir_all(path)
+    } else {
+        fs::remove_file(path)
+    }
+}
+
 fn copy_dir_all(source: &Path, destination: &Path) -> io::Result<()> {
     fs::create_dir_all(destination)?;
     for entry in fs::read_dir(source)? {
@@ -547,50 +822,98 @@ fn copy_dir_all(source: &Path, destination: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn print_backup_plan(plan: &InstallBackupPlan, dry_run: bool) {
+fn print_uninstall_plan(plan: &UninstallPlan, dry_run: bool, backup_choice: BackupChoice) {
     if dry_run {
-        eprintln!("Dry run: no files will be moved and no service will be unloaded.");
+        eprintln!(
+            "Dry run: no files/provider settings will be removed and no service will be unloaded."
+        );
     } else {
         eprintln!(
-            "This will unload daemon8's local service and move daemon8-owned install/state files."
+            "This will unload daemon8's local service, remove provider MCP settings, and remove daemon8-owned install/state files."
         );
     }
-    eprintln!("Backup dir: {}", plan.backup_dir.display());
+
+    match backup_choice {
+        BackupChoice::Prompt => {
+            eprintln!("Backup: prompt before uninstall (defaults to yes with --yes)");
+            eprintln!("Backup dir if selected: {}", plan.backup_dir.display());
+        }
+        BackupChoice::Backup => eprintln!("Backup dir: {}", plan.backup_dir.display()),
+        BackupChoice::NoBackup => eprintln!("Backup: disabled"),
+    }
+
     eprintln!();
     eprintln!("Service snapshots:");
-    for snapshot in &plan.snapshots {
-        eprintln!("  {} {}", snapshot.command, snapshot.args.join(" "));
+    if plan.snapshots.is_empty() {
+        eprintln!("  (none for this platform)");
+    } else {
+        for snapshot in &plan.snapshots {
+            eprintln!("  {} {}", snapshot.command, snapshot.args.join(" "));
+        }
     }
+
     eprintln!();
     eprintln!("Service unloads:");
-    for unload in &plan.unloads {
-        eprintln!("  {} {}", unload.command, unload.args.join(" "));
+    if plan.unloads.is_empty() {
+        eprintln!("  (none for this platform)");
+    } else {
+        for unload in &plan.unloads {
+            eprintln!("  {} {}", unload.command, unload.args.join(" "));
+        }
     }
+
     eprintln!();
-    eprintln!("Moves:");
+    eprintln!("Provider MCP settings:");
+    for provider in &plan.provider_configs {
+        eprintln!(
+            "  {}: {} ({})",
+            provider.provider.label(),
+            provider.config_path.display(),
+            provider.status()
+        );
+    }
+
+    eprintln!();
+    eprintln!("Install/state paths:");
     if plan.moves.is_empty() {
         eprintln!("  (no daemon8 install/state paths found)");
     }
     for target in &plan.moves {
-        eprintln!(
-            "  {} -> {}",
-            target.source.display(),
-            plan.backup_dir.join(&target.destination).display()
-        );
+        if matches!(backup_choice, BackupChoice::NoBackup) {
+            eprintln!("  remove {}", target.source.display());
+        } else {
+            eprintln!(
+                "  {} -> {}",
+                target.source.display(),
+                plan.backup_dir.join(&target.destination).display()
+            );
+        }
     }
 }
 
-fn confirm_backup_install() -> io::Result<bool> {
+fn confirm_uninstall() -> io::Result<bool> {
     use std::io::Write;
 
     eprintln!();
-    eprintln!("Type 'backup daemon8 install' to continue.");
+    eprintln!("Type 'uninstall daemon8' to continue.");
     eprint!("Confirmation: ");
     io::stderr().flush()?;
 
     let mut input = String::new();
     io::stdin().read_line(&mut input)?;
-    Ok(input.trim() == "backup daemon8 install")
+    Ok(input.trim() == "uninstall daemon8")
+}
+
+fn confirm_backup() -> io::Result<bool> {
+    use std::io::Write;
+
+    eprint!("Back up install/state files and provider configs first? [Y/n]: ");
+    io::stderr().flush()?;
+
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    let answer = input.trim();
+    Ok(answer.is_empty() || answer.eq_ignore_ascii_case("y") || answer.eq_ignore_ascii_case("yes"))
 }
 
 fn command_output(command: &str, args: &[&str]) -> String {
