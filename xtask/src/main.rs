@@ -373,77 +373,85 @@ fn dedupe_targets(workspace_dir: &Path, targets: Vec<MoveTarget>) -> Vec<MoveTar
 }
 
 fn service_snapshots() -> Vec<ServiceSnapshot> {
-    let mut snapshots = Vec::new();
-
     #[cfg(target_os = "macos")]
-    if let Some(domain) = launchd_domain() {
-        snapshots.push(ServiceSnapshot {
-            filename: "launchctl-before.txt",
-            command: "launchctl",
-            args: vec!["print".into(), format!("{domain}/dev.daemon8.daemon")],
-        });
+    {
+        let mut snapshots = Vec::new();
+        if let Some(domain) = launchd_domain() {
+            snapshots.push(ServiceSnapshot {
+                filename: "launchctl-before.txt",
+                command: "launchctl",
+                args: vec!["print".into(), format!("{domain}/dev.daemon8.daemon")],
+            });
+        }
+        snapshots
     }
 
     #[cfg(target_os = "linux")]
-    snapshots.push(ServiceSnapshot {
-        filename: "systemctl-before.txt",
-        command: "systemctl",
-        args: vec!["--user".into(), "status".into(), "daemon8".into()],
-    });
+    {
+        vec![ServiceSnapshot {
+            filename: "systemctl-before.txt",
+            command: "systemctl",
+            args: vec!["--user".into(), "status".into(), "daemon8".into()],
+        }]
+    }
 
     #[cfg(windows)]
-    snapshots.push(ServiceSnapshot {
-        filename: "schtasks-before.xml",
-        command: "schtasks",
-        args: vec![
-            "/Query".into(),
-            "/TN".into(),
-            "Daemon8".into(),
-            "/XML".into(),
-        ],
-    });
-
-    snapshots
+    {
+        vec![ServiceSnapshot {
+            filename: "schtasks-before.xml",
+            command: "schtasks",
+            args: vec![
+                "/Query".into(),
+                "/TN".into(),
+                "Daemon8".into(),
+                "/XML".into(),
+            ],
+        }]
+    }
 }
 
 fn service_unloads() -> Vec<ServiceUnload> {
-    let mut unloads = Vec::new();
-
     #[cfg(target_os = "macos")]
-    if let (Some(home), Some(domain)) = (home_dir(), launchd_domain()) {
-        let plist = home
-            .join("Library/LaunchAgents/dev.daemon8.daemon.plist")
-            .display()
-            .to_string();
-        unloads.push(ServiceUnload {
-            command: "launchctl",
-            args: vec!["bootout".into(), domain, plist],
-        });
+    {
+        let mut unloads = Vec::new();
+        if let (Some(home), Some(domain)) = (home_dir(), launchd_domain()) {
+            let plist = home
+                .join("Library/LaunchAgents/dev.daemon8.daemon.plist")
+                .display()
+                .to_string();
+            unloads.push(ServiceUnload {
+                command: "launchctl",
+                args: vec!["bootout".into(), domain, plist],
+            });
+        }
+        unloads
     }
 
     #[cfg(target_os = "linux")]
-    unloads.push(ServiceUnload {
-        command: "systemctl",
-        args: vec![
-            "--user".into(),
-            "disable".into(),
-            "--now".into(),
-            "daemon8".into(),
-        ],
-    });
+    {
+        vec![ServiceUnload {
+            command: "systemctl",
+            args: vec![
+                "--user".into(),
+                "disable".into(),
+                "--now".into(),
+                "daemon8".into(),
+            ],
+        }]
+    }
 
     #[cfg(windows)]
-    unloads.push(ServiceUnload {
-        command: "schtasks",
-        args: vec![
-            "/Delete".into(),
-            "/TN".into(),
-            "Daemon8".into(),
-            "/F".into(),
-        ],
-    });
-
-    unloads
+    {
+        vec![ServiceUnload {
+            command: "schtasks",
+            args: vec![
+                "/Delete".into(),
+                "/TN".into(),
+                "Daemon8".into(),
+                "/F".into(),
+            ],
+        }]
+    }
 }
 
 fn service_reloads() -> Vec<ServiceReload> {
