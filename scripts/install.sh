@@ -107,24 +107,26 @@ step 2 $TOTAL_STEPS "Verify"
 
 CHECKSUMS_URL="$(checksums_url)"
 CHECKSUMS_FILE="$TMPDIR/checksums.sha256"
-if curl -fsSL "$CHECKSUMS_URL" -o "$CHECKSUMS_FILE" 2>/dev/null; then
-  EXPECTED="$(grep "$ARCHIVE_NAME" "$CHECKSUMS_FILE" | awk '{print $1}')"
-  if [ -z "$EXPECTED" ]; then
-    dim "No checksum entry for $ARCHIVE_NAME; skipping verification"
-  else
-    ACTUAL="$(compute_sha256 "$ARCHIVE")"
-    if [ "$EXPECTED" = "$ACTUAL" ]; then
-      ok "SHA-256 verified"
-    else
-      err "Checksum verification failed!"
-      err "Expected: $EXPECTED"
-      err "Got:      $ACTUAL"
-      err "The downloaded file may be corrupted. Aborting."
-      exit 1
-    fi
-  fi
+if ! curl -fsSL "$CHECKSUMS_URL" -o "$CHECKSUMS_FILE" 2>/dev/null; then
+  err "Checksum file not available. Aborting."
+  exit 1
+fi
+
+EXPECTED="$(awk -v name="$ARCHIVE_NAME" '$2 == name {print $1; found = 1} END {if (!found) exit 1}' "$CHECKSUMS_FILE" || true)"
+if [ -z "$EXPECTED" ]; then
+  err "No checksum entry for $ARCHIVE_NAME. Aborting."
+  exit 1
+fi
+
+ACTUAL="$(compute_sha256 "$ARCHIVE")"
+if [ "$EXPECTED" = "$ACTUAL" ]; then
+  ok "SHA-256 verified"
 else
-  dim "Checksum file not available; skipping verification"
+  err "Checksum verification failed!"
+  err "Expected: $EXPECTED"
+  err "Got:      $ACTUAL"
+  err "The downloaded file may be corrupted. Aborting."
+  exit 1
 fi
 
 tar xz -C "$TMPDIR" -f "$ARCHIVE"

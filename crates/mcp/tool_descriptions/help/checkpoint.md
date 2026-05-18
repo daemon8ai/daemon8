@@ -8,7 +8,7 @@ Right before any change you might want to compare against:
 
 ```
 daemon8_connect(provider="codex", project_path="/path/to/project")
-start_debug_session(agent_id=":host/codex+worker>")
+start_debug_session(agent_id=":host/codex+agent>")
 create_checkpoint(description="before applying retry patch")
 # ... apply patch, run test ...
 read_live_feed(since_checkpoint=<seq_at_creation from above>)

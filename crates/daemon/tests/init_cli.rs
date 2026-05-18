@@ -125,7 +125,6 @@ fn cli_version_reports_alpha_release_version() {
         stdout.trim(),
         format!("daemon8 {}", env!("CARGO_PKG_VERSION"))
     );
-    assert_eq!(stdout.trim(), "daemon8 0.4.0-alpha.1");
 }
 
 #[test]
@@ -457,7 +456,10 @@ fn cli_reset_keeps_project_files_and_reports_schema_version() {
     );
 
     let stderr = String::from_utf8_lossy(&reset.stderr);
-    assert!(stderr.contains("schema re-initialized at 0.4.0-alpha"));
+    assert!(stderr.contains(&format!(
+        "schema re-initialized at {}",
+        daemon8_store::SCHEMA_VERSION
+    )));
     assert!(stderr.contains("project files were untouched"));
     assert_eq!(
         std::fs::read_to_string(project_config).unwrap(),

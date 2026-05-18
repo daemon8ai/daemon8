@@ -57,6 +57,10 @@ if grep -R "cargo install daemon8" install.sh install.ps1 scripts/install.sh scr
   fail "installer fallback must not imply crates.io publish"
 fi
 
+if grep -R -n -E 'cargo (install|binstall) daemon8' README.md DEPLOY.md; then
+  fail "public install docs must not imply crates.io publish"
+fi
+
 cargo metadata --no-deps --format-version 1 >/dev/null
 cargo fmt --check
 cargo check --workspace
@@ -64,7 +68,15 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 git diff --check
 
-if grep -R -n -E 'setup_(apply|status|plan)|\.daemon8\.toml|awareness|librarian|discovery|debug_summary|debug_observe|provider hooks|old setup|deprecated alias|migration shim' README.md crates/mcp/tool_descriptions; then
+stale_surface_paths=(
+  README.md
+  DEPLOY.md
+  .github
+  scripts
+  crates/mcp/tool_descriptions
+)
+
+if grep -R --exclude=release-check.sh -n -E 'setup_(apply|status|plan)|\.daemon8\.toml|awareness|librarian|discovery|debug_summary|debug_observe|provider hooks|old setup|deprecated alias|migration shim' "${stale_surface_paths[@]}"; then
   fail "stale alpha release-surface wording found"
 fi
 

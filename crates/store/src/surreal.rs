@@ -231,12 +231,19 @@ impl SurrealStore {
     }
 
     async fn ensure_schema_compatible(&self) -> Result<(), StoreError> {
-        if let Some(version) = self.read_schema_version().await?
-            && version != SCHEMA_VERSION
-        {
-            return Err(StoreError::Db(format!(
-                "incompatible database schema: found {version}, need {SCHEMA_VERSION}; run `daemon8 reset --yes` to wipe and reinitialize daemon-owned state"
-            )));
+        match self.read_schema_version().await? {
+            Some(version) if version != SCHEMA_VERSION => {
+                return Err(StoreError::Db(format!(
+                    "incompatible database schema: found {version}, need {SCHEMA_VERSION}; run `daemon8 reset --yes` to wipe and reinitialize daemon-owned state"
+                )));
+            }
+            Some(_) => {}
+            None if self.has_daemon_state_records().await? => {
+                return Err(StoreError::Db(format!(
+                    "incompatible database schema: missing schema metadata, need {SCHEMA_VERSION}; run `daemon8 reset --yes` to wipe and reinitialize daemon-owned state"
+                )));
+            }
+            None => {}
         }
 
         Ok(())
@@ -300,6 +307,25 @@ impl SurrealStore {
         Ok(session + recent + failures)
     }
 
+    async fn has_daemon_state_records(&self) -> Result<bool, StoreError> {
+        for table in [
+            "observation",
+            "memory",
+            "debug_session",
+            "debug_checkpoint",
+            "checkpoint",
+            "scope_session",
+            "recent_scope",
+            "scope_connect_failure",
+            "cursor_state",
+        ] {
+            if self.count_table(table).await? > 0 {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     async fn count_table(&self, table: &str) -> Result<usize, StoreError> {
         let sql = format!("SELECT count() FROM {table} GROUP ALL");
         let mut result = self
@@ -307,9 +333,11 @@ impl SurrealStore {
             .query(sql)
             .await
             .map_err(|e| StoreError::Db(format!("count {table}: {e}")))?;
-        let row: Option<serde_json::Value> = result
-            .take(0)
-            .map_err(|e| StoreError::Db(format!("count {table} read: {e}")))?;
+        let row: Option<serde_json::Value> = match result.take(0) {
+            Ok(row) => row,
+            Err(err) if err.to_string().contains("does not exist") => return Ok(0),
+            Err(err) => return Err(StoreError::Db(format!("count {table} read: {err}"))),
+        };
         Ok(row
             .and_then(|v| v.get("count").and_then(|c| c.as_u64()).map(|c| c as usize))
             .unwrap_or(0))
@@ -1076,6 +1104,46 @@ mod tests {
         match result {
             Ok(_) => panic!("stale schema should not open"),
             Err(err) => assert!(err.to_string().contains("incompatible database schema")),
+        }
+    }
+
+    #[tokio::test]
+    async fn open_initializes_fresh_store_without_schema_metadata() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("daemon8-store-test-{suffix}"));
+        let _ = std::fs::remove_dir_all(&path);
+        let store = SurrealStore::open(&path).await.unwrap();
+
+        assert_eq!(
+            store.schema_version().await.as_deref(),
+            Some(SCHEMA_VERSION)
+        );
+        drop(store);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[tokio::test]
+    async fn schema_check_rejects_existing_state_without_schema_metadata() {
+        let store = SurrealStore::memory().await.unwrap();
+        store.insert(make_obs(Severity::Info, 1)).await.unwrap();
+        store
+            .db
+            .query("REMOVE TABLE daemon_meta")
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+
+        let result = store.ensure_schema_compatible().await;
+        match result {
+            Ok(_) => panic!("unversioned daemon state should not open"),
+            Err(err) => {
+                assert!(err.to_string().contains("missing schema metadata"));
+                assert!(err.to_string().contains("daemon8 reset --yes"));
+            }
         }
     }
 

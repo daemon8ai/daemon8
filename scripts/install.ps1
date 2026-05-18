@@ -45,17 +45,18 @@ Write-Host ""
 Write-Host "[2/4] Verify" -ForegroundColor Cyan
 
 $ChecksumsFile = Join-Path $Tmp "checksums.sha256"
-$Verified = $false
 
 try {
     Invoke-WebRequest -Uri $ChecksumsUrl -OutFile $ChecksumsFile -UseBasicParsing
-    $ExpectedLine = Get-Content $ChecksumsFile | Where-Object { $_ -match $ArchiveName }
+    $ExpectedLine = Get-Content $ChecksumsFile | Where-Object {
+        $Parts = $_ -split '\s+'
+        $Parts.Length -ge 2 -and $Parts[1] -eq $ArchiveName
+    } | Select-Object -First 1
     if ($ExpectedLine) {
         $Expected = ($ExpectedLine -split '\s+')[0]
         $Actual = (Get-FileHash -Path $Archive -Algorithm SHA256).Hash.ToLower()
         if ($Expected -eq $Actual) {
             Write-Host "  + SHA-256 verified" -ForegroundColor Green
-            $Verified = $true
         } else {
             Write-Host "  ! Checksum verification failed!" -ForegroundColor Red
             Write-Host "  ! Expected: $Expected" -ForegroundColor Red
@@ -65,10 +66,14 @@ try {
             exit 1
         }
     } else {
-        Write-Host "  No checksum entry for $ArchiveName; skipping verification" -ForegroundColor DarkGray
+        Write-Host "  ! No checksum entry for $ArchiveName. Aborting." -ForegroundColor Red
+        Remove-Item -Recurse -Force $Tmp -ErrorAction SilentlyContinue
+        exit 1
     }
 } catch {
-    Write-Host "  Checksum file not available; skipping verification" -ForegroundColor DarkGray
+    Write-Host "  ! Checksum file not available. Aborting." -ForegroundColor Red
+    Remove-Item -Recurse -Force $Tmp -ErrorAction SilentlyContinue
+    exit 1
 }
 
 Expand-Archive -Path $Archive -DestinationPath $Tmp -Force

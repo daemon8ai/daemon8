@@ -5,27 +5,27 @@ end-user overview and quick-start, see [README.md](README.md).
 
 ## Distribution
 
-`daemon8` is a compiled Rust binary. Three install methods:
+`daemon8` is a compiled Rust binary. Current install paths:
 
 ```bash
-# Pre-built binary (fastest, no compile)
-cargo install cargo-binstall       # one-time
-cargo binstall daemon8
+# Pre-built binary from GitHub Releases
+curl -fsSL https://raw.githubusercontent.com/daemon8ai/daemon8/main/install.sh | bash
 
-# Compile from crates.io
-cargo install daemon8
-
-# Compile from this repo
+# Compile from git
 cargo install --git https://github.com/daemon8ai/daemon8 daemon8
+
+# Compile from this checkout
+cargo install --path crates/daemon --force
 ```
 
-All three produce the same binary at `~/.cargo/bin/daemon8`.
+Each path produces the same binary at `~/.cargo/bin/daemon8` unless
+`DAEMON8_INSTALL_DIR` overrides the release installer destination.
 
 > **Note on crates.io publishing.** Workspace crates currently carry
 > `publish = false` while the crates.io publish flow is stabilized.
 > This will change once `daemon8` and its library crates are reserved
-> and published. Until then, use `cargo install --git` or a pre-built
-> release tarball.
+> and published. Until then, crates.io and cargo-binstall support are
+> future install paths, not current ones.
 
 ## Building from Source
 
@@ -47,8 +47,8 @@ install`:
 codesign --force --sign - ~/.cargo/bin/daemon8
 ```
 
-Pre-built release binaries (`cargo binstall`, direct download) are signed
-with a stable Developer ID so this step is not needed for those.
+Pre-built release binaries may be signed separately from local source
+builds; verify the release artifact before assuming macOS trust behavior.
 
 ## Service Management
 
@@ -130,7 +130,7 @@ fail at load time — no silent fallbacks.
 
 | Section           | Field                         | Default                  | Description                                 |
 | ----------------- | ----------------------------- | ------------------------ | ------------------------------------------- |
-| server            | port                          | `9077`                   | HTTP server port                            |
+| server            | port                          | `8888`                   | HTTP server port                            |
 | server            | host                          | `127.0.0.1`              | Bind address (IpAddr)                       |
 | storage           | path                          | (platform default)       | SurrealDB/SurrealKV store location          |
 | storage           | screenshot_path               | (resolved from storage)  | Browser screenshot output directory         |
@@ -139,13 +139,12 @@ fail at load time — no silent fallbacks.
 | browser           | reconnect_interval_secs       | `5`                      | Initial backoff after disconnect            |
 | browser           | max_reconnect_interval_secs   | `30`                     | Max exponential backoff ceiling             |
 | browser           | path                          | (auto-detect)            | Chrome binary path for auto-launch          |
-| adb               | enabled                       | `true`                   | Monitor ADB/Vega devices                    |
+| adb               | enabled                       | `false`                  | Monitor ADB/Vega devices                    |
 | adb               | server_addr                   | `127.0.0.1:5037`         | ADB server address (SocketAddrV4)           |
-| adb               | scan_interval_secs            | `10`                     | Device discovery interval                   |
+| adb               | scan_interval_secs            | `10`                     | Device scan interval                        |
 | mcp               | stdio                         | `true`                   | Enable MCP stdio transport                  |
-| mcp               | http                          | `false`                  | Enable MCP HTTP/SSE transport               |
 | ingestion.udp     | enabled                       | `false`                  | UDP ingestion listener                      |
-| ingestion.udp     | bind                          | `127.0.0.1:9078`         | UDP bind address (SocketAddr)               |
+| ingestion.udp     | bind                          | `127.0.0.1:8889`         | UDP bind address (SocketAddr)               |
 | ingestion.unix    | enabled                       | `false`                  | Unix socket listener                        |
 | ingestion.unix    | path                          | `/tmp/daemon8.sock`      | Socket path                                 |
 | logging           | level                         | `info`                   | trace / debug / info / warn / error         |
@@ -181,11 +180,11 @@ Chrome must be launched with remote debugging enabled:
 
 ## Troubleshooting
 
-**Port 9077 in use** (orphaned daemon):
+**Port 8888 in use** (orphaned daemon):
 
 ```bash
 daemon8 service uninstall      # stop the managed service first
-lsof -nP -iTCP:9077 -sTCP:LISTEN
+lsof -nP -iTCP:8888 -sTCP:LISTEN
 kill <exact-pid>               # only if the listed process is daemon8
 daemon8 service install        # fresh start
 ```
@@ -211,7 +210,6 @@ Log directory: `~/Library/Application Support/dev.daemon8.daemon8/logs/` (macOS)
 
 ```bash
 daemon8 status                 # print daemon health and connected sources
-daemon8 service status         # inspect the installed service
 ```
 
 ## Release Workflow
@@ -224,9 +222,9 @@ GitHub Actions builds 5 targets on `v*` tag push:
 - `aarch64-unknown-linux-gnu` (Linux ARM)
 - `x86_64-pc-windows-msvc` (Windows)
 
-Release artifacts are attached to the GitHub Release for that tag. Users
-with `cargo binstall` installed consume these tarballs directly via
-`cargo binstall daemon8`.
+Release artifacts are attached to the GitHub Release for that tag. The
+root install scripts consume those tarballs and verify `checksums.sha256`
+before installing.
 
 ### Tagging a release
 

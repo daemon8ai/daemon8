@@ -543,7 +543,7 @@ fn composed_router_has_full_tool_surface() {
 }
 
 #[tokio::test]
-async fn memory_tools_are_not_public_in_afl_02d() {
+async fn memory_tools_are_not_public_on_alpha_surface() {
     let mcp = make_mcp().await;
     let names: Vec<String> = mcp
         .tools_for_client()
@@ -559,7 +559,7 @@ async fn memory_tools_are_not_public_in_afl_02d() {
     ] {
         assert!(
             !names.iter().any(|name| name == removed),
-            "{removed} must remain absent from the AFL-02d public MCP surface"
+            "{removed} must remain absent from the alpha public MCP surface"
         );
     }
 }
@@ -1199,6 +1199,11 @@ async fn pre_connect_status_exception_runs_through_real_mcp_call() -> anyhow::Re
     let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
     assert_eq!(parsed["status"], "success");
     assert_eq!(parsed["code"], "status");
+    assert_eq!(parsed["data"]["daemon_version"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(
+        parsed["data"]["schema_version"],
+        daemon8_store::SCHEMA_VERSION
+    );
     assert!(parsed["data"]["session_id"].is_string());
     assert!(parsed["data"]["connection"].is_null());
     assert!(parsed["data"].get("session_context").is_none());
