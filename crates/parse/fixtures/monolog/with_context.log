@@ -1,0 +1,7 @@
+[2024-03-10 08:15:00] payment.ERROR: Payment declined {"card_last4":"4242","amount":99.99,"currency":"USD"} []
+[2024-03-10 08:15:01] auth.WARNING: Failed login attempt {"ip":"192.168.1.100","username":"admin","attempts":3} []
+[2024-03-10 08:15:02] queue.INFO: Job dispatched {"queue":"high","job_class":"SendWelcomeEmail","delay_seconds":0} []
+[2024-03-10 08:15:03] http.DEBUG: Outgoing request {"url":"https://api.stripe.com/v1/charges","method":"POST","duration_ms":234} []
+[2024-03-10 08:15:04] database.ERROR: Deadlock detected {"table":"orders","transaction_id":"tx-abc-123","retries":2} []
+[2024-03-10 08:15:05] cache.INFO: Cache warmed {"keys_loaded":1523,"duration_ms":890} []
+[2024-03-10 08:15:06] scheduler.NOTICE: Cron job started {"job":"cleanup_temp_files","schedule":"0 3 * * *"} []

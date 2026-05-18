@@ -1,0 +1,10 @@
+{"ts":"2024-01-15T10:00:00Z","severity":"info","message":"using message field","service":"api"}
+{"time":"1705312800","lvl":"debug","text":"using text field","component":"auth"}
+{"@timestamp":"2024-01-15T10:00:02.000Z","level":"error","msg":"elasticsearch style","index":"logs-2024"}
+{"timestamp":"2024-01-15","level":"warn","msg":"date only timestamp","reason":"disk_full"}
+{"level":"info","msg":"no timestamp at all","pid":12345}
+{"severity":"critical","message":"critical maps to error","node":"worker-03"}
+{"level":"fatal","msg":"fatal maps to error too","exit_code":1}
+{"level":"trace","msg":"trace level log","detail":"very verbose"}
+{"ts":"2024-01-15T10:00:08Z","level":"information","msg":"verbose level name","source":"dotnet"}
+{"timestamp":"2024-01-15T10:00:09Z","level":"warning","msg":"another verbose name","metric":"cpu_usage","value":92.5}

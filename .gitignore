@@ -22,6 +22,8 @@ target/
 !/.github/**
 !/crates/mcp/tool_descriptions/
 !/crates/mcp/tool_descriptions/**
+!/crates/parse/fixtures/
+!/crates/parse/fixtures/**
 !/README.md
 !/DEPLOY.md
 !/LICENSE
