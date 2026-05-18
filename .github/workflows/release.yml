@@ -227,7 +227,11 @@ jobs:
         run: |
           set_count=0
           for name in DEPLOY_HOST DEPLOY_USER DEPLOY_KEY DEPLOY_PATH; do
-            if [ -n "${!name}" ]; then
+            value="${!name}"
+            if [ "$name" != "DEPLOY_KEY" ]; then
+              value="$(printf '%s' "$value" | tr -d '\r' | xargs)"
+            fi
+            if [ -n "$value" ]; then
               set_count=$((set_count + 1))
             fi
           done
@@ -239,8 +243,11 @@ jobs:
       - name: Upload to server
         run: |
           VERSION="${{ needs.prepare.outputs.release_tag }}"
+          DEPLOY_HOST="$(printf '%s' "$DEPLOY_HOST" | tr -d '\r' | xargs)"
+          DEPLOY_USER="$(printf '%s' "$DEPLOY_USER" | tr -d '\r' | xargs)"
+          DEPLOY_PATH="$(printf '%s' "$DEPLOY_PATH" | tr -d '\r' | xargs)"
           mkdir -p ~/.ssh
-          echo "$DEPLOY_KEY" > ~/.ssh/deploy_key
+          printf '%s\n' "$DEPLOY_KEY" | tr -d '\r' > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
           ssh -o StrictHostKeyChecking=no -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p $DEPLOY_PATH/$VERSION"
           scp -o StrictHostKeyChecking=no -i ~/.ssh/deploy_key artifacts/* "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/$VERSION/"
