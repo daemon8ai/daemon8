@@ -2,7 +2,7 @@
 # Print the active config path with: daemon8 config path
 # Reference: https://daemon8.ai/docs/configuration
 #
-# All values shown are defaults. Uncomment to override.
+# Common values shown are defaults. Uncomment to override.
 # Env vars use DAEMON8_ prefix with __ for nesting (e.g. DAEMON8_SERVER__PORT).
 
 # [server]

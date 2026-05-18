@@ -77,6 +77,11 @@ checksums_url() {
 
 printf "\n${BOLD}Daemon8 Installer${RESET}\n"
 
+if [ "${DAEMON8_INSTALLER_SELF_TEST:-}" = "1" ]; then
+  dim "Self-test: no network, no install"
+  exit 0
+fi
+
 TARGET="$(detect_target)"
 resolve_install_dir
 

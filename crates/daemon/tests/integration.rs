@@ -1078,7 +1078,7 @@ async fn text_search_filter() {
 }
 
 #[tokio::test]
-async fn provenance_filters_query_observations() {
+async fn provenance_filters_observe_endpoint() {
     let store: Arc<dyn StateModel> = Arc::new(SurrealStore::memory().await.unwrap());
     let (base, _tx, _handle) = start_server(store).await;
     let client = reqwest::Client::new();

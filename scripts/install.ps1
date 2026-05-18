@@ -20,6 +20,11 @@ Write-Host ""
 Write-Host "Daemon8 Installer" -ForegroundColor White
 Write-Host ""
 
+if ($env:DAEMON8_INSTALLER_SELF_TEST -eq "1") {
+    Write-Host "  Self-test: no network, no install" -ForegroundColor DarkGray
+    exit 0
+}
+
 Write-Host "[1/4] Download" -ForegroundColor Cyan
 Write-Host "  Platform: $Target" -ForegroundColor DarkGray
 Write-Host "  Source:   $Url" -ForegroundColor DarkGray

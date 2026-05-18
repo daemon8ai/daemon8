@@ -12,14 +12,14 @@ $RemoteInstaller = if ($env:DAEMON8_INSTALLER_SCRIPT_URL) {
     "https://raw.githubusercontent.com/daemon8ai/daemon8/main/scripts/install.ps1"
 }
 
-if ($LocalInstaller -and (Test-Path $LocalInstaller)) {
-    & $LocalInstaller @args
-    exit $LASTEXITCODE
-}
-
 if ($env:DAEMON8_INSTALLER_SELF_TEST -eq "1") {
     Write-Host "installer fallback: $RemoteInstaller"
     exit 0
+}
+
+if ($LocalInstaller -and (Test-Path $LocalInstaller)) {
+    & $LocalInstaller @args
+    exit $LASTEXITCODE
 }
 
 $Tmp = Join-Path ([System.IO.Path]::GetTempPath()) "daemon8-install-$([System.Guid]::NewGuid()).ps1"

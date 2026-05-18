@@ -11,21 +11,20 @@ end-user overview and quick-start, see [README.md](README.md).
 # Pre-built binary from GitHub Releases
 curl -fsSL https://raw.githubusercontent.com/daemon8ai/daemon8/main/install.sh | bash
 
-# Compile from git
+# Compile from git while crates remain unpublished
 cargo install --git https://github.com/daemon8ai/daemon8 daemon8
 
 # Compile from this checkout
 cargo install --path crates/daemon --force
 ```
 
-Each path produces the same binary at `~/.cargo/bin/daemon8` unless
-`DAEMON8_INSTALL_DIR` overrides the release installer destination.
+The release shell installer uses `~/.cargo/bin` when present and otherwise
+falls back to `~/.local/bin`. The PowerShell installer defaults to
+`%LOCALAPPDATA%\Programs\daemon8`. `DAEMON8_INSTALL_DIR` overrides the
+release installer destination.
 
-> **Note on crates.io publishing.** Workspace crates currently carry
-> `publish = false` while the crates.io publish flow is stabilized.
-> This will change once `daemon8` and its library crates are reserved
-> and published. Until then, crates.io and cargo-binstall support are
-> future install paths, not current ones.
+> **Publish gate.** Workspace crates currently carry `publish = false`.
+> Use the release installer, git install, or checkout install paths above.
 
 ## Building from Source
 
@@ -231,8 +230,8 @@ before installing.
 ### Tagging a release
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.4.0-alpha.1
+git push origin v0.4.0-alpha.1
 ```
 
 The release workflow triggers automatically from the tag.

@@ -128,7 +128,7 @@ daemon8_connect -> start_debug_session -> create_checkpoint -> change/repro/test
 
 ## Response Shape
 
-MCP responses and CLI `--json` output use a common envelope:
+MCP responses and CLI `connect/init/status --json` output use the common alpha envelope:
 
 ```json
 {

@@ -223,13 +223,12 @@ jobs:
               set_count=$((set_count + 1))
             fi
           done
-          if [ "$set_count" -ne 0 ] && [ "$set_count" -ne 4 ]; then
-            echo "DEPLOY_HOST, DEPLOY_USER, DEPLOY_KEY, and DEPLOY_PATH must be set together" >&2
+          if [ "$set_count" -ne 4 ]; then
+            echo "DEPLOY_HOST, DEPLOY_USER, DEPLOY_KEY, and DEPLOY_PATH are required before creating a GitHub release" >&2
             exit 1
           fi
 
       - name: Upload to server
-        if: env.DEPLOY_HOST != ''
         run: |
           VERSION="${{ needs.prepare.outputs.release_tag }}"
           mkdir -p ~/.ssh
