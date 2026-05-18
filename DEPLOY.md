@@ -8,13 +8,18 @@ end-user overview and quick-start, see [README.md](README.md).
 `daemon8` is a compiled Rust binary. Current install paths:
 
 ```bash
-# Pre-built binary from GitHub Releases
-curl -fsSL https://raw.githubusercontent.com/daemon8ai/daemon8/main/install.sh | bash
+curl -fsSL https://daemon8.ai/install.sh | bash
+```
 
-# Compile from git while crates remain unpublished
+Compile from git while crates remain unpublished:
+
+```bash
 cargo install --git https://github.com/daemon8ai/daemon8 daemon8
+```
 
-# Compile from this checkout
+Compile from this checkout:
+
+```bash
 cargo install --path crates/daemon --force
 ```
 
@@ -29,10 +34,12 @@ release installer destination.
 ## Building from Source
 
 ```bash
-# Build and install to ~/.cargo/bin/daemon8
 cargo install --path crates/daemon --force
+```
 
-# Or just build without installing (for testing)
+Build without installing:
+
+```bash
 cargo build -p daemon8
 ```
 
@@ -79,20 +86,34 @@ ADB settings and ingestion listeners stay configured through `config.toml`.
 ## Upgrading
 
 ```bash
-# 1. Optional: back up current binary
 cp ~/.cargo/bin/daemon8 ~/.cargo/bin/daemon8.bak
+```
 
-# 2. Stop and remove service
+Stop and remove the service:
+
+```bash
 daemon8 service uninstall
+```
 
-# 3. Build and install new binary
+Build, install, and codesign on macOS:
+
+```bash
 cargo install --path crates/daemon --force --locked
-codesign --force --sign - ~/.cargo/bin/daemon8   # macOS only
+```
 
-# 4. Re-register and start service
+```bash
+codesign --force --sign - ~/.cargo/bin/daemon8
+```
+
+Re-register and start the service:
+
+```bash
 daemon8 service install
+```
 
-# 5. Verify
+Verify:
+
+```bash
 daemon8 status
 ```
 
@@ -177,7 +198,6 @@ connect_browser { endpoint: "http://localhost:9222" }
 Chrome must be launched with remote debugging enabled:
 
 ```bash
-# macOS
 /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9222 --user-data-dir=/tmp/chrome-debug-profile
 ```
 
@@ -186,25 +206,55 @@ Chrome must be launched with remote debugging enabled:
 **Port 8888 in use** (orphaned daemon):
 
 ```bash
-daemon8 service uninstall      # stop the managed service first
+daemon8 service uninstall
+```
+
+Then identify the exact daemon process:
+
+```bash
 lsof -nP -iTCP:8888 -sTCP:LISTEN
-kill <exact-pid>               # only if the listed process is daemon8
-daemon8 service install        # fresh start
+```
+
+Only if the listed process is daemon8:
+
+```bash
+kill <exact-pid>
+```
+
+Fresh start:
+
+```bash
+daemon8 service install
 ```
 
 **Orphaned processes**:
 
 ```bash
-pgrep -fl daemon8              # find all daemon processes
-daemon8 service uninstall      # remove service (stops respawning)
-kill <exact-pid>               # only for confirmed daemon8 processes
+pgrep -fl daemon8
+```
+
+Remove the service so it stops respawning:
+
+```bash
+daemon8 service uninstall
+```
+
+Only for confirmed daemon8 processes:
+
+```bash
+kill <exact-pid>
 ```
 
 **Logs**:
 
 ```bash
-daemon8 logs                   # print path to latest log file
-daemon8 logs -f                # tail -f the latest log
+daemon8 logs
+```
+
+Tail the latest log:
+
+```bash
+daemon8 logs -f
 ```
 
 Log directory: `~/Library/Application Support/dev.daemon8.daemon8/logs/` (macOS release), `~/.local/share/daemon8/logs/` (Linux release).
@@ -212,7 +262,7 @@ Log directory: `~/Library/Application Support/dev.daemon8.daemon8/logs/` (macOS 
 **Status**:
 
 ```bash
-daemon8 status                 # print daemon health and connected sources
+daemon8 status
 ```
 
 ## Release Workflow

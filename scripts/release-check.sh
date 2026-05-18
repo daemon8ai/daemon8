@@ -23,6 +23,29 @@ workspace_version="$(
 
 [ -n "$workspace_version" ] || fail "workspace package version not found"
 command -v jq >/dev/null 2>&1 || fail "jq is required for release metadata checks"
+command -v curl >/dev/null 2>&1 || fail "curl is required for release URL checks"
+
+if [ "$(sed -n '1p' .gitignore)" != ".*" ] || [ "$(sed -n '2p' .gitignore)" != "*.md" ]; then
+  fail ".gitignore must start with default-deny rules: .* then *.md"
+fi
+
+tracked_context="$(git ls-files | grep -E '^(\.claude/|\.aimind/|CLAUDE\.md$|AGENTS\.md$)' || true)"
+if [ -n "$tracked_context" ]; then
+  printf '%s\n' "$tracked_context" >&2
+  fail "AI context files must not be tracked"
+fi
+
+tracked_hidden_or_markdown="$(git ls-files | grep -E '^\.|\.md$' || true)"
+unexpected_tracked_context="$(
+  printf '%s\n' "$tracked_hidden_or_markdown" | grep -Ev '^$|^\.github/|^\.gitignore$|^(CHANGELOG|CODE_OF_CONDUCT|CONTRIBUTING|DEPLOY|README|SECURITY)\.md$|^crates/mcp/tool_descriptions/.*\.md$' || true
+)"
+if [ -n "$unexpected_tracked_context" ]; then
+  printf '%s\n' "$unexpected_tracked_context" >&2
+  fail "tracked hidden/markdown files must be explicitly allowlisted"
+fi
+
+curl -fsSIL https://daemon8.ai/install.sh >/dev/null || fail "public shell installer URL must be reachable"
+curl -fsSIL https://daemon8.ai/install.ps1 >/dev/null || fail "public PowerShell installer URL must be reachable"
 
 awk -v want="$workspace_version" '
   /^daemon8-/ && $0 ~ /version =/ {
@@ -87,9 +110,8 @@ if command -v pwsh >/dev/null 2>&1; then
   cp install.ps1 "$tmp_dir/delegate-pwsh/install.ps1"
   cat > "$tmp_dir/delegate-pwsh/scripts/install.ps1" <<'EOF'
 Set-Content -Path delegated.out -Value delegated -NoNewline
-exit 0
 EOF
-  (cd "$tmp_dir/delegate-pwsh" && pwsh -NoLogo -NoProfile -Command "\$ErrorActionPreference='Stop'; \$env:DAEMON8_INSTALLER_SELF_TEST='1'; ./install.ps1 | Out-Null")
+  (cd "$tmp_dir/delegate-pwsh" && pwsh -NoLogo -NoProfile -Command "\$ErrorActionPreference='Continue'; /bin/sh -c 'exit 7'; \$ErrorActionPreference='Stop'; \$env:DAEMON8_INSTALLER_SELF_TEST='1'; ./install.ps1 | Out-Null")
   test "$(cat "$tmp_dir/delegate-pwsh/delegated.out")" = "delegated" || fail "root PowerShell installer must delegate to local scripts/install.ps1"
   cp install.ps1 "$tmp_dir/install.ps1"
   if ! (cd "$tmp_dir" && pwsh -NoLogo -NoProfile -Command "\$ErrorActionPreference='Stop'; \$env:DAEMON8_INSTALLER_SELF_TEST='1'; ./install.ps1 | Out-Null"); then
@@ -98,6 +120,9 @@ EOF
 fi
 
 metadata="$(cargo metadata --no-deps --format-version 1)"
+if ! printf '%s' "$metadata" | jq -e --arg version "$workspace_version" '.packages | map(select(.name | startswith("daemon8"))) | length > 0 and all(.version == $version)' >/dev/null; then
+  fail "daemon8 workspace crate versions must match workspace version"
+fi
 if ! printf '%s' "$metadata" | jq -e '.packages | length > 0 and all(.publish == [])' >/dev/null; then
   fail "workspace crates must remain publish=false until crates.io release is intentionally enabled"
 fi

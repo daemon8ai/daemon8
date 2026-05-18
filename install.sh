@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 LOCAL_INSTALLER="$SCRIPT_DIR/scripts/install.sh"
-REMOTE_INSTALLER="${DAEMON8_INSTALLER_SCRIPT_URL:-https://raw.githubusercontent.com/daemon8ai/daemon8/main/scripts/install.sh}"
+REMOTE_INSTALLER="${DAEMON8_INSTALLER_SCRIPT_URL:-https://daemon8.ai/install.sh}"
 
 if [ -f "$LOCAL_INSTALLER" ]; then
   exec "$LOCAL_INSTALLER" "$@"

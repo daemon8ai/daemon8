@@ -9,12 +9,17 @@ $LocalInstaller = if ($CommandPath) {
 $RemoteInstaller = if ($env:DAEMON8_INSTALLER_SCRIPT_URL) {
     $env:DAEMON8_INSTALLER_SCRIPT_URL
 } else {
-    "https://raw.githubusercontent.com/daemon8ai/daemon8/main/scripts/install.ps1"
+    "https://daemon8.ai/install.ps1"
 }
 
 if ($LocalInstaller -and (Test-Path $LocalInstaller)) {
+    $global:LASTEXITCODE = $null
     & $LocalInstaller @args
-    exit $LASTEXITCODE
+    if (-not $?) {
+        if ($LASTEXITCODE -is [int]) { exit $LASTEXITCODE }
+        exit 1
+    }
+    exit 0
 }
 
 if ($env:DAEMON8_INSTALLER_SELF_TEST -eq "1") {

@@ -122,7 +122,8 @@ jobs:
       - name: Smoke packaged artifact (unix)
         if: matrix.smoke && matrix.archive == 'tar.gz'
         run: |
-          smoke/${{ env.BINARY_NAME }} --version
+          EXPECTED_VERSION="${{ needs.prepare.outputs.release_tag }}"
+          smoke/${{ env.BINARY_NAME }} --version | grep "daemon8 ${EXPECTED_VERSION#v}"
           smoke/${{ env.BINARY_NAME }} --help
           SMOKE_ROOT="$RUNNER_TEMP/daemon8-smoke"
           mkdir -p "$SMOKE_ROOT"
@@ -173,7 +174,9 @@ jobs:
         if: matrix.smoke && matrix.archive == 'zip'
         shell: pwsh
         run: |
-          .\smoke\daemon8.exe --version
+          $ExpectedVersion = "${{ needs.prepare.outputs.release_tag }}".TrimStart("v")
+          $VersionOutput = .\smoke\daemon8.exe --version
+          if ($VersionOutput -notmatch "daemon8 $ExpectedVersion") { throw "unexpected version output: $VersionOutput" }
           .\smoke\daemon8.exe --help
           $SmokeRoot = Join-Path $env:RUNNER_TEMP "daemon8-smoke"
           New-Item -ItemType Directory -Force -Path $SmokeRoot | Out-Null

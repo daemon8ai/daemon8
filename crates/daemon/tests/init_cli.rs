@@ -254,6 +254,59 @@ fn config_env_nested_override_applies() {
 }
 
 #[test]
+fn config_env_debug_session_override_applies() {
+    let (_tmp, work, home) = setup_dirs();
+    let missing_config = work.join("missing-config.toml");
+    let out = run_daemon8_with_env(
+        &work,
+        &home,
+        &[("DAEMON8_DEBUG_SESSION__INACTIVITY_AUTO_END_SECS", "12345")],
+        &[
+            "--config",
+            missing_config.to_str().unwrap(),
+            "config",
+            "show",
+            "--json",
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let parsed: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(parsed["debug_session"]["inactivity_auto_end_secs"], 12345);
+}
+
+#[test]
+fn cli_config_set_accepts_debug_session_timeout() {
+    let (_tmp, work, home) = setup_dirs();
+    let config_path = work.join("daemon8.toml");
+    let out = run_daemon8_with_env(
+        &work,
+        &home,
+        &[],
+        &[
+            "--config",
+            config_path.to_str().unwrap(),
+            "config",
+            "set",
+            "debug_session.inactivity_auto_end_secs",
+            "12345",
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let config = std::fs::read_to_string(&config_path).unwrap();
+    assert!(config.contains("[debug_session]"));
+    assert!(config.contains("inactivity_auto_end_secs = 12345"));
+}
+
+#[test]
 fn cli_status_json_uses_common_envelope() {
     let (_tmp, work, home) = setup_dirs();
     let out = run_daemon8_with_env(&work, &home, &[], &["status", "--json"]);

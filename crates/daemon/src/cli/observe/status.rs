@@ -43,7 +43,12 @@ pub async fn cmd_status(config_path: Option<String>, args: super::ClientArgs) ->
     };
 
     if args.json {
-        let scope_ledger = load_scope_ledger_summary(&data_dir).await;
+        let scope_ledger = match load_scope_ledger_summary(&data_dir).await {
+            Err(err) if running && err.contains("LOCK is already locked") => {
+                Ok(ScopeLedgerSummary::default())
+            }
+            other => other,
+        };
         let mut data = serde_json::json!({
             "config_path": config_file.display().to_string(),
             "config_exists": config_exists,

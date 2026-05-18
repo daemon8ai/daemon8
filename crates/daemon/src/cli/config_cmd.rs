@@ -346,6 +346,13 @@ mod tests {
     }
 
     #[test]
+    fn validate_config_key_value_rejects_zero_debug_session_timeout() {
+        let err =
+            validate_config_key_value("debug_session.inactivity_auto_end_secs", "0").unwrap_err();
+        assert!(err.to_string().contains("must be greater than 0"));
+    }
+
+    #[test]
     fn validate_config_key_value_rejects_removed_http_toggle() {
         let err = validate_config_key_value("mcp.http", "true").unwrap_err();
         assert!(err.to_string().contains("unknown config key"));

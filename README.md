@@ -11,13 +11,13 @@ Everything is local by default. The daemon-owned database lives under the platfo
 From a release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/daemon8ai/daemon8/main/install.sh | bash
+curl -fsSL https://daemon8.ai/install.sh | bash
 ```
 
 Windows PowerShell:
 
 ```powershell
-iwr https://raw.githubusercontent.com/daemon8ai/daemon8/main/install.ps1 -UseB | iex
+iwr https://daemon8.ai/install.ps1 -UseB | iex
 ```
 
 Pin a release with `DAEMON8_VERSION=v0.4.0-alpha.1`. Override the destination with `DAEMON8_INSTALL_DIR`.
@@ -150,6 +150,7 @@ The daemon serves local HTTP endpoints on the configured server port:
 
 | Route | Method | Purpose |
 |-------|--------|---------|
+| `/health` | `GET` | Health check. |
 | `/ingest` | `POST` | Write one observation. |
 | `/ingest/batch` | `POST` | Write multiple observations. |
 | `/api/observe` | `GET` | Query observations with filters. |
@@ -160,6 +161,8 @@ The daemon serves local HTTP endpoints on the configured server port:
 | `/api/stream` | `GET` | Stream observations over SSE; `project_path` refreshes configured project sources before replay. |
 | `/api/lens` | `GET`/`PUT`/`DELETE` | Inspect, set, or clear the observation lens. |
 | `/api/browser/act` | `POST` | Run a browser/device action. |
+| `/mcp` | `POST` | Streamable HTTP MCP transport. |
+| `/.well-known/oauth-protected-resource` | `GET` | MCP resource metadata. |
 
 ## Reset Safety
 

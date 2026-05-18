@@ -1,6 +1,7 @@
-# Blanket ignores
 .*
 *.md
+
+# Blanket ignores
 *.log
 
 # OS
