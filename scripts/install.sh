@@ -190,14 +190,7 @@ esac
 
 step 4 $TOTAL_STEPS "Service"
 echo ""
-if "$INSTALL_DIR/$BINARY" service install; then
-  ok "Daemon8 service installed and running"
-else
+if ! "$INSTALL_DIR/$BINARY" service install; then
   err "Service install failed. Try again with: $INSTALL_DIR/$BINARY service install"
   exit 1
 fi
-
-echo ""
-dim "Daemon8 is now running as the local MCP server."
-dim "Start a fresh AI CLI/REPL session and check that daemon8 appears in the MCP server list."
-dim "Inside a project, initialize source config only when daemon8 asks: daemon8 init"

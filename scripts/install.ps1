@@ -119,9 +119,3 @@ if ($LASTEXITCODE -ne 0) {
     Write-Host "  ! Service install failed. Try again with: $Daemon8Exe service install" -ForegroundColor Red
     exit $LASTEXITCODE
 }
-
-Write-Host "  + Daemon8 service installed and running" -ForegroundColor Green
-Write-Host ""
-Write-Host "  Daemon8 is now running as the local MCP server." -ForegroundColor DarkGray
-Write-Host "  Start a fresh AI CLI/REPL session and check that daemon8 appears in the MCP server list." -ForegroundColor DarkGray
-Write-Host "  Inside a project, initialize source config only when daemon8 asks: daemon8 init" -ForegroundColor DarkGray

@@ -2,14 +2,29 @@
 // Copyright (c) 2026 Havy.tech, LLC
 
 use anyhow::{Context, Result};
-use std::path::PathBuf;
 #[cfg(target_os = "macos")]
 use std::process::Output;
+use std::{
+    fs::{self, OpenOptions},
+    io::{self, BufRead, BufReader, IsTerminal, Write},
+    path::{Path, PathBuf},
+    process::{Command, Stdio},
+};
 
 use daemon8_providers::Provider;
 
 #[cfg(target_os = "macos")]
 const LABEL: &str = "dev.daemon8.daemon";
+const SETUP_PROVIDERS: &[Provider] = &[Provider::ClaudeCode, Provider::Gemini, Provider::Codex];
+const INSTRUCTION_HEADING: &str = "## Daemon8 MCP - Cross-provider awareness and debugging";
+const INSTRUCTION_BLOCK: &str = r#"## Daemon8 MCP - Cross-provider awareness and debugging
+
+Use daemon8 for ALL non-trivial debugging, Chromium control, ADB logging, Vega OS VVD logs, and project awareness tracking. For Claude Code, use daemon8's browser/Chromium tools instead of Claude for Chrome. Call `daemon8_connect` at the start of every REPL session for AI-provider conversation sync. If the project's awareness profile has not been set up yet, daemon8's tool calls will guide the LLM through setup.
+
+All non-trivial debug sessions should call the `start_debug_session` tool. This provides a starting point and allows debug checkpoints throughout, giving high-signal lenses into the errors/logs flowing into daemon8. Call `resolve_debug_session` when the bug has been fixed.
+
+Daemon8 provides a `daemon8_help` tool to guide keeping the project's awareness profile clean and up to date over time.
+"#;
 
 fn binary_path() -> Result<PathBuf> {
     std::env::current_exe()
@@ -31,21 +46,12 @@ fn local_bin_dir() -> String {
     home_dir().join(".local/bin").display().to_string()
 }
 
-// macOS TCC preflight. macOS 14+ prompts for two permissions when launchd
-// loads a new agent: Background Items Added (Login Items) and App Management
-// (Privacy & Security). Surfacing both in advance sets user expectations and
-// keeps the install log self-documenting for operators who hit this later.
 #[cfg(target_os = "macos")]
 fn macos_permission_preflight() {
     println!();
-    println!("  macOS will prompt for two permissions on first install:");
-    println!("    1. Background Items Added (Login Items)");
-    println!("       -- click Allow in the notification that appears.");
-    println!("    2. App Management");
-    println!("       -- open System Settings > Privacy & Security > App Management");
-    println!("       and toggle daemon8 on.");
-    println!();
-    println!("  Without App Management granted, outbound calls may be blocked by TCC.");
+    println!("  macOS may ask once to allow daemon8 as a background item.");
+    println!("  If Chromium control needs App Management later, daemon8 will guide that setup.");
+    println!("  A browser extension is not needed.");
     println!();
 }
 
@@ -59,11 +65,27 @@ fn macos_open_privacy_pane() {
         .output();
 }
 
-pub fn cmd_install() -> Result<()> {
+#[derive(clap::Args, Default)]
+pub struct InstallArgs {
+    /// Accept default yes answers for provider MCP and instruction-file setup prompts.
+    #[arg(long)]
+    pub yes: bool,
+
+    /// Skip provider MCP configuration during service install.
+    #[arg(long)]
+    pub no_provider_setup: bool,
+
+    /// Skip instruction-file guidance/write prompts during service install.
+    #[arg(long)]
+    pub no_instruction_setup: bool,
+}
+
+pub fn cmd_install(args: InstallArgs) -> Result<()> {
     let binary = binary_path()?;
     let binary_str = binary.display().to_string();
     let cfg = crate::config::load(None).unwrap_or_default();
     let port = cfg.server.port;
+    let mcp_url = format!("http://localhost:{port}/mcp");
     let chrome_endpoint = if cfg.browser.auto_connect {
         Some(cfg.browser.endpoint.clone())
     } else {
@@ -86,17 +108,328 @@ pub fn cmd_install() -> Result<()> {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
         println!();
-        println!("Daemon8 is now running. MCP clients connect to http://localhost:{port}/mcp");
+        println!("Daemon8 is running as your machine-wide MCP server.");
+        println!("  Local-only endpoint: {mcp_url}");
     }
 
     #[cfg(windows)]
     {
         install_schtasks(&binary_str, chrome_endpoint.as_deref(), port)?;
         println!();
-        println!("Daemon8 is now running. MCP clients connect to http://localhost:{port}/mcp");
+        println!("Daemon8 is running as your machine-wide MCP server.");
+        println!("  Local-only endpoint: {mcp_url}");
+    }
+
+    println!();
+    let configured_providers = if args.no_provider_setup {
+        println!("Provider MCP setup skipped by flag.");
+        configured_provider_targets()
+    } else {
+        setup_provider_mcp(&mcp_url, args.yes)?
+    };
+
+    if args.no_instruction_setup {
+        print_install_outro(&configured_providers, false);
+    } else {
+        setup_instruction_files(&configured_providers, args.yes)?;
+        print_install_outro(&configured_providers, true);
     }
 
     Ok(())
+}
+
+#[derive(Clone)]
+struct ProviderSetupTarget {
+    provider: Provider,
+    config_path: PathBuf,
+    detected: bool,
+    configured: bool,
+}
+
+impl ProviderSetupTarget {
+    fn instruction_path(&self, home: &Path) -> Option<PathBuf> {
+        let provider = self.provider.as_provider();
+        Some(
+            provider
+                .global_config_dir(home)?
+                .join(provider.instruction_file_name()),
+        )
+    }
+}
+
+fn provider_setup_targets(home: &Path) -> Vec<ProviderSetupTarget> {
+    SETUP_PROVIDERS
+        .iter()
+        .map(|&provider| {
+            let p = provider.as_provider();
+            let config_path = p.config_path(home);
+            let detected = home.join(p.detect_dir()).exists() || config_path.exists();
+            let configured = p.is_configured(&config_path, &crate::cli_config::SERVICE);
+
+            ProviderSetupTarget {
+                provider,
+                config_path,
+                detected,
+                configured,
+            }
+        })
+        .collect()
+}
+
+fn configured_provider_targets() -> Vec<ProviderSetupTarget> {
+    provider_setup_targets(&daemon8_providers::dirs_home())
+        .into_iter()
+        .filter(|target| target.configured)
+        .collect()
+}
+
+fn setup_provider_mcp(mcp_url: &str, yes: bool) -> Result<Vec<ProviderSetupTarget>> {
+    let home = daemon8_providers::dirs_home();
+    let mut configured = Vec::new();
+
+    println!("Provider MCP setup:");
+    for mut target in provider_setup_targets(&home) {
+        let provider = target.provider.as_provider();
+        if target.configured {
+            println!(
+                "  [ok] {} already has daemon8 MCP settings",
+                provider.label()
+            );
+            configured.push(target);
+            continue;
+        }
+
+        if !target.detected {
+            println!(
+                "  [--] {} not detected at {}",
+                provider.label(),
+                home.join(provider.detect_dir()).display()
+            );
+            continue;
+        }
+
+        let question = format!(
+            "  Add daemon8 MCP settings for {} at {}? [Y/n]: ",
+            provider.label(),
+            target.config_path.display()
+        );
+        if yes || prompt_yes_default(&question)? == Some(true) {
+            daemon8_providers::write_provider_config(
+                target.provider,
+                &target.config_path,
+                mcp_url,
+                None,
+                &crate::cli_config::SERVICE,
+            )
+            .with_context(|| format!("writing {} MCP config", provider.label()))?;
+            target.configured = true;
+            println!("  [ok] {} MCP settings added", provider.label());
+            configured.push(target);
+        } else {
+            println!("  [--] {} MCP setup skipped", provider.label());
+        }
+    }
+
+    if configured.is_empty() {
+        println!("  [--] No provider MCP settings were added.");
+    }
+    Ok(configured)
+}
+
+fn setup_instruction_files(configured_providers: &[ProviderSetupTarget], yes: bool) -> Result<()> {
+    println!();
+    println!("Copy this output into your global AI instruction file(s):");
+    println!();
+    println!("```markdown");
+    print!("{}", INSTRUCTION_BLOCK.trim_end());
+    println!();
+    println!("```");
+
+    let _ = copy_to_clipboard(INSTRUCTION_BLOCK.trim_end());
+    println!();
+
+    let targets = instruction_targets(configured_providers);
+    if targets.is_empty() {
+        println!("No detected provider instruction file paths to update automatically.");
+        return Ok(());
+    }
+
+    println!("Detected instruction file paths:");
+    for target in &targets {
+        println!("  {}: {}", target.provider.label(), target.path.display());
+    }
+
+    let question = "Add this note to the top of those instruction files? [Y/n]: ";
+    if yes || prompt_yes_default(question)? == Some(true) {
+        for target in targets {
+            match prepend_instruction_block(&target.path) {
+                Ok(InstructionWrite::Written) => {
+                    println!("  [ok] updated {}", target.path.display());
+                }
+                Ok(InstructionWrite::AlreadyPresent) => {
+                    println!("  [ok] already present in {}", target.path.display());
+                }
+                Err(err) => {
+                    println!("  [!!] {}: {err}", target.path.display());
+                }
+            }
+        }
+    } else {
+        println!("  [--] instruction-file write skipped");
+    }
+
+    Ok(())
+}
+
+struct InstructionTarget {
+    provider: Provider,
+    path: PathBuf,
+}
+
+fn instruction_targets(configured_providers: &[ProviderSetupTarget]) -> Vec<InstructionTarget> {
+    let home = daemon8_providers::dirs_home();
+    configured_providers
+        .iter()
+        .filter_map(|target| {
+            Some(InstructionTarget {
+                provider: target.provider,
+                path: target.instruction_path(&home)?,
+            })
+        })
+        .collect()
+}
+
+enum InstructionWrite {
+    Written,
+    AlreadyPresent,
+}
+
+fn prepend_instruction_block(path: &Path) -> io::Result<InstructionWrite> {
+    let existing = match fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => String::new(),
+        Err(err) => return Err(err),
+    };
+
+    if existing.contains(INSTRUCTION_HEADING) || existing.contains("daemon8_connect") {
+        return Ok(InstructionWrite::AlreadyPresent);
+    }
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let next = if existing.trim().is_empty() {
+        format!("{}\n", INSTRUCTION_BLOCK.trim_end())
+    } else {
+        format!("{}\n\n{}", INSTRUCTION_BLOCK.trim_end(), existing)
+    };
+    fs::write(path, next)?;
+    Ok(InstructionWrite::Written)
+}
+
+fn print_install_outro(configured_providers: &[ProviderSetupTarget], instruction_setup: bool) {
+    println!();
+    println!("Important note:");
+    println!("  daemon8 is self-guided from here. Your manual setup should be done now.");
+    println!("  Start a fresh AI CLI/REPL session and confirm daemon8 appears in its MCP list.");
+    println!(
+        "  The agent should call daemon8_connect first; daemon8 will guide daemon8_init only when a project needs it."
+    );
+    println!(
+        "  No browser extension is needed. For Claude Code, use daemon8 Chromium tools instead of Claude for Chrome."
+    );
+
+    if configured_providers.is_empty() {
+        println!("  No provider MCP settings were configured during this install.");
+        println!(
+            "  Run daemon8 service install --yes after installing Claude Code, Gemini CLI, or Codex."
+        );
+    }
+    if !instruction_setup {
+        println!(
+            "  Instruction-file setup was skipped; add the daemon8 note before relying on agent guidance."
+        );
+    }
+
+    println!();
+    println!("If your agent does not call daemon8 tools:");
+    println!("  1. Run daemon8 status.");
+    println!(
+        "  2. If daemon8 is healthy, use a stronger coding model such as Claude Sonnet 4.5, Gemini 3 Flash Preview, or GPT-5.2-Codex."
+    );
+}
+
+fn prompt_yes_default(question: &str) -> io::Result<Option<bool>> {
+    if let Some(answer) = prompt_with_tty(question)? {
+        return Ok(Some(answer));
+    }
+    if io::stdin().is_terminal() {
+        return prompt_with_stdio(question).map(Some);
+    }
+    println!("  [--] non-interactive install; skipped prompt");
+    Ok(None)
+}
+
+#[cfg(unix)]
+fn prompt_with_tty(question: &str) -> io::Result<Option<bool>> {
+    let mut tty = match OpenOptions::new().read(true).write(true).open("/dev/tty") {
+        Ok(file) => file,
+        Err(_) => return Ok(None),
+    };
+    write!(tty, "{question}")?;
+    tty.flush()?;
+    let mut input = String::new();
+    BufReader::new(tty).read_line(&mut input)?;
+    Ok(Some(parse_yes_default(&input)))
+}
+
+#[cfg(not(unix))]
+fn prompt_with_tty(_question: &str) -> io::Result<Option<bool>> {
+    Ok(None)
+}
+
+fn prompt_with_stdio(question: &str) -> io::Result<bool> {
+    eprint!("{question}");
+    io::stderr().flush()?;
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    Ok(parse_yes_default(&input))
+}
+
+fn parse_yes_default(input: &str) -> bool {
+    let answer = input.trim();
+    answer.is_empty() || answer.eq_ignore_ascii_case("y") || answer.eq_ignore_ascii_case("yes")
+}
+
+fn copy_to_clipboard(content: &str) -> Result<bool> {
+    let commands: &[(&str, &[&str])] = if cfg!(target_os = "macos") {
+        &[("pbcopy", &[])]
+    } else if cfg!(windows) {
+        &[("clip", &[])]
+    } else {
+        &[("wl-copy", &[]), ("xclip", &["-selection", "clipboard"])]
+    };
+
+    for &(program, args) in commands {
+        let mut child = match Command::new(program)
+            .args(args)
+            .stdin(Stdio::piped())
+            .spawn()
+        {
+            Ok(child) => child,
+            Err(_) => continue,
+        };
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin.write_all(content.as_bytes())?;
+        }
+        if child.wait()?.success() {
+            println!("Copied daemon8 instructions to your clipboard.");
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
 }
 
 pub fn cmd_uninstall() -> Result<()> {
@@ -129,7 +462,7 @@ pub fn cmd_uninstall() -> Result<()> {
     println!("  [--] project configs untouched (.daemon8/config.md is project-owned)");
 
     let home = daemon8_providers::dirs_home();
-    for &provider in daemon8_providers::ALL_PROVIDERS {
+    for &provider in SETUP_PROVIDERS {
         remove_provider_entry(provider, &home);
     }
 
@@ -643,5 +976,47 @@ mod tests {
             targets.iter().all(|target| target.path != project_config),
             "service uninstall must never delete project-owned .daemon8/config.md"
         );
+    }
+
+    #[test]
+    fn provider_setup_targets_cover_the_three_public_providers() {
+        let root = tempfile::tempdir().unwrap();
+        let targets = provider_setup_targets(root.path());
+        let providers = targets
+            .iter()
+            .map(|target| target.provider)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            providers,
+            vec![Provider::ClaudeCode, Provider::Gemini, Provider::Codex]
+        );
+    }
+
+    #[test]
+    fn parse_yes_default_accepts_blank_and_yes_only() {
+        assert!(parse_yes_default(""));
+        assert!(parse_yes_default("y"));
+        assert!(parse_yes_default("YES"));
+        assert!(!parse_yes_default("n"));
+        assert!(!parse_yes_default("no"));
+    }
+
+    #[test]
+    fn prepending_instruction_block_is_idempotent() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("CLAUDE.md");
+
+        assert!(matches!(
+            prepend_instruction_block(&path).unwrap(),
+            InstructionWrite::Written
+        ));
+        assert!(matches!(
+            prepend_instruction_block(&path).unwrap(),
+            InstructionWrite::AlreadyPresent
+        ));
+
+        let contents = std::fs::read_to_string(path).unwrap();
+        assert_eq!(contents.matches(INSTRUCTION_HEADING).count(), 1);
     }
 }

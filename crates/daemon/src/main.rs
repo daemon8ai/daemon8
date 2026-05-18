@@ -78,7 +78,7 @@ enum Commands {
 #[derive(Subcommand)]
 enum ServiceSubcommand {
     /// Install daemon8 as a system service (starts on login, restarts on crash)
-    Install,
+    Install(cli::service::InstallArgs),
     /// Remove daemon8 system service
     Uninstall,
 }
@@ -122,7 +122,7 @@ async fn main() -> Result<()> {
         Commands::Connect(args) => cli::connect::cmd_connect(cli.config, args).await,
         Commands::Init(args) => cli::init::cmd_init(cli.config, args).await,
         Commands::Service(sub) => match sub {
-            ServiceSubcommand::Install => cli::service::cmd_install(),
+            ServiceSubcommand::Install(args) => cli::service::cmd_install(args),
             ServiceSubcommand::Uninstall => cli::service::cmd_uninstall(),
         },
         Commands::Reset(args) => cli::reset::cmd_reset(cli.config, args).await,

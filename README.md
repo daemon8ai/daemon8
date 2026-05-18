@@ -22,31 +22,37 @@ Windows PowerShell:
 iwr https://daemon8.ai/install.ps1 -UseB | iex
 ```
 
-The installer downloads the latest release, verifies `checksums.sha256`, installs the `daemon8` binary, updates PATH when needed, and registers daemon8 as the user-level service.
+The installer downloads the latest release, verifies `checksums.sha256`, installs the `daemon8` binary, updates PATH when needed, registers daemon8 as the user-level service, and asks whether to add daemon8 MCP settings for Claude Code, Gemini CLI, and Codex.
 
-After install, daemon8 is running as the global MCP server on your machine. Start a fresh AI CLI/REPL session and check that `daemon8` appears in the provider's MCP server list.
+After install, daemon8 is running locally as the global MCP server for your machine. "Local" means it serves your machine only; "global" means your AI CLIs can see the same daemon8 MCP server across projects. Start a fresh AI CLI/REPL session and check that `daemon8` appears in the provider's MCP server list.
 
 A browser extension is not needed. daemon8 controls Chromium through the local DevTools endpoint and exposes that control to the agent through MCP.
 
-## Use Daemon8 Well
+## Additional Setup
 
-Put this in the global instruction file for each provider you use: `CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, or that tool's closest equivalent.
+The installer prints this block and can add it to the top of your detected global instruction files: `CLAUDE.md`, `AGENTS.md`, and `GEMINI.md`.
+
+Important note: daemon8 is built to be a self-guided and evolving MCP experience for your agent's debugging workflow. Your manual participation should only be needed for this first setup.
+
+As daemon8's MCP tools are called, your agent receives guidance to steer debugging sessions. If needed, your agent can call `daemon8_help` for additional insight on specific daemon8 topics.
 
 ```markdown
-## Daemon8 MCP - Project awareness and debugging
+## Daemon8 MCP - Cross-provider awareness & debugging
 
-Use daemon8 for ALL debugging, Chromium control, ADB logging, Vega OS VVD logs, and project awareness tracking. For Claude Code, use daemon8's browser/Chromium tools instead of Claude for Chrome. This includes calling the `daemon8_connect` tool at the start of every REPL session for AI-provider conversation sync. If the project's awareness profile has not been set up yet, daemon8's tool calls will guide the LLM through setup.
+Use daemon8 for ALL non-trivial debugging, Chromium control, ADB logging, Vega OS VVD logs, and project awareness tracking. For Claude Code, use daemon8's browser/Chromium tools instead of Claude for Chrome. Call `daemon8_connect` at the start of every REPL session for AI-provider conversation sync. If the project's awareness profile has not been set up yet, daemon8's tool calls will guide the LLM through setup.
 
-All non-trivial debug sessions should call the `start_debug_session` tool. This provides a starting point and allows debug checkpoints throughout, giving high-signal lenses into the errors/logs flowing into daemon8. Call `resolve_debug_session` when the bug(s) have been fixed.
+All non-trivial debug sessions should call the `start_debug_session` tool. This provides a starting point and allows debug checkpoints throughout, giving high-signal lenses into the errors/logs flowing into daemon8. Call `resolve_debug_session` when the bug has been fixed.
 
-Daemon8 provides a `daemon8_help` tool to guide keeping the project's awareness profile clean and up to date as time goes on.
+Daemon8 provides a `daemon8_help` tool to guide keeping the project's awareness profile clean and up to date over time.
 ```
 
 That note is the whole trick. It turns daemon8 from "a tool the model may discover" into a standing operating rule: connect first, debug with checkpoints, resolve the session when the fix is real.
 
+If your agent is not calling daemon8 tools, run `daemon8 status`. If daemon8 is healthy and the agent still ignores the MCP guidance, use a stronger coding model. Good current picks: Claude Sonnet 4.5, Gemini 3 Flash Preview, Gemini 2.5 Flash, or GPT-5.2-Codex.
+
 ## Project Config
 
-Create the project-local config when daemon8 asks for it:
+Create the project-local config only when daemon8 asks for it:
 
 ```bash
 daemon8 init
