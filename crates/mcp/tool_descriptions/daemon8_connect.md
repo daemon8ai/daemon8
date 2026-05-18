@@ -4,7 +4,7 @@ Bind this MCP session to an explicit alpha scope and, in project mode, bind the 
 
 ## When
 
-Call once at the start of an LLM session before any MCP tool except `daemon8_init` and `daemon8_status`. Retry after `daemon8_init` if the first response returns `setup_required`. If the response returns `blocked/transcript_ambiguous`, retry with `transcript_path` set to one returned candidate.
+Call once at the start of an LLM session before any MCP tool except `daemon8_init`, `daemon8_status`, and `daemon8_help`. Retry after `daemon8_init` if the first response returns `setup_required`. If the response returns `blocked/transcript_ambiguous`, retry with `transcript_path` set to one returned candidate.
 
 ## Prereq
 

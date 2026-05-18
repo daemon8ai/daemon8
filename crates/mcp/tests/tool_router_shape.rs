@@ -124,6 +124,50 @@ async fn make_mcp_with_debug() -> DaemonMcp {
     })
 }
 
+async fn make_mcp_with_debug_and_writer() -> DaemonMcp {
+    let store = Arc::new(SurrealStore::memory().await.unwrap());
+    let memory_store = store.memory_store();
+    memory_store.init_schema().await.unwrap();
+    let debug_session_store = store.debug_session_store();
+    debug_session_store.init_schema().await.unwrap();
+    let scope_ledger_store = store.scope_ledger_store();
+    let source_trigger = ConfiguredSourceTrigger::new(
+        Arc::new(store.cursor_store()),
+        Arc::new(DirectStoreWriter {
+            store: store.clone(),
+        }),
+    );
+    let (obs_tx, mut obs_rx) = tokio::sync::mpsc::unbounded_channel();
+    let store_for_writer = store.clone();
+    tokio::spawn(async move {
+        while let Some(obs) = obs_rx.recv().await {
+            let _ = store_for_writer.insert(obs).await;
+        }
+    });
+
+    let (chrome_tx, _) = tokio::sync::mpsc::channel(16);
+    let (_, chrome_state_rx) = tokio::sync::watch::channel(ConnectionState::Disconnected);
+    let (broadcast_tx, _) = tokio::sync::broadcast::channel(16);
+    let lens = Arc::new(daemon8_store::LensManager::new(broadcast_tx.subscribe()));
+    DaemonMcp::new(DaemonMcpConfig {
+        store,
+        memory_store: Some(Arc::new(memory_store)),
+        debug_session_store: Some(Arc::new(debug_session_store)),
+        scope_ledger_store: Some(Arc::new(scope_ledger_store)),
+        obs_tx,
+        chrome_tx,
+        chrome_state: chrome_state_rx,
+        chrome_endpoint: Arc::new(std::sync::Mutex::new(None)),
+        device_screenshot_fn: None,
+        screenshot_dir: std::env::temp_dir().join("daemon8-test-screenshots"),
+        home_dir: test_home_dir(),
+        broadcast_tx,
+        source_trigger: Some(Arc::new(source_trigger)),
+        lens,
+        cancel: CancellationToken::new(),
+    })
+}
+
 async fn make_mcp_with_debug_without_memory() -> DaemonMcp {
     let store = Arc::new(SurrealStore::memory().await.unwrap());
     let debug_session_store = store.debug_session_store();
@@ -666,6 +710,8 @@ async fn daemon8_connect_missing_config_guides_to_init() {
     let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(parsed["status"], "setup_required");
     assert_eq!(parsed["code"], "missing_config");
+    assert!(parsed["data"]["session_id"].is_string());
+    assert!(parsed["data"]["connection"].is_null());
     assert_eq!(parsed["next_actions"][0]["tool"], "daemon8_init");
 
     let body = mcp
@@ -719,6 +765,8 @@ async fn daemon8_init_then_connect_sets_session_connection() {
     let parsed: serde_json::Value = serde_json::from_str(&connect).unwrap();
     assert_eq!(parsed["status"], "success");
     assert_eq!(parsed["data"]["mode"], "project");
+    assert_eq!(parsed["data"]["connection"]["mode"], "project");
+    assert_eq!(parsed["data"]["connection"]["provider"], "codex");
 
     let status = mcp.daemon8_status_for_tests().await;
     let parsed: serde_json::Value = serde_json::from_str(&status).unwrap();
@@ -1151,6 +1199,9 @@ async fn pre_connect_status_exception_runs_through_real_mcp_call() -> anyhow::Re
     let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
     assert_eq!(parsed["status"], "success");
     assert_eq!(parsed["code"], "status");
+    assert!(parsed["data"]["session_id"].is_string());
+    assert!(parsed["data"]["connection"].is_null());
+    assert!(parsed["data"].get("session_context").is_none());
 
     client.cancel().await?;
     server.await??;
@@ -1178,6 +1229,9 @@ async fn pre_connect_help_exception_runs_through_real_mcp_call() -> anyhow::Resu
     assert_eq!(parsed["status"], "success");
     assert_eq!(parsed["code"], "ok");
     assert_eq!(parsed["data"]["topic"], "envelope");
+    assert!(parsed["data"]["session_id"].is_string());
+    assert!(parsed["data"]["connection"].is_null());
+    assert!(parsed["data"].get("session_context").is_none());
     assert!(
         parsed["data"]["body"]
             .as_str()
@@ -1271,22 +1325,25 @@ async fn mcp_live_feed_filters_by_provenance() {
     let parsed: serde_json::Value = serde_json::from_str(&connected).unwrap();
     assert_eq!(parsed["status"], "success");
 
-    mcp.write_to_live_feed_for_tests(IngestParams {
-        kind: Some("log".into()),
-        severity: Some("info".into()),
-        app: Some("cargo".into()),
-        channel: None,
-        correlation_id: None,
-        parent_id: None,
-        tags: None,
-        session_id: None,
-        node_id: None,
-        service: Some("cargo".into()),
-        source: Some("cargo.check".into()),
-        source_instance: Some("target/daemon8/cargo-check.log".into()),
-        data: serde_json::json!({"msg": "cargo check failed"}),
-    })
-    .await;
+    let written = mcp
+        .write_to_live_feed_for_tests(IngestParams {
+            kind: Some("log".into()),
+            severity: Some("info".into()),
+            app: Some("cargo".into()),
+            channel: None,
+            correlation_id: None,
+            parent_id: None,
+            tags: None,
+            session_id: None,
+            node_id: None,
+            service: Some("cargo".into()),
+            source: Some("cargo.check".into()),
+            source_instance: Some("target/daemon8/cargo-check.log".into()),
+            data: serde_json::json!({"msg": "cargo check failed"}),
+        })
+        .await;
+    let parsed_write: serde_json::Value = serde_json::from_str(&written).unwrap();
+    assert_eq!(parsed_write["data"]["queued"], true);
     mcp.write_to_live_feed_for_tests(IngestParams {
         kind: Some("log".into()),
         severity: Some("info".into()),
@@ -1321,7 +1378,7 @@ async fn mcp_live_feed_filters_by_provenance() {
 }
 
 #[tokio::test]
-async fn live_feed_warning_since_checkpoint_has_specific_next_actions() {
+async fn live_feed_warning_since_checkpoint_without_active_debug_session_stays_on_feed() {
     let mcp = make_mcp_with_writer().await;
     let general = tempfile::tempdir().unwrap();
     let connected = mcp
@@ -1366,6 +1423,75 @@ async fn live_feed_warning_since_checkpoint_has_specific_next_actions() {
     assert_eq!(parsed["next_actions"][0]["tool"], "read_live_feed");
     assert_eq!(parsed["next_actions"][0]["params"]["since_checkpoint"], 0);
     assert_eq!(parsed["next_actions"][0]["params"]["severity_min"], "warn");
+    assert_eq!(parsed["next_actions"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn live_feed_warning_since_checkpoint_in_active_project_debug_session_can_resolve() {
+    let mcp = make_mcp_with_debug_and_writer().await;
+    let project = tempfile::tempdir().unwrap();
+    mark_project(project.path());
+    let init = mcp
+        .daemon8_init_for_tests(Daemon8InitParams {
+            project_path: project.path().display().to_string(),
+            name: Some("mcp-project".into()),
+            overwrite: None,
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&init).unwrap();
+    assert_eq!(parsed["status"], "success");
+
+    let connected = mcp
+        .daemon8_connect_for_tests(Daemon8ConnectParams {
+            provider: "codex".into(),
+            project_path: project.path().display().to_string(),
+            agent_name: None,
+            transcript_path: None,
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&connected).unwrap();
+    assert_eq!(parsed["data"]["mode"], "project");
+
+    let started = mcp
+        .start_debug_session_for_tests(StartDebugSessionParams {
+            project: Some("daemon8".into()),
+            description: Some("warning follow-up".into()),
+            agent_id: ":host/codex+worker>".into(),
+            feature: None,
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&started).unwrap();
+    assert_eq!(parsed["status"], "success");
+
+    mcp.write_to_live_feed_for_tests(IngestParams {
+        kind: Some("log".into()),
+        severity: Some("warn".into()),
+        app: Some("agent".into()),
+        channel: None,
+        correlation_id: None,
+        parent_id: None,
+        tags: None,
+        session_id: None,
+        node_id: None,
+        service: Some("agent".into()),
+        source: Some("agent.notes".into()),
+        source_instance: Some("mcp".into()),
+        data: serde_json::json!({"message": "warn during active debug"}),
+    })
+    .await;
+    tokio::task::yield_now().await;
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+    let feed = mcp
+        .read_live_feed_for_tests_with(ObserveParams {
+            since_checkpoint: Some(0),
+            service: Some(vec!["agent".into()]),
+            ..Default::default()
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&feed).unwrap();
+    assert_eq!(parsed["status"], "success");
+    assert_eq!(parsed["next_actions"][0]["tool"], "read_live_feed");
     assert_eq!(parsed["next_actions"][1]["tool"], "resolve_debug_session");
     assert_eq!(
         parsed["next_actions"][1]["params"]["summary"],
@@ -1824,6 +1950,59 @@ async fn debug_lifecycle_codes_are_stable_through_real_mcp_calls() -> anyhow::Re
 }
 
 #[tokio::test]
+async fn already_active_debug_session_prefers_resolution_before_abandoning() {
+    let mcp = make_mcp_with_debug().await;
+    let project = tempfile::tempdir().unwrap();
+    mark_project(project.path());
+
+    let init = mcp
+        .daemon8_init_for_tests(Daemon8InitParams {
+            project_path: project.path().display().to_string(),
+            name: None,
+            overwrite: None,
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&init).unwrap();
+    assert_eq!(parsed["status"], "success");
+
+    let connected = mcp
+        .daemon8_connect_for_tests(Daemon8ConnectParams {
+            provider: "codex".into(),
+            project_path: project.path().display().to_string(),
+            agent_name: None,
+            transcript_path: None,
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&connected).unwrap();
+    assert_eq!(parsed["data"]["mode"], "project");
+
+    let first = mcp
+        .start_debug_session_for_tests(StartDebugSessionParams {
+            project: Some("daemon8".into()),
+            description: Some("first".into()),
+            agent_id: ":host/codex+worker>".into(),
+            feature: None,
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&first).unwrap();
+    assert_eq!(parsed["status"], "success");
+
+    let second = mcp
+        .start_debug_session_for_tests(StartDebugSessionParams {
+            project: Some("daemon8".into()),
+            description: Some("second".into()),
+            agent_id: ":host/codex+worker>".into(),
+            feature: None,
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&second).unwrap();
+    assert_eq!(parsed["status"], "error");
+    assert_eq!(parsed["code"], "already_active_debug_session");
+    assert_eq!(parsed["next_actions"][0]["tool"], "resolve_debug_session");
+    assert_eq!(parsed["next_actions"][1]["tool"], "end_debug_session");
+}
+
+#[tokio::test]
 async fn project_mode_allows_project_only_debug_tools() {
     let mcp = make_mcp_with_debug().await;
     let project = tempfile::tempdir().unwrap();
@@ -1867,6 +2046,8 @@ async fn issue_command_missing_param_uses_alpha_envelope() {
     let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(parsed["status"], "error");
     assert_eq!(parsed["code"], "missing_param");
+    assert!(parsed["data"]["session_id"].is_string());
+    assert!(parsed["data"]["connection"].is_null());
     assert!(parsed.get("result").is_none());
     assert!(parsed.get("error").is_none());
 }

@@ -411,6 +411,23 @@ fn cli_init_json_uses_common_envelope() {
 }
 
 #[test]
+fn cli_init_success_human_prints_next_action() {
+    let (_tmp, work, home) = setup_dirs();
+    mark_project(&work);
+    let out = run_init(&work, &home, &[]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("wrote "));
+    assert!(stdout.contains("name: work"));
+    assert!(stdout.contains("next: daemon8_connect"));
+}
+
+#[test]
 fn cli_init_refuses_general_scope_without_writing() {
     let (_tmp, work, home) = setup_dirs();
     let out = run_init(&work, &home, &["--json"]);
@@ -492,6 +509,10 @@ fn cli_skips_existing_project_config_without_force() {
         preserved, "# pre-existing\n",
         "file must be untouched when --force is not set"
     );
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("project config already exists"));
+    assert!(stdout.contains("next: daemon8_init"));
 }
 
 #[test]

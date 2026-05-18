@@ -68,7 +68,7 @@ Observation records include optional `service`, `source`, and `source_instance` 
 
 ## MCP Surface
 
-Except for `daemon8_connect`, `daemon8_init`, and `daemon8_status`, MCP tools require an established `daemon8_connect` session. Debug lifecycle tools require project mode.
+Except for `daemon8_connect`, `daemon8_init`, `daemon8_status`, and `daemon8_help`, MCP tools require an established `daemon8_connect` session. Debug lifecycle tools require project mode.
 
 Core runtime tools:
 
@@ -119,7 +119,7 @@ MCP responses and CLI `--json` output use a common envelope:
 }
 ```
 
-The envelope is part of the control flow. `status`, `code`, and structured `next_actions` guide the model at decision points. Session context appears in `data.session_id`; connected responses also expose `data.mode`, `data.requested_path`, `data.scope_root`, and the full `data.connection` object. Clients should branch on `status`, `code`, and `next_actions`.
+The envelope is part of the control flow. `status`, `code`, and structured `next_actions` guide the model at decision points. `daemon8_connect` returns flattened scope fields such as `data.session_id`, `data.mode`, `data.requested_path`, and `data.scope_root`. MCP connect/status responses and guarded MCP tool responses also include `data.connection`; CLI connect JSON uses the shared flattened core fields. Clients should branch on `status`, `code`, and `next_actions`.
 
 ## Reset Safety
 

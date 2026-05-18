@@ -24,4 +24,4 @@ Common envelope with `code="checkpoint_created"`, `data.checkpoint_id`, `data.de
 
 ## Next
 
-Do the thing you were about to do (apply patch, run test, ask the user to reproduce), then call read_live_feed(since_checkpoint=<this id>) to see only what changed. Record durable conclusions through `resolve_debug_session` after interpreting observations; checkpoint/feed rows are signals only.
+Do the thing you were about to do (apply patch, run test, ask the user to reproduce), then call read_live_feed(since_checkpoint=<seq_at_creation>) to see only what changed. Record durable conclusions through `resolve_debug_session` after interpreting observations; checkpoint/feed rows are signals only.

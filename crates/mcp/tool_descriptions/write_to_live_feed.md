@@ -22,7 +22,7 @@ A connected MCP session. Call `daemon8_connect` first.
   - source_instance: optional string. Concrete source instance.
 
 ## Returns
-Common envelope with `data.ok=true` and session context. If a debug session is active, the observation is stamped with its `debug_session_id`.
+Common envelope with `data.ok=true`, `data.queued=true`, and session context. If a debug session is active, the observation is stamped with its `debug_session_id`.
 
 ## Errors
   - daemon_shutting_down: ingest channel closed. hint: not retryable in the same session.

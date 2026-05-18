@@ -11,7 +11,7 @@ daemon8_connect(provider="codex", project_path="/path/to/project")
 start_debug_session(agent_id=":host/codex+worker>")
 create_checkpoint(description="before applying retry patch")
 # ... apply patch, run test ...
-read_live_feed(since_checkpoint=<id from above>)
+read_live_feed(since_checkpoint=<seq_at_creation from above>)
 ```
 
 Returns only what arrived after the checkpoint — typically the relevant error/log delta.
@@ -33,4 +33,4 @@ Returns only what arrived after the checkpoint — typically the relevant error/
 }
 ```
 
-The envelope's `next_actions` will hint `read_live_feed` as the natural follow-up.
+The envelope's `next_actions` will pass `data.seq_at_creation` as the `read_live_feed` sequence cursor.

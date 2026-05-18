@@ -83,7 +83,7 @@ pub struct ObserveParams {
     #[schemars(description = "Search across materialized observation text")]
     pub text_match: Option<String>,
 
-    #[schemars(description = "Return only observations after this checkpoint id")]
+    #[schemars(description = "Return only observations after this checkpoint sequence cursor")]
     pub since_checkpoint: Option<u64>,
 
     #[schemars(description = "Maximum number of results to return (default 50)")]
@@ -789,27 +789,30 @@ impl DaemonMcp {
                         .iter()
                         .any(|obs| obs.severity.level() >= daemon8_types::Severity::Warn.level());
                 if warned_since_checkpoint {
+                    let mut next_actions = vec![NextAction::new(
+                        "read_live_feed",
+                        "inspect additional runtime signals with a narrower filter if needed",
+                        serde_json::json!({
+                            "since_checkpoint": since_checkpoint,
+                            "severity_min": "warn",
+                        }),
+                    )];
+                    if self.connection_mode() == Some(ScopeMode::Project)
+                        && self.active_state.current_session().is_some()
+                    {
+                        next_actions.push(NextAction::new(
+                            "resolve_debug_session",
+                            "record the durable conclusion after interpreting the runtime signal",
+                            serde_json::json!({
+                                "summary": "<durable conclusion after interpreting the runtime signal>",
+                            }),
+                        ));
+                    }
                     return self.ok_with_actions(
                         "ok",
                         "ok",
                         result,
-                        vec![
-                            NextAction::new(
-                                "read_live_feed",
-                                "inspect additional runtime signals with a narrower filter if needed",
-                                serde_json::json!({
-                                    "since_checkpoint": since_checkpoint,
-                                    "severity_min": "warn",
-                                }),
-                            ),
-                            NextAction::new(
-                                "resolve_debug_session",
-                                "record the durable conclusion after interpreting the runtime signal",
-                                serde_json::json!({
-                                    "summary": "<durable conclusion after interpreting the runtime signal>",
-                                }),
-                            ),
-                        ],
+                        next_actions,
                         Some("runtime signal found; interpret the live-feed entries before recording any durable conclusion"),
                     );
                 }
@@ -848,7 +851,16 @@ impl DaemonMcp {
                         &outcome,
                     )
                     .await;
-                    return outcome.envelope.render();
+                    let mut envelope = outcome.envelope;
+                    envelope.data = Some(
+                        self.with_session_context(
+                            envelope
+                                .data
+                                .take()
+                                .unwrap_or_else(|| serde_json::json!({})),
+                        ),
+                    );
+                    return envelope.render();
                 }
             };
         let outcome = connect_scope(ConnectRequest {
@@ -884,6 +896,14 @@ impl DaemonMcp {
             envelope.data = Some(data);
         }
 
+        envelope.data = Some(
+            self.with_session_context(
+                envelope
+                    .data
+                    .take()
+                    .unwrap_or_else(|| serde_json::json!({})),
+            ),
+        );
         envelope.render()
     }
 
@@ -1048,7 +1068,7 @@ impl DaemonMcp {
             );
         }
 
-        self.ok(serde_json::json!({"ok": true}))
+        self.ok(serde_json::json!({"ok": true, "queued": true}))
     }
 
     #[doc = include_str!("../tool_descriptions/watch_live_feed.md")]
@@ -1344,14 +1364,16 @@ impl DaemonMcp {
             }
         };
         if let Some(existing) = self.active_state.current_session() {
-            return self.err(
+            return AlphaEnvelope::non_success(
+                AlphaStatus::Error,
                 "already_active_debug_session",
-                &format!("session {} is already active", existing.id),
-                Some(
-                    "call end_debug_session(outcome=\"abandoned\") or resolve_debug_session first",
-                ),
-                Some("end_debug_session"),
-            );
+                format!("session {} is already active", existing.id),
+                "call resolve_debug_session if you have a durable conclusion, or end_debug_session to abandon/in-progress",
+            )
+            .with_data(self.session_context())
+            .with_next_action(next_action_for_tool("resolve_debug_session"))
+            .with_next_action(next_action_for_tool("end_debug_session"))
+            .render();
         }
         if let Err(msg) = validate_agent_id(&params.agent_id) {
             return self.err(
