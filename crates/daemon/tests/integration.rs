@@ -3,7 +3,7 @@
 
 // Integration tests that exercise cross-feature interactions.
 // Each test spins up the actual Axum server stack (ingest + API) backed by
-// a real SQLite store, then exercises the pipeline end-to-end.
+// a real SurrealDB store, then exercises the pipeline end-to-end.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -188,12 +188,8 @@ async fn start_server(
         chrome_cmd_tx,
         chrome_state: chrome_state_rx,
         chrome_endpoint: std::sync::Arc::new(std::sync::Mutex::new(None)),
-        lens: std::sync::Arc::new(daemon8_store::LensManager::new(
-            broadcast_tx.subscribe(),
-            None,
-        )),
-        source_activator: None,
-        discovery_control: None,
+        lens: std::sync::Arc::new(daemon8_store::LensManager::new(broadcast_tx.subscribe())),
+        source_trigger: None,
     };
 
     let app =
@@ -940,6 +936,38 @@ async fn health_endpoint() {
 }
 
 #[tokio::test]
+async fn lens_accepts_provenance_and_include_system_filters() {
+    let store: Arc<dyn StateModel> = Arc::new(SurrealStore::memory().await.unwrap());
+    let (base, _tx, _handle) = start_server(store).await;
+
+    let status: Value = reqwest::Client::new()
+        .put(format!("{base}/api/lens"))
+        .json(&json!({
+            "service": "cargo",
+            "source": "cargo.check",
+            "source_instance": "target/daemon8/cargo-check.log",
+            "include_system": true,
+            "capacity": 25,
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    assert_eq!(status["active"], true);
+    assert_eq!(status["capacity"], 25);
+    assert_eq!(status["filter"]["service"][0], "cargo");
+    assert_eq!(status["filter"]["source"][0], "cargo.check");
+    assert_eq!(
+        status["filter"]["source_instance"][0],
+        "target/daemon8/cargo-check.log"
+    );
+    assert_eq!(status["filter"]["include_system"], true);
+}
+
+#[tokio::test]
 async fn serve_writes_rotating_operational_log_file() {
     let tmp = tempfile::TempDir::new().unwrap();
     let log_dir = tmp.path().join("logs");
@@ -1049,6 +1077,68 @@ async fn text_search_filter() {
     assert_eq!(obs[0]["tags"][0], "domain:device");
 }
 
+#[tokio::test]
+async fn provenance_filters_observe_endpoint() {
+    let store: Arc<dyn StateModel> = Arc::new(SurrealStore::memory().await.unwrap());
+    let (base, _tx, _handle) = start_server(store).await;
+    let client = reqwest::Client::new();
+
+    client
+        .post(format!("{base}/ingest"))
+        .json(&json!({
+            "kind": "log",
+            "data": {"msg": "cargo check failed"},
+            "service": "cargo",
+            "source": "cargo.check",
+            "source_instance": "target/daemon8/cargo-check.log",
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    client
+        .post(format!("{base}/ingest"))
+        .json(&json!({
+            "kind": "log",
+            "data": {"msg": "assistant turn"},
+            "service": "claude",
+            "source": "claude.conversations",
+            "source_instance": "session.jsonl",
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let resp: Value = reqwest::get(format!(
+        "{base}/api/observe?service=cargo&source=cargo.check&source_instance=target%2Fdaemon8%2Fcargo-check.log"
+    ))
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+
+    let obs = resp["observations"].as_array().unwrap();
+    assert_eq!(obs.len(), 1);
+    assert_eq!(obs[0]["service"], "cargo");
+    assert_eq!(obs[0]["source"], "cargo.check");
+    assert_eq!(obs[0]["source_instance"], "target/daemon8/cargo-check.log");
+
+    let resp: Value = reqwest::get(format!(
+        "{base}/api/observe?text_match=claude.conversations"
+    ))
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    let obs = resp["observations"].as_array().unwrap();
+    assert_eq!(obs.len(), 1);
+    assert_eq!(obs[0]["service"], "claude");
+}
+
 // -----------------------------------------------------------------------
 // /api/browser/act — each variant of ActRequest deserializes into the
 // correct BrowserAction with the correct fields.
@@ -1076,9 +1166,8 @@ async fn start_act_server() -> (
         chrome_cmd_tx,
         chrome_state: chrome_state_rx,
         chrome_endpoint: std::sync::Arc::new(std::sync::Mutex::new(None)),
-        lens: std::sync::Arc::new(daemon8_store::LensManager::new(stream_tx.subscribe(), None)),
-        source_activator: None,
-        discovery_control: None,
+        lens: std::sync::Arc::new(daemon8_store::LensManager::new(stream_tx.subscribe())),
+        source_trigger: None,
     };
     let app = daemon8_api::api_router(api_state);
 

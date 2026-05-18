@@ -5,9 +5,7 @@ mod cleanup;
 mod cli;
 mod cli_config;
 mod config;
-mod discovery;
 mod screenshot;
-mod sources;
 pub(crate) mod style;
 
 use std::path::PathBuf;
@@ -18,6 +16,7 @@ use clap::{Parser, Subcommand};
 #[derive(Parser)]
 #[command(
     name = "daemon8",
+    version,
     about = "Runtime observation layer for AI coding agents"
 )]
 struct Cli {
@@ -63,41 +62,17 @@ enum Commands {
         #[arg(value_enum)]
         shell: clap_complete::aot::Shell,
     },
-    /// Report what daemon8 found in this project and register with detected agents
-    #[command(subcommand)]
-    Setup(SetupSubcommand),
+    /// Classify and connect an explicit alpha scope
+    Connect(cli::connect::ConnectArgs),
+    /// Write `.daemon8/config.md` for explicit project configuration
+    Init(cli::init::InitArgs),
     /// Manage daemon8 system service (install/uninstall)
     #[command(subcommand)]
     Service(ServiceSubcommand),
-    /// Manage per-project discovery skip/rescan signals
-    Discover(cli::discover::DiscoverArgs),
+    /// Wipe all daemon8 state and reinitialize the database
+    Reset(cli::reset::ResetArgs),
     /// Real-time alert relay for MCP clients (experimental)
     Channel,
-    /// Diagnose common configuration and environment issues
-    Doctor {
-        /// Attempt to fix issues that can be repaired automatically
-        #[arg(long)]
-        fix: bool,
-    },
-    // Hidden aliases for backward compatibility
-    #[command(hide = true)]
-    Install,
-    #[command(hide = true)]
-    Uninstall,
-    #[command(hide = true)]
-    Init(cli::init::InitArgs),
-    #[command(hide = true)]
-    Features(cli::features::FeaturesArgs),
-}
-
-#[derive(Subcommand)]
-enum SetupSubcommand {
-    /// Register MCP with detected agents, then run the project-aware discovery scan
-    Apply(cli::setup::SetupArgs),
-    /// Enable optional features interactively
-    Features(cli::features::FeaturesArgs),
-    /// Write a `.daemon8.toml` override file for explicit source configuration
-    Init(cli::init::InitArgs),
 }
 
 #[derive(Subcommand)]
@@ -132,7 +107,7 @@ async fn main() -> Result<()> {
 
     match command {
         Commands::Serve(args) => cli::serve::cmd_serve(cli.config, args).await,
-        Commands::Status(args) => cli::observe::status::cmd_status(args).await,
+        Commands::Status(args) => cli::observe::status::cmd_status(cli.config, args).await,
         Commands::Tail(args) => cli::observe::tail::cmd_tail(args).await,
         Commands::Query(args) => cli::observe::query::cmd_query(args).await,
         Commands::Connections(args) => cli::observe::connections::cmd_connections(args).await,
@@ -144,23 +119,14 @@ async fn main() -> Result<()> {
             use clap::CommandFactory;
             cli::completions::cmd_completions(shell, &mut Cli::command())
         }
-        Commands::Setup(sub) => match sub {
-            SetupSubcommand::Apply(args) => cli::setup::cmd_setup(cli.config, args).await,
-            SetupSubcommand::Features(args) => cli::features::cmd_features(args),
-            SetupSubcommand::Init(args) => cli::init::cmd_init(args),
-        },
+        Commands::Connect(args) => cli::connect::cmd_connect(cli.config, args).await,
+        Commands::Init(args) => cli::init::cmd_init(cli.config, args).await,
         Commands::Service(sub) => match sub {
             ServiceSubcommand::Install => cli::service::cmd_install(),
             ServiceSubcommand::Uninstall => cli::service::cmd_uninstall(),
         },
-        Commands::Discover(args) => cli::discover::cmd_discover(args).await,
+        Commands::Reset(args) => cli::reset::cmd_reset(cli.config, args).await,
         Commands::Channel => cli::channel::cmd_channel().await,
-        Commands::Doctor { fix } => cli::doctor::cmd_doctor(cli.config, fix).await,
-        // Hidden backward-compat aliases
-        Commands::Install => cli::service::cmd_install(),
-        Commands::Uninstall => cli::service::cmd_uninstall(),
-        Commands::Init(args) => cli::init::cmd_init(args),
-        Commands::Features(args) => cli::features::cmd_features(args),
     }
 }
 

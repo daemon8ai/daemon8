@@ -58,6 +58,9 @@ pub fn normalize(mut raw: Value) -> Observation {
         data,
         severity,
         source_location,
+        service: meta.service.map(Arc::from),
+        source: meta.source.map(Arc::from),
+        source_instance: meta.source_instance.map(Arc::from),
         timestamp_ns,
         correlation_id: meta.correlation_id.map(Arc::from),
         parent_id: meta.parent_id,
@@ -77,6 +80,9 @@ struct ObsMeta {
     tags: Option<Vec<String>>,
     session_id: Option<String>,
     node_id: Option<String>,
+    service: Option<String>,
+    source: Option<String>,
+    source_instance: Option<String>,
 }
 
 type MetaFields = (
@@ -130,6 +136,15 @@ fn extract_meta(map: &mut Map<String, Value>) -> MetaFields {
     let node_id = map
         .remove("node_id")
         .and_then(|v| v.as_str().map(String::from));
+    let service = map
+        .remove("service")
+        .and_then(|v| v.as_str().map(String::from));
+    let source = map
+        .remove("source")
+        .and_then(|v| v.as_str().map(String::from));
+    let source_instance = map
+        .remove("source_instance")
+        .and_then(|v| v.as_str().map(String::from));
 
     let meta = ObsMeta {
         correlation_id,
@@ -137,6 +152,9 @@ fn extract_meta(map: &mut Map<String, Value>) -> MetaFields {
         tags,
         session_id,
         node_id,
+        service,
+        source,
+        source_instance,
     };
 
     (
@@ -172,11 +190,13 @@ fn resolve_kind(kind_str: Option<&str>, channel: Option<String>, data: &Value) -
         Some(k) => match k.to_ascii_lowercase().as_str() {
             "log" => ObservationKind::Log,
             "query" => try_query(data),
-            "http" => try_http(data),
+            "http" | "http_exchange" => try_http(data),
             "exception" => try_exception(data),
             "metric" => try_metric(data),
             "state_snapshot" => try_state_snapshot(data),
             "tool_call" => try_tool_call(data),
+            "js_exception" => try_js_exception(data),
+            "lifecycle" => try_lifecycle(data),
             "custom" => ObservationKind::Custom {
                 channel: channel.unwrap_or_else(|| "custom".into()),
             },
@@ -282,6 +302,34 @@ fn try_state_snapshot(data: &Value) -> ObservationKind {
     }
 }
 
+fn try_js_exception(data: &Value) -> ObservationKind {
+    let message = data.get("message").and_then(Value::as_str);
+    match message {
+        Some(message) => ObservationKind::JsException {
+            message: message.to_string(),
+            line: data.get("line").and_then(Value::as_u64).map(|n| n as u32),
+            column: data.get("column").and_then(Value::as_u64).map(|n| n as u32),
+        },
+        None => ObservationKind::Custom {
+            channel: "js_exception".into(),
+        },
+    }
+}
+
+fn try_lifecycle(data: &Value) -> ObservationKind {
+    let event_name = data.get("event_name").and_then(Value::as_str);
+    let frame_id = data.get("frame_id").and_then(Value::as_str);
+    match (event_name, frame_id) {
+        (Some(event_name), Some(frame_id)) => ObservationKind::Lifecycle {
+            event_name: event_name.to_string(),
+            frame_id: frame_id.to_string(),
+        },
+        _ => ObservationKind::Custom {
+            channel: "lifecycle".into(),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -319,5 +367,29 @@ mod tests {
         let input = Value::String("{not valid json".into());
         let out = unwrap_stringified_json(input.clone());
         assert_eq!(out, input);
+    }
+
+    #[test]
+    fn resolves_documented_live_feed_kinds() {
+        let http = resolve_kind(
+            Some("http_exchange"),
+            None,
+            &serde_json::json!({"method": "GET", "url": "/health"}),
+        );
+        assert!(matches!(http, ObservationKind::HttpExchange { .. }));
+
+        let js = resolve_kind(
+            Some("js_exception"),
+            None,
+            &serde_json::json!({"message": "boom", "line": 12, "column": 3}),
+        );
+        assert!(matches!(js, ObservationKind::JsException { .. }));
+
+        let lifecycle = resolve_kind(
+            Some("lifecycle"),
+            None,
+            &serde_json::json!({"event_name": "load", "frame_id": "frame-1"}),
+        );
+        assert!(matches!(lifecycle, ObservationKind::Lifecycle { .. }));
     }
 }

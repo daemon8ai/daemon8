@@ -77,6 +77,11 @@ checksums_url() {
 
 printf "\n${BOLD}Daemon8 Installer${RESET}\n"
 
+if [ "${DAEMON8_INSTALLER_SELF_TEST:-}" = "1" ]; then
+  dim "Self-test: no network, no install"
+  exit 0
+fi
+
 TARGET="$(detect_target)"
 resolve_install_dir
 
@@ -94,7 +99,7 @@ ARCHIVE="$TMPDIR/$ARCHIVE_NAME"
 if ! curl -fsSL "$URL" -o "$ARCHIVE" 2>/dev/null; then
   err "Download failed for $TARGET."
   err "No prebuilt binary may exist for this platform."
-  err "Install from source instead: cargo install daemon8"
+  err "Install from a checked-out source tree instead: cargo install --path crates/daemon"
   if [ "$VERSION" != "latest" ]; then
     err "Version requested: $VERSION"
   fi
@@ -107,24 +112,26 @@ step 2 $TOTAL_STEPS "Verify"
 
 CHECKSUMS_URL="$(checksums_url)"
 CHECKSUMS_FILE="$TMPDIR/checksums.sha256"
-if curl -fsSL "$CHECKSUMS_URL" -o "$CHECKSUMS_FILE" 2>/dev/null; then
-  EXPECTED="$(grep "$ARCHIVE_NAME" "$CHECKSUMS_FILE" | awk '{print $1}')"
-  if [ -z "$EXPECTED" ]; then
-    dim "No checksum entry for $ARCHIVE_NAME; skipping verification"
-  else
-    ACTUAL="$(compute_sha256 "$ARCHIVE")"
-    if [ "$EXPECTED" = "$ACTUAL" ]; then
-      ok "SHA-256 verified"
-    else
-      err "Checksum verification failed!"
-      err "Expected: $EXPECTED"
-      err "Got:      $ACTUAL"
-      err "The downloaded file may be corrupted. Aborting."
-      exit 1
-    fi
-  fi
+if ! curl -fsSL "$CHECKSUMS_URL" -o "$CHECKSUMS_FILE" 2>/dev/null; then
+  err "Checksum file not available. Aborting."
+  exit 1
+fi
+
+EXPECTED="$(awk -v name="$ARCHIVE_NAME" '$2 == name {print $1; found = 1} END {if (!found) exit 1}' "$CHECKSUMS_FILE" || true)"
+if [ -z "$EXPECTED" ]; then
+  err "No checksum entry for $ARCHIVE_NAME. Aborting."
+  exit 1
+fi
+
+ACTUAL="$(compute_sha256 "$ARCHIVE")"
+if [ "$EXPECTED" = "$ACTUAL" ]; then
+  ok "SHA-256 verified"
 else
-  dim "Checksum file not available; skipping verification"
+  err "Checksum verification failed!"
+  err "Expected: $EXPECTED"
+  err "Got:      $ACTUAL"
+  err "The downloaded file may be corrupted. Aborting."
+  exit 1
 fi
 
 tar xz -C "$TMPDIR" -f "$ARCHIVE"
@@ -181,6 +188,16 @@ case ":${PATH}:" in
     ;;
 esac
 
-step 4 $TOTAL_STEPS "Setup"
+step 4 $TOTAL_STEPS "Service"
 echo ""
-"$INSTALL_DIR/$BINARY" setup
+if "$INSTALL_DIR/$BINARY" service install; then
+  ok "Daemon8 service installed and running"
+else
+  err "Service install failed. Try again with: $INSTALL_DIR/$BINARY service install"
+  exit 1
+fi
+
+echo ""
+dim "Daemon8 is now running as the local MCP server."
+dim "Start a fresh AI CLI/REPL session and check that daemon8 appears in the MCP server list."
+dim "Inside a project, initialize source config only when daemon8 asks: daemon8 init"

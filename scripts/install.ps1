@@ -20,6 +20,11 @@ Write-Host ""
 Write-Host "Daemon8 Installer" -ForegroundColor White
 Write-Host ""
 
+if ($env:DAEMON8_INSTALLER_SELF_TEST -eq "1") {
+    Write-Host "  Self-test: no network, no install" -ForegroundColor DarkGray
+    exit 0
+}
+
 Write-Host "[1/4] Download" -ForegroundColor Cyan
 Write-Host "  Platform: $Target" -ForegroundColor DarkGray
 Write-Host "  Source:   $Url" -ForegroundColor DarkGray
@@ -33,7 +38,7 @@ try {
 } catch {
     Write-Host "  ! Download failed for $Target." -ForegroundColor Red
     Write-Host "  ! No prebuilt binary may exist for this platform." -ForegroundColor Red
-    Write-Host "  ! Install from source instead: cargo install daemon8" -ForegroundColor Red
+    Write-Host "  ! Install from a checked-out source tree instead: cargo install --path crates/daemon" -ForegroundColor Red
     if ($Version -ne "latest") { Write-Host "  ! Version requested: $Version" -ForegroundColor Red }
     Remove-Item -Recurse -Force $Tmp -ErrorAction SilentlyContinue
     exit 1
@@ -45,17 +50,18 @@ Write-Host ""
 Write-Host "[2/4] Verify" -ForegroundColor Cyan
 
 $ChecksumsFile = Join-Path $Tmp "checksums.sha256"
-$Verified = $false
 
 try {
     Invoke-WebRequest -Uri $ChecksumsUrl -OutFile $ChecksumsFile -UseBasicParsing
-    $ExpectedLine = Get-Content $ChecksumsFile | Where-Object { $_ -match $ArchiveName }
+    $ExpectedLine = Get-Content $ChecksumsFile | Where-Object {
+        $Parts = $_ -split '\s+'
+        $Parts.Length -ge 2 -and $Parts[1] -eq $ArchiveName
+    } | Select-Object -First 1
     if ($ExpectedLine) {
         $Expected = ($ExpectedLine -split '\s+')[0]
         $Actual = (Get-FileHash -Path $Archive -Algorithm SHA256).Hash.ToLower()
         if ($Expected -eq $Actual) {
             Write-Host "  + SHA-256 verified" -ForegroundColor Green
-            $Verified = $true
         } else {
             Write-Host "  ! Checksum verification failed!" -ForegroundColor Red
             Write-Host "  ! Expected: $Expected" -ForegroundColor Red
@@ -65,10 +71,14 @@ try {
             exit 1
         }
     } else {
-        Write-Host "  No checksum entry for $ArchiveName; skipping verification" -ForegroundColor DarkGray
+        Write-Host "  ! No checksum entry for $ArchiveName. Aborting." -ForegroundColor Red
+        Remove-Item -Recurse -Force $Tmp -ErrorAction SilentlyContinue
+        exit 1
     }
 } catch {
-    Write-Host "  Checksum file not available; skipping verification" -ForegroundColor DarkGray
+    Write-Host "  ! Checksum file not available. Aborting." -ForegroundColor Red
+    Remove-Item -Recurse -Force $Tmp -ErrorAction SilentlyContinue
+    exit 1
 }
 
 Expand-Archive -Path $Archive -DestinationPath $Tmp -Force
@@ -101,6 +111,17 @@ Write-Host "  + Installed to $InstallDir\$Binary.exe" -ForegroundColor Green
 Remove-Item -Recurse -Force $Tmp -ErrorAction SilentlyContinue
 
 Write-Host ""
-Write-Host "[4/4] Setup" -ForegroundColor Cyan
+Write-Host "[4/4] Service" -ForegroundColor Cyan
 Write-Host ""
-& (Join-Path $InstallDir "$Binary.exe") setup
+$Daemon8Exe = Join-Path $InstallDir "$Binary.exe"
+& $Daemon8Exe service install
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "  ! Service install failed. Try again with: $Daemon8Exe service install" -ForegroundColor Red
+    exit $LASTEXITCODE
+}
+
+Write-Host "  + Daemon8 service installed and running" -ForegroundColor Green
+Write-Host ""
+Write-Host "  Daemon8 is now running as the local MCP server." -ForegroundColor DarkGray
+Write-Host "  Start a fresh AI CLI/REPL session and check that daemon8 appears in the MCP server list." -ForegroundColor DarkGray
+Write-Host "  Inside a project, initialize source config only when daemon8 asks: daemon8 init" -ForegroundColor DarkGray

@@ -1,0 +1,9 @@
+Starting application server on port 8080
+Loading configuration from /etc/app/config.toml
+Connected to database at localhost:5432
+[WARNING] This is not a monolog line but has brackets
+{"this": "looks like json but line parser takes it as-is"}
+2024-01-15 10:00:00 plain timestamped line
+ERROR: something went wrong (but line parser treats it all as message)
+    indented continuation line
+Special chars: @#$%^&*()

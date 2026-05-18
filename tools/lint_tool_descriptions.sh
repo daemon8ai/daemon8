@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: LicenseRef-FCL-1.0-ALv2
 # Copyright (c) 2026 Havy.tech, LLC
 #
-# Lint daemon8 MCP tool descriptions against the v0.3 house style.
+# Lint daemon8 MCP tool descriptions against the alpha house style.
 #
-# Every file under crates/mcp/tool_descriptions/*.txt must contain the
+# Every file under crates/mcp/tool_descriptions/*.md must contain the
 # following section headers (in any order, on a line of their own with
 # either a leading "<header>:" or "<header>" + colon + content):
 #
@@ -17,7 +17,7 @@
 # `Prereq:` and `Errors:` are recommended but not required (some tools have
 # no prerequisites and no expected errors beyond the generic envelope shape).
 #
-# `instructions.txt` and the `help/` topic markdown are exempt — those are
+# `instructions.md` and the `help/` topic markdown are exempt — those are
 # narrative documents, not per-tool prompts.
 
 set -uo pipefail
@@ -30,14 +30,14 @@ if [ ! -d "$TARGET_DIR" ]; then
     exit 2
 fi
 
-REQUIRED_HEADERS=("Purpose:" "When:" "Args:" "Returns:" "Next:")
-EXEMPT_FILES=("instructions.txt")
+REQUIRED_HEADERS=("Purpose" "When" "Args" "Returns" "Next")
+EXEMPT_FILES=("instructions.md")
 
 errors=0
 checked=0
 
 shopt -s nullglob
-for file in "$TARGET_DIR"/*.txt; do
+for file in "$TARGET_DIR"/*.md; do
     name=$(basename "$file")
     skip=false
     for exempt in "${EXEMPT_FILES[@]}"; do
@@ -53,7 +53,7 @@ for file in "$TARGET_DIR"/*.txt; do
     checked=$((checked + 1))
     missing=()
     for header in "${REQUIRED_HEADERS[@]}"; do
-        if ! grep -q "^$header" "$file"; then
+        if ! grep -Eq "^(##[[:space:]]+)?$header(:|[[:space:]]*$)" "$file"; then
             missing+=("$header")
         fi
     done
@@ -66,7 +66,7 @@ done
 
 if [ "$errors" -gt 0 ]; then
     echo "" >&2
-    echo "$errors tool description file(s) violate the v0.3 house style." >&2
+    echo "$errors tool description file(s) violate the alpha house style." >&2
     echo "Required headers per file: ${REQUIRED_HEADERS[*]}" >&2
     exit 1
 fi

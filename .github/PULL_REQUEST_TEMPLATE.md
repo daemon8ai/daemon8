@@ -22,7 +22,7 @@ Thanks for sending a PR. A few things before you hit submit:
 - [ ] Store / memory (`crates/store/`)
 - [ ] Browser / ADB bridges (`crates/chrome/`, `crates/adb/`)
 - [ ] CLI (`crates/daemon/`)
-- [ ] Setup / doctor / hooks
+- [ ] Connect / init / service / release surface
 - [ ] Docs / meta (root files, .github/, etc.)
 
 ## Tests

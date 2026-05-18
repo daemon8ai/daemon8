@@ -5,35 +5,43 @@ end-user overview and quick-start, see [README.md](README.md).
 
 ## Distribution
 
-`daemon8` is a compiled Rust binary. Three install methods:
+`daemon8` is a compiled Rust binary. Current install paths:
 
 ```bash
-# Pre-built binary (fastest, no compile)
-cargo install cargo-binstall       # one-time
-cargo binstall daemon8
+curl -fsSL https://daemon8.ai/install.sh | bash
+```
 
-# Compile from crates.io
-cargo install daemon8
+Compile from git while crates remain unpublished:
 
-# Compile from this repo
+```bash
 cargo install --git https://github.com/daemon8ai/daemon8 daemon8
 ```
 
-All three produce the same binary at `~/.cargo/bin/daemon8`.
+Compile from this checkout:
 
-> **Note on crates.io publishing.** Workspace crates currently carry
-> `publish = false` while the crates.io publish flow is stabilized.
-> This will change once `daemon8` and its library crates are reserved
-> and published. Until then, use `cargo install --git` or a pre-built
-> release tarball.
+```bash
+cargo install --path crates/daemon --force
+```
+
+The release shell installer uses `~/.cargo/bin` when present and otherwise
+falls back to `~/.local/bin`. The PowerShell installer defaults to
+`%LOCALAPPDATA%\Programs\daemon8`. After installing the binary, release
+installers run `daemon8 service install` so daemon8 starts as the local MCP
+server immediately. `DAEMON8_INSTALL_DIR` overrides the release installer
+destination.
+
+> **Publish gate.** Workspace crates currently carry `publish = false`.
+> Use the release installer, git install, or checkout install paths above.
 
 ## Building from Source
 
 ```bash
-# Build and install to ~/.cargo/bin/daemon8
 cargo install --path crates/daemon --force
+```
 
-# Or just build without installing (for testing)
+Build without installing:
+
+```bash
 cargo build -p daemon8
 ```
 
@@ -47,8 +55,8 @@ install`:
 codesign --force --sign - ~/.cargo/bin/daemon8
 ```
 
-Pre-built release binaries (`cargo binstall`, direct download) are signed
-with a stable Developer ID so this step is not needed for those.
+Pre-built release binaries may be signed separately from local source
+builds; verify the release artifact before assuming macOS trust behavior.
 
 ## Service Management
 
@@ -56,8 +64,8 @@ with a stable Developer ID so this step is not needed for those.
 auto-restarts on crash.
 
 ```bash
-daemon8 install     # register + start the service
-daemon8 uninstall   # stop + remove the service
+daemon8 service install     # register + start the service
+daemon8 service uninstall   # stop + remove the service
 ```
 
 | Platform | Service type                  | File location                                                 |
@@ -68,39 +76,55 @@ daemon8 uninstall   # stop + remove the service
 
 The launchd plist uses `KeepAlive: true`, which means `kill <pid>` does
 **not** stop the daemon — launchd immediately respawns it. Use
-`daemon8 uninstall` (or `launchctl bootout` on the plist) to actually
-stop.
+`daemon8 service uninstall` (or `launchctl bootout` on the plist) to
+actually stop.
 
-The generated service only passes `serve` as an argument. Chrome
-endpoint, ADB settings, ingestion listeners — all configured via
-`config.toml`, not via service-file arguments.
+The generated service runs `daemon8 serve`. When `browser.auto_connect`
+is true at install time, the generated service also snapshots the current
+browser endpoint as `--browser <endpoint>`, which overrides later
+`config.toml` browser endpoint changes until the service is reinstalled.
+ADB settings and ingestion listeners stay configured through `config.toml`.
 
 ## Upgrading
 
 ```bash
-# 1. Optional: back up current binary
 cp ~/.cargo/bin/daemon8 ~/.cargo/bin/daemon8.bak
+```
 
-# 2. Stop and remove service
-daemon8 uninstall
+Stop and remove the service:
 
-# 3. Build and install new binary
+```bash
+daemon8 service uninstall
+```
+
+Build, install, and codesign on macOS:
+
+```bash
 cargo install --path crates/daemon --force --locked
-codesign --force --sign - ~/.cargo/bin/daemon8   # macOS only
+```
 
-# 4. Re-register and start service
-daemon8 install
+```bash
+codesign --force --sign - ~/.cargo/bin/daemon8
+```
 
-# 5. Verify
+Re-register and start the service:
+
+```bash
+daemon8 service install
+```
+
+Verify:
+
+```bash
 daemon8 status
 ```
 
 Quick rollback:
 
 ```bash
-daemon8 uninstall
+daemon8 service uninstall
 cp ~/.cargo/bin/daemon8.bak ~/.cargo/bin/daemon8
-daemon8 install
+daemon8 service install
 ```
 
 ## Configuration
@@ -110,8 +134,10 @@ Config file location (via `directories::ProjectDirs::from("dev", "daemon8", "dae
 | Platform | Path                                                                 |
 | -------- | -------------------------------------------------------------------- |
 | macOS    | `~/Library/Application Support/dev.daemon8.daemon8/config.toml`      |
-| Linux    | `~/.config/dev/daemon8/daemon8/config.toml`                          |
-| Windows  | `%APPDATA%\dev\daemon8\daemon8\config.toml`                          |
+| Linux    | `~/.config/daemon8/config.toml`                                      |
+| Windows  | `%APPDATA%\daemon8\daemon8\config\config.toml`                       |
+
+Debug builds use the `daemon8-dev` app slug so local development state stays isolated from release binaries.
 
 Priority: compiled defaults < `config.toml` < environment variables < CLI args.
 
@@ -121,6 +147,7 @@ Environment variables use `DAEMON8_` prefix with double-underscore for nesting:
 DAEMON8_SERVER__PORT=9090
 DAEMON8_BROWSER__AUTO_CONNECT=true
 DAEMON8_LOGGING__LEVEL=debug
+DAEMON8_DEBUG_SESSION__INACTIVITY_AUTO_END_SECS=14400
 ```
 
 Invalid primitives (bad IP address, malformed socket, unknown log level)
@@ -130,22 +157,22 @@ fail at load time — no silent fallbacks.
 
 | Section           | Field                         | Default                  | Description                                 |
 | ----------------- | ----------------------------- | ------------------------ | ------------------------------------------- |
-| server            | port                          | `9077`                   | HTTP server port                            |
+| server            | port                          | `8888`                   | HTTP server port                            |
 | server            | host                          | `127.0.0.1`              | Bind address (IpAddr)                       |
-| storage           | path                          | (platform default)       | SQLite database location                    |
+| storage           | path                          | (platform default)       | SurrealDB/SurrealKV store location          |
 | storage           | screenshot_path               | (resolved from storage)  | Browser screenshot output directory         |
 | browser           | auto_connect                  | `false`                  | Connect to Chrome on startup                |
 | browser           | endpoint                      | `http://localhost:9222`  | Chrome DevTools Protocol URL                |
 | browser           | reconnect_interval_secs       | `5`                      | Initial backoff after disconnect            |
 | browser           | max_reconnect_interval_secs   | `30`                     | Max exponential backoff ceiling             |
 | browser           | path                          | (auto-detect)            | Chrome binary path for auto-launch          |
-| adb               | enabled                       | `true`                   | Monitor ADB/Vega devices                    |
+| adb               | enabled                       | `false`                  | Monitor ADB/Vega devices                    |
 | adb               | server_addr                   | `127.0.0.1:5037`         | ADB server address (SocketAddrV4)           |
-| adb               | scan_interval_secs            | `10`                     | Device discovery interval                   |
+| adb               | scan_interval_secs            | `10`                     | Device scan interval                        |
 | mcp               | stdio                         | `true`                   | Enable MCP stdio transport                  |
-| mcp               | http                          | `false`                  | Enable MCP HTTP/SSE transport               |
+| debug_session     | inactivity_auto_end_secs      | `14400`                  | Active-session idle timeout                 |
 | ingestion.udp     | enabled                       | `false`                  | UDP ingestion listener                      |
-| ingestion.udp     | bind                          | `127.0.0.1:9078`         | UDP bind address (SocketAddr)               |
+| ingestion.udp     | bind                          | `127.0.0.1:8889`         | UDP bind address (SocketAddr)               |
 | ingestion.unix    | enabled                       | `false`                  | Unix socket listener                        |
 | ingestion.unix    | path                          | `/tmp/daemon8.sock`      | Socket path                                 |
 | logging           | level                         | `info`                   | trace / debug / info / warn / error         |
@@ -173,47 +200,72 @@ connect_browser { endpoint: "http://localhost:9222" }
 Chrome must be launched with remote debugging enabled:
 
 ```bash
-# macOS
-/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome \
-  --remote-debugging-port=9222 \
-  --user-data-dir=/tmp/chrome-debug-profile
+/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9222 --user-data-dir=/tmp/chrome-debug-profile
 ```
 
 ## Troubleshooting
 
-**Port 9077 in use** (orphaned daemon):
+**Port 8888 in use** (orphaned daemon):
 
 ```bash
-lsof -ti :9077 | xargs kill    # kill whatever holds the port
-daemon8 uninstall              # clean up stale service
-daemon8 install                # fresh start
+daemon8 service uninstall
+```
+
+Then identify the exact daemon process:
+
+```bash
+lsof -nP -iTCP:8888 -sTCP:LISTEN
+```
+
+Only if the listed process is daemon8:
+
+```bash
+kill <exact-pid>
+```
+
+Fresh start:
+
+```bash
+daemon8 service install
 ```
 
 **Orphaned processes**:
 
 ```bash
-pgrep -fl daemon8              # find all daemon processes
-daemon8 uninstall              # remove service (stops respawning)
-pkill -f daemon8               # kill stragglers
+pgrep -fl daemon8
+```
+
+Remove the service so it stops respawning:
+
+```bash
+daemon8 service uninstall
+```
+
+Only for confirmed daemon8 processes:
+
+```bash
+kill <exact-pid>
 ```
 
 **Logs**:
 
 ```bash
-daemon8 logs                   # print path to latest log file
-daemon8 logs -f                # tail -f the latest log
+daemon8 logs
 ```
 
-Log directory: `~/Library/Application Support/dev.daemon8.daemon8/logs/` (macOS), `~/.local/share/dev/daemon8/daemon8/logs/` (Linux).
-
-**Doctor**:
+Tail the latest log:
 
 ```bash
-daemon8 doctor             # run diagnostic checks
-daemon8 doctor --fix       # auto-repair issues that can be repaired
+daemon8 logs -f
 ```
 
-Covers: config file existence, screenshot/data dir writability, port availability, outbound network, macOS launchd service state, App Management TCC grant.
+Log directory: `~/Library/Application Support/dev.daemon8.daemon8/logs/` (macOS release), `~/.local/share/daemon8/logs/` (Linux release).
+
+**Status**:
+
+```bash
+daemon8 status
+```
 
 ## Release Workflow
 
@@ -225,16 +277,15 @@ GitHub Actions builds 5 targets on `v*` tag push:
 - `aarch64-unknown-linux-gnu` (Linux ARM)
 - `x86_64-pc-windows-msvc` (Windows)
 
-Release artifacts are attached to the GitHub Release for that tag. Users
-with `cargo binstall` installed consume these tarballs directly via
-`cargo binstall daemon8`.
+Release artifacts are attached to the GitHub Release for that tag. The
+root install scripts consume those tarballs and verify `checksums.sha256`
+before installing.
 
 ### Tagging a release
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.4.0
+git push origin v0.4.0
 ```
 
 The release workflow triggers automatically from the tag.
-

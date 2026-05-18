@@ -8,7 +8,7 @@ Reading DOM state, capturing visual proof of a fix, prototyping CSS, simulating 
 
 ## Prereq
 
-A connected browser. Auto-discovers localhost:9222; use `connect_browser` for non-standard endpoints.
+A connected MCP session and a connected browser. Call `daemon8_connect` first. Browser auto-connect handles localhost:9222; use `connect_browser` for non-standard endpoints.
 
 ## Args
   - action: required string. One of: eval_js, screenshot, inject_css, revert_css, list_tabs, get_perf_metrics, get_dom, set_viewport, clear_viewport, network_conditions, navigate, storage_clear, storage_inspect, storage_set, element_at_point, new_tab, close_tab.
@@ -17,13 +17,12 @@ A connected browser. Auto-discovers localhost:9222; use `connect_browser` for no
   - Per-action: see action-specific keys (expression, selector, url, viewport_width/height/scale/mobile, network_preset, storage_types, storage_key, storage_value, x, y, css).
 
 ## Returns
-  result: action-specific shape (see issue_command help for examples).
-  Common shapes: {result: <eval value>}, {screenshot: path, size_bytes}, {tabs: [...]}.
+Common envelope with action-specific `data`. Common payload fields include `data.result`, `data.screenshot`, `data.size_bytes`, and `data.tabs`.
 
 ## Errors
-  - missing_param: required action-specific param absent. hint shows which one.
-  - browser_not_connected: see list_connections / connect_browser.
+  - `missing_param`: required action-specific param absent; `why` names the missing field.
+  - `browser_not_connected`: see list_connections / connect_browser.
 
 ## Next
 
-query_observations(origins=["browser"]) to see browser console activity triggered by your action.
+read_live_feed(origins=["browser"]) to see browser console activity triggered by your action.

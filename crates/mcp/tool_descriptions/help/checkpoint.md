@@ -7,16 +7,18 @@ A checkpoint is a bookmark within an active debug session. It records the observ
 Right before any change you might want to compare against:
 
 ```
+daemon8_connect(provider="codex", project_path="/path/to/project")
+start_debug_session(agent_id=":host/codex+agent>")
 create_checkpoint(description="before applying retry patch")
 # ... apply patch, run test ...
-query_observations(since_checkpoint=<id from above>)
+read_live_feed(since_checkpoint=<seq_at_creation from above>)
 ```
 
 Returns only what arrived after the checkpoint — typically the relevant error/log delta.
 
 ## Constraints
 
-- Requires an active debug session. Without one, returns a structured `no_active_debug_session` error with `fix.tool: "start_debug_session"`.
+- Requires a connected project-mode MCP session and an active debug session. Without a project connection, returns `project_required`; without an active debug session, returns `no_active_debug_session` with `next_actions[].tool="start_debug_session"`.
 - Persisted as a row in the `checkpoint` table; survives daemon restart.
 - Linked to its parent session via `debug_session_id`.
 
@@ -31,4 +33,4 @@ Returns only what arrived after the checkpoint — typically the relevant error/
 }
 ```
 
-The envelope's `daemon8.next_actions` will hint `query_observations` as the natural follow-up.
+The envelope's `next_actions` will pass `data.seq_at_creation` as the `read_live_feed` sequence cursor.

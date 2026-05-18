@@ -2,7 +2,7 @@
 
 Open a daemon8 debug investigation. Required before create_checkpoint or resolve_debug_session can be used.
 
-Opening a session is not enough by itself. The next step is to establish the session's awareness posture with `awareness_status`; aim for `optimal` awareness before trusting checkpoint deltas.
+Opening a session is not enough by itself. The next step is normally `create_checkpoint`, then the change or repro, then `read_live_feed(since_checkpoint=...)`.
 
 ## When
 
@@ -10,7 +10,7 @@ At the start of any non-trivial debugging task. Errors observed, tests failing, 
 
 ## Prereq
 
-No other debug session is currently active IN THIS MCP SESSION. Other agents/connections can each have their own active session. If one is active here, end_debug_session or resolve_debug_session must close it first.
+A connected project-scope MCP session (`data.connection.mode == "project"`) and no other debug session currently active IN THIS MCP SESSION. Call `daemon8_connect` with a project path first. Other agents/connections can each have their own active session. If one is active here, end_debug_session or resolve_debug_session must close it first.
 
 ## Args
   - agent_id: REQUIRED string. Agent identity in format :host/tool+role> (e.g. :mbp/claude+plan-agent>). Identifies who is running this investigation.
@@ -19,15 +19,13 @@ No other debug session is currently active IN THIS MCP SESSION. Other agents/con
   - feature: optional string. The feature being investigated (e.g. "auth", "search"). Other agents can discover overlapping work via list_debug_sessions(feature="auth").
 
 ## Returns
-  result.debug_session_id: opaque id; pass to create_checkpoint, resolve, end.
-  result.started_at: integer ns since epoch.
-  daemon8.active_debug_session: the session you just opened.
+Common envelope with `code="debug_session_started"`, `data.debug_session_id`, `data.started_at`, and `data.active_debug_session`.
 
 ## Errors
   - invalid_agent_id: agent_id does not match format :host/tool+role>. hint: use the convention.
-  - already_active_debug_session: another session is open IN THIS MCP SESSION. hint: call end_debug_session(outcome="abandoned") or resolve_debug_session first; fix.tool: end_debug_session.
-  - debug_session_unavailable: daemon was started without a debug-session store. hint: ensure setup_apply has run; fix.tool: setup_apply.
+  - already_active_debug_session: another session is open IN THIS MCP SESSION. `next_actions[].tool` points to the close/resolve step.
+  - debug_session_unavailable: daemon was started without debug-session storage. hint: restart daemon8 with debug-session storage enabled.
 
 ## Next
 
-Call `awareness_status` first. If awareness is `optimal`, create_checkpoint right before any action you may want to compare. If awareness is `partial`, `limited`, or `unknown`, inspect librarian/source coverage before trusting the debug stream.
+Call `create_checkpoint` right before the action you want to compare. Then use `read_live_feed(since_checkpoint=...)` and interpret the runtime signal before resolving the session.

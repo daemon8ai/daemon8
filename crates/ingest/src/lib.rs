@@ -3,6 +3,7 @@
 
 mod error;
 pub mod normalize;
+pub mod source_sync;
 pub mod udp;
 #[cfg(unix)]
 pub mod unix;

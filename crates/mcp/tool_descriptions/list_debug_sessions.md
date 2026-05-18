@@ -8,15 +8,14 @@ Looking for "what was I working on yesterday", "which sessions are still open", 
 
 ## Prereq
 
-None.
+A connected MCP session in project or general mode. Call `daemon8_connect` first.
 
 ## Args
   - status: optional string. One of "active", "completed", "abandoned". Omit for all statuses.
   - feature: optional string. Filter to sessions investigating this feature (e.g. "auth", "search"). Used by agents to discover overlapping work.
 
 ## Returns
-  result.sessions: array of {id, project_slug, agent_id, feature, description, status, outcome, started_at, ended_at, last_activity, summary_memory_id}, ordered most-recent-first.
-  result.count: integer. Filtered count when feature or status is provided.
+Common envelope with `code="debug_sessions_listed"`, `data.sessions` ordered most-recent-first, and `data.count` for the filtered count.
 
 ## Errors
   - debug_session_unavailable: see start_debug_session.

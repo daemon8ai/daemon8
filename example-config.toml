@@ -1,8 +1,8 @@
 # Daemon8 configuration
-# Location: ~/.config/daemon8/config.toml (macOS/Linux)
-# Reference: https://daemon8.ai/docs/configuration
+# Print the active config path with: daemon8 config path
+# Reference: README.md and DEPLOY.md
 #
-# All values shown are defaults. Uncomment to override.
+# Common values shown are defaults. Uncomment to override.
 # Env vars use DAEMON8_ prefix with __ for nesting (e.g. DAEMON8_SERVER__PORT).
 
 # [server]
@@ -21,12 +21,15 @@
 # path = ""
 
 # [adb]
-# enabled = true
+# enabled = false
 # server_addr = "127.0.0.1:5037"
 # scan_interval_secs = 10
 
 # [mcp]
 # stdio = true
+
+# [debug_session]
+# inactivity_auto_end_secs = 14400
 
 # [ingestion.udp]
 # enabled = false

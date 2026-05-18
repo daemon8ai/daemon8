@@ -1,7 +1,9 @@
-# Blanket ignores
 .*
 *.md
+
+# Blanket ignores
 *.log
+backups/
 
 # OS
 Thumbs.db
@@ -21,6 +23,8 @@ target/
 !/.github/**
 !/crates/mcp/tool_descriptions/
 !/crates/mcp/tool_descriptions/**
+!/crates/parse/fixtures/
+!/crates/parse/fixtures/**
 !/README.md
 !/DEPLOY.md
 !/LICENSE
@@ -30,4 +34,3 @@ target/
 !/CODE_OF_CONDUCT.md
 !/NOTICE
 !/logo.svg
-!/tools/sandbox/.daemon8.toml

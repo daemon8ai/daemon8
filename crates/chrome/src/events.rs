@@ -354,7 +354,7 @@ mod tests {
     fn console_warning() {
         let params = serde_json::json!({
             "type": "warning",
-            "args": [{"type": "string", "value": "deprecated API"}],
+            "args": [{"type": "string", "value": "slow API"}],
             "timestamp": 0.0
         });
         let event = parse_console(&params).unwrap();

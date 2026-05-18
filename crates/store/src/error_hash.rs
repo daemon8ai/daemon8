@@ -190,6 +190,9 @@ mod tests {
                 line: 42,
                 function: None,
             }),
+            service: None,
+            source: None,
+            source_instance: None,
             timestamp_ns: 0,
             correlation_id: None,
             parent_id: None,
@@ -216,7 +219,7 @@ mod tests {
 
     #[test]
     fn normalizes_paths() {
-        let n = normalize_error_text("file /Users/foo/bar/baz.rs:42:11 not found");
+        let n = normalize_error_text("file /workspace/foo/bar/baz.rs:42:11 not found");
         assert_eq!(n, "file <PATH> not found");
     }
 

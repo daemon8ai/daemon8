@@ -18,31 +18,70 @@ permissions:
   contents: write
 
 jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      release_ref: ${{ steps.release-ref.outputs.release_ref }}
+      release_tag: ${{ steps.release-ref.outputs.release_tag }}
+      should_deploy: ${{ steps.release-ref.outputs.should_deploy }}
+    steps:
+      - name: Resolve release ref
+        id: release-ref
+        env:
+          RAW_REF: ${{ github.event.inputs.ref || github.ref }}
+        run: |
+          release_ref="$RAW_REF"
+          release_tag=""
+          should_deploy=false
+          if [[ "$release_ref" == refs/tags/v* ]]; then
+            release_tag="${release_ref#refs/tags/}"
+            release_ref="refs/tags/$release_tag"
+            should_deploy=true
+          elif [[ "$release_ref" == v* ]]; then
+            release_tag="$release_ref"
+            release_ref="refs/tags/$release_tag"
+            should_deploy=true
+          fi
+          if [ "$should_deploy" = "true" ]; then
+            git ls-remote --exit-code "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" "refs/tags/$release_tag" >/dev/null
+          fi
+          echo "release_ref=$release_ref" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
+          echo "should_deploy=$should_deploy" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: prepare
     strategy:
       fail-fast: false
       matrix:
         include:
           - target: aarch64-apple-darwin
-            os: macos-latest
+            os: macos-14
             archive: tar.gz
+            smoke: true
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             archive: tar.gz
+            smoke: true
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             archive: zip
+            smoke: true
           - target: x86_64-apple-darwin
-            os: macos-14
+            os: macos-15-intel
             archive: tar.gz
+            smoke: true
           - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: ubuntu-24.04-arm
             archive: tar.gz
+            smoke: true
 
     runs-on: ${{ matrix.os }}
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.release_ref }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -52,24 +91,18 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
-      - name: Install cross-compilation tools
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
-          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+      - name: Release preflight
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        env:
+          RELEASE_REF: ${{ needs.prepare.outputs.release_ref }}
+        run: bash scripts/release-check.sh
 
       - name: Build
         run: cargo build --release --target ${{ matrix.target }} -p daemon8
 
       - name: Strip binary (unix)
         if: matrix.archive == 'tar.gz'
-        run: |
-          if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-gnu" ]]; then
-            aarch64-linux-gnu-strip target/${{ matrix.target }}/release/${{ env.BINARY_NAME }}
-          else
-            strip target/${{ matrix.target }}/release/${{ env.BINARY_NAME }}
-          fi
+        run: strip target/${{ matrix.target }}/release/${{ env.BINARY_NAME }}
 
       - name: Package (unix)
         if: matrix.archive == 'tar.gz'
@@ -77,6 +110,46 @@ jobs:
           cp LICENSE target/${{ matrix.target }}/release/
           cd target/${{ matrix.target }}/release
           tar czf ../../../${{ env.BINARY_NAME }}-${{ matrix.target }}.tar.gz ${{ env.BINARY_NAME }} LICENSE
+
+      - name: Inspect packaged artifact (unix)
+        if: matrix.archive == 'tar.gz'
+        run: |
+          mkdir -p smoke
+          tar xzf ${{ env.BINARY_NAME }}-${{ matrix.target }}.tar.gz -C smoke
+          test -f smoke/${{ env.BINARY_NAME }}
+          test -f smoke/LICENSE
+
+      - name: Smoke packaged artifact (unix)
+        if: matrix.smoke && matrix.archive == 'tar.gz'
+        run: |
+          EXPECTED_VERSION="${{ needs.prepare.outputs.release_tag }}"
+          smoke/${{ env.BINARY_NAME }} --version | grep "daemon8 ${EXPECTED_VERSION#v}"
+          smoke/${{ env.BINARY_NAME }} --help
+          SMOKE_ROOT="$RUNNER_TEMP/daemon8-smoke"
+          mkdir -p "$SMOKE_ROOT"
+          cat > "$SMOKE_ROOT/config.toml" <<EOF
+          [server]
+          port = 18888
+
+          [storage]
+          path = "$SMOKE_ROOT/store"
+          screenshot_path = "$SMOKE_ROOT/screens"
+
+          [adb]
+          enabled = false
+          EOF
+          smoke/${{ env.BINARY_NAME }} --config "$SMOKE_ROOT/config.toml" status --json
+          smoke/${{ env.BINARY_NAME }} --config "$SMOKE_ROOT/config.toml" serve --port 18888 &
+          DAEMON8_PID=$!
+          trap 'kill "$DAEMON8_PID" 2>/dev/null || true; wait "$DAEMON8_PID" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 50); do
+            if curl -fsS http://127.0.0.1:18888/health >/dev/null; then
+              exit 0
+            fi
+            sleep 0.1
+          done
+          echo "daemon8 health smoke failed" >&2
+          exit 1
 
       - name: Package (windows)
         if: matrix.archive == 'zip'
@@ -88,6 +161,38 @@ jobs:
                    target\${{ matrix.target }}\release\LICENSE `
             -DestinationPath ${{ env.BINARY_NAME }}-${{ matrix.target }}.zip
 
+      - name: Inspect packaged artifact (windows)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path smoke | Out-Null
+          Expand-Archive -Path "${{ env.BINARY_NAME }}-${{ matrix.target }}.zip" -DestinationPath smoke -Force
+          if (-not (Test-Path ".\smoke\daemon8.exe")) { throw "daemon8.exe missing from archive" }
+          if (-not (Test-Path ".\smoke\LICENSE")) { throw "LICENSE missing from archive" }
+
+      - name: Smoke packaged artifact (windows)
+        if: matrix.smoke && matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          $ExpectedVersion = "${{ needs.prepare.outputs.release_tag }}".TrimStart("v")
+          $VersionOutput = .\smoke\daemon8.exe --version
+          if ($VersionOutput -notmatch "daemon8 $ExpectedVersion") { throw "unexpected version output: $VersionOutput" }
+          .\smoke\daemon8.exe --help
+          $SmokeRoot = Join-Path $env:RUNNER_TEMP "daemon8-smoke"
+          New-Item -ItemType Directory -Force -Path $SmokeRoot | Out-Null
+          $ConfigPath = Join-Path $SmokeRoot "config.toml"
+          $StorePath = (Join-Path $SmokeRoot "store").Replace('\', '\\')
+          $ScreensPath = (Join-Path $SmokeRoot "screens").Replace('\', '\\')
+          @"
+          [storage]
+          path = "$StorePath"
+          screenshot_path = "$ScreensPath"
+
+          [adb]
+          enabled = false
+          "@ | Set-Content -Path $ConfigPath -NoNewline
+          .\smoke\daemon8.exe --config $ConfigPath status --json
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -95,9 +200,14 @@ jobs:
           path: ${{ env.BINARY_NAME }}-${{ matrix.target }}.*
 
   deploy:
-    needs: build
+    needs: [prepare, build]
     runs-on: ubuntu-latest
-    if: always() && startsWith(github.ref, 'refs/tags/v') && contains(needs.build.result, 'success')
+    if: always() && needs.prepare.outputs.should_deploy == 'true' && needs.build.result == 'success'
+    env:
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+      DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
+      DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -113,24 +223,40 @@ jobs:
           cd artifacts
           sha256sum * > checksums.sha256
 
-      - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: artifacts/*
-          generate_release_notes: true
+      - name: Validate server upload configuration
+        run: |
+          set_count=0
+          for name in DEPLOY_HOST DEPLOY_USER DEPLOY_KEY DEPLOY_PATH; do
+            value="${!name}"
+            if [ "$name" != "DEPLOY_KEY" ]; then
+              value="$(printf '%s' "$value" | tr -d '\r' | xargs)"
+            fi
+            if [ -n "$value" ]; then
+              set_count=$((set_count + 1))
+            fi
+          done
+          if [ "$set_count" -ne 4 ]; then
+            echo "DEPLOY_HOST, DEPLOY_USER, DEPLOY_KEY, and DEPLOY_PATH are required before creating a GitHub release" >&2
+            exit 1
+          fi
 
       - name: Upload to server
-        if: env.DEPLOY_HOST != ''
-        env:
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-          DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
-          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
         run: |
-          VERSION=${GITHUB_REF#refs/tags/}
+          VERSION="${{ needs.prepare.outputs.release_tag }}"
+          DEPLOY_HOST="$(printf '%s' "$DEPLOY_HOST" | tr -d '\r' | xargs)"
+          DEPLOY_USER="$(printf '%s' "$DEPLOY_USER" | tr -d '\r' | xargs)"
+          DEPLOY_PATH="$(printf '%s' "$DEPLOY_PATH" | tr -d '\r' | xargs)"
           mkdir -p ~/.ssh
-          echo "$DEPLOY_KEY" > ~/.ssh/deploy_key
+          printf '%s\n' "$DEPLOY_KEY" | tr -d '\r' > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
           ssh -o StrictHostKeyChecking=no -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p $DEPLOY_PATH/$VERSION"
           scp -o StrictHostKeyChecking=no -i ~/.ssh/deploy_key artifacts/* "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/$VERSION/"
           ssh -o StrictHostKeyChecking=no -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" "ln -sfn $DEPLOY_PATH/$VERSION $DEPLOY_PATH/latest"
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare.outputs.release_tag }}
+          prerelease: ${{ contains(needs.prepare.outputs.release_tag, '-') }}
+          files: artifacts/*
+          generate_release_notes: true

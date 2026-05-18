@@ -9,6 +9,10 @@ use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
+use daemon8_ingest::source_sync::{
+    ConfiguredSourceTrigger, ObservationWriteResult, ObservationWriteStatus, ObservationWriter,
+    SourceTrigger,
+};
 use daemon8_mcp::ChromeCommand;
 use daemon8_store::{
     DebugSessionStore, MemoryStore, ObservationHashCache, StateModel, SurrealStore, error_hash,
@@ -34,7 +38,6 @@ pub(crate) struct ServeArgs {
 
 pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> Result<()> {
     let mut cfg = config::load(config_path.as_deref()).context("failed to load configuration")?;
-    let setup_config_path = config_path.clone();
 
     if let Some(port) = args.port {
         cfg.server.port = port;
@@ -51,13 +54,22 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
             .with_context(|| format!("opening database: {}", db_path.display()))?,
     );
 
+    if let Some(version) = surreal_store.schema_version().await
+        && version != daemon8_store::SCHEMA_VERSION
+    {
+        eprintln!(
+            "daemon8: incompatible database schema (found {version}, need {}). \
+             Run `daemon8 reset --yes` to wipe and reinitialize.",
+            daemon8_store::SCHEMA_VERSION,
+        );
+        std::process::exit(1);
+    }
+
     let memory_store: Arc<dyn daemon8_store::MemoryStore> = Arc::new(surreal_store.memory_store());
     let debug_session_store: Arc<dyn daemon8_store::DebugSessionStore> =
         Arc::new(surreal_store.debug_session_store());
-    let librarian_store: Arc<dyn daemon8_store::LibrarianStore> =
-        Arc::new(surreal_store.librarian_store());
-    let awareness_store: Arc<dyn daemon8_store::AwarenessStore> =
-        Arc::new(surreal_store.awareness_store());
+    let scope_ledger_store: Arc<dyn daemon8_store::ScopeLedgerStore> =
+        Arc::new(surreal_store.scope_ledger_store());
     let store: Arc<dyn StateModel> = surreal_store.clone();
 
     // Unbounded channel — deliberate policy.  The daemon captures observations
@@ -78,17 +90,23 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
 
     let node_id: Arc<str> = Arc::from(resolve_node_id().as_str());
 
+    let observation_writer = Arc::new(ObservationWriteService::new(Arc::new(StoreWriterCtx {
+        store: store.clone(),
+        memory_store: Some(memory_store.clone()),
+        debug_session_store: Some(debug_session_store.clone()),
+        broadcast_tx: broadcast_tx.clone(),
+        node_id,
+        hash_cache: ObservationHashCache::new(),
+    })));
+    let source_trigger: Arc<dyn SourceTrigger> = Arc::new(ConfiguredSourceTrigger::new(
+        Arc::new(surreal_store.cursor_store()),
+        observation_writer.clone(),
+    ));
+
     spawn_store_writer(
         &mut tasks,
         obs_rx,
-        StoreWriterCtx {
-            store: store.clone(),
-            memory_store: Some(memory_store.clone()),
-            debug_session_store: Some(debug_session_store.clone()),
-            broadcast_tx: broadcast_tx.clone(),
-            node_id,
-            hash_cache: ObservationHashCache::new(),
-        },
+        observation_writer.clone(),
         cancel.clone(),
     );
 
@@ -179,72 +197,6 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
         );
     }
 
-    let source_activator: Option<Arc<dyn daemon8_types::SourceActivator>> =
-        if !cfg.sources.is_empty() {
-            tracing::info!(
-                count = cfg.sources.len(),
-                "registering file sources (lazy activation)"
-            );
-            let mgr = crate::sources::SourceManager::new(
-                cfg.sources.clone(),
-                obs_tx.clone(),
-                cfg.source_config.idle_ttl_secs,
-            );
-            let activator: Arc<dyn daemon8_types::SourceActivator> = Arc::new(mgr.clone());
-            mgr.spawn_reaper_task(&mut tasks, cancel.clone());
-            Some(activator)
-        } else {
-            None
-        };
-
-    {
-        let lib = librarian_store.clone();
-        tasks.spawn(async move {
-            register_provider_projects(lib).await;
-        });
-    }
-
-    // Project-aware discovery is on-demand in alpha. A global daemon may be
-    // launched from `/` or another meaningless cwd, so the scanner must not run
-    // at serve startup. MCP/CLI callers provide the project root explicitly.
-    let discovery_control: Option<Arc<dyn daemon8_types::DiscoveryControl>> = {
-        let signals = crate::discovery::scanner::DiscoverySignals::new();
-        Some(signals as Arc<dyn daemon8_types::DiscoveryControl>)
-    };
-
-    let setup_tool_fn: daemon8_mcp::SetupToolFn = Arc::new(move |action| {
-        let setup_config_path = setup_config_path.clone();
-        Box::pin(async move {
-            crate::cli::setup::cmd_setup_mcp(action, setup_config_path.as_deref()).await
-        })
-    });
-    let project_context_resolver: daemon8_mcp::ProjectContextResolverFn = Arc::new(|root| {
-        Box::pin(async move { classify_project_root(std::path::PathBuf::from(root)).await })
-    });
-    let project_discovery_fn: daemon8_mcp::ProjectDiscoveryFn = {
-        let lib = librarian_store.clone();
-        let tx = obs_tx.clone();
-        let cancel = cancel.clone();
-        let user_sources: Vec<crate::config::SourceConfig> =
-            cfg.sources.values().cloned().collect();
-        Arc::new(move |root| {
-            let lib = lib.clone();
-            let tx = tx.clone();
-            let cancel = cancel.child_token();
-            let user_sources = user_sources.clone();
-            Box::pin(async move {
-                run_discovery_plan_json(
-                    &std::path::PathBuf::from(root),
-                    lib.as_ref(),
-                    &tx,
-                    user_sources,
-                    cancel,
-                )
-                .await
-            })
-        })
-    };
-
     // Only start MCP stdio when stdin is a real FIFO from an MCP client.
     // A plain "not a TTY" check is insufficient: launchd, nohup, and shell
     // backgrounding all attach /dev/null (a character device) to stdin.
@@ -252,32 +204,26 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
     // EOF and the daemon cancels itself. FIFO detection is the one signal
     // that distinguishes a real client pipe from /dev/null on every launcher.
     let stdin_is_pipe = stdin_is_real_pipe();
-    if stdin_is_pipe {
+    if should_start_mcp_stdio(cfg.mcp.stdio, stdin_is_pipe) {
         use rmcp::ServiceExt;
 
-        let lens = Arc::new(daemon8_store::LensManager::new(
-            broadcast_tx.subscribe(),
-            source_activator.clone(),
-        ));
+        let lens = Arc::new(daemon8_store::LensManager::new(broadcast_tx.subscribe()));
         let mcp = daemon8_mcp::DaemonMcp::new(daemon8_mcp::DaemonMcpConfig {
             store: store.clone(),
             memory_store: Some(memory_store.clone()),
             debug_session_store: Some(debug_session_store.clone()),
-            librarian_store: Some(librarian_store.clone()),
-            awareness_store: Some(awareness_store.clone()),
+            scope_ledger_store: Some(scope_ledger_store.clone()),
             obs_tx: obs_tx.clone(),
             chrome_tx: chrome_cmd_tx.clone(),
             chrome_state: chrome_state_rx.clone(),
             chrome_endpoint: chrome_endpoint.clone(),
             device_screenshot_fn: device_screenshot_fn.clone(),
             screenshot_dir: screenshot_dir.clone(),
+            home_dir: daemon8_providers::dirs_home(),
             broadcast_tx: broadcast_tx.clone(),
+            source_trigger: Some(source_trigger.clone()),
             lens,
-            setup_tool_fn: Some(setup_tool_fn.clone()),
-            project_discovery_fn: Some(project_discovery_fn.clone()),
-            project_context_resolver: Some(project_context_resolver.clone()),
             cancel: cancel.clone(),
-            source_activator: source_activator.clone(),
         });
         let cancel_on_eof = cancel.clone();
         tasks.spawn(async move {
@@ -302,8 +248,7 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
     let mcp_store = store.clone();
     let mcp_memory_store = memory_store.clone();
     let mcp_debug_session_store = debug_session_store.clone();
-    let mcp_librarian_store = librarian_store.clone();
-    let mcp_awareness_store = awareness_store.clone();
+    let mcp_scope_ledger_store = scope_ledger_store.clone();
     let mcp_obs_tx = obs_tx.clone();
     let mcp_chrome_tx = chrome_cmd_tx.clone();
     let mcp_state_rx = chrome_state_rx.clone();
@@ -311,7 +256,7 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
     let mcp_screenshot_fn = device_screenshot_fn.clone();
     let mcp_screenshot_dir = screenshot_dir.clone();
     let mcp_broadcast_tx = broadcast_tx.clone();
-    let mcp_source_activator = source_activator.clone();
+    let mcp_source_trigger = source_trigger.clone();
     let mcp_cancel = cancel.child_token();
     // Daemon-wide cancel cloned into the per-session factory closure. Each
     // `DaemonMcp` then derives its own child token for the push task in
@@ -325,24 +270,20 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
                 store: mcp_store.clone(),
                 memory_store: Some(mcp_memory_store.clone()),
                 debug_session_store: Some(mcp_debug_session_store.clone()),
-                librarian_store: Some(mcp_librarian_store.clone()),
-                awareness_store: Some(mcp_awareness_store.clone()),
+                scope_ledger_store: Some(mcp_scope_ledger_store.clone()),
                 obs_tx: mcp_obs_tx.clone(),
                 chrome_tx: mcp_chrome_tx.clone(),
                 chrome_state: mcp_state_rx.clone(),
                 chrome_endpoint: mcp_ep.clone(),
                 device_screenshot_fn: mcp_screenshot_fn.clone(),
                 screenshot_dir: mcp_screenshot_dir.clone(),
+                home_dir: daemon8_providers::dirs_home(),
                 broadcast_tx: mcp_broadcast_tx.clone(),
+                source_trigger: Some(mcp_source_trigger.clone()),
                 lens: Arc::new(daemon8_store::LensManager::new(
                     mcp_broadcast_tx.subscribe(),
-                    mcp_source_activator.clone(),
                 )),
-                setup_tool_fn: Some(setup_tool_fn.clone()),
-                project_discovery_fn: Some(project_discovery_fn.clone()),
-                project_context_resolver: Some(project_context_resolver.clone()),
                 cancel: mcp_root_cancel.clone(),
-                source_activator: mcp_source_activator.clone(),
             }))
         },
         Arc::new({
@@ -355,10 +296,7 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
             .with_cancellation_token(mcp_cancel),
     );
 
-    let api_lens = Arc::new(daemon8_store::LensManager::new(
-        broadcast_tx.subscribe(),
-        source_activator.clone(),
-    ));
+    let api_lens = Arc::new(daemon8_store::LensManager::new(broadcast_tx.subscribe()));
     let api_state = daemon8_api::ApiState {
         store: store.clone(),
         stream_tx: broadcast_tx.clone(),
@@ -366,8 +304,7 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
         chrome_state: chrome_state_rx.clone(),
         chrome_endpoint: chrome_endpoint.clone(),
         lens: api_lens,
-        source_activator: source_activator.clone(),
-        discovery_control: discovery_control.clone(),
+        source_trigger: Some(source_trigger.clone()),
     };
     let port = cfg.server.port;
     let app = daemon8_ingest::ingest_router(obs_tx.clone())
@@ -461,7 +398,7 @@ pub(crate) struct StoreWriterCtx {
 fn spawn_store_writer(
     tasks: &mut JoinSet<()>,
     mut rx: mpsc::UnboundedReceiver<Observation>,
-    ctx: StoreWriterCtx,
+    writer: Arc<ObservationWriteService>,
     cancel: CancellationToken,
 ) {
     tasks.spawn(async move {
@@ -470,7 +407,9 @@ fn spawn_store_writer(
                 msg = rx.recv() => {
                     match msg {
                         Some(obs) => {
-                            handle_observation(obs, &ctx).await;
+                            if let Err(err) = writer.write_observation(obs).await {
+                                tracing::error!("store insert failed: {err}");
+                            }
                         }
                         None => break, // channel closed
                     }
@@ -482,7 +421,29 @@ fn spawn_store_writer(
     });
 }
 
-async fn handle_observation(mut obs: Observation, ctx: &StoreWriterCtx) {
+pub(crate) struct ObservationWriteService {
+    ctx: Arc<StoreWriterCtx>,
+}
+
+impl ObservationWriteService {
+    pub(crate) fn new(ctx: Arc<StoreWriterCtx>) -> Self {
+        Self { ctx }
+    }
+}
+
+#[async_trait::async_trait]
+impl ObservationWriter for ObservationWriteService {
+    async fn write_observation(&self, obs: Observation) -> Result<ObservationWriteResult, String> {
+        handle_observation(obs, &self.ctx)
+            .await
+            .map_err(|err| err.to_string())
+    }
+}
+
+async fn handle_observation(
+    mut obs: Observation,
+    ctx: &StoreWriterCtx,
+) -> anyhow::Result<ObservationWriteResult> {
     let now_ns = current_ns();
 
     if obs.node_id.is_none() {
@@ -514,7 +475,10 @@ async fn handle_observation(mut obs: Observation, ctx: &StoreWriterCtx) {
                 kind = %obs.kind.tag(),
                 "observation deduped by hash cache"
             );
-            return;
+            return Ok(ObservationWriteResult {
+                status: ObservationWriteStatus::Deduped,
+                id: None,
+            });
         }
     }
 
@@ -522,8 +486,7 @@ async fn handle_observation(mut obs: Observation, ctx: &StoreWriterCtx) {
     let inserted_id = match ctx.store.insert(insert_copy).await {
         Ok(id) => id,
         Err(e) => {
-            tracing::error!("store insert failed: {e}");
-            return;
+            return Err(anyhow::anyhow!("store insert failed: {e}"));
         }
     };
     obs.id = inserted_id;
@@ -571,6 +534,10 @@ async fn handle_observation(mut obs: Observation, ctx: &StoreWriterCtx) {
 
     // touch_debug_session is handled by per-MCP-session flush tasks (B1.6).
     let _ = ctx.debug_session_store.as_ref();
+    Ok(ObservationWriteResult {
+        status: ObservationWriteStatus::Inserted,
+        id: Some(inserted_id),
+    })
 }
 
 fn current_ns() -> u64 {
@@ -597,6 +564,9 @@ mod writer_tests {
             data: serde_json::json!({"msg": "x"}),
             severity,
             source_location: None,
+            service: None,
+            source: None,
+            source_instance: None,
             timestamp_ns: 0,
             correlation_id: None,
             parent_id: None,
@@ -644,7 +614,7 @@ mod writer_tests {
         obs.debug_session_id = Some(Arc::from("mcp-session-1"));
         obs.checkpoint_id = Some(Arc::from("mcp-cp-1"));
         obs.tags = Some(vec!["project:daemon8".into()]);
-        handle_observation(obs, &ctx).await;
+        handle_observation(obs, &ctx).await.unwrap();
 
         let slice = store
             .query(&daemon8_types::Filter::default())
@@ -663,7 +633,9 @@ mod writer_tests {
     async fn writer_stamps_node_id_on_every_observation() {
         let (ctx, store, _mem) = build_ctx_with_active(None, None).await;
 
-        handle_observation(fresh_obs(Severity::Info, ObservationKind::Log), &ctx).await;
+        handle_observation(fresh_obs(Severity::Info, ObservationKind::Log), &ctx)
+            .await
+            .unwrap();
 
         let slice = store
             .query(&daemon8_types::Filter::default())
@@ -679,19 +651,19 @@ mod writer_tests {
 
         let exc = ObservationKind::Exception {
             message: "DB timeout after 5000ms on conn 7".into(),
-            trace: Some("at db::query in /Users/x/proj/src/db.rs:42".into()),
+            trace: Some("at db::query in /workspace/x/proj/src/db.rs:42".into()),
         };
         let mut obs1 = fresh_obs(Severity::Error, exc.clone());
         obs1.tags = Some(vec!["project:daemon8".into()]);
-        handle_observation(obs1, &ctx).await;
+        handle_observation(obs1, &ctx).await.unwrap();
         // Same shape — should bump seen, not create a new memory.
         let exc2 = ObservationKind::Exception {
             message: "DB timeout after 9999ms on conn 12".into(),
-            trace: Some("at db::query in /Users/y/other/src/db.rs:42".into()),
+            trace: Some("at db::query in /workspace/y/other/src/db.rs:42".into()),
         };
         let mut obs2 = fresh_obs(Severity::Error, exc2);
         obs2.tags = Some(vec!["project:daemon8".into()]);
-        handle_observation(obs2, &ctx).await;
+        handle_observation(obs2, &ctx).await.unwrap();
 
         let slice = store
             .query(&daemon8_types::Filter::default())
@@ -735,7 +707,9 @@ mod writer_tests {
         };
         let (ctx, _store, _mem) = build_ctx_with_active(Some(session), None).await;
 
-        handle_observation(fresh_obs(Severity::Info, ObservationKind::Log), &ctx).await;
+        handle_observation(fresh_obs(Severity::Info, ObservationKind::Log), &ctx)
+            .await
+            .unwrap();
 
         assert!(
             last.load(std::sync::atomic::Ordering::Relaxed) > 1_000,
@@ -1004,6 +978,10 @@ fn stdin_is_real_pipe() -> bool {
     unsafe { GetFileType(handle as *mut _) == 3 }
 }
 
+fn should_start_mcp_stdio(config_enabled: bool, stdin_is_pipe: bool) -> bool {
+    config_enabled && stdin_is_pipe
+}
+
 async fn bind_with_retry(addr: &str, port: u16) -> Result<tokio::net::TcpListener> {
     const MAX_ATTEMPTS: u32 = 5;
     let mut delay = Duration::from_millis(500);
@@ -1038,6 +1016,19 @@ async fn bind_with_retry(addr: &str, port: u16) -> Result<tokio::net::TcpListene
         }
     }
     unreachable!()
+}
+
+#[cfg(test)]
+mod stdio_tests {
+    use super::*;
+
+    #[test]
+    fn mcp_stdio_requires_config_and_pipe() {
+        assert!(should_start_mcp_stdio(true, true));
+        assert!(!should_start_mcp_stdio(true, false));
+        assert!(!should_start_mcp_stdio(false, true));
+        assert!(!should_start_mcp_stdio(false, false));
+    }
 }
 
 fn find_port_holder(port: u16) -> Option<String> {
@@ -1410,120 +1401,6 @@ mod chrome_handler_tests {
         assert_eq!(
             decide_connect_action(true, ConnectionState::Disconnected, false),
             ConnectDecision::AbortAndSpawn
-        );
-    }
-}
-
-async fn classify_project_root(
-    root: std::path::PathBuf,
-) -> Result<daemon8_types::ProjectClassification, String> {
-    daemon8_providers::classify(&root)
-        .map(|mut classification| {
-            classification.root =
-                std::fs::canonicalize(&classification.root).unwrap_or(classification.root);
-            classification
-        })
-        .map_err(|e| e.to_string())
-}
-
-async fn run_discovery_plan_json(
-    root: &std::path::Path,
-    librarian: &dyn daemon8_store::LibrarianStore,
-    obs_tx: &mpsc::UnboundedSender<Observation>,
-    user_overrides: Vec<crate::config::SourceConfig>,
-    cancel: CancellationToken,
-) -> String {
-    use crate::discovery::{presentation, scanner};
-
-    let config = scanner::ScannerConfig {
-        wait_timeout: Duration::from_secs(0),
-        poll_interval: Duration::from_secs(1),
-        ..scanner::ScannerConfig::default()
-    };
-    let plan = match scanner::scan(
-        root,
-        librarian,
-        obs_tx,
-        user_overrides,
-        config,
-        cancel,
-        None,
-    )
-    .await
-    {
-        Ok(plan) => plan,
-        Err(e) => {
-            return serde_json::json!({
-                "error": {
-                    "code": "discovery_scan_failed",
-                    "message": e.to_string(),
-                }
-            })
-            .to_string();
-        }
-    };
-
-    let mut rendered = Vec::new();
-    if let Err(e) = presentation::render_plan(&plan, &mut rendered) {
-        return serde_json::json!({
-            "error": {
-                "code": "discovery_render_failed",
-                "message": format!("render discovery plan: {e}"),
-            }
-        })
-        .to_string();
-    }
-    let report = String::from_utf8_lossy(&rendered).to_string();
-    let next_actions = if plan.awaiting_agent {
-        vec!["librarian_index", "discover_project", "awareness_status"]
-    } else {
-        vec!["awareness_status", "query_observations"]
-    };
-
-    serde_json::to_string_pretty(&serde_json::json!({
-        "plan": plan,
-        "report": report,
-        "next_actions": next_actions,
-    }))
-    .unwrap_or_default()
-}
-
-async fn register_provider_projects(lib: Arc<dyn daemon8_store::LibrarianStore>) {
-    let projects = daemon8_providers::list_all_projects();
-    if projects.is_empty() {
-        return;
-    }
-    let now = current_ns();
-    let mut registered = 0u32;
-    for entry in &projects {
-        let node = daemon8_store::LibrarianNode {
-            id: None,
-            kind: daemon8_types::LibrarianNodeKind::Project,
-            label: entry.slug.clone(),
-            locator_kind: daemon8_types::LocatorKind::File,
-            locator: entry.path.to_string_lossy().to_string(),
-            tags: vec![format!("provider:{}", entry.provider)],
-            project_slug: entry.slug.clone(),
-            version: String::new(),
-            parent_id: None,
-            created_at: now,
-            updated_at: now,
-            last_read_at: None,
-            deprecated_at: None,
-            canonicalized_at: None,
-            data: None,
-        };
-        match lib.index_node(node).await {
-            Ok(_) => registered += 1,
-            Err(e) => {
-                tracing::warn!(slug = %entry.slug, "failed to register project: {e}");
-            }
-        }
-    }
-    if registered > 0 {
-        tracing::info!(
-            count = registered,
-            "registered provider projects in librarian"
         );
     }
 }

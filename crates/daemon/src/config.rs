@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: LicenseRef-FCL-1.0-ALv2
 // Copyright (c) 2026 Havy.tech, LLC
 
-use std::collections::BTreeMap;
 use std::net::{IpAddr, SocketAddr, SocketAddrV4};
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -28,13 +27,7 @@ pub struct Config {
     #[serde(default)]
     pub logging: LoggingConfig,
     #[serde(default)]
-    pub sources: BTreeMap<String, SourceConfig>,
-    #[serde(default)]
-    pub setup: SetupConfig,
-    #[serde(default)]
     pub debug_session: DebugSessionConfig,
-    #[serde(default)]
-    pub source_config: SourceManagerConfig,
     #[serde(skip)]
     pub config_dir: PathBuf,
 }
@@ -181,108 +174,6 @@ impl FromStr for LogLevel {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
-pub enum SourceConfig {
-    File(FileSourceConfig),
-    Conversation(ConversationSourceConfig),
-    Sqlite(SqliteSourceConfig),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct FileSourceConfig {
-    pub path: String,
-    #[serde(default = "default_line_parser")]
-    pub parser: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parser_pattern: Option<String>,
-    #[serde(default)]
-    pub tags: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ConversationSourceConfig {
-    pub provider: String,
-    #[serde(default)]
-    pub tags: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SqliteSourceConfig {
-    pub path: String,
-    pub provider: String,
-    #[serde(default = "default_sqlite_poll_secs")]
-    pub poll_interval_secs: u64,
-    #[serde(default)]
-    pub tags: Vec<String>,
-}
-
-fn default_sqlite_poll_secs() -> u64 {
-    60
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SetupConfig {
-    #[serde(default)]
-    pub projects: BTreeMap<String, ProjectSetupState>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ProjectSetupState {
-    pub slug: String,
-    pub root_path: String,
-    pub config_path: String,
-    pub applied_at_ns: u64,
-    #[serde(default)]
-    pub desired_scope: Vec<String>,
-    pub hook_policy: HookPolicy,
-    #[serde(default)]
-    pub sources: Vec<String>,
-    #[serde(default)]
-    pub source_audit: Vec<String>,
-}
-
-/// Records whether hook installation was performed during `setup apply` or
-/// left to the operator. Stored verbatim in setup state TOML; existing
-/// `"install"` / `"manual"` strings continue to round-trip via
-/// `rename_all = "snake_case"`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum HookPolicy {
-    /// Setup applied hook installation for one or more providers.
-    Install,
-    /// Setup deferred hook installation; the operator wires hooks themselves.
-    Manual,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SourceManagerConfig {
-    #[serde(default = "default_idle_ttl_secs")]
-    pub idle_ttl_secs: u64,
-}
-
-impl Default for SourceManagerConfig {
-    fn default() -> Self {
-        Self {
-            idle_ttl_secs: default_idle_ttl_secs(),
-        }
-    }
-}
-
-fn default_idle_ttl_secs() -> u64 {
-    900
-}
-
-fn default_line_parser() -> String {
-    "line".into()
-}
-
 fn deser_optional_path<'de, D: Deserializer<'de>>(d: D) -> Result<Option<PathBuf>, D::Error> {
     let s: Option<String> = Option::deserialize(d)?;
     Ok(s.filter(|s| !s.is_empty()).map(PathBuf::from))
@@ -336,10 +227,7 @@ impl Default for Config {
             adb: AdbConfig::default(),
             ingestion: IngestionConfig::default(),
             logging: LoggingConfig::default(),
-            sources: BTreeMap::new(),
-            setup: SetupConfig::default(),
             debug_session: DebugSessionConfig::default(),
-            source_config: SourceManagerConfig::default(),
             config_dir: project_dirs()
                 .map(|d| d.config_dir().to_path_buf())
                 .unwrap_or_else(|| PathBuf::from(".")),
@@ -426,7 +314,7 @@ pub fn load(config_path: Option<&str>) -> Result<Config, figment::Error> {
     }
 
     // Environment variables use double-underscore for nesting:
-    // DAEMON8_SERVER__PORT=9090, DAEMON8_CHROME__AUTO_CONNECT=true
+    // DAEMON8_SERVER__PORT=9090, DAEMON8_BROWSER__AUTO_CONNECT=true
     figment = figment.merge(
         Env::prefixed("DAEMON8_")
             .split("__")
@@ -465,9 +353,7 @@ fn is_config_env_key(key: &str) -> bool {
             | "adb"
             | "ingestion"
             | "logging"
-            | "sources"
-            | "source_config"
-            | "setup"
+            | "debug_session"
     )
 }
 
@@ -585,7 +471,6 @@ mod tests {
         assert_eq!(cfg.logging.max_log_files, 5);
         assert!(cfg.storage.path.is_none());
         assert!(cfg.browser.path.is_none());
-        assert!(cfg.setup.projects.is_empty());
     }
 
     #[test]
@@ -627,11 +512,11 @@ role_default = "debugger"
 "#,
             r#"
 [ingestion.udp]
-legacy_port = 8099
+removed_port = 8099
 "#,
             r#"
 [sources.app]
-type = "file"
+kind = "file"
 path = "app.log"
 role_default = "debugger"
 "#,
@@ -649,58 +534,21 @@ role_default = "debugger"
         assert!(!is_config_env_key("hook_verbose"));
         assert!(is_config_env_key("server.port"));
         assert!(is_config_env_key("server__port"));
+        assert!(is_config_env_key("debug_session.inactivity_auto_end_secs"));
+        assert!(is_config_env_key("debug_session__inactivity_auto_end_secs"));
     }
 
     #[test]
-    fn invalid_hook_policy_value_is_rejected() {
+    fn removed_setup_config_is_rejected() {
         let result: Result<Config, _> = toml::from_str(
             r#"
 [setup.projects.daemon8]
 slug = "daemon8"
-root_path = "/tmp/daemon8"
-config_path = "/tmp/daemon8/.daemon8.toml"
-applied_at_ns = 0
-hook_policy = "banana"
 "#,
         );
         assert!(
             result.is_err(),
-            "unknown hook_policy value must be rejected, got Ok: {result:?}"
-        );
-    }
-
-    #[test]
-    fn hook_policy_round_trips_via_snake_case() {
-        let cfg: Config = toml::from_str(
-            r#"
-[setup.projects.daemon8]
-slug = "daemon8"
-root_path = "/tmp/daemon8"
-config_path = "/tmp/daemon8/.daemon8.toml"
-applied_at_ns = 0
-hook_policy = "install"
-"#,
-        )
-        .expect("install policy should parse");
-        assert_eq!(
-            cfg.setup.projects["daemon8"].hook_policy,
-            HookPolicy::Install
-        );
-
-        let cfg: Config = toml::from_str(
-            r#"
-[setup.projects.daemon8]
-slug = "daemon8"
-root_path = "/tmp/daemon8"
-config_path = "/tmp/daemon8/.daemon8.toml"
-applied_at_ns = 0
-hook_policy = "manual"
-"#,
-        )
-        .expect("manual policy should parse");
-        assert_eq!(
-            cfg.setup.projects["daemon8"].hook_policy,
-            HookPolicy::Manual
+            "removed setup config must not be silently accepted"
         );
     }
 
@@ -840,119 +688,31 @@ bind = "0.0.0.0:8889"
     }
 
     #[test]
-    fn sources_default_is_empty() {
-        let cfg = Config::default();
-        assert!(cfg.sources.is_empty());
-    }
-
-    #[test]
-    fn sources_file_type_parses() {
-        let cfg: Config = toml::from_str(
-            r#"
-[sources.laravel]
-type = "file"
-path = "/var/log/laravel/*.log"
-parser = "monolog"
-tags = ["php", "laravel"]
-
-[sources.nginx]
-type = "file"
-path = "/var/log/nginx/access.log"
-parser = "clf"
-"#,
-        )
-        .unwrap();
-        assert_eq!(cfg.sources.len(), 2);
-        let SourceConfig::File(f) = &cfg.sources["laravel"] else {
-            panic!("expected File source");
-        };
-        assert_eq!(f.path, "/var/log/laravel/*.log");
-        assert_eq!(f.parser, "monolog");
-        assert_eq!(f.tags, vec!["php", "laravel"]);
-
-        let SourceConfig::File(f) = &cfg.sources["nginx"] else {
-            panic!("expected File source");
-        };
-        assert_eq!(f.parser, "clf");
-        assert!(f.tags.is_empty());
-    }
-
-    #[test]
-    fn sources_file_defaults_parser_to_line() {
-        let cfg: Config = toml::from_str(
+    fn removed_sources_config_is_rejected() {
+        let result: Result<Config, _> = toml::from_str(
             r#"
 [sources.raw]
-type = "file"
+kind = "file"
 path = "/tmp/test.log"
 "#,
-        )
-        .unwrap();
-        let SourceConfig::File(f) = &cfg.sources["raw"] else {
-            panic!("expected File source");
-        };
-        assert_eq!(f.parser, "line");
+        );
+        assert!(
+            result.is_err(),
+            "global sources config must not be accepted in alpha"
+        );
     }
 
     #[test]
-    fn sources_sqlite_type_parses() {
-        let cfg: Config = toml::from_str(
+    fn removed_source_config_is_rejected() {
+        let result: Result<Config, _> = toml::from_str(
             r#"
-[sources.codex-db]
-type = "sqlite"
-path = "~/.codex/state_5.sqlite"
-provider = "codex"
-poll_interval_secs = 30
-tags = ["codex", "agent-topology"]
+[source_config]
+idle_ttl_secs = 1
 "#,
-        )
-        .unwrap();
-        assert_eq!(cfg.sources.len(), 1);
-        let SourceConfig::Sqlite(s) = &cfg.sources["codex-db"] else {
-            panic!("expected Sqlite source");
-        };
-        assert_eq!(s.path, "~/.codex/state_5.sqlite");
-        assert_eq!(s.provider, "codex");
-        assert_eq!(s.poll_interval_secs, 30);
-        assert_eq!(s.tags, vec!["codex", "agent-topology"]);
-    }
-
-    #[test]
-    fn sources_sqlite_defaults() {
-        let cfg: Config = toml::from_str(
-            r#"
-[sources.codex-db]
-type = "sqlite"
-path = "~/.codex/state_5.sqlite"
-provider = "codex"
-"#,
-        )
-        .unwrap();
-        let SourceConfig::Sqlite(s) = &cfg.sources["codex-db"] else {
-            panic!("expected Sqlite source");
-        };
-        assert_eq!(s.poll_interval_secs, 60);
-        assert!(s.tags.is_empty());
-    }
-
-    #[test]
-    fn setup_state_parses() {
-        let cfg: Config = toml::from_str(
-            r#"
-[setup.projects.daemon8]
-slug = "daemon8"
-root_path = "/tmp/daemon8"
-config_path = "/tmp/daemon8/.daemon8.toml"
-applied_at_ns = 42
-desired_scope = ["file-sources"]
-hook_policy = "manual"
-sources = ["daemon8.app-logs"]
-source_audit = ["daemon8.app-logs: registered"]
-"#,
-        )
-        .unwrap();
-
-        let state = &cfg.setup.projects["daemon8"];
-        assert_eq!(state.slug, "daemon8");
-        assert_eq!(state.sources, vec!["daemon8.app-logs"]);
+        );
+        assert!(
+            result.is_err(),
+            "source manager runtime config must not be accepted in alpha"
+        );
     }
 }

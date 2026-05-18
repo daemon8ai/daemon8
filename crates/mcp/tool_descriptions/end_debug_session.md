@@ -8,20 +8,18 @@ You're stopping investigation but you don't have a captured fix worth indexing f
 
 ## Prereq
 
-A debug session must be active. Call start_debug_session first if not.
+A connected project-scope MCP session (`data.connection.mode == "project"`) and an active debug session. Call `daemon8_connect` with a project path first; call start_debug_session if no debug session is active.
 
 ## Args
   - outcome: optional string. Defaults to "abandoned". Allowed: "abandoned", "in_progress" (if you intend to resume later in a new session). Do NOT use "resolved" here — use resolve_debug_session for that.
 
 ## Returns
-  result.debug_session_id: id of the session that was just closed.
-  result.summary_memory_id: id of the thin SessionSummary written for this session (always written, even on abandon, so the session never silently disappears).
-  daemon8.active_debug_session: null after this call.
+Common envelope with `code="debug_session_ended"`, `data.debug_session_id`, and `data.summary_memory_id`.
 
 ## Errors
-  - no_active_debug_session: nothing to end. hint: this is usually safe to ignore; fix.tool: null.
+  - no_active_debug_session: nothing to end. This is usually safe to ignore.
   - debug_session_unavailable: see start_debug_session.
 
 ## Next
 
-Call `awareness_sync` if unresolved blockers/questions should survive the handoff. Then start_debug_session for a fresh investigation, or list_debug_sessions to review past sessions.
+Start a fresh debug session for the next investigation, or call list_debug_sessions to review recent sessions.

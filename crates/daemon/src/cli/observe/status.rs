@@ -1,20 +1,26 @@
 // SPDX-License-Identifier: LicenseRef-FCL-1.0-ALv2
 // Copyright (c) 2026 Havy.tech, LLC
 
-use anyhow::Result;
+use anyhow::{Context, Result};
+use daemon8_core::control::status_envelope;
+use daemon8_store::{ScopeLedgerStore, ScopeLedgerSummary, SurrealStore};
 use daemon8_types::{HealthStatus, RuntimeSummary};
 use owo_colors::OwoColorize;
+use std::path::PathBuf;
 
 use super::{base_url, format_number};
 
-pub async fn cmd_status(args: super::ClientArgs) -> Result<()> {
+pub async fn cmd_status(config_path: Option<String>, args: super::ClientArgs) -> Result<()> {
     use crate::config;
     use crate::style;
 
-    let cfg = config::load(None).unwrap_or_default();
-    let config_path = cfg.config_dir.join("config.toml");
+    let cfg = config::load(config_path.as_deref()).context("failed to load configuration")?;
+    let config_file = config_path
+        .as_deref()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| cfg.config_dir.join("config.toml"));
 
-    let config_exists = config_path.exists();
+    let config_exists = config_file.exists();
     let config_label = if config_exists {
         style::green("exists")
     } else {
@@ -26,7 +32,7 @@ pub async fn cmd_status(args: super::ClientArgs) -> Result<()> {
 
     let screenshot_dir = config::resolve_screenshot_path(&cfg);
 
-    let port = args.resolved_port();
+    let port = args.port.unwrap_or(cfg.server.port);
     let addr = std::net::SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), port);
     let running =
         std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(1)).is_ok();
@@ -37,21 +43,35 @@ pub async fn cmd_status(args: super::ClientArgs) -> Result<()> {
     };
 
     if args.json {
-        let json = serde_json::json!({
-            "config_path": config_path.display().to_string(),
+        let scope_ledger = match load_scope_ledger_summary(&data_dir).await {
+            Err(err) if running && err.contains("LOCK is already locked") => {
+                Ok(ScopeLedgerSummary::default())
+            }
+            other => other,
+        };
+        let mut data = serde_json::json!({
+            "config_path": config_file.display().to_string(),
             "config_exists": config_exists,
             "data_dir": data_dir_display,
             "screenshot_dir": screenshot_dir.display().to_string(),
             "daemon": if running { "running" } else { "stopped" },
             "port": port,
+            "daemon_version": env!("CARGO_PKG_VERSION"),
+            "schema_version": daemon8_store::SCHEMA_VERSION,
+            "connection": serde_json::Value::Null,
+            "scope_authority": "none",
+            "scope_ledger": scope_ledger.as_ref().ok().cloned().unwrap_or_default(),
         });
-        println!("{}", serde_json::to_string_pretty(&json)?);
+        if let Err(err) = scope_ledger {
+            data["scope_ledger_error"] = serde_json::json!(err);
+        }
+        println!("{}", status_envelope(data).render());
         return Ok(());
     }
 
     println!();
     println!("  {}", style::blue("Daemon8 Status"));
-    println!("    {} {}", style::label("Config"), config_path.display());
+    println!("    {} {}", style::label("Config"), config_file.display());
     println!("    {}   {config_label}", style::label("      "));
     println!("    {} {data_dir_display}", style::label("Data   "));
     println!(
@@ -103,4 +123,21 @@ pub async fn cmd_status(args: super::ClientArgs) -> Result<()> {
 
     println!();
     Ok(())
+}
+
+async fn load_scope_ledger_summary(
+    db_path: &std::path::Path,
+) -> Result<ScopeLedgerSummary, String> {
+    if !db_path.exists() {
+        return Ok(ScopeLedgerSummary::default());
+    }
+
+    let store = SurrealStore::open(db_path)
+        .await
+        .map_err(|err| err.to_string())?;
+    store
+        .scope_ledger_store()
+        .scope_ledger_summary(5)
+        .await
+        .map_err(|err| err.to_string())
 }

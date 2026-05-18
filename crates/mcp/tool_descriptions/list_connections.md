@@ -1,6 +1,6 @@
 ## Purpose
 
-List active data source connections feeding observations into the daemon: applications, the browser, devices.
+List active browser and application connections feeding observations into the daemon.
 
 ## When
 
@@ -8,14 +8,14 @@ Confirming the daemon is receiving telemetry from the expected source; diagnosin
 
 ## Prereq
 
-None.
+A connected MCP session. Call `daemon8_connect` first.
 
 ## Args
 
 none.
 
 ## Returns
-  result: {browser: {state, endpoint, ...}, applications: [...], devices: [...]}.
+Common envelope with `data.browser` and optional `data.applications`.
   State values: connected | connecting | reconnecting | disconnected.
 
 ## Errors
@@ -24,4 +24,4 @@ none expected (read-only).
 
 ## Next
 
-connect_browser if the browser endpoint shows disconnected; query_observations(origins=["app:<name>"]) once a source is confirmed.
+connect_browser if the browser endpoint shows disconnected; read_live_feed(origins=["app:<name>"]) once a source is confirmed.

@@ -3,8 +3,6 @@
 
 //! Shared daemon8 CLI constants.
 
-pub const PROJECT_CONFIG_FILENAME: &str = ".daemon8.toml";
-
 pub const SERVICE: daemon8_providers::ServiceIdentity = daemon8_providers::ServiceIdentity {
     name: "daemon8",
     channel_name: Some("daemon8-channel"),

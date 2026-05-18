@@ -2,30 +2,27 @@
 // Copyright (c) 2026 Havy.tech, LLC
 
 pub mod active_session;
-pub mod awareness;
+pub mod cursor;
 pub mod debug_session;
 pub mod error_hash;
 pub mod hash_cache;
 mod lens;
-pub mod librarian;
-pub mod librarian_validators;
 pub mod memory;
+pub mod scope_ledger;
 mod surreal;
 
 pub use active_session::{ActiveDebugSession, ActiveSessionState};
-pub use awareness::SurrealAwarenessStore;
+pub use cursor::SurrealCursorStore;
 pub use debug_session::SurrealDebugSessionStore;
 pub use hash_cache::ObservationHashCache;
 pub use lens::{LensManager, LensStatus};
-pub use librarian::SurrealLibrarianStore;
 pub use memory::SurrealMemoryStore;
-pub use surreal::SurrealStore;
+pub use scope_ledger::SurrealScopeLedgerStore;
+pub use surreal::{ResetReport, SCHEMA_VERSION, SurrealStore};
 
 use daemon8_types::{
-    AwarenessAuthority, AwarenessEdgeKind, AwarenessNodeKind, AwarenessNodeState,
-    AwarenessOperation, Checkpoint, DebugSessionOutcome, DebugSessionStatus, Filter,
-    LibrarianEdgeKind, LibrarianNodeKind, LocatorKind, MemoryKind, Observation, RuntimeSummary,
-    StateSlice,
+    Checkpoint, DebugSessionOutcome, DebugSessionStatus, Filter, MemoryKind, Observation,
+    RuntimeSummary, StateSlice,
 };
 use serde::{Deserialize, Serialize};
 
@@ -80,6 +77,34 @@ pub struct Memory {
     /// commands_used, related_errors). Other memory kinds may leave it empty.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CursorState {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub scope_root: String,
+    pub source: String,
+    pub source_instance: String,
+    pub position: u64,
+    pub updated_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
+}
+
+#[async_trait::async_trait]
+pub trait CursorStore: Send + Sync {
+    async fn upsert_cursor(&self, cursor: CursorState) -> Result<(), StoreError>;
+    async fn get_cursor(
+        &self,
+        scope_root: &str,
+        source: &str,
+        source_instance: &str,
+    ) -> Result<Option<CursorState>, StoreError>;
+    async fn list_cursors_for_scope(
+        &self,
+        scope_root: &str,
+    ) -> Result<Vec<CursorState>, StoreError>;
 }
 
 #[derive(Debug, Clone, Default)]
@@ -164,279 +189,85 @@ pub trait DebugSessionStore: Send + Sync {
     ) -> Result<Vec<DebugCheckpoint>, StoreError>;
 }
 
-// ── Awareness Tree ───────────────────────────────────────────────────
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AwarenessNode {
+pub struct ScopeSessionRecord {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
-    pub project_slug: String,
-    pub path: String,
-    pub kind: AwarenessNodeKind,
-    pub state: AwarenessNodeState,
-    pub authority: AwarenessAuthority,
-    pub confidence: f64,
-    pub summary: String,
+    pub session_id: String,
+    pub provider: String,
+    pub agent_name: String,
+    pub mode: String,
+    pub requested_path: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub note: Option<String>,
+    pub scope_root: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub redex: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub redex_derived: Option<AwarenessRedex>,
-    pub tags: Vec<String>,
+    pub transcript_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub debug_session_id: Option<String>,
+    pub project_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub checkpoint_id: Option<String>,
-    #[serde(default)]
-    pub debug_session_ids: Vec<String>,
-    #[serde(default)]
-    pub checkpoint_ids: Vec<String>,
-    #[serde(default)]
-    pub evidence_refs: Vec<AwarenessRef>,
-    #[serde(default)]
-    pub signal_refs: Vec<AwarenessRef>,
-    #[serde(default)]
-    pub observation_ids: Vec<u64>,
-    #[serde(default)]
-    pub librarian_node_ids: Vec<String>,
-    pub created_at: u64,
-    pub updated_at: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub resolved_at: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub retired_at: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stale_at: Option<u64>,
+    pub source_count: Option<u64>,
+    pub connected_at: u64,
+    pub last_seen_at: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AwarenessEdge {
+pub struct RecentScopeRecord {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
-    pub kind: AwarenessEdgeKind,
-    pub from_node: String,
-    pub to_node: String,
-    pub created_at: u64,
+    pub mode: String,
+    pub requested_path: String,
+    pub scope_root: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_count: Option<u64>,
+    pub first_seen_at: u64,
+    pub last_seen_at: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScopeConnectFailureRecord {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub session_id: String,
+    pub provider: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_name: Option<String>,
+    pub requested_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope_root: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transcript_path: Option<String>,
+    pub mode: String,
+    pub status: String,
+    pub code: String,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+    pub attempt_count: u64,
+    pub first_seen_at: u64,
+    pub last_seen_at: u64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct AwarenessRef {
-    pub kind: String,
-    pub id: String,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct AwarenessRefs {
-    pub evidence_refs: Vec<AwarenessRef>,
-    pub signal_refs: Vec<AwarenessRef>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct AwarenessRedex {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub state: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub recovery: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub implication: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub temporal: Option<String>,
-    pub persistent: bool,
-    pub conflict: bool,
-}
-
-#[derive(Debug, Clone)]
-pub struct AwarenessSync {
-    pub operation: AwarenessOperation,
-    pub project_slug: String,
-    pub path: String,
-    pub kind: AwarenessNodeKind,
-    pub authority: Option<AwarenessAuthority>,
-    pub confidence: Option<f64>,
-    pub summary: Option<String>,
-    pub note: Option<String>,
-    pub redex: Option<String>,
-    pub tags: Vec<String>,
-    pub debug_session_id: Option<String>,
-    pub checkpoint_id: Option<String>,
-    pub refs: AwarenessRefs,
-    pub target_node_id: Option<String>,
-    pub supersedes: Vec<String>,
-    pub answers: Vec<String>,
-    pub contradicts: Vec<String>,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct AwarenessFilter {
-    pub project_slug: String,
-    pub include_inactive: bool,
-    pub limit: Option<usize>,
-}
-
-#[derive(Debug, Clone)]
-pub struct AwarenessTraversalFilter {
-    pub project_slug: String,
-    pub focus_path: String,
-    pub depth: usize,
-    pub include_inactive: bool,
-    pub include_notes: bool,
-    pub include_evidence: bool,
-    pub limit: Option<usize>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AwarenessManifest {
-    pub project_slug: String,
-    pub counts_by_kind: std::collections::BTreeMap<String, usize>,
-    pub active_objectives: Vec<AwarenessNode>,
-    pub open_questions: Vec<AwarenessNode>,
-    pub active_hypotheses: Vec<AwarenessNode>,
-    pub stale_risk_count: usize,
-    pub conflict_count: usize,
-    pub suggested_focus_paths: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AwarenessSignal {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub id: Option<String>,
-    pub project_slug: String,
-    pub signal_kind: String,
-    #[serde(default)]
-    pub signal_key: String,
-    pub severity: String,
-    pub summary: String,
-    pub signal_refs: Vec<AwarenessRef>,
-    pub related_awareness_node_ids: Vec<String>,
-    pub score: f64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub surfaced_at: Option<u64>,
-    pub expires_at: u64,
-    pub created_at: u64,
-}
-
-#[derive(Debug, Clone)]
-pub struct AwarenessSignalInput {
-    pub project_slug: String,
-    pub signal_kind: String,
-    pub severity: String,
-    pub summary: String,
-    pub signal_refs: Vec<AwarenessRef>,
-    pub related_awareness_node_ids: Vec<String>,
-    pub score: f64,
-    pub expires_at: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AwarenessTree {
-    pub project_slug: String,
-    pub focus_path: String,
-    pub nodes: Vec<AwarenessNode>,
-    pub edges: Vec<AwarenessEdge>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AwarenessConflict {
-    pub reason: String,
-    pub incoming_path: String,
-    pub existing_nodes: Vec<AwarenessNode>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AwarenessSyncResult {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub node: Option<AwarenessNode>,
-    pub edges: Vec<AwarenessEdge>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub conflict: Option<AwarenessConflict>,
+pub struct ScopeLedgerSummary {
+    pub recent_scopes: Vec<RecentScopeRecord>,
+    pub recent_failures: Vec<ScopeConnectFailureRecord>,
 }
 
 #[async_trait::async_trait]
-pub trait AwarenessStore: Send + Sync {
-    async fn sync_node(&self, input: AwarenessSync) -> Result<AwarenessSyncResult, StoreError>;
-    async fn get_node(&self, id: &str) -> Result<Option<AwarenessNode>, StoreError>;
-    async fn manifest(&self, filter: &AwarenessFilter) -> Result<AwarenessManifest, StoreError>;
-    async fn record_signal(
+pub trait ScopeLedgerStore: Send + Sync {
+    async fn record_connect_success(&self, record: ScopeSessionRecord) -> Result<(), StoreError>;
+    async fn record_recent_scope(&self, record: RecentScopeRecord) -> Result<(), StoreError>;
+    async fn record_connect_failure(
         &self,
-        input: AwarenessSignalInput,
-    ) -> Result<AwarenessSignal, StoreError>;
-    async fn active_signals(
-        &self,
-        project_slug: &str,
-        limit: usize,
-    ) -> Result<Vec<AwarenessSignal>, StoreError>;
-    async fn prune_expired_signals(&self, now: u64) -> Result<u64, StoreError>;
-    async fn traverse(
-        &self,
-        filter: &AwarenessTraversalFilter,
-    ) -> Result<AwarenessTree, StoreError>;
-}
-
-// ── Librarian catalog ────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LibrarianNode {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub id: Option<String>,
-    pub kind: LibrarianNodeKind,
-    pub label: String,
-    pub locator_kind: LocatorKind,
-    pub locator: String,
-    pub tags: Vec<String>,
-    pub project_slug: String,
-    pub version: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub parent_id: Option<String>,
-    pub created_at: u64,
-    pub updated_at: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub last_read_at: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub deprecated_at: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub canonicalized_at: Option<u64>,
-    // Kind-specific payload (D6). The schema column is option<object>;
-    // per-kind shapes (SourceTemplateData, ProjectNodeData) live in
-    // daemon8-types and are validated at write time by
-    // crates/store/src/librarian_validators.rs. Older rows without
-    // this field stay valid.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub data: Option<serde_json::Value>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LibrarianEdge {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub id: Option<String>,
-    pub kind: LibrarianEdgeKind,
-    pub from_node: String,
-    pub to_node: String,
-    pub created_at: u64,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct LibrarianFilter {
-    pub kinds: Option<Vec<LibrarianNodeKind>>,
-    pub tags: Option<Vec<String>>,
-    pub project_slug: Option<String>,
-    pub text_match: Option<String>,
-    pub limit: Option<usize>,
-    pub include_deprecated: bool,
-    pub stale_before: Option<u64>,
-    pub parent_id: Option<String>,
-}
-
-#[async_trait::async_trait]
-pub trait LibrarianStore: Send + Sync {
-    async fn index_node(&self, node: LibrarianNode) -> Result<String, StoreError>;
-    async fn index_edge(&self, edge: LibrarianEdge) -> Result<String, StoreError>;
-    async fn lookup(&self, filter: &LibrarianFilter) -> Result<Vec<LibrarianNode>, StoreError>;
-    async fn get_node(&self, id: &str) -> Result<Option<LibrarianNode>, StoreError>;
-    async fn get_edges(&self, node_id: &str) -> Result<Vec<LibrarianEdge>, StoreError>;
-    async fn get_children(&self, parent_id: &str) -> Result<Vec<LibrarianNode>, StoreError>;
-    async fn touch_read(&self, id: &str) -> Result<(), StoreError>;
-    async fn deprecate_node(&self, id: &str) -> Result<bool, StoreError>;
-    async fn forget_node(&self, id: &str) -> Result<bool, StoreError>;
-    async fn forget_edge(&self, id: &str) -> Result<bool, StoreError>;
+        record: ScopeConnectFailureRecord,
+    ) -> Result<(), StoreError>;
+    async fn scope_ledger_summary(&self, limit: usize) -> Result<ScopeLedgerSummary, StoreError>;
 }

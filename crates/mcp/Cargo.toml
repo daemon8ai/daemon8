@@ -5,8 +5,10 @@ edition.workspace = true
 license-file.workspace = true
 description = "MCP tool server for daemon8 AI agent integration"
 repository.workspace = true
+publish.workspace = true
 
 [dependencies]
+daemon8-core.workspace = true
 daemon8-types.workspace = true
 daemon8-store.workspace = true
 daemon8-chrome.workspace = true
@@ -28,3 +30,6 @@ test-util = []
 
 [dev-dependencies]
 daemon8-mcp = { path = ".", features = ["test-util"] }
+rmcp = { workspace = true, features = ["client"] }
+tempfile = "3"
+async-trait.workspace = true

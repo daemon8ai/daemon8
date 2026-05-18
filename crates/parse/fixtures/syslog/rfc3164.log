@@ -1,0 +1,10 @@
+<34>Oct 11 22:14:15 mymachine su[12345]: 'su root' failed for lonvick on /dev/pts/8
+<13>Jan 15 14:32:01 webserver nginx[789]: GET /index.html 200
+<165>Jan 15 14:32:02 apphost myapp[1234]: Application started successfully
+<11>Jan 15 14:32:03 dbhost postgres[5678]: FATAL: database "test" does not exist
+<86>Jan 15 14:32:04 mailhost postfix[910]: connect from unknown[192.168.1.1]
+<38>Jan 15 14:32:05 firewall iptables[111]: DROP IN=eth0 SRC=10.0.0.1 DST=10.0.0.2
+<14>Jan 15 14:32:06 authhost sshd[2222]: Accepted publickey for admin from 10.0.0.5
+<4>Jan 15 14:32:07 kernel kernel[0]: Out of memory: Kill process 9876 (java) score 950
+<30>Jan 15 14:32:08 loghost rsyslogd[333]: start
+<46>Jan 15 14:32:09 webserver haproxy[444]: Server backend/web1 is UP

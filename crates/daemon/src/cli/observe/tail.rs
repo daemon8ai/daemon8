@@ -2,12 +2,18 @@
 // Copyright (c) 2026 Havy.tech, LLC
 
 use anyhow::Result;
+use daemon8_ingest::source_sync::SourceSyncReport;
 use daemon8_types::{Observation, Severity};
 use owo_colors::OwoColorize;
 use reqwest_eventsource::{Event, EventSource};
+use serde_json::{Value, json};
+use std::path::PathBuf;
 use tokio_stream::StreamExt;
 
-use super::{base_url, format_origin, format_severity, format_timestamp, truncate, urlenc};
+use super::{
+    base_url, encoded_project_path, format_origin, format_severity, format_timestamp,
+    source_sync_failure_lines, source_sync_summary, truncate, urlenc,
+};
 
 #[derive(clap::Args)]
 pub struct TailArgs {
@@ -19,6 +25,12 @@ pub struct TailArgs {
     pub severity: Option<String>,
     #[arg(long)]
     pub origin: Option<String>,
+    #[arg(long)]
+    pub service: Option<String>,
+    #[arg(long)]
+    pub source: Option<String>,
+    #[arg(long)]
+    pub source_instance: Option<String>,
     #[arg(long, help = "Search across materialized observation text")]
     pub text: Option<String>,
     #[arg(long)]
@@ -29,6 +41,11 @@ pub struct TailArgs {
     pub no_color: bool,
     #[arg(long)]
     pub include_system: bool,
+    #[arg(
+        long,
+        help = "Project path whose configured sources should refresh before streaming"
+    )]
+    pub project_path: Option<PathBuf>,
 }
 
 pub async fn cmd_tail(args: TailArgs) -> Result<()> {
@@ -44,6 +61,15 @@ pub async fn cmd_tail(args: TailArgs) -> Result<()> {
     if let Some(ref origin) = args.origin {
         params.push(format!("origins={}", urlenc(origin)));
     }
+    if let Some(ref service) = args.service {
+        params.push(format!("service={}", urlenc(service)));
+    }
+    if let Some(ref source) = args.source {
+        params.push(format!("source={}", urlenc(source)));
+    }
+    if let Some(ref source_instance) = args.source_instance {
+        params.push(format!("source_instance={}", urlenc(source_instance)));
+    }
     if let Some(ref text) = args.text {
         params.push(format!("text_match={}", urlenc(text)));
     }
@@ -55,6 +81,12 @@ pub async fn cmd_tail(args: TailArgs) -> Result<()> {
     }
     if args.include_system {
         params.push("include_system=true".to_string());
+    }
+    if let Some(ref project_path) = args.project_path {
+        params.push(format!(
+            "project_path={}",
+            encoded_project_path(project_path)?
+        ));
     }
     let query = if params.is_empty() {
         String::new()
@@ -78,6 +110,10 @@ pub async fn cmd_tail(args: TailArgs) -> Result<()> {
                 }
             }
             Ok(Event::Message(msg)) => {
+                if msg.event == "triggered_ingestion" {
+                    print_triggered_ingestion_event(&msg.event, &msg.data, json_mode);
+                    continue;
+                }
                 if json_mode {
                     println!("{}", msg.data);
                 } else {
@@ -114,4 +150,22 @@ pub async fn cmd_tail(args: TailArgs) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn print_triggered_ingestion_event(event: &str, data: &str, json_mode: bool) {
+    if json_mode {
+        let data = serde_json::from_str::<Value>(data).unwrap_or(Value::String(data.to_string()));
+        println!("{}", json!({ "event": event, "data": data }));
+        return;
+    }
+
+    match serde_json::from_str::<SourceSyncReport>(data) {
+        Ok(report) => {
+            eprintln!("{}", source_sync_summary(&report));
+            for line in source_sync_failure_lines(&report) {
+                eprintln!("{line}");
+            }
+        }
+        Err(_) => eprintln!("configured source refresh: {data}"),
+    }
 }

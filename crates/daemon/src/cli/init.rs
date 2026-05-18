@@ -1,268 +1,157 @@
 // SPDX-License-Identifier: LicenseRef-FCL-1.0-ALv2
 // Copyright (c) 2026 Havy.tech, LLC
 
-//! `daemon8 init` -- scaffold `.daemon8.toml` at cwd and optionally
-//! bootstrap provider configs.
+//! `daemon8 init` -- scaffold `.daemon8/config.md`.
 
 use std::env;
-use std::io::IsTerminal;
-use std::path::Path;
+use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context, Result};
+use anyhow::{Result, bail};
+use daemon8_core::control::{AlphaEnvelope, AlphaStatus};
+use daemon8_core::init::{InitRequest, init_project};
+use daemon8_store::{RecentScopeRecord, ScopeLedgerStore, SurrealStore};
 
-use crate::cli_config::PROJECT_CONFIG_FILENAME;
-use daemon8_providers::{
-    Provider, ProviderWriteSummary, dirs_home, is_non_interactive, parse_provider_list,
-    summarize_restarts, write_provider_config,
-};
+use crate::config;
 
 #[derive(clap::Args, Default)]
 pub struct InitArgs {
-    /// Overwrite an existing `.daemon8.toml` at this location
+    /// Overwrite an existing `.daemon8/config.md` at this location.
     #[arg(long)]
     pub force: bool,
 
-    /// Explicit project slug. Defaults to the cwd basename
+    /// Explicit project name. Defaults to the project path basename.
     #[arg(long)]
-    pub slug: Option<String>,
+    pub name: Option<String>,
 
-    /// Accept defaults without prompting. Auto-enabled when stdin is not a TTY
-    /// or when the `CI` env var is set.
-    #[arg(short = 'y', long, visible_alias = "no-interaction")]
-    pub yes: bool,
-
-    /// Comma-separated providers to configure alongside project bootstrap.
-    /// Example: `claude-code,codex-cli`.
+    /// Project directory to initialize. Defaults to cwd.
     #[arg(long)]
-    pub providers: Option<String>,
+    pub path: Option<PathBuf>,
+
+    /// Emit the common alpha JSON envelope.
+    #[arg(long)]
+    pub json: bool,
 }
 
-pub fn cmd_init(args: InitArgs) -> Result<()> {
-    let cwd = env::current_dir().context("cannot read current working directory")?;
-    let target = cwd.join(PROJECT_CONFIG_FILENAME);
+pub async fn cmd_init(config_path: Option<String>, args: InitArgs) -> Result<()> {
+    let path = match args.path {
+        Some(path) => path,
+        None => env::current_dir()?,
+    };
 
-    if target.exists() && !args.force {
-        println!(
-            "{} already exists. Use --force to overwrite.",
-            target.display()
-        );
+    let outcome = init_project(InitRequest {
+        project_path: path,
+        name: args.name,
+        overwrite: args.force,
+    });
+
+    if let Err(err) = record_init_outcome(config_path.as_deref(), &outcome.envelope).await {
+        tracing::warn!(error = %err, "scope ledger init recording failed");
+    }
+
+    if args.json {
+        println!("{}", outcome.envelope.render());
         return Ok(());
     }
 
-    let non_interactive = args.yes || is_non_interactive() || !std::io::stdin().is_terminal();
-    let slug = args.slug.clone().unwrap_or_else(|| derive_slug(&cwd));
-    let project_type = detect_project_type(&cwd);
-    let contents = render_template(&slug, project_type);
-
-    std::fs::write(&target, contents)
-        .with_context(|| format!("failed to write {}", target.display()))?;
-
-    let mut summary = ProviderWriteSummary::default();
-
-    let port = crate::config::load(None).unwrap_or_default().server.port;
-    let mcp_url = format!("http://127.0.0.1:{port}/mcp");
-
-    for provider in resolve_providers(&args, non_interactive)? {
-        let config_path = provider.config_path(&dirs_home());
-        write_provider_config(
-            provider,
-            &config_path,
-            &mcp_url,
-            Some(&cwd),
-            &crate::cli_config::SERVICE,
-        )?;
-        summary.provider_files.push(config_path);
-        summary.note_restart(provider);
-    }
-
-    println!("wrote {}", target.display());
-    println!("slug: {slug}");
-    if !summary.provider_files.is_empty() {
-        println!();
-        println!("provider configs:");
-        for path in &summary.provider_files {
-            println!("  {}", path.display());
+    match outcome.envelope.status {
+        AlphaStatus::Success => {
+            if let Some(path) = outcome.config_path {
+                println!("wrote {}", path.display());
+            } else {
+                println!("{}", outcome.envelope.message);
+            }
+            if let Some(name) = outcome
+                .envelope
+                .data
+                .as_ref()
+                .and_then(|data| data.get("project_name"))
+                .and_then(|name| name.as_str())
+            {
+                println!("name: {name}");
+            }
+            print_next_actions(&outcome.envelope);
+            Ok(())
         }
-    }
-    let restart_messages = summarize_restarts(&summary);
-    if !restart_messages.is_empty() {
-        println!();
-        println!("restart required:");
-        for message in restart_messages {
-            println!("  {message}");
+        AlphaStatus::Blocked => {
+            println!("{}", outcome.envelope.message);
+            if let Some(why) = &outcome.envelope.why {
+                println!("{why}");
+            }
+            print_next_actions(&outcome.envelope);
+            Ok(())
         }
+        _ => bail!(
+            "{}: {}",
+            outcome.envelope.code,
+            outcome
+                .envelope
+                .why
+                .as_deref()
+                .unwrap_or(&outcome.envelope.message)
+        ),
     }
+}
 
+fn print_next_actions(envelope: &AlphaEnvelope) {
+    for action in &envelope.next_actions {
+        println!("next: {} ({})", action.tool, action.reason);
+    }
+}
+
+async fn record_init_outcome(config_path: Option<&str>, envelope: &AlphaEnvelope) -> Result<()> {
+    if envelope.status != AlphaStatus::Success {
+        return Ok(());
+    }
+    let Some(scope_root) = envelope_data_str(envelope, "scope_root") else {
+        return Ok(());
+    };
+
+    let cfg = config::load(config_path)?;
+    let db_path = config::resolve_db_path(cfg.storage.path.as_deref());
+    let store = SurrealStore::open(&db_path).await?;
+    let ledger = store.scope_ledger_store();
+    let now = current_ns();
+
+    ledger
+        .record_recent_scope(RecentScopeRecord {
+            id: None,
+            mode: envelope_data_str(envelope, "mode").unwrap_or_else(|| "project".into()),
+            requested_path: envelope_data_str(envelope, "requested_path")
+                .unwrap_or_else(|| scope_root.clone()),
+            scope_root,
+            provider: None,
+            agent_name: None,
+            session_id: None,
+            project_name: envelope_data_str(envelope, "project_name"),
+            source_count: envelope_data_u64(envelope, "source_count"),
+            first_seen_at: now,
+            last_seen_at: now,
+        })
+        .await?;
     Ok(())
 }
 
-fn resolve_providers(args: &InitArgs, non_interactive: bool) -> Result<Vec<Provider>> {
-    if let Some(raw) = args.providers.as_deref() {
-        return parse_provider_list(raw);
-    }
-    if non_interactive {
-        return Ok(Vec::new());
-    }
-
-    let items: Vec<(Provider, &str, &str)> = daemon8_providers::ALL_PROVIDERS
-        .iter()
-        .map(|&p| (p, p.label(), p.as_provider().init_hint()))
-        .collect();
-
-    Ok(cliclack::multiselect("Select provider configs to write")
-        .required(false)
-        .items(&items)
-        .interact()?)
+fn envelope_data_str(envelope: &AlphaEnvelope, key: &str) -> Option<String> {
+    envelope
+        .data
+        .as_ref()
+        .and_then(|data| data.get(key))
+        .and_then(|value| value.as_str())
+        .map(ToString::to_string)
 }
 
-fn derive_slug(cwd: &Path) -> String {
-    cwd.file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("project")
-        .to_string()
+fn envelope_data_u64(envelope: &AlphaEnvelope, key: &str) -> Option<u64> {
+    envelope
+        .data
+        .as_ref()
+        .and_then(|data| data.get(key))
+        .and_then(|value| value.as_u64())
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ProjectType {
-    Laravel,
-    Symfony,
-    Node,
-    Rust,
-    Generic,
-}
-
-fn detect_project_type(cwd: &Path) -> ProjectType {
-    if cwd.join("artisan").exists() {
-        ProjectType::Laravel
-    } else if cwd.join("bin/console").exists() {
-        ProjectType::Symfony
-    } else if cwd.join("package.json").exists() {
-        ProjectType::Node
-    } else if cwd.join("Cargo.toml").exists() {
-        ProjectType::Rust
-    } else {
-        ProjectType::Generic
-    }
-}
-
-fn sources_example(project_type: ProjectType) -> &'static str {
-    match project_type {
-        ProjectType::Laravel => {
-            r#"
-# [sources.app-logs]
-# type = "file"
-# path = "storage/logs/laravel.log"
-# parser = "monolog"
-# tags = ["app"]
-"#
-        }
-        ProjectType::Symfony => {
-            r#"
-# [sources.app-logs]
-# type = "file"
-# path = "var/log/*.log"
-# parser = "monolog"
-# tags = ["app"]
-"#
-        }
-        ProjectType::Node => {
-            r#"
-# [sources.app-logs]
-# type = "file"
-# path = "logs/app.log"
-# parser = "json"
-# tags = ["app"]
-"#
-        }
-        ProjectType::Rust => {
-            r#"
-# [sources.app-logs]
-# type = "file"
-# path = "logs/app.log"
-# parser = "line"
-# tags = ["app"]
-"#
-        }
-        ProjectType::Generic => {
-            r#"
-# [sources.app-logs]
-# type = "file"
-# path = "logs/app.log"
-# parser = "line"
-# tags = ["app"]
-"#
-        }
-    }
-}
-
-fn render_template(slug: &str, project_type: ProjectType) -> String {
-    let sources = sources_example(project_type);
-    format!(
-        r##"# Daemon8 project configuration.
-# Runtime sources can be registered explicitly here or discovered with the librarian.
-
-[project]
-slug = "{slug}"
-{sources}"##
-    )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn template_includes_slug_without_role() {
-        let out = render_template("my-proj", ProjectType::Generic);
-        assert!(out.contains(r#"slug = "my-proj""#));
-        assert!(!out.contains("role_default"));
-    }
-
-    #[test]
-    fn template_laravel_sources_example() {
-        let out = render_template("my-app", ProjectType::Laravel);
-        assert!(out.contains("storage/logs/laravel.log"));
-        assert!(out.contains(r#"# parser = "monolog""#));
-    }
-
-    #[test]
-    fn template_symfony_sources_example() {
-        let out = render_template("my-app", ProjectType::Symfony);
-        assert!(out.contains("var/log/*.log"));
-        assert!(out.contains(r#"# parser = "monolog""#));
-    }
-
-    #[test]
-    fn template_node_sources_example() {
-        let out = render_template("my-app", ProjectType::Node);
-        assert!(out.contains("logs/app.log"));
-        assert!(out.contains(r#"# parser = "json""#));
-    }
-
-    #[test]
-    fn template_rust_sources_example() {
-        let out = render_template("my-app", ProjectType::Rust);
-        assert!(out.contains("logs/app.log"));
-        assert!(out.contains(r#"# parser = "line""#));
-    }
-
-    #[test]
-    fn detect_project_type_defaults_to_generic() {
-        let tmp = std::env::temp_dir().join("daemon8-test-empty");
-        let _ = std::fs::create_dir_all(&tmp);
-        assert_eq!(detect_project_type(&tmp), ProjectType::Generic);
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn derive_slug_uses_basename() {
-        let p = std::path::PathBuf::from("/tmp/foo/bar");
-        assert_eq!(derive_slug(&p), "bar");
-    }
-
-    #[test]
-    fn provider_list_parser_accepts_codex() {
-        let providers = parse_provider_list("claude-code,codex-cli").unwrap();
-        assert_eq!(providers, vec![Provider::ClaudeCode, Provider::Codex]);
-    }
+fn current_ns() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos() as u64)
+        .unwrap_or_default()
 }

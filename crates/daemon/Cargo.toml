@@ -9,6 +9,7 @@ homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 readme = "../../README.md"
+publish.workspace = true
 
 [[bin]]
 name = "daemon8"
@@ -31,13 +32,14 @@ clap.workspace = true
 figment.workspace = true
 directories.workspace = true
 anyhow.workspace = true
+async-trait.workspace = true
 thiserror.workspace = true
 axum.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 rmcp.workspace = true
 daemon8-api.workspace = true
-daemon8-parse.workspace = true
+daemon8-core.workspace = true
 reqwest.workspace = true
 reqwest-eventsource.workspace = true
 tokio-stream.workspace = true
@@ -45,15 +47,9 @@ clap_complete.workspace = true
 owo-colors.workspace = true
 comfy-table.workspace = true
 toml.workspace = true
-ureq.workspace = true
-cliclack.workspace = true
 dirs.workspace = true
-notify.workspace = true
-glob.workspace = true
-semver.workspace = true
-rusqlite.workspace = true
 futures.workspace = true
-humantime = "2"
+humantime.workspace = true
 libc = "0.2"
 xcap = { version = "0.9", optional = true }
 image = { version = "0.25", optional = true, default-features = false, features = ["png"] }

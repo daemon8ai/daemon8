@@ -617,16 +617,16 @@ async fn monitor_browser(
         pump_client.run(event_tx, pump_cancel).await;
     });
 
-    // Initial target discovery via HTTP /json/list
+    // Initial target enumeration via HTTP /json/list
     discover_and_attach(&client, endpoint, &mut sessions, &mut target_to_session).await;
 
-    // Enable push-based target discovery so new tabs are detected immediately
+    // Enable push-based target detection so new tabs are detected immediately
     // instead of waiting for the fallback scan timer.
     if let Err(e) = client
         .send_command("Target.setDiscoverTargets", json!({"discover": true}), None)
         .await
     {
-        tracing::warn!("failed to enable target discovery: {e}");
+        tracing::warn!("failed to enable target detection: {e}");
     }
 
     // Auto-attach to child targets (workers, OOPIFs, popups) so their
@@ -887,6 +887,9 @@ async fn handle_cdp_event(
                     }),
                     severity: ev.severity,
                     source_location: ev.source_location,
+                    service: None,
+                    source: None,
+                    source_instance: None,
                     timestamp_ns: ev.timestamp_ns,
                     correlation_id: None,
                     parent_id: None,
@@ -917,6 +920,9 @@ async fn handle_cdp_event(
                     }),
                     severity: ev.severity,
                     source_location: None,
+                    service: None,
+                    source: None,
+                    source_instance: None,
                     timestamp_ns: ev.timestamp_ns,
                     correlation_id: None,
                     parent_id: None,
@@ -976,6 +982,9 @@ async fn handle_cdp_event(
                     data: json!({"mime_type": ev.mime_type}),
                     severity,
                     source_location: None,
+                    service: None,
+                    source: None,
+                    source_instance: None,
                     timestamp_ns: (ev.timestamp * 1_000_000_000.0).clamp(0.0, u64::MAX as f64)
                         as u64,
                     correlation_id: None,
@@ -1018,6 +1027,9 @@ async fn handle_cdp_event(
                     data: json!({"error": ev.error_text, "canceled": ev.canceled}),
                     severity: Severity::Error,
                     source_location: None,
+                    service: None,
+                    source: None,
+                    source_instance: None,
                     timestamp_ns: (ev.timestamp * 1_000_000_000.0).clamp(0.0, u64::MAX as f64)
                         as u64,
                     correlation_id: None,
@@ -1055,6 +1067,9 @@ async fn handle_cdp_event(
                     }),
                     severity: Severity::Error,
                     source_location: ev.source_location,
+                    service: None,
+                    source: None,
+                    source_instance: None,
                     timestamp_ns: ev.timestamp_ns,
                     correlation_id: None,
                     parent_id: None,
@@ -1084,6 +1099,9 @@ async fn handle_cdp_event(
                     data: json!({"event": ev.name}),
                     severity: Severity::Info,
                     source_location: None,
+                    service: None,
+                    source: None,
+                    source_instance: None,
                     timestamp_ns: ev.timestamp_ns,
                     correlation_id: None,
                     parent_id: None,
@@ -1199,6 +1217,9 @@ async fn handle_cdp_event(
                     data: json!({"event": "tab_crashed", "target_id": target_id}),
                     severity: Severity::Error,
                     source_location: None,
+                    service: None,
+                    source: None,
+                    source_instance: None,
                     timestamp_ns: now_ns,
                     correlation_id: None,
                     parent_id: None,
@@ -1710,6 +1731,10 @@ fn live_chrome_pid_for_user_data_dir(user_data_dir: &std::path::Path) -> Option<
 // signaling or requiring any TCC grant.
 #[cfg(target_os = "macos")]
 fn pid_alive(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+
     use std::mem::MaybeUninit;
     const PROC_PIDTBSDINFO: libc::c_int = 3;
     let mut info = MaybeUninit::<libc::proc_bsdinfo>::uninit();
@@ -1728,11 +1753,19 @@ fn pid_alive(pid: u32) -> bool {
 
 #[cfg(all(unix, not(target_os = "macos")))]
 fn pid_alive(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+
     unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
 }
 
 #[cfg(windows)]
 fn pid_alive(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+
     use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
     use windows_sys::Win32::System::Threading::{
         GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
@@ -1931,16 +1964,7 @@ fn find_chrome_debug_port_for_pid(_pid: u32) -> Option<u16> {
 async fn launch_chrome(configured_path: Option<&str>) -> Result<BrowserLaunch> {
     let tmp = std::env::temp_dir();
     let user_data_dir = tmp.join("daemon8-browser");
-    // Check legacy path for backward compat
-    let legacy_dir = tmp.join("daemon8-chrome");
-    let (user_data_dir, active_port_file) = if !user_data_dir.exists() && legacy_dir.exists() {
-        (legacy_dir.clone(), legacy_dir.join("DevToolsActivePort"))
-    } else {
-        (
-            user_data_dir.clone(),
-            user_data_dir.join("DevToolsActivePort"),
-        )
-    };
+    let active_port_file = user_data_dir.join("DevToolsActivePort");
 
     // Authoritative liveness check: does any process currently hold the
     // SingletonLock for this profile dir?
@@ -2093,8 +2117,8 @@ mod pid_alive_tests {
 
     #[test]
     fn impossible_pid_is_dead() {
-        // PID 0 is the kernel scheduler on macOS/Linux; userland procinfo
-        // lookups return zero bytes and the libc liveness probe reports dead.
+        // PID 0 is not a real Chrome process. On Unix, `kill(0, 0)` probes the
+        // current process group instead, so reject it before platform probing.
         assert!(!pid_alive(0));
     }
 

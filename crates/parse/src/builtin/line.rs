@@ -68,7 +68,7 @@ mod tests {
         );
         assert_eq!(
             parser
-                .parse("WARNING: deprecated API endpoint called")
+                .parse("WARNING: slow API endpoint called")
                 .unwrap()
                 .severity,
             Some(Severity::Warn)

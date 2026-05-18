@@ -1,20 +1,20 @@
 ## Purpose
 
-Override the Chrome DevTools endpoint the daemon connects to. Auto-discovery handles localhost:9222 by default; this tool is for non-standard ports or remote endpoints.
+Override the Chrome DevTools endpoint the daemon connects to. Automatic browser connect handles localhost:9222 by default; this tool is for non-standard ports or remote endpoints.
 
 ## When
 
-Browser is on a non-standard port, you're targeting a remote DevTools endpoint over a tunnel, or you want to fail fast on a config mismatch instead of waiting for auto-discovery. Do NOT call as a debugging shortcut — reconnection is automatic.
+Browser is on a non-standard port, you're targeting a remote DevTools endpoint over a tunnel, or you want to fail fast on a config mismatch instead of waiting for automatic reconnect. Do NOT call as a debugging shortcut — reconnection is automatic.
 
 ## Prereq
 
-None.
+A connected MCP session. Call `daemon8_connect` first.
 
 ## Args
   - endpoint: required string. Full URL including scheme (e.g. "http://localhost:9222").
 
 ## Returns
-  result: {status: "connecting", endpoint}.
+Common envelope with `data.status="connecting"` and `data.endpoint`.
 
 ## Errors
   - daemon_shutting_down: connect command channel closed.

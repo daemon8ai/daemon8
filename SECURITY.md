@@ -30,7 +30,8 @@ In scope for this policy:
 
 - The daemon binary and its Rust crates (this repo).
 - Ingest endpoints (HTTP `/ingest`, UDP when enabled, Unix socket when enabled).
-- MCP handlers (14 tools including query, command, lens, memory, and ingest tools).
+- MCP handlers: connect/status/help, live-feed read/write/watch, browser
+  actions, lens management, connections, and debug-session lifecycle tools.
 - Chrome DevTools Protocol bridge — specifically, any path that could let a
   malicious page influence the daemon beyond its intended surface.
 - Configuration file parsing and secret handling.

@@ -5,6 +5,7 @@ edition.workspace = true
 license-file.workspace = true
 description = "Log parser trait and built-in format parsers for daemon8"
 repository.workspace = true
+publish.workspace = true
 
 [dependencies]
 daemon8-types.workspace = true

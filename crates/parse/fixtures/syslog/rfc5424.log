@@ -1,0 +1,7 @@
+<165>1 2024-01-15T14:32:01.123Z host1 myapp 1234 ID47 - Application started
+<134>1 2024-01-15T14:32:02.456Z host2 nginx 5678 - - GET /api/health 200
+<131>1 2024-01-15T14:32:03.789Z host3 postgres 910 - - FATAL: connection limit exceeded
+<166>1 2024-01-15T14:32:04.000Z host1 myapp 1234 MSG001 - Processing batch job
+<141>1 2024-01-15T14:32:05.111Z host4 sshd 2222 AUTH01 - Failed password for root from 10.0.0.1
+<174>1 2024-01-15T14:32:06.222Z host1 crond 3333 - - Starting scheduled task cleanup
+<163>1 2024-01-15T14:32:07.333Z host5 docker 4444 - - Container web-01 exited with code 137
