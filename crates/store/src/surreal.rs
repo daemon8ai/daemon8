@@ -21,7 +21,7 @@ use crate::{
     memory::SurrealMemoryStore,
 };
 
-pub const SCHEMA_VERSION: &str = "0.4.0-alpha.afl03";
+pub const SCHEMA_VERSION: &str = "0.4.0-alpha";
 
 const NAMESPACE: &str = "daemon8";
 const DATABASE: &str = "observations";

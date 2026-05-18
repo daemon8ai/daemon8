@@ -33,7 +33,7 @@ try {
 } catch {
     Write-Host "  ! Download failed for $Target." -ForegroundColor Red
     Write-Host "  ! No prebuilt binary may exist for this platform." -ForegroundColor Red
-    Write-Host "  ! Install from source instead: cargo install daemon8" -ForegroundColor Red
+    Write-Host "  ! Install from a checked-out source tree instead: cargo install --path crates/daemon" -ForegroundColor Red
     if ($Version -ne "latest") { Write-Host "  ! Version requested: $Version" -ForegroundColor Red }
     Remove-Item -Recurse -Force $Tmp -ErrorAction SilentlyContinue
     exit 1

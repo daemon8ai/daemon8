@@ -16,6 +16,7 @@ use clap::{Parser, Subcommand};
 #[derive(Parser)]
 #[command(
     name = "daemon8",
+    version,
     about = "Runtime observation layer for AI coding agents"
 )]
 struct Cli {

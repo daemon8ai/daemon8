@@ -94,7 +94,7 @@ ARCHIVE="$TMPDIR/$ARCHIVE_NAME"
 if ! curl -fsSL "$URL" -o "$ARCHIVE" 2>/dev/null; then
   err "Download failed for $TARGET."
   err "No prebuilt binary may exist for this platform."
-  err "Install from source instead: cargo install daemon8"
+  err "Install from a checked-out source tree instead: cargo install --path crates/daemon"
   if [ "$VERSION" != "latest" ]; then
     err "Version requested: $VERSION"
   fi

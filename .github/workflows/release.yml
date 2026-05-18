@@ -26,23 +26,30 @@ jobs:
           - target: aarch64-apple-darwin
             os: macos-latest
             archive: tar.gz
+            smoke: false
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             archive: tar.gz
+            smoke: true
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             archive: zip
+            smoke: true
           - target: x86_64-apple-darwin
             os: macos-14
             archive: tar.gz
+            smoke: false
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
             archive: tar.gz
+            smoke: false
 
     runs-on: ${{ matrix.os }}
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -51,6 +58,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
+
+      - name: Release preflight
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        env:
+          RELEASE_REF: ${{ github.event.inputs.ref || github.ref_name }}
+        run: bash scripts/release-check.sh
 
       - name: Install cross-compilation tools
         if: matrix.target == 'aarch64-unknown-linux-gnu'
@@ -78,6 +91,39 @@ jobs:
           cd target/${{ matrix.target }}/release
           tar czf ../../../${{ env.BINARY_NAME }}-${{ matrix.target }}.tar.gz ${{ env.BINARY_NAME }} LICENSE
 
+      - name: Smoke packaged artifact (unix)
+        if: matrix.smoke && matrix.archive == 'tar.gz'
+        run: |
+          mkdir -p smoke
+          tar xzf ${{ env.BINARY_NAME }}-${{ matrix.target }}.tar.gz -C smoke
+          smoke/${{ env.BINARY_NAME }} --version
+          smoke/${{ env.BINARY_NAME }} --help
+          SMOKE_ROOT="$RUNNER_TEMP/daemon8-smoke"
+          mkdir -p "$SMOKE_ROOT"
+          cat > "$SMOKE_ROOT/config.toml" <<EOF
+          [server]
+          port = 18888
+
+          [storage]
+          path = "$SMOKE_ROOT/store"
+          screenshot_path = "$SMOKE_ROOT/screens"
+
+          [adb]
+          enabled = false
+          EOF
+          smoke/${{ env.BINARY_NAME }} --config "$SMOKE_ROOT/config.toml" status --json
+          smoke/${{ env.BINARY_NAME }} --config "$SMOKE_ROOT/config.toml" serve --port 18888 &
+          DAEMON8_PID=$!
+          trap 'kill "$DAEMON8_PID" 2>/dev/null || true; wait "$DAEMON8_PID" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 50); do
+            if curl -fsS http://127.0.0.1:18888/health >/dev/null; then
+              exit 0
+            fi
+            sleep 0.1
+          done
+          echo "daemon8 health smoke failed" >&2
+          exit 1
+
       - name: Package (windows)
         if: matrix.archive == 'zip'
         shell: pwsh
@@ -88,6 +134,29 @@ jobs:
                    target\${{ matrix.target }}\release\LICENSE `
             -DestinationPath ${{ env.BINARY_NAME }}-${{ matrix.target }}.zip
 
+      - name: Smoke packaged artifact (windows)
+        if: matrix.smoke && matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path smoke | Out-Null
+          Expand-Archive -Path "${{ env.BINARY_NAME }}-${{ matrix.target }}.zip" -DestinationPath smoke -Force
+          .\smoke\daemon8.exe --version
+          .\smoke\daemon8.exe --help
+          $SmokeRoot = Join-Path $env:RUNNER_TEMP "daemon8-smoke"
+          New-Item -ItemType Directory -Force -Path $SmokeRoot | Out-Null
+          $ConfigPath = Join-Path $SmokeRoot "config.toml"
+          $StorePath = (Join-Path $SmokeRoot "store").Replace('\', '\\')
+          $ScreensPath = (Join-Path $SmokeRoot "screens").Replace('\', '\\')
+          @"
+          [storage]
+          path = "$StorePath"
+          screenshot_path = "$ScreensPath"
+
+          [adb]
+          enabled = false
+          "@ | Set-Content -Path $ConfigPath -NoNewline
+          .\smoke\daemon8.exe --config $ConfigPath status --json
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -97,8 +166,23 @@ jobs:
   deploy:
     needs: build
     runs-on: ubuntu-latest
-    if: always() && startsWith(github.ref, 'refs/tags/v') && contains(needs.build.result, 'success')
+    if: >-
+      always() &&
+      needs.build.result == 'success' &&
+      (
+        startsWith(github.ref, 'refs/tags/v') ||
+        startsWith(github.event.inputs.ref, 'v') ||
+        startsWith(github.event.inputs.ref, 'refs/tags/v')
+      )
     steps:
+      - name: Resolve release tag
+        id: release-tag
+        env:
+          RELEASE_REF: ${{ github.event.inputs.ref || github.ref_name }}
+        run: |
+          tag="${RELEASE_REF#refs/tags/}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -116,6 +200,7 @@ jobs:
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.release-tag.outputs.tag }}
           files: artifacts/*
           generate_release_notes: true
 
@@ -127,7 +212,7 @@ jobs:
           DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
         run: |
-          VERSION=${GITHUB_REF#refs/tags/}
+          VERSION="${{ steps.release-tag.outputs.tag }}"
           mkdir -p ~/.ssh
           echo "$DEPLOY_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key

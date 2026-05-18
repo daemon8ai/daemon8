@@ -52,6 +52,7 @@ pub async fn cmd_status(config_path: Option<String>, args: super::ClientArgs) ->
             "daemon": if running { "running" } else { "stopped" },
             "port": port,
             "daemon_version": env!("CARGO_PKG_VERSION"),
+            "schema_version": daemon8_store::SCHEMA_VERSION,
             "connection": serde_json::Value::Null,
             "scope_authority": "none",
             "scope_ledger": scope_ledger.as_ref().ok().cloned().unwrap_or_default(),

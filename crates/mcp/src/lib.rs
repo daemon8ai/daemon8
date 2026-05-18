@@ -930,6 +930,10 @@ impl DaemonMcp {
                             "daemon_version".into(),
                             serde_json::Value::String(env!("CARGO_PKG_VERSION").to_string()),
                         );
+                        obj.insert(
+                            "schema_version".into(),
+                            serde_json::Value::String(daemon8_store::SCHEMA_VERSION.to_string()),
+                        );
                     }
                     val["session_id"] = serde_json::json!(self.session_id);
                     let connection = self

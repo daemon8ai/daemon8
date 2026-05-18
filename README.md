@@ -8,6 +8,22 @@ Everything is local by default. The daemon-owned database lives under the platfo
 
 ## Install
 
+From a release:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/daemon8ai/daemon8/main/install.sh | bash
+```
+
+Windows PowerShell:
+
+```powershell
+iwr https://raw.githubusercontent.com/daemon8ai/daemon8/main/install.ps1 -UseB | iex
+```
+
+Pin a release with `DAEMON8_VERSION=v0.4.0-alpha.1`. Override the destination with `DAEMON8_INSTALL_DIR`.
+
+From a checkout:
+
 ```bash
 cargo install --path crates/daemon
 ```
@@ -31,6 +47,12 @@ Useful CLI checks:
 daemon8 status
 daemon8 connections
 daemon8 logs --follow
+```
+
+Install the login service when you want daemon8 to start automatically:
+
+```bash
+daemon8 service install
 ```
 
 ## Project Config
@@ -120,6 +142,23 @@ MCP responses and CLI `--json` output use a common envelope:
 ```
 
 The envelope is part of the control flow. `status`, `code`, and structured `next_actions` guide the model at decision points. `daemon8_connect` returns flattened scope fields such as `data.session_id`, `data.mode`, `data.requested_path`, and `data.scope_root`. MCP connect/status responses and guarded MCP tool responses also include `data.connection`; CLI connect JSON uses the shared flattened core fields. Clients should branch on `status`, `code`, and `next_actions`.
+
+## HTTP API
+
+The daemon serves local HTTP endpoints on the configured server port:
+
+| Route | Method | Purpose |
+|-------|--------|---------|
+| `/ingest` | `POST` | Write one observation. |
+| `/ingest/batch` | `POST` | Write multiple observations. |
+| `/api/observe` | `GET` | Query observations with filters. |
+| `/api/checkpoint` | `GET` | Read the current observation sequence. |
+| `/api/summary` | `GET` | Snapshot daemon health and source summary. |
+| `/api/connections` | `GET` | Inspect browser/app connection state. |
+| `/api/connect` | `POST` | Trigger configured source ingestion for a project path. |
+| `/api/stream` | `GET` | Stream observations over SSE. |
+| `/api/lens` | `GET`/`PUT`/`DELETE` | Inspect, set, or clear the observation lens. |
+| `/api/browser/act` | `POST` | Run a browser/device action. |
 
 ## Reset Safety
 

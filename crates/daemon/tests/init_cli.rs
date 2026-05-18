@@ -112,6 +112,23 @@ fn mark_project(root: &Path) {
 // ---------------------------------------------------------------------------
 
 #[test]
+fn cli_version_reports_alpha_release_version() {
+    let out = run_daemon8(&["--version"]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        stdout.trim(),
+        format!("daemon8 {}", env!("CARGO_PKG_VERSION"))
+    );
+    assert_eq!(stdout.trim(), "daemon8 0.4.0-alpha.1");
+}
+
+#[test]
 fn cli_init_writes_project_config_only() {
     let (_tmp, work, home) = setup_dirs();
     mark_project(&work);
@@ -193,7 +210,11 @@ fn cli_status_json_uses_common_envelope() {
     assert_eq!(parsed["code"], "status");
     assert_eq!(parsed["message"], "daemon status");
     assert!(parsed["data"]["config_path"].is_string());
-    assert!(parsed["data"]["daemon_version"].is_string());
+    assert_eq!(parsed["data"]["daemon_version"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(
+        parsed["data"]["schema_version"],
+        daemon8_store::SCHEMA_VERSION
+    );
     assert!(parsed["data"]["connection"].is_null());
     assert_eq!(parsed["data"]["scope_authority"], "none");
     assert!(parsed.get("result").is_none());
@@ -389,6 +410,60 @@ fn cli_init_name_sets_project_name() {
     let config = std::fs::read_to_string(project_config_path(&work)).unwrap();
     let parsed = parse_project_config_str(&config).unwrap();
     assert_eq!(parsed.project.name, "alpha-name");
+}
+
+#[test]
+fn cli_reset_keeps_project_files_and_reports_schema_version() {
+    let (_tmp, work, home) = setup_dirs();
+    mark_project(&work);
+
+    let config_path = home.join("daemon8.custom.toml");
+    let store_path = home.join("store");
+    let source_path = work.join("app.log");
+    std::fs::write(&source_path, "line before reset\n").unwrap();
+    std::fs::write(
+        &config_path,
+        format!("[storage]\npath = {:?}\n", store_path.display().to_string()),
+    )
+    .unwrap();
+
+    let init = run_daemon8_with_env(
+        &work,
+        &home,
+        &[],
+        &["--config", config_path.to_str().unwrap(), "init", "--json"],
+    );
+    assert!(
+        init.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+    assert!(store_path.exists(), "init should create daemon-owned store");
+
+    let project_config = project_config_path(&work);
+    let config_before = std::fs::read_to_string(&project_config).unwrap();
+    let source_before = std::fs::read_to_string(&source_path).unwrap();
+
+    let reset = run_daemon8_with_env(
+        &work,
+        &home,
+        &[],
+        &["--config", config_path.to_str().unwrap(), "reset", "--yes"],
+    );
+    assert!(
+        reset.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&reset.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&reset.stderr);
+    assert!(stderr.contains("schema re-initialized at 0.4.0-alpha"));
+    assert!(stderr.contains("project files were untouched"));
+    assert_eq!(
+        std::fs::read_to_string(project_config).unwrap(),
+        config_before
+    );
+    assert_eq!(std::fs::read_to_string(source_path).unwrap(), source_before);
 }
 
 #[test]
