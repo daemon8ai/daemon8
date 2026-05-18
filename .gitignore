@@ -3,6 +3,7 @@
 
 # Blanket ignores
 *.log
+backups/
 
 # OS
 Thumbs.db

@@ -188,9 +188,16 @@ case ":${PATH}:" in
     ;;
 esac
 
-step 4 $TOTAL_STEPS "Next steps"
+step 4 $TOTAL_STEPS "Service"
 echo ""
-dim "Start daemon8: daemon8 serve"
-dim "Install the login service when wanted: daemon8 service install"
-dim "Inside a project, initialize alpha config: daemon8 init"
-dim ".daemon8/ should stay gitignored; daemon8 does not edit project .gitignore"
+if "$INSTALL_DIR/$BINARY" service install; then
+  ok "Daemon8 service installed and running"
+else
+  err "Service install failed. Try again with: $INSTALL_DIR/$BINARY service install"
+  exit 1
+fi
+
+echo ""
+dim "Daemon8 is now running as the local MCP server."
+dim "Start a fresh AI CLI/REPL session and check that daemon8 appears in the MCP server list."
+dim "Inside a project, initialize source config only when daemon8 asks: daemon8 init"

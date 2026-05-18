@@ -1,14 +1,16 @@
+<p align="center">
+  <img src="logo.svg" alt="daemon8" width="240">
+</p>
+
 # daemon8
 
-Runtime observation for AI coding agents.
+daemon8 gives AI coding agents runtime awareness while the work is happening: browser console/network/DOM, app telemetry, device logs, and provider transcripts stream into one local observation bus. Lenses, checkpoints, and debug sessions let the agent pull the exact slice it needs instead of guessing from stale context.
 
-daemon8 runs locally and gives an agent structured access to the live development surface: browser console/network/DOM state, app telemetry, device logs, checkpoints, lenses, and debug-session summaries.
-
-Everything is local by default. The daemon-owned database lives under the platform data directory. Project-specific configuration lives in one project file: `.daemon8/config.md`.
+It also gives the agent a foundation for better project awareness over time: which log sources matter here, which docs are worth checking, and how to review the active conversation transcript across Codex, Claude Code, and Gemini CLI.
 
 ## Install
 
-From a release:
+macOS and Linux:
 
 ```bash
 curl -fsSL https://daemon8.ai/install.sh | bash
@@ -20,50 +22,37 @@ Windows PowerShell:
 iwr https://daemon8.ai/install.ps1 -UseB | iex
 ```
 
-Pin a release with `DAEMON8_VERSION=v0.4.0-alpha.1`. Override the destination with `DAEMON8_INSTALL_DIR`.
+The installer downloads the latest release, verifies `checksums.sha256`, installs the `daemon8` binary, updates PATH when needed, and registers daemon8 as the machine-level service.
 
-From a checkout:
+After install, daemon8 is running as the global MCP server on your machine. Start a fresh AI CLI/REPL session and check that `daemon8` appears in the provider's MCP server list.
 
-```bash
-cargo install --path crates/daemon
+A browser extension is not needed. daemon8 controls Chromium through the local DevTools endpoint and exposes that control to the agent through MCP.
+
+## Use Daemon8 Well
+
+Put this in the global instruction file for each provider you use: `CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, or that tool's closest equivalent.
+
+```markdown
+## Daemon8 MCP - Project awareness and debugging
+
+Use daemon8 for ALL debugging, Chromium control, ADB logging, Vega OS VVD logs, and project awareness tracking. For Claude Code, use daemon8's browser/Chromium tools instead of Claude for Chrome. This includes calling the `daemon8_connect` tool at the start of every REPL session for AI-provider conversation sync. If the project's awareness profile has not been set up yet, daemon8's tool calls will guide the LLM through setup.
+
+All non-trivial debug sessions should call the `start_debug_session` tool. This provides a starting point and allows debug checkpoints throughout, giving high-signal lenses into the errors/logs flowing into daemon8. Call `resolve_debug_session` when the bug(s) have been fixed.
+
+Daemon8 provides a `daemon8_help` tool to guide keeping the project's awareness profile clean and up to date as time goes on.
 ```
 
-For development:
-
-```bash
-cargo check --workspace
-cargo test --workspace
-```
-
-## Start
-
-```bash
-daemon8 serve
-```
-
-Useful CLI checks:
-
-```bash
-daemon8 status
-daemon8 connections
-daemon8 logs --follow
-```
-
-Install the login service when you want daemon8 to start automatically:
-
-```bash
-daemon8 service install
-```
+That note is the whole trick. It turns daemon8 from "a tool the model may discover" into a standing operating rule: connect first, debug with checkpoints, resolve the session when the fix is real.
 
 ## Project Config
 
-Create the project-local alpha config:
+Create the project-local config when daemon8 asks for it:
 
 ```bash
 daemon8 init
 ```
 
-This writes `.daemon8/config.md`. The file is Markdown with YAML frontmatter so daemon8 can parse it and the LLM can read it directly.
+This writes `.daemon8/config.md`: Markdown for the agent, YAML frontmatter for daemon8. Project config is explicit on purpose. No hidden project scan, no mystery registry.
 
 Source entries use `kind`, not `type`. The alpha source kinds are strict:
 
@@ -76,51 +65,47 @@ sources:
     parser: line
     tags: ["app"]
 
-  - id: claude.conversations
-    service: claude
+  - id: codex.sessions
+    service: codex
     kind: conversation
-    provider: claude
-    path: "/absolute/path/to/claude/sessions"
+    provider: codex
+    path: "/absolute/path/to/codex/sessions"
     tags: ["conversation"]
 ```
 
-`vars.PRJ_ROOT` is declared in the config frontmatter and points at the absolute project root.
+`vars.PRJ_ROOT` is declared in the config frontmatter and points at the absolute project root. Observation records carry `service`, `source`, and `source_instance` provenance so lenses can cut down to the one stream the agent needs.
 
-Observation records include optional `service`, `source`, and `source_instance` provenance for live-feed filtering. Cursor state uses the same source identity.
+Useful CLI checks:
 
-## MCP Surface
+```bash
+daemon8 status
+daemon8 connections
+daemon8 logs --follow
+```
 
-Except for `daemon8_connect`, `daemon8_init`, `daemon8_status`, and `daemon8_help`, MCP tools require an established `daemon8_connect` session. Debug lifecycle mutation and checkpoint tools require project mode; `list_debug_sessions` is available after connect in project or general mode.
+## MCP Tools
+
+`daemon8_connect` is the first call. It binds the MCP session to a project or general scope and, when possible, the active provider transcript. After that, the rest of the tools have enough context to be useful.
 
 Core runtime tools:
 
-| Tool | Purpose |
-|------|---------|
-| `daemon8_connect` | Bind this MCP session to an explicit project/general scope and active provider transcript when available. |
-| `daemon8_init` | Write `.daemon8/config.md` for an explicit project path. |
-| `daemon8_status` | Snapshot daemon health, connected sources, and current MCP scope. |
-| `read_live_feed` | Query observations with filters and checkpoint windows. |
-| `write_to_live_feed` | Ingest an agent/app note, metric, exception, or custom event. |
-| `watch_live_feed` | Subscribe this MCP session to live matching observations. |
-| `connect_browser` | Override the browser DevTools endpoint. |
-| `issue_command` | Browser/device action surface: eval JS, screenshot, navigate, storage, viewport, network. |
-| `list_connections` | Inspect browser/app/device connections feeding the stream. |
-| `set_lens` | Buffer matching observations between reads. |
-| `lens_status` | Inspect the active lens. |
-| `clear_lens` | Clear the active lens. |
-| `daemon8_help` | Load focused MCP help topics. |
+| Tool | What it gives the agent |
+|------|--------------------------|
+| `daemon8_connect` | The current scope, provider, transcript binding, and next action. |
+| `daemon8_init` | A project `.daemon8/config.md` when the repo needs explicit source wiring. |
+| `daemon8_status` | A clean status snapshot when the agent needs to orient itself. |
+| `read_live_feed` | The observation stream, filtered by time, source, severity, text, or checkpoint. |
+| `write_to_live_feed` | Agent notes, app events, metrics, exceptions, or custom signals. |
+| `watch_live_feed` | A live subscription for matching events. |
+| `set_lens` / `lens_status` / `clear_lens` | A focused buffer so the agent can keep watching one slice without polling everything. |
+| `create_checkpoint` | A before/after marker. This is the move before a repro, patch, test, or user verification. |
+| `start_debug_session` | A named investigation with durable context. Use this for real bugs. |
+| `resolve_debug_session` | Close the loop with what broke, what fixed it, and the commands that mattered. |
+| `issue_command` | Browser/device control: JS eval, screenshots, navigation, storage, viewport, network, ADB/Vega captures. |
+| `list_connections` | What is actually feeding the bus right now. |
+| `daemon8_help` | Focused guidance when the agent needs the current tool contract. |
 
-Debug-session tools are available when debug lifecycle storage is enabled:
-
-| Tool | Purpose |
-|------|---------|
-| `start_debug_session` | Open a scoped investigation. |
-| `create_checkpoint` | Bookmark the current observation sequence. |
-| `list_debug_sessions` | Review active or past investigations. |
-| `resolve_debug_session` | Close with a rich SessionSummary. |
-| `end_debug_session` | Close without a fix. |
-
-The standard debugging loop is:
+The debugging rhythm should be boring:
 
 ```text
 daemon8_connect -> start_debug_session -> create_checkpoint -> change/repro/test -> read_live_feed(since_checkpoint=...) -> resolve_debug_session
@@ -142,7 +127,7 @@ MCP responses and CLI `connect/init/status --json` output use the common alpha e
 }
 ```
 
-The envelope is part of the control flow. `status`, `code`, and structured `next_actions` guide the model at decision points. `daemon8_connect` returns flattened scope fields such as `data.session_id`, `data.mode`, `data.requested_path`, and `data.scope_root`. MCP connect/status responses and guarded MCP tool responses also include `data.connection`; CLI connect JSON uses the shared flattened core fields. Clients should branch on `status`, `code`, and `next_actions`.
+The envelope is part of the control flow. `status`, `code`, and structured `next_actions` tell the agent what to do next. `daemon8_connect` returns fields such as `data.session_id`, `data.mode`, `data.requested_path`, and `data.scope_root`. MCP connect/status responses and guarded MCP tool responses also include `data.connection`.
 
 ## HTTP API
 
@@ -171,6 +156,21 @@ daemon8 reset --yes
 ```
 
 Reset only clears daemon-owned state: observations, memories, debug sessions/checkpoints, session/scope bookkeeping, cursors, and schema metadata. It must not touch project files, `.daemon8/config.md`, transcripts, source files, plans, or docs.
+
+## Development
+
+From a checkout:
+
+```bash
+cargo install --path crates/daemon
+```
+
+For development:
+
+```bash
+cargo check --workspace
+cargo test --workspace
+```
 
 ## Workspace
 

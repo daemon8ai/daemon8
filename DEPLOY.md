@@ -25,8 +25,10 @@ cargo install --path crates/daemon --force
 
 The release shell installer uses `~/.cargo/bin` when present and otherwise
 falls back to `~/.local/bin`. The PowerShell installer defaults to
-`%LOCALAPPDATA%\Programs\daemon8`. `DAEMON8_INSTALL_DIR` overrides the
-release installer destination.
+`%LOCALAPPDATA%\Programs\daemon8`. After installing the binary, release
+installers run `daemon8 service install` so daemon8 starts as the local MCP
+server immediately. `DAEMON8_INSTALL_DIR` overrides the release installer
+destination.
 
 > **Publish gate.** Workspace crates currently carry `publish = false`.
 > Use the release installer, git install, or checkout install paths above.
@@ -282,8 +284,8 @@ before installing.
 ### Tagging a release
 
 ```bash
-git tag v0.4.0-alpha.1
-git push origin v0.4.0-alpha.1
+git tag v0.4.0
+git push origin v0.4.0
 ```
 
 The release workflow triggers automatically from the tag.

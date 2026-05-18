@@ -4,7 +4,7 @@ This changelog summarizes major repository changes by release phase.
 For full commit-by-commit detail, use `git log` and
 [daemon8ai/daemon8/releases](https://github.com/daemon8ai/daemon8/releases).
 
-## v0.4.0-alpha.1 - 2026-05-18
+## v0.4.0 - 2026-05-18
 
 - Replaced the pre-alpha setup flow with the alpha control surface:
   `daemon8 init`, `daemon8 connect`, `daemon8 status`, and the MCP
@@ -23,7 +23,7 @@ For full commit-by-commit detail, use `git log` and
 ### Upgrading from v0.2.x
 
 Historical notes below describe pre-alpha releases. Use the
-`v0.4.0-alpha.1` section above for current alpha commands and config.
+`v0.4.0` section above for current alpha commands and config.
 
 The lean MVP cull tightened TOML config parsing to reject unknown keys via `deny_unknown_fields`. Existing global and project configs that contain removed sections will fail to parse and the daemon will refuse to start until the stale keys are removed.
 

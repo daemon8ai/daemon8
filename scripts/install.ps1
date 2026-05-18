@@ -111,9 +111,17 @@ Write-Host "  + Installed to $InstallDir\$Binary.exe" -ForegroundColor Green
 Remove-Item -Recurse -Force $Tmp -ErrorAction SilentlyContinue
 
 Write-Host ""
-Write-Host "[4/4] Next steps" -ForegroundColor Cyan
+Write-Host "[4/4] Service" -ForegroundColor Cyan
 Write-Host ""
-Write-Host "  Start daemon8: daemon8 serve" -ForegroundColor DarkGray
-Write-Host "  Install the login service when wanted: daemon8 service install" -ForegroundColor DarkGray
-Write-Host "  Inside a project, initialize alpha config: daemon8 init" -ForegroundColor DarkGray
-Write-Host "  .daemon8/ should stay gitignored; daemon8 does not edit project .gitignore" -ForegroundColor DarkGray
+$Daemon8Exe = Join-Path $InstallDir "$Binary.exe"
+& $Daemon8Exe service install
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "  ! Service install failed. Try again with: $Daemon8Exe service install" -ForegroundColor Red
+    exit $LASTEXITCODE
+}
+
+Write-Host "  + Daemon8 service installed and running" -ForegroundColor Green
+Write-Host ""
+Write-Host "  Daemon8 is now running as the local MCP server." -ForegroundColor DarkGray
+Write-Host "  Start a fresh AI CLI/REPL session and check that daemon8 appears in the MCP server list." -ForegroundColor DarkGray
+Write-Host "  Inside a project, initialize source config only when daemon8 asks: daemon8 init" -ForegroundColor DarkGray
