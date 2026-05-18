@@ -22,6 +22,7 @@ workspace_version="$(
 )"
 
 [ -n "$workspace_version" ] || fail "workspace package version not found"
+command -v jq >/dev/null 2>&1 || fail "jq is required for release metadata checks"
 
 awk -v want="$workspace_version" '
   /^daemon8-/ && $0 ~ /version =/ {
@@ -56,21 +57,40 @@ if command -v pwsh >/dev/null 2>&1; then
   pwsh -NoLogo -NoProfile -Command "\$ErrorActionPreference='Stop'; [scriptblock]::Create((Get-Content -Raw 'scripts/install.ps1')) | Out-Null; [scriptblock]::Create((Get-Content -Raw 'install.ps1')) | Out-Null"
 fi
 
+tmp_dir="$(mktemp -d)"
+trap 'rm -rf "$tmp_dir"' EXIT
+
 DAEMON8_INSTALLER_SELF_TEST=1 bash scripts/install.sh >/dev/null
 DAEMON8_INSTALLER_SELF_TEST=1 bash install.sh >/dev/null
+mkdir -p "$tmp_dir/delegate-shell/scripts"
+cp install.sh "$tmp_dir/delegate-shell/install.sh"
+cat > "$tmp_dir/delegate-shell/scripts/install.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf delegated > delegated.out
+EOF
+chmod +x "$tmp_dir/delegate-shell/scripts/install.sh"
+(cd "$tmp_dir/delegate-shell" && DAEMON8_INSTALLER_SELF_TEST=1 bash install.sh >/dev/null)
+test "$(cat "$tmp_dir/delegate-shell/delegated.out")" = "delegated" || fail "root shell installer must delegate to local scripts/install.sh"
 
 if grep -R "cargo install daemon8" install.sh install.ps1 scripts/install.sh scripts/install.ps1; then
   fail "installer fallback must not imply crates.io publish"
 fi
 
-tmp_dir="$(mktemp -d)"
-trap 'rm -rf "$tmp_dir"' EXIT
 cp install.sh "$tmp_dir/install.sh"
 if ! (cd "$tmp_dir" && DAEMON8_INSTALLER_SELF_TEST=1 bash install.sh >/dev/null); then
   fail "root shell installer must work outside a checkout"
 fi
 if command -v pwsh >/dev/null 2>&1; then
   pwsh -NoLogo -NoProfile -Command "\$ErrorActionPreference='Stop'; \$env:DAEMON8_INSTALLER_SELF_TEST='1'; ./scripts/install.ps1 | Out-Null; ./install.ps1 | Out-Null"
+  mkdir -p "$tmp_dir/delegate-pwsh/scripts"
+  cp install.ps1 "$tmp_dir/delegate-pwsh/install.ps1"
+  cat > "$tmp_dir/delegate-pwsh/scripts/install.ps1" <<'EOF'
+Set-Content -Path delegated.out -Value delegated -NoNewline
+exit 0
+EOF
+  (cd "$tmp_dir/delegate-pwsh" && pwsh -NoLogo -NoProfile -Command "\$ErrorActionPreference='Stop'; \$env:DAEMON8_INSTALLER_SELF_TEST='1'; ./install.ps1 | Out-Null")
+  test "$(cat "$tmp_dir/delegate-pwsh/delegated.out")" = "delegated" || fail "root PowerShell installer must delegate to local scripts/install.ps1"
   cp install.ps1 "$tmp_dir/install.ps1"
   if ! (cd "$tmp_dir" && pwsh -NoLogo -NoProfile -Command "\$ErrorActionPreference='Stop'; \$env:DAEMON8_INSTALLER_SELF_TEST='1'; ./install.ps1 | Out-Null"); then
     fail "root PowerShell installer must work outside a checkout"
@@ -78,9 +98,7 @@ if command -v pwsh >/dev/null 2>&1; then
 fi
 
 metadata="$(cargo metadata --no-deps --format-version 1)"
-package_count="$(printf '%s' "$metadata" | { grep -o '"id":"path+file://' || true; } | wc -l | tr -d ' ')"
-publish_false_count="$(printf '%s' "$metadata" | { grep -o '"publish":\[\]' || true; } | wc -l | tr -d ' ')"
-if [ "$package_count" = "0" ] || [ "$publish_false_count" != "$package_count" ]; then
+if ! printf '%s' "$metadata" | jq -e '.packages | length > 0 and all(.publish == [])' >/dev/null; then
   fail "workspace crates must remain publish=false until crates.io release is intentionally enabled"
 fi
 
@@ -90,6 +108,22 @@ fi
 
 if grep -n "if: env.DEPLOY_HOST != ''" .github/workflows/release.yml; then
   fail "release workflow must not create a GitHub release when server upload is skipped"
+fi
+upload_line="$(grep -n 'name: Upload to server' .github/workflows/release.yml | cut -d: -f1)"
+release_lines="$(grep -n 'softprops/action-gh-release' .github/workflows/release.yml | cut -d: -f1)"
+release_line_count="$(printf '%s\n' "$release_lines" | sed '/^$/d' | wc -l | tr -d ' ')"
+release_line="$(printf '%s\n' "$release_lines" | sed '/^$/d' | head -n 1)"
+if [ -z "$upload_line" ] || [ "$release_line_count" != "1" ] || [ "$upload_line" -ge "$release_line" ]; then
+  fail "release workflow must upload to server before exactly one GitHub release step"
+fi
+next_step_line="$(awk -v start="$upload_line" 'NR > start && /^[[:space:]]+- name:/ { print NR; exit }' .github/workflows/release.yml)"
+if [ -n "$next_step_line" ]; then
+  upload_end_line=$((next_step_line - 1))
+else
+  upload_end_line="$(wc -l < .github/workflows/release.yml | tr -d ' ')"
+fi
+if sed -n "${upload_line},${upload_end_line}p" .github/workflows/release.yml | grep -n '^[[:space:]]*if:'; then
+  fail "server upload step must not be conditional"
 fi
 
 cargo metadata --no-deps --format-version 1 >/dev/null
@@ -116,7 +150,7 @@ git ls-files \
   | grep -v '^scripts/release-check.sh$' > "$stale_surface_list"
 
 stale_pattern='setup_(apply|status|plan)|\.daemon8\.toml|awareness|librarian|discovery|debug_summary|debug_observe|provider hooks|old setup|deprecated alias|migration shim|:host/codex\+worker>'
-if grep -n -E "$stale_pattern" $(cat "$stale_surface_list"); then
+if xargs grep -n -E "$stale_pattern" < "$stale_surface_list"; then
   fail "stale alpha release-surface wording found"
 fi
 

@@ -111,8 +111,10 @@ Config file location (via `directories::ProjectDirs::from("dev", "daemon8", "dae
 | Platform | Path                                                                 |
 | -------- | -------------------------------------------------------------------- |
 | macOS    | `~/Library/Application Support/dev.daemon8.daemon8/config.toml`      |
-| Linux    | `~/.config/dev/daemon8/daemon8/config.toml`                          |
-| Windows  | `%APPDATA%\dev\daemon8\daemon8\config.toml`                          |
+| Linux    | `~/.config/daemon8/config.toml`                                      |
+| Windows  | `%APPDATA%\daemon8\daemon8\config\config.toml`                       |
+
+Debug builds use the `daemon8-dev` app slug so local development state stays isolated from release binaries.
 
 Priority: compiled defaults < `config.toml` < environment variables < CLI args.
 
@@ -122,6 +124,7 @@ Environment variables use `DAEMON8_` prefix with double-underscore for nesting:
 DAEMON8_SERVER__PORT=9090
 DAEMON8_BROWSER__AUTO_CONNECT=true
 DAEMON8_LOGGING__LEVEL=debug
+DAEMON8_DEBUG_SESSION__INACTIVITY_AUTO_END_SECS=14400
 ```
 
 Invalid primitives (bad IP address, malformed socket, unknown log level)
@@ -144,6 +147,7 @@ fail at load time — no silent fallbacks.
 | adb               | server_addr                   | `127.0.0.1:5037`         | ADB server address (SocketAddrV4)           |
 | adb               | scan_interval_secs            | `10`                     | Device scan interval                        |
 | mcp               | stdio                         | `true`                   | Enable MCP stdio transport                  |
+| debug_session     | inactivity_auto_end_secs      | `14400`                  | Active-session idle timeout                 |
 | ingestion.udp     | enabled                       | `false`                  | UDP ingestion listener                      |
 | ingestion.udp     | bind                          | `127.0.0.1:8889`         | UDP bind address (SocketAddr)               |
 | ingestion.unix    | enabled                       | `false`                  | Unix socket listener                        |
@@ -174,9 +178,7 @@ Chrome must be launched with remote debugging enabled:
 
 ```bash
 # macOS
-/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome \
-  --remote-debugging-port=9222 \
-  --user-data-dir=/tmp/chrome-debug-profile
+/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9222 --user-data-dir=/tmp/chrome-debug-profile
 ```
 
 ## Troubleshooting
@@ -205,7 +207,7 @@ daemon8 logs                   # print path to latest log file
 daemon8 logs -f                # tail -f the latest log
 ```
 
-Log directory: `~/Library/Application Support/dev.daemon8.daemon8/logs/` (macOS), `~/.local/share/dev/daemon8/daemon8/logs/` (Linux).
+Log directory: `~/Library/Application Support/dev.daemon8.daemon8/logs/` (macOS release), `~/.local/share/daemon8/logs/` (Linux release).
 
 **Status**:
 

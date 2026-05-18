@@ -35,10 +35,15 @@ jobs:
           should_deploy=false
           if [[ "$release_ref" == refs/tags/v* ]]; then
             release_tag="${release_ref#refs/tags/}"
+            release_ref="refs/tags/$release_tag"
             should_deploy=true
           elif [[ "$release_ref" == v* ]]; then
             release_tag="$release_ref"
+            release_ref="refs/tags/$release_tag"
             should_deploy=true
+          fi
+          if [ "$should_deploy" = "true" ]; then
+            git ls-remote --exit-code "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" "refs/tags/$release_tag" >/dev/null
           fi
           echo "release_ref=$release_ref" >> "$GITHUB_OUTPUT"
           echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"

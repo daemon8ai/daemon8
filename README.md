@@ -90,7 +90,7 @@ Observation records include optional `service`, `source`, and `source_instance` 
 
 ## MCP Surface
 
-Except for `daemon8_connect`, `daemon8_init`, `daemon8_status`, and `daemon8_help`, MCP tools require an established `daemon8_connect` session. Debug lifecycle tools require project mode.
+Except for `daemon8_connect`, `daemon8_init`, `daemon8_status`, and `daemon8_help`, MCP tools require an established `daemon8_connect` session. Debug lifecycle mutation and checkpoint tools require project mode; `list_debug_sessions` is available after connect in project or general mode.
 
 Core runtime tools:
 
@@ -176,10 +176,10 @@ Reset only clears daemon-owned state: observations, memories, debug sessions/che
 | `daemon` | CLI binary, command dispatch, runtime wiring. |
 | `types` | Shared observation, filter, source, and debug-session types. |
 | `store` | SurrealDB-backed observation, memory, debug-session, lens, cursor, and schema state. |
-| `api` | Axum HTTP routes for observation ingest, SSE streaming, and health. |
+| `api` | Axum HTTP routes for observe, checkpoint, summary, connections, lens, browser action, and SSE streaming. |
 | `mcp` | MCP tool surface and control-flow envelopes. |
 | `providers` | Standalone AI provider detection/config utilities. |
-| `ingest` | HTTP, UDP, and Unix socket ingestion endpoints. |
+| `ingest` | HTTP `/ingest`, `/ingest/batch`, `/health`, UDP, and Unix socket ingestion endpoints. |
 | `chrome` | Chrome DevTools Protocol bridge. |
 | `adb` | Android Debug Bridge transport. |
 | `parse` | Log/conversation parser trait and built-in parsers. |

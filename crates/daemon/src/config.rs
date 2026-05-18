@@ -314,7 +314,7 @@ pub fn load(config_path: Option<&str>) -> Result<Config, figment::Error> {
     }
 
     // Environment variables use double-underscore for nesting:
-    // DAEMON8_SERVER__PORT=9090, DAEMON8_CHROME__AUTO_CONNECT=true
+    // DAEMON8_SERVER__PORT=9090, DAEMON8_BROWSER__AUTO_CONNECT=true
     figment = figment.merge(
         Env::prefixed("DAEMON8_")
             .split("__")
@@ -345,7 +345,15 @@ fn is_config_env_key(key: &str) -> bool {
         .unwrap_or(key);
     matches!(
         root.to_ascii_lowercase().as_str(),
-        "version" | "server" | "storage" | "browser" | "mcp" | "adb" | "ingestion" | "logging"
+        "version"
+            | "server"
+            | "storage"
+            | "browser"
+            | "mcp"
+            | "adb"
+            | "ingestion"
+            | "logging"
+            | "debug_session"
     )
 }
 
@@ -526,6 +534,8 @@ role_default = "debugger"
         assert!(!is_config_env_key("hook_verbose"));
         assert!(is_config_env_key("server.port"));
         assert!(is_config_env_key("server__port"));
+        assert!(is_config_env_key("debug_session.inactivity_auto_end_secs"));
+        assert!(is_config_env_key("debug_session__inactivity_auto_end_secs"));
     }
 
     #[test]

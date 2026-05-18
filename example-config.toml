@@ -28,6 +28,9 @@
 # [mcp]
 # stdio = true
 
+# [debug_session]
+# inactivity_auto_end_secs = 14400
+
 # [ingestion.udp]
 # enabled = false
 # bind = "127.0.0.1:8889"

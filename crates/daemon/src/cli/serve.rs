@@ -204,7 +204,7 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
     // EOF and the daemon cancels itself. FIFO detection is the one signal
     // that distinguishes a real client pipe from /dev/null on every launcher.
     let stdin_is_pipe = stdin_is_real_pipe();
-    if stdin_is_pipe {
+    if should_start_mcp_stdio(cfg.mcp.stdio, stdin_is_pipe) {
         use rmcp::ServiceExt;
 
         let lens = Arc::new(daemon8_store::LensManager::new(broadcast_tx.subscribe()));
@@ -978,6 +978,10 @@ fn stdin_is_real_pipe() -> bool {
     unsafe { GetFileType(handle as *mut _) == 3 }
 }
 
+fn should_start_mcp_stdio(config_enabled: bool, stdin_is_pipe: bool) -> bool {
+    config_enabled && stdin_is_pipe
+}
+
 async fn bind_with_retry(addr: &str, port: u16) -> Result<tokio::net::TcpListener> {
     const MAX_ATTEMPTS: u32 = 5;
     let mut delay = Duration::from_millis(500);
@@ -1012,6 +1016,19 @@ async fn bind_with_retry(addr: &str, port: u16) -> Result<tokio::net::TcpListene
         }
     }
     unreachable!()
+}
+
+#[cfg(test)]
+mod stdio_tests {
+    use super::*;
+
+    #[test]
+    fn mcp_stdio_requires_config_and_pipe() {
+        assert!(should_start_mcp_stdio(true, true));
+        assert!(!should_start_mcp_stdio(true, false));
+        assert!(!should_start_mcp_stdio(false, true));
+        assert!(!should_start_mcp_stdio(false, false));
+    }
 }
 
 fn find_port_holder(port: u16) -> Option<String> {
