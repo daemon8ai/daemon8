@@ -16,14 +16,34 @@ use daemon8_providers::Provider;
 #[cfg(target_os = "macos")]
 const LABEL: &str = "dev.daemon8.daemon";
 const SETUP_PROVIDERS: &[Provider] = &[Provider::ClaudeCode, Provider::Gemini, Provider::Codex];
-const INSTRUCTION_HEADING: &str = "## Daemon8 MCP - Cross-provider awareness and debugging";
-const INSTRUCTION_BLOCK: &str = r#"## Daemon8 MCP - Cross-provider awareness and debugging
+const INSTRUCTION_HEADING: &str = "## Daemon8 -- Runtime Observation Layer (ALWAYS ON)";
+const INSTRUCTION_BLOCK: &str = r#"## Daemon8 -- Runtime Observation Layer (ALWAYS ON)
 
-Use daemon8 for ALL non-trivial debugging, Chromium control, ADB logging, Vega OS VVD logs, and project awareness tracking. For Claude Code, use daemon8's browser/Chromium tools instead of Claude for Chrome. Call `daemon8_connect` at the start of every REPL session for AI-provider conversation sync. If the project's awareness profile has not been set up yet, daemon8's tool calls will guide the LLM through setup.
+Daemon8 is the runtime source of truth. Use it for ALL debugging, browser control, ADB/device logs, and application telemetry. Never guess console output, network activity, or runtime state -- query daemon8.
 
-All non-trivial debug sessions should call the `start_debug_session` tool. This provides a starting point and allows debug checkpoints throughout, giving high-signal lenses into the errors/logs flowing into daemon8. Call `resolve_debug_session` when the bug has been fixed.
+Call `daemon8_connect` once at session start. All tools and decisions depend on it.
 
-Daemon8 provides a `daemon8_help` tool to guide keeping the project's awareness profile clean and up to date over time.
+**Debug loop:**
+`start_debug_session`
+  -> [review DOCS.md/review knowledge]
+  -> start loop
+    -> `create_checkpoint`
+    -> [make changes]
+    -> [run/test]
+    -> `read_live_feed` (with `since_checkpoint`)
+    -> [review results / update knowledge]
+    -> fixed? end loop
+  -> `resolve_debug_session`
+  -> [sync knowledge/sync DOCS.md]
+
+**Primary tools:**
+- `read_live_feed` -- console, network, errors, app telemetry (use `since_checkpoint` for incremental reads)
+- `list_connections` -- see active input sources (browsers, devices, apps)
+- `issue_command` -- browser control (eval_js, screenshot, navigate, viewport, storage, network throttle)
+- `write_to_live_feed` -- emit notes, metrics, or agent-to-agent messages
+- `set_lens` / `clear_lens` -- persistent filters that surface matching observations automatically
+- `daemon8_connect` -- bind the session to a project scope and provider transcript (call once at start)
+- `daemon8_help` -- guidance on any daemon8 topic
 "#;
 
 fn binary_path() -> Result<PathBuf> {
