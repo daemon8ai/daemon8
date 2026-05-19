@@ -284,8 +284,8 @@ before installing.
 ### Tagging a release
 
 ```bash
-git tag v0.4.0
-git push origin v0.4.0
+git tag v0.4.1
+git push origin v0.4.1
 ```
 
 The release workflow triggers automatically from the tag.

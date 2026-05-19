@@ -71,13 +71,13 @@ Call `daemon8_connect` once at session start. All tools and decisions depend on 
 **Debug loop:**
 `start_debug_session`
   -> [review DOCS.md/review knowledge]
-  -> start loop
+  -> [start loop]
     -> `create_checkpoint`
     -> [make changes]
     -> [run/test]
     -> `read_live_feed` (with `since_checkpoint`)
     -> [review results / update knowledge]
-    -> fixed? end loop
+    -> [fixed? end loop]
   -> `resolve_debug_session`
   -> [sync knowledge/sync DOCS.md]
 

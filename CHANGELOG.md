@@ -4,6 +4,13 @@ This changelog summarizes major repository changes by release phase.
 For full commit-by-commit detail, use `git log` and
 [daemon8ai/daemon8/releases](https://github.com/daemon8ai/daemon8/releases).
 
+## v0.4.1 - 2026-05-18
+
+- Tightened README onboarding around the self-guided daemon8 install,
+  provider instruction setup, awareness profile shape, and SurrealDB-backed
+  runtime context.
+- Updated public release docs for the next patch tag.
+
 ## v0.4.0 - 2026-05-18
 
 - Replaced the pre-alpha setup flow with the alpha control surface:
