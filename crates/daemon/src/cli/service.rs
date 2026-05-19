@@ -257,48 +257,89 @@ fn setup_provider_mcp(mcp_url: &str, yes: bool) -> Result<Vec<ProviderSetupTarge
 }
 
 fn setup_instruction_files(configured_providers: &[ProviderSetupTarget], yes: bool) -> Result<()> {
-    println!();
-    println!("Copy this output into your global AI instruction file(s):");
-    println!();
-    println!("```markdown");
-    print!("{}", INSTRUCTION_BLOCK.trim_end());
-    println!();
-    println!("```");
-
-    let _ = copy_to_clipboard(INSTRUCTION_BLOCK.trim_end());
-    println!();
-
     let targets = instruction_targets(configured_providers);
+
     if targets.is_empty() {
+        println!();
         println!("No detected provider instruction file paths to update automatically.");
         return Ok(());
     }
 
+    println!();
     println!("Detected instruction file paths:");
     for target in &targets {
         println!("  {}: {}", target.provider.label(), target.path.display());
     }
 
-    let question = "Add this note to the top of those instruction files? [Y/n]: ";
-    if yes || prompt_yes_default(question)? == Some(true) {
-        for target in targets {
-            match prepend_instruction_block(&target.path) {
-                Ok(InstructionWrite::Written) => {
-                    println!("  [ok] updated {}", target.path.display());
+    if yes {
+        for target in &targets {
+            print_instruction_write_result(target);
+        }
+        return Ok(());
+    }
+
+    loop {
+        let question = "Add daemon8 instructions to those files? [Y]es/[N]o/[P]rint/[C]opy: ";
+        let answer = match prompt_raw(question)? {
+            Some(s) => s,
+            None => break,
+        };
+
+        match answer.as_str() {
+            "y" | "yes" | "" => {
+                for target in &targets {
+                    print_instruction_write_result(target);
                 }
-                Ok(InstructionWrite::AlreadyPresent) => {
-                    println!("  [ok] already present in {}", target.path.display());
-                }
-                Err(err) => {
-                    println!("  [!!] {}: {err}", target.path.display());
+                break;
+            }
+            "n" | "no" => {
+                println!("  [--] instruction-file write skipped");
+                break;
+            }
+            "p" | "print" => {
+                println!();
+                print!("{}", strip_markdown(INSTRUCTION_BLOCK.trim_end()));
+                println!();
+                println!();
+            }
+            "c" | "copy" => {
+                if copy_to_clipboard(INSTRUCTION_BLOCK.trim_end())? {
+                    println!("  [ok] copied to clipboard");
+                } else {
+                    println!("  [!!] clipboard not available");
                 }
             }
+            _ => {
+                println!("  unrecognized input");
+            }
         }
-    } else {
-        println!("  [--] instruction-file write skipped");
     }
 
     Ok(())
+}
+
+fn print_instruction_write_result(target: &InstructionTarget) {
+    match prepend_instruction_block(&target.path) {
+        Ok(InstructionWrite::Written) => {
+            println!("  [ok] updated {}", target.path.display());
+        }
+        Ok(InstructionWrite::AlreadyPresent) => {
+            println!("  [ok] already present in {}", target.path.display());
+        }
+        Err(err) => {
+            println!("  [!!] {}: {err}", target.path.display());
+        }
+    }
+}
+
+fn strip_markdown(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for line in input.lines() {
+        let clean = line.replace("**", "").replace('`', "");
+        out.push_str(&clean);
+        out.push('\n');
+    }
+    out
 }
 
 struct InstructionTarget {
@@ -371,13 +412,6 @@ fn print_install_outro(configured_providers: &[ProviderSetupTarget], instruction
             "  Instruction-file setup was skipped; add the daemon8 note before relying on agent guidance."
         );
     }
-
-    println!();
-    println!("If your agent does not call daemon8 tools:");
-    println!("  1. Run daemon8 status.");
-    println!(
-        "  2. If daemon8 is healthy, use a stronger coding model such as Claude Sonnet 4.5, Gemini 3 Flash Preview, or GPT-5.2-Codex."
-    );
 }
 
 fn prompt_yes_default(question: &str) -> io::Result<Option<bool>> {
@@ -422,6 +456,39 @@ fn parse_yes_default(input: &str) -> bool {
     answer.is_empty() || answer.eq_ignore_ascii_case("y") || answer.eq_ignore_ascii_case("yes")
 }
 
+fn prompt_raw(question: &str) -> io::Result<Option<String>> {
+    if let Some(answer) = prompt_raw_tty(question)? {
+        return Ok(Some(answer));
+    }
+    if io::stdin().is_terminal() {
+        eprint!("{question}");
+        io::stderr().flush()?;
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+        return Ok(Some(input.trim().to_ascii_lowercase()));
+    }
+    println!("  [--] non-interactive install; skipped prompt");
+    Ok(None)
+}
+
+#[cfg(unix)]
+fn prompt_raw_tty(question: &str) -> io::Result<Option<String>> {
+    let mut tty = match OpenOptions::new().read(true).write(true).open("/dev/tty") {
+        Ok(file) => file,
+        Err(_) => return Ok(None),
+    };
+    write!(tty, "{question}")?;
+    tty.flush()?;
+    let mut input = String::new();
+    BufReader::new(tty).read_line(&mut input)?;
+    Ok(Some(input.trim().to_ascii_lowercase()))
+}
+
+#[cfg(not(unix))]
+fn prompt_raw_tty(_question: &str) -> io::Result<Option<String>> {
+    Ok(None)
+}
+
 fn copy_to_clipboard(content: &str) -> Result<bool> {
     let commands: &[(&str, &[&str])] = if cfg!(target_os = "macos") {
         &[("pbcopy", &[])]
@@ -444,7 +511,6 @@ fn copy_to_clipboard(content: &str) -> Result<bool> {
             stdin.write_all(content.as_bytes())?;
         }
         if child.wait()?.success() {
-            println!("Copied daemon8 instructions to your clipboard.");
             return Ok(true);
         }
     }
