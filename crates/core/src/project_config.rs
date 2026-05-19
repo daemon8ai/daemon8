@@ -39,13 +39,29 @@ pub struct ProjectConfig {
     pub vars: BTreeMap<String, String>,
     #[serde(default)]
     pub sources: Vec<ProjectSource>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub related_projects: BTreeMap<String, RelatedProject>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProjectInfo {
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     pub stack: ProjectStack,
+}
+
+impl ProjectInfo {
+    pub fn effective_id(&self) -> String {
+        self.id.clone().unwrap_or_else(|| slugify(&self.name))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RelatedProject {
+    pub path: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -146,6 +162,7 @@ pub fn validate_project_config(config: &ProjectConfig) -> Result<()> {
     require_non_empty("created_at", &config.created_at)?;
     require_non_empty("updated_at", &config.updated_at)?;
     require_non_empty("project.name", &config.project.name)?;
+    validate_project_id(&config.project.effective_id())?;
     validate_string_list("project.stack.languages", &config.project.stack.languages)?;
     validate_string_list("project.stack.frameworks", &config.project.stack.frameworks)?;
     validate_string_list("project.stack.tools", &config.project.stack.tools)?;
@@ -153,6 +170,24 @@ pub fn validate_project_config(config: &ProjectConfig) -> Result<()> {
     for (name, value) in &config.vars {
         validate_var_name(name)?;
         validate_var_path(&format!("vars.{name}"), value)?;
+    }
+
+    for (key, related) in &config.related_projects {
+        if key.is_empty()
+            || !key
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        {
+            return Err(ProjectConfigError::Invalid(format!(
+                "related_projects key '{key}' must be a lowercase slug"
+            )));
+        }
+        validate_declared_path(&format!("related_projects.{key}.path"), &related.path)?;
+        validate_path_vars(
+            &format!("related_projects.{key}.path"),
+            &related.path,
+            &config.vars,
+        )?;
     }
 
     let mut ids = BTreeSet::new();
@@ -246,6 +281,58 @@ impl ProjectSource {
             Self::Conversation(source) => &source.path,
         }
     }
+}
+
+impl ProjectConfig {
+    pub fn derived_tags(&self) -> Vec<String> {
+        let mut tags = vec![format!("project:{}", self.project.effective_id())];
+        for lang in &self.project.stack.languages {
+            tags.push(format!("lang:{}", lang.to_ascii_lowercase()));
+        }
+        for fw in &self.project.stack.frameworks {
+            tags.push(format!("framework:{}", fw.to_ascii_lowercase()));
+        }
+        for tool in &self.project.stack.tools {
+            tags.push(format!("tool:{}", tool.to_ascii_lowercase()));
+        }
+        tags.sort();
+        tags.dedup();
+        tags
+    }
+}
+
+pub fn slugify(name: &str) -> String {
+    let mut slug = String::with_capacity(name.len());
+    for ch in name.chars() {
+        if ch.is_ascii_alphanumeric() {
+            slug.push(ch.to_ascii_lowercase());
+        } else if !slug.ends_with('-') && !slug.is_empty() {
+            slug.push('-');
+        }
+    }
+    slug.trim_end_matches('-').to_string()
+}
+
+fn validate_project_id(id: &str) -> Result<()> {
+    if id.is_empty() {
+        return Err(ProjectConfigError::Invalid(
+            "project.id must not be empty".into(),
+        ));
+    }
+    if !id
+        .bytes()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    {
+        return Err(ProjectConfigError::Invalid(format!(
+            "project.id '{id}' must contain only lowercase letters, digits, and hyphens"
+        )));
+    }
+    if id.starts_with('-') || id.ends_with('-') {
+        return Err(ProjectConfigError::Invalid(format!(
+            "project.id '{id}' must not start or end with a hyphen"
+        )));
+    }
+    Ok(())
 }
 
 fn default_line_parser() -> String {
@@ -627,5 +714,126 @@ sources:
         let vars = BTreeMap::new();
         let err = resolve_declared_path("path", "$NOPE/file.log", &vars).unwrap_err();
         assert!(err.to_string().contains("undeclared variable"));
+    }
+
+    #[test]
+    fn slugify_basic() {
+        assert_eq!(slugify("daemon8"), "daemon8");
+        assert_eq!(slugify("My Project"), "my-project");
+        assert_eq!(slugify("rtn-tv-platforms-api"), "rtn-tv-platforms-api");
+    }
+
+    #[test]
+    fn slugify_special_chars() {
+        assert_eq!(slugify("foo_bar.baz"), "foo-bar-baz");
+        assert_eq!(slugify("--leading--"), "leading");
+        assert_eq!(slugify("UPPER"), "upper");
+        assert_eq!(slugify("a  b"), "a-b");
+    }
+
+    #[test]
+    fn effective_id_uses_explicit_id() {
+        let info = ProjectInfo {
+            name: "My Project".into(),
+            id: Some("my-proj".into()),
+            stack: ProjectStack {
+                languages: vec![],
+                frameworks: vec![],
+                tools: vec![],
+            },
+        };
+        assert_eq!(info.effective_id(), "my-proj");
+    }
+
+    #[test]
+    fn effective_id_falls_back_to_slugified_name() {
+        let info = ProjectInfo {
+            name: "My Project".into(),
+            id: None,
+            stack: ProjectStack {
+                languages: vec![],
+                frameworks: vec![],
+                tools: vec![],
+            },
+        };
+        assert_eq!(info.effective_id(), "my-project");
+    }
+
+    #[test]
+    fn parses_config_without_id_field() {
+        let config = parse(valid_config()).unwrap();
+        assert!(config.project.id.is_none());
+        assert_eq!(config.project.effective_id(), "daemon8");
+    }
+
+    #[test]
+    fn parses_config_with_explicit_id() {
+        let input = valid_config().replace(
+            "  name: daemon8\n  stack:",
+            "  name: daemon8\n  id: d8\n  stack:",
+        );
+        let config = parse(input).unwrap();
+        assert_eq!(config.project.id.as_deref(), Some("d8"));
+        assert_eq!(config.project.effective_id(), "d8");
+    }
+
+    #[test]
+    fn rejects_invalid_project_id() {
+        let input = valid_config().replace(
+            "  name: daemon8\n  stack:",
+            "  name: daemon8\n  id: UPPER_CASE\n  stack:",
+        );
+        let err = parse(input).unwrap_err();
+        assert!(err.to_string().contains("project.id"));
+    }
+
+    #[test]
+    fn derived_tags_from_config() {
+        let config = parse(valid_config()).unwrap();
+        let tags = config.derived_tags();
+        assert!(tags.contains(&"project:daemon8".to_string()));
+        assert!(tags.contains(&"lang:rust".to_string()));
+        assert!(tags.contains(&"framework:tokio".to_string()));
+        assert!(tags.contains(&"tool:cargo".to_string()));
+    }
+
+    #[test]
+    fn parses_config_without_related_projects() {
+        let config = parse(valid_config()).unwrap();
+        assert!(config.related_projects.is_empty());
+    }
+
+    #[test]
+    fn parses_config_with_related_projects() {
+        let input = valid_config().replace(
+            "sources:",
+            "related_projects:\n  frontend:\n    path: \"/tmp/frontend\"\nsources:",
+        );
+        let config = parse(input).unwrap();
+        assert_eq!(config.related_projects.len(), 1);
+        assert_eq!(config.related_projects["frontend"].path, "/tmp/frontend");
+    }
+
+    #[test]
+    fn rejects_invalid_related_project_key() {
+        let input = valid_config().replace(
+            "sources:",
+            "related_projects:\n  UPPER:\n    path: \"/tmp/x\"\nsources:",
+        );
+        let err = parse(input).unwrap_err();
+        assert!(err.to_string().contains("related_projects key"));
+    }
+
+    #[test]
+    fn related_project_path_supports_vars() {
+        let input = valid_config().replace(
+            "sources:",
+            "related_projects:\n  frontend:\n    path: \"$PRJ_ROOT/../frontend\"\nsources:",
+        );
+        let config = parse(input).unwrap();
+        assert_eq!(
+            config.related_projects["frontend"].path,
+            "$PRJ_ROOT/../frontend"
+        );
     }
 }

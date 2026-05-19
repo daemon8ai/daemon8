@@ -19,8 +19,18 @@ An explicit `project_path`.
 
 ## Returns
 
-Common envelope. Success returns `code=initialized`; an existing config without overwrite returns `status=blocked`, `code=config_exists`. With `ignore=true`, returns `code=project_ignored`. With `ignore=false`, returns `code=project_unignored` with a `next_action` to retry `daemon8_connect`.
+Common envelope. Success returns `code=initialized` with a hint to populate sources; an existing config without overwrite returns `status=blocked`, `code=config_exists`. With `ignore=true`, returns `code=project_ignored`. With `ignore=false`, returns `code=project_unignored` with a `next_action` to retry `daemon8_connect`.
+
+The generated config includes `project.id` (a slug derived from the project name) used for structured tag scoping. Structured tags (`project:`, `lang:`, `framework:`, `tool:`) are derived automatically from the config's stack metadata and applied to all observations from this project.
+
+To declare sibling projects (e.g. a frontend/backend pair), add a `related_projects` map to the config keyed by project id:
+
+```yaml
+related_projects:
+  frontend:
+    path: "$PRJ_ROOT/../frontend"
+```
 
 ## Next
 
-Retry `daemon8_connect` after a successful init. After `ignore=true`, no further action is needed -- `daemon8_connect` will return `blocked/project_ignored`. After `ignore=false`, follow the `next_action` to reconnect.
+Retry `daemon8_connect` after a successful init. After connecting, populate `.daemon8/config.md` sources with file and conversation entries for this project's logs, build output, and provider transcripts -- this is a one-time investment that enables daemon8's runtime observation for the project. After `ignore=true`, no further action is needed -- `daemon8_connect` will return `blocked/project_ignored`. After `ignore=false`, follow the `next_action` to reconnect.

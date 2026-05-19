@@ -1125,12 +1125,28 @@ impl DaemonMcp {
 
         let mut obs = daemon8_ingest::normalize::normalize(serde_json::Value::Object(body));
 
-        // Stamp per-session debug-session and checkpoint links. Each DaemonMcp
-        // instance owns its own ActiveSessionState, so concurrent MCP sessions
-        // do not interfere with each other's observation stamping.
+        if let Some(ref connection) = *self.connection.lock().expect("connection mutex poisoned")
+            && let Some(ref pid) = connection.project_id
+        {
+            let tag = format!("{}{pid}", daemon8_types::TAG_PREFIX_PROJECT);
+            obs.tags = Some(match obs.tags {
+                Some(mut existing) => {
+                    if !existing.contains(&tag) {
+                        existing.push(tag);
+                    }
+                    existing
+                }
+                None => vec![tag],
+            });
+        }
+
         if let Some(ref session) = self.active_state.current_session() {
             obs.debug_session_id = Some(session.id.clone());
-            let slug_tag = format!("project:{}", session.project_slug);
+            let slug_tag = format!(
+                "{}{}",
+                daemon8_types::TAG_PREFIX_PROJECT,
+                session.project_slug
+            );
             obs.tags = Some(match obs.tags {
                 Some(mut existing) => {
                     if !existing.contains(&slug_tag) {

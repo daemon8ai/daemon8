@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use crate::control::{
     AlphaEnvelope, AlphaStatus, NextAction, ScopeCandidate, ScopeMode, classify_scope,
 };
-use crate::project_config::{PROJECT_CONFIG_SCHEMA, parse_project_config_str};
+use crate::project_config::{PROJECT_CONFIG_SCHEMA, parse_project_config_str, slugify};
 
 pub const PROJECT_CONFIG_DIR: &str = ".daemon8";
 pub const PROJECT_CONFIG_FILENAME: &str = "config.md";
@@ -238,7 +238,8 @@ pub fn init_project(request: InitRequest) -> InitOutcome {
                 "daemon8_connect",
                 "connect this MCP session to the initialized project",
                 json!({"project_path": scope_root.display().to_string()}),
-            )),
+            ))
+            .with_hint("sources is empty -- after connecting, add file and conversation source entries to .daemon8/config.md for this project's logs, build output, and provider transcripts"),
         config_path: Some(config_path),
     }
 }
@@ -291,6 +292,7 @@ pub fn detect_stack(cwd: &Path) -> DetectedStack {
 
 pub fn render_project_config(name: &str, root: &Path, stack: &DetectedStack) -> String {
     let root = root.display().to_string();
+    let id = slugify(name);
     let now = humantime::format_rfc3339(SystemTime::now()).to_string();
     format!(
         r##"---
@@ -299,6 +301,7 @@ created_at: {created_at}
 updated_at: {updated_at}
 project:
   name: {name}
+  id: {id}
   stack:
     languages: {languages}
     frameworks: {frameworks}
@@ -315,6 +318,7 @@ daemon8 and LLM sessions read the YAML frontmatter above. Keep runtime behavior 
         created_at = yaml_string(&now),
         updated_at = yaml_string(&now),
         name = yaml_string(name),
+        id = yaml_string(&id),
         root = yaml_string(&root),
         languages = yaml_array(&stack.languages),
         frameworks = yaml_array(&stack.frameworks),

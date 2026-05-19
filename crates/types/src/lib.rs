@@ -13,6 +13,11 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 pub const SYSTEM_TAG: &str = "_system";
+pub const TAG_PREFIX_PROJECT: &str = "project:";
+pub const TAG_PREFIX_LANG: &str = "lang:";
+pub const TAG_PREFIX_FRAMEWORK: &str = "framework:";
+pub const TAG_PREFIX_TOOL: &str = "tool:";
+pub const TAG_PREFIX_SOURCE: &str = "source:";
 pub const OBSERVATION_SEARCH_TEXT_LIMIT_BYTES: usize = 16 * 1024;
 
 macro_rules! arc_str_newtype {

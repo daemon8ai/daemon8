@@ -140,6 +140,8 @@ pub struct SessionConnection {
     pub agent_name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transcript_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -239,6 +241,7 @@ pub fn connect(request: ConnectRequest) -> ConnectOutcome {
                     .agent_name
                     .unwrap_or_else(|| format!("{provider}-agent")),
                 transcript_path: None,
+                project_id: None,
             };
             ConnectOutcome {
                 envelope: AlphaEnvelope::success(
@@ -323,6 +326,7 @@ fn connect_project(
         }
     };
 
+    let project_id = config.project.effective_id();
     let connection = SessionConnection {
         session_id: request.session_id,
         mode: ScopeMode::Project,
@@ -335,11 +339,15 @@ fn connect_project(
         transcript_path: request
             .transcript_path
             .map(|path| path.display().to_string()),
+        project_id: Some(project_id),
     };
     let mut data = serde_json::to_value(&connection).unwrap_or(Value::Null);
     data["project_name"] = json!(config.project.name);
     data["source_count"] = json!(config.sources.len());
     data["config_path"] = json!(config_path.display().to_string());
+    if !config.related_projects.is_empty() {
+        data["related_projects"] = json!(config.related_projects.keys().collect::<Vec<_>>());
+    }
 
     ConnectOutcome {
         envelope: AlphaEnvelope::success("connected", "connected to project", data),

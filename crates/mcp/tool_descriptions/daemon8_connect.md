@@ -19,7 +19,7 @@ None.
 
 ## Returns
 
-Common envelope with `status`, `code`, `message`, `data`, and structured `next_actions`. Project success includes `data.transcript.status` as `bound` or `not_found`.
+Common envelope with `status`, `code`, `message`, `data`, and structured `next_actions`. Project success includes `data.project_id` (the deterministic project slug from config), `data.transcript.status` as `bound` or `not_found`, and `data.related_projects` (list of sibling project IDs, if any are declared in config). Structured tags (`project:{id}`, `lang:`, `framework:`, `tool:`) are automatically applied to all observations from this project -- use `tags: ["project:{id}"]` in `read_live_feed` to scope queries.
 
 ## Next
 

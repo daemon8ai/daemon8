@@ -150,6 +150,7 @@ impl SourceTrigger for ConfiguredSourceTrigger {
             }
         };
 
+        let derived_tags = config.derived_tags();
         let active_transcript = request.active_transcript;
         let active_transcript_path = active_transcript
             .as_ref()
@@ -158,7 +159,8 @@ impl SourceTrigger for ConfiguredSourceTrigger {
         for source in &config.sources {
             let source_report = match source {
                 ProjectSource::File(file) => {
-                    self.ingest_file_source(&scope_root, &config, file).await
+                    self.ingest_file_source(&scope_root, &config, file, &derived_tags)
+                        .await
                 }
                 ProjectSource::Conversation(conversation) => {
                     if let Some(active) = active_transcript.as_ref()
@@ -166,11 +168,21 @@ impl SourceTrigger for ConfiguredSourceTrigger {
                         && active.provider == conversation.provider
                         && conversation_source_covers_transcript(&config, conversation, path)
                     {
-                        self.ingest_selected_conversation_source(&scope_root, conversation, path)
-                            .await
+                        self.ingest_selected_conversation_source(
+                            &scope_root,
+                            conversation,
+                            path,
+                            &derived_tags,
+                        )
+                        .await
                     } else {
-                        self.ingest_conversation_source(&scope_root, &config, conversation)
-                            .await
+                        self.ingest_conversation_source(
+                            &scope_root,
+                            &config,
+                            conversation,
+                            &derived_tags,
+                        )
+                        .await
                     }
                 }
             };
@@ -178,7 +190,7 @@ impl SourceTrigger for ConfiguredSourceTrigger {
         }
         if let Some(active_transcript) = active_transcript {
             let source_report = self
-                .ingest_active_transcript(&scope_root, &config, &active_transcript)
+                .ingest_active_transcript(&scope_root, &config, &active_transcript, &derived_tags)
                 .await;
             report.absorb(source_report);
         }
@@ -192,6 +204,7 @@ impl ConfiguredSourceTrigger {
         scope_root: &Path,
         config: &ProjectConfig,
         source: &FileSource,
+        project_tags: &[String],
     ) -> SourceSyncReport {
         let mut report = SourceSyncReport {
             sources_considered: 1,
@@ -282,7 +295,7 @@ impl ConfiguredSourceTrigger {
             let Some(parsed) = parser.parse(&line.text) else {
                 continue;
             };
-            let obs = file_observation(source, &path, parsed);
+            let obs = file_observation(source, &path, parsed, project_tags);
             match self.writer.write_observation(obs).await {
                 Ok(result) => match result.status {
                     ObservationWriteStatus::Inserted => report.observations_written += 1,
@@ -327,6 +340,7 @@ impl ConfiguredSourceTrigger {
         scope_root: &Path,
         config: &ProjectConfig,
         source: &ConversationSource,
+        project_tags: &[String],
     ) -> SourceSyncReport {
         let mut report = SourceSyncReport {
             sources_considered: 1,
@@ -379,7 +393,7 @@ impl ConfiguredSourceTrigger {
         for instance in instances {
             report.instances_considered += 1;
             let mut instance_report = self
-                .ingest_conversation_instance(scope_root, source, &instance)
+                .ingest_conversation_instance(scope_root, source, &instance, project_tags)
                 .await;
             report.observations_written += instance_report.observations_written;
             report.observations_deduped += instance_report.observations_deduped;
@@ -394,6 +408,7 @@ impl ConfiguredSourceTrigger {
         scope_root: &Path,
         source: &ConversationSource,
         path: &Path,
+        project_tags: &[String],
     ) -> SourceSyncReport {
         let mut report = SourceSyncReport {
             sources_considered: 1,
@@ -401,7 +416,7 @@ impl ConfiguredSourceTrigger {
             ..Default::default()
         };
         let mut instance_report = self
-            .ingest_conversation_instance(scope_root, source, path)
+            .ingest_conversation_instance(scope_root, source, path, project_tags)
             .await;
         report.observations_written += instance_report.observations_written;
         report.observations_deduped += instance_report.observations_deduped;
@@ -415,6 +430,7 @@ impl ConfiguredSourceTrigger {
         scope_root: &Path,
         config: &ProjectConfig,
         active: &ActiveTranscriptSource,
+        project_tags: &[String],
     ) -> SourceSyncReport {
         let mut report = SourceSyncReport {
             sources_considered: 1,
@@ -456,7 +472,7 @@ impl ConfiguredSourceTrigger {
             tags: vec!["active_transcript".into()],
         };
         let mut instance_report = self
-            .ingest_conversation_instance(scope_root, &source, &path)
+            .ingest_conversation_instance(scope_root, &source, &path, project_tags)
             .await;
         report.observations_written += instance_report.observations_written;
         report.observations_deduped += instance_report.observations_deduped;
@@ -470,6 +486,7 @@ impl ConfiguredSourceTrigger {
         scope_root: &Path,
         source: &ConversationSource,
         path: &Path,
+        project_tags: &[String],
     ) -> SourceSyncReport {
         let mut report = SourceSyncReport::default();
         let fingerprint = match source_file_fingerprint(path) {
@@ -515,7 +532,7 @@ impl ConfiguredSourceTrigger {
 
         for line in &window.lines {
             for event in parse_conversation_line(&source.provider, &line.text) {
-                let obs = conversation_observation(source, path, event);
+                let obs = conversation_observation(source, path, event, project_tags);
                 match self.writer.write_observation(obs).await {
                     Ok(result) => match result.status {
                         ObservationWriteStatus::Inserted => report.observations_written += 1,
@@ -601,7 +618,12 @@ impl ConfiguredSourceTrigger {
     }
 }
 
-fn file_observation(source: &FileSource, path: &Path, parsed: ParsedLine) -> Observation {
+fn file_observation(
+    source: &FileSource,
+    path: &Path,
+    parsed: ParsedLine,
+    project_tags: &[String],
+) -> Observation {
     let mut data = Value::Object(parsed.fields);
     data["message"] = Value::String(parsed.message);
     if let Some(timestamp) = parsed.timestamp {
@@ -618,6 +640,7 @@ fn file_observation(source: &FileSource, path: &Path, parsed: ParsedLine) -> Obs
         source: &source.id,
         path,
         tags: source.tags.clone(),
+        project_tags,
         kind,
         data,
         severity: parsed.severity.unwrap_or(Severity::Info),
@@ -629,6 +652,7 @@ fn conversation_observation(
     source: &ConversationSource,
     path: &Path,
     event: ConversationEvent,
+    project_tags: &[String],
 ) -> Observation {
     let (kind, data) = match event {
         ConversationEvent::ToolUse {
@@ -776,6 +800,7 @@ fn conversation_observation(
         source: &source.id,
         path,
         tags: source.tags.clone(),
+        project_tags,
         kind,
         data,
         severity: Severity::Info,
@@ -788,6 +813,7 @@ struct ObservationStamp<'a> {
     source: &'a str,
     path: &'a Path,
     tags: Vec<String>,
+    project_tags: &'a [String],
     kind: ObservationKind,
     data: Value,
     severity: Severity,
@@ -800,12 +826,18 @@ fn stamped_observation(input: ObservationStamp<'_>) -> Observation {
         source,
         path,
         mut tags,
+        project_tags,
         kind,
         data,
         severity,
         source_timestamp,
     } = input;
     tags.retain(|tag| tag != SYSTEM_TAG);
+    let mut all_tags = project_tags.to_vec();
+    all_tags.push(format!("source:{source}"));
+    all_tags.append(&mut tags);
+    all_tags.sort();
+    all_tags.dedup();
     let mut obs = Observation::new(
         Origin::Application {
             name: AppName::from(service),
@@ -825,8 +857,8 @@ fn stamped_observation(input: ObservationStamp<'_>) -> Observation {
     obs.service = Some(Arc::from(service));
     obs.source = Some(Arc::from(source));
     obs.source_instance = Some(Arc::from(path.display().to_string()));
-    if !tags.is_empty() {
-        obs.tags = Some(tags);
+    if !all_tags.is_empty() {
+        obs.tags = Some(all_tags);
     }
     obs
 }
