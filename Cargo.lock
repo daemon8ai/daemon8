@@ -1389,6 +1389,7 @@ version = "0.4.1"
 dependencies = [
  "daemon8-providers",
  "humantime",
+ "regex",
  "serde",
  "serde_json",
  "serde_norway",

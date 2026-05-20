@@ -548,6 +548,10 @@ pub fn classify_scope(path: &Path) -> ScopeCandidate {
         }
     }
 
+    if !crate::detect::detect_workspace_children(path).is_empty() {
+        return ScopeCandidate::Project(path.to_path_buf());
+    }
+
     ScopeCandidate::General(path.to_path_buf())
 }
 
@@ -755,5 +759,40 @@ mod tests {
             outcome.envelope.next_actions[0].params["transcript_path"],
             "<candidate path>"
         );
+    }
+
+    #[test]
+    fn workspace_root_classifies_as_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let child_a = dir.path().join("backend");
+        let child_b = dir.path().join("frontend");
+        std::fs::create_dir_all(&child_a).unwrap();
+        std::fs::create_dir_all(&child_b).unwrap();
+        std::fs::write(child_a.join("Cargo.toml"), "[package]").unwrap();
+        std::fs::write(child_b.join("package.json"), "{}").unwrap();
+
+        match classify_scope(dir.path()) {
+            ScopeCandidate::Project(root) => assert_eq!(root, dir.path()),
+            ScopeCandidate::General(_) => panic!("workspace root should classify as project"),
+        }
+    }
+
+    #[test]
+    fn empty_dir_still_general() {
+        let dir = tempfile::tempdir().unwrap();
+        match classify_scope(dir.path()) {
+            ScopeCandidate::General(_) => {}
+            ScopeCandidate::Project(_) => panic!("empty dir should be general"),
+        }
+    }
+
+    #[test]
+    fn single_project_classifies_via_fast_path() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(".git")).unwrap();
+        match classify_scope(dir.path()) {
+            ScopeCandidate::Project(root) => assert_eq!(root, dir.path()),
+            ScopeCandidate::General(_) => panic!("project with .git should classify as project"),
+        }
     }
 }

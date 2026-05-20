@@ -33,27 +33,27 @@ related_projects:
 
 ## Requirements
 
-After a successful init, the generated config has `sources: []`. The config is NOT usable until sources are populated. You MUST complete ALL of the following steps. Do NOT skip or defer any step.
+After a successful init, the config may have auto-detected sources or an empty `sources: []` array depending on whether daemon8 recognized the project's ecosystem. Either way, the config is NOT usable until you verify and complete it. You MUST complete ALL of the following steps. Do NOT skip or defer any step.
 
-### STEP 1: Full project audit
+### STEP 1: Verify and complete the stack
 
-You MUST build a complete picture of this project before adding sources. Do ALL of the following IN ORDER:
+daemon8 auto-detects languages, frameworks, and tools from ecosystem markers (package manager files, framework config files, build files). The auto-detected values may be substantially correct but are NOT guaranteed complete. You MUST:
 
 1. Read ALL package manager files to identify every dependency across the ENTIRE project: package.json, Cargo.toml, composer.json, pyproject.toml, go.mod, Gemfile, and their lock files.
 
 2. Scan the full project structure. Run `tree -L 3 -I 'node_modules|vendor|target|.git|dist|build|__pycache__' .` to get a full view. On Windows use `tree /F` and filter manually.
 
-3. Review containerization and infrastructure: Dockerfile, docker-compose.yml, .dockerignore, Kubernetes manifests, terraform files, serverless configs.
+3. Review containerization, CI/CD, and runtime configuration files.
 
-4. Review deployment and CI/CD: .github/workflows/, .gitlab-ci.yml, Jenkinsfile, deploy scripts, Procfile, Caddyfile, nginx configs.
+4. Update the `project.stack` section with ALL languages, frameworks, and tools found across the ENTIRE project.
 
-5. Review runtime configuration: .env.example, config files, environment-specific settings, database configs, queue configs, cache configs.
+For workspace or monorepo roots containing multiple sub-projects, scan ALL sub-project directories. daemon8 detects workspace roots by finding ecosystem markers in child directories even when the root itself has no markers.
 
-After this audit, update the `project.stack` section in the frontmatter with ALL languages, frameworks, and tools found across the ENTIRE project. The auto-detected values are a starting point only -- they are NOT complete.
+### STEP 2: Verify and supplement sources
 
-### STEP 2: Add sources
+daemon8 pre-populates the `sources` array based on detected ecosystem log paths. If sources were auto-detected, verify each path is correct for your environment. Then search for additional sources daemon8 did not detect. If sources is empty, you MUST add sources manually.
 
-Using what you learned in Step 1, add file and conversation source entries to the `sources` array in the frontmatter. You MUST investigate every log path, build output, and error stream the project produces. Do NOT stop at the obvious ones -- dig through config files, docker entrypoints, and supervisor configs to find ALL log outputs.
+You MUST investigate every log path, build output, and error stream the project produces. Do NOT stop at the obvious ones -- dig through config files, docker entrypoints, and supervisor configs to find ALL log outputs.
 
 daemon8 supports these log parsers. ANY log file that matches one of these formats MUST be added as a source:
 

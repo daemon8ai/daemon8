@@ -29,9 +29,9 @@ pub struct InitOutcome {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DetectedStack {
-    pub languages: Vec<&'static str>,
-    pub frameworks: Vec<&'static str>,
-    pub tools: Vec<&'static str>,
+    pub languages: Vec<String>,
+    pub frameworks: Vec<String>,
+    pub tools: Vec<String>,
 }
 
 pub fn init_project(request: InitRequest) -> InitOutcome {
@@ -123,8 +123,18 @@ pub fn init_project(request: InitRequest) -> InitOutcome {
         }
         None => derive_name(&scope_root),
     };
-    let stack = detect_stack(&scope_root);
-    let contents = render_project_config(&name, &scope_root, &stack);
+    let ecosystems = crate::detect::detect_ecosystems(&scope_root);
+    let stack = if ecosystems.is_empty() {
+        DetectedStack {
+            languages: vec!["generic".into()],
+            frameworks: Vec::new(),
+            tools: Vec::new(),
+        }
+    } else {
+        crate::detect::ecosystems_to_stack(&ecosystems)
+    };
+    let sources = crate::detect::ecosystems_to_sources(&ecosystems);
+    let contents = render_project_config(&name, &scope_root, &stack, &sources);
     let config = match parse_project_config_str(&contents) {
         Ok(config) => config,
         Err(err) => {
@@ -366,65 +376,110 @@ pub fn derive_name(cwd: &Path) -> String {
 }
 
 pub fn detect_stack(cwd: &Path) -> DetectedStack {
-    let mut languages = Vec::new();
-    let mut frameworks = Vec::new();
-    let mut tools = Vec::new();
-
-    if cwd.join("artisan").exists() {
-        languages.push("php");
-        frameworks.push("laravel");
+    let ecosystems = crate::detect::detect_ecosystems(cwd);
+    if ecosystems.is_empty() {
+        return DetectedStack {
+            languages: vec!["generic".into()],
+            frameworks: Vec::new(),
+            tools: Vec::new(),
+        };
     }
-    if cwd.join("bin/console").exists() {
-        languages.push("php");
-        frameworks.push("symfony");
-    }
-    if cwd.join("package.json").exists() {
-        languages.push("javascript");
-        tools.push("node");
-    }
-    if cwd.join("Cargo.toml").exists() {
-        languages.push("rust");
-        tools.push("cargo");
-    }
-    if languages.is_empty() && frameworks.is_empty() && tools.is_empty() {
-        languages.push("generic");
-    }
-
-    languages.sort_unstable();
-    languages.dedup();
-    frameworks.sort_unstable();
-    frameworks.dedup();
-    tools.sort_unstable();
-    tools.dedup();
-
-    DetectedStack {
-        languages,
-        frameworks,
-        tools,
-    }
+    crate::detect::ecosystems_to_stack(&ecosystems)
 }
 
-pub fn render_project_config(name: &str, root: &Path, stack: &DetectedStack) -> String {
+pub fn render_project_config(
+    name: &str,
+    root: &Path,
+    stack: &DetectedStack,
+    sources: &[crate::detect::SourceSuggestion],
+) -> String {
     let root = root.display().to_string();
     let id = slugify(name);
     let now = humantime::format_rfc3339(SystemTime::now()).to_string();
+    let sources_yaml = render_sources_yaml(sources);
+    let body = if sources.is_empty() {
+        CONFIG_BODY_EMPTY_SOURCES
+    } else {
+        CONFIG_BODY_WITH_SOURCES
+    };
     format!(
-        r##"---
-daemon8_schema: {schema}
-created_at: {created_at}
-updated_at: {updated_at}
-project:
-  name: {name}
-  id: {id}
-  stack:
-    languages: {languages}
-    frameworks: {frameworks}
-    tools: {tools}
-vars:
-  PRJ_ROOT: {root}
-sources: []
----
-# daemon8 project config
+        "---\ndaemon8_schema: {schema}\ncreated_at: {created_at}\nupdated_at: {updated_at}\nproject:\n  name: {name}\n  id: {id}\n  stack:\n    languages: {languages}\n    frameworks: {frameworks}\n    tools: {tools}\nvars:\n  PRJ_ROOT: {root}\n{sources_yaml}\n---\n{body}",
+        schema = PROJECT_CONFIG_SCHEMA,
+        created_at = yaml_string(&now),
+        updated_at = yaml_string(&now),
+        name = yaml_string(name),
+        id = yaml_string(&id),
+        root = yaml_string(&root),
+        languages = yaml_array(&stack.languages),
+        frameworks = yaml_array(&stack.frameworks),
+        tools = yaml_array(&stack.tools),
+    )
+}
+
+fn render_sources_yaml(sources: &[crate::detect::SourceSuggestion]) -> String {
+    if sources.is_empty() {
+        return "sources: []".to_string();
+    }
+    let mut yaml = String::from("sources:");
+    for src in sources {
+        yaml.push_str(&format!(
+            "\n  - id: {}\n    service: {}\n    kind: file\n    path: \"$PRJ_ROOT/{}\"\n    parser: {}",
+            src.id, src.service, src.path, src.parser,
+        ));
+    }
+    yaml
+}
+
+const CONFIG_BODY_WITH_SOURCES: &str = r##"# daemon8 project config
+
+daemon8 detected ecosystem markers and pre-populated the stack and sources
+sections above. Complete the steps below to finalize the config.
+
+## STEP 1: Verify auto-detected stack and sources
+
+Review the frontmatter for accuracy:
+
+1. Verify the languages, frameworks, and tools lists are complete.
+   The auto-detected values are based on ecosystem markers -- add anything
+   daemon8 missed.
+
+2. Verify each source path is correct for your environment. The paths are
+   based on framework conventions and may not match your project's layout.
+
+3. Search for additional log files, build outputs, and error streams the
+   project produces that are NOT listed above:
+   - Application logs (storage/logs/, logs/, log/, *.log, stdout/stderr)
+   - Web server access and error logs (nginx, Apache, Caddy)
+   - Database query logs (slow query logs, general logs)
+   - Queue and worker logs (Redis, RabbitMQ, SQS worker output)
+   - Container logs (docker-compose log paths, k8s pod logs)
+   - Provider transcripts for session continuity
+
+daemon8 supports these log parsers:
+
+  line     -- plain text, one observation per line (catch-all)
+  json     -- structured JSON logs (one JSON object per line)
+  syslog   -- RFC 3164/5424 syslog format
+  logfmt   -- key=value structured logs (Heroku, Go stdlib)
+  clf      -- Common/Combined Log Format (Apache, nginx access logs)
+  monolog  -- PHP Monolog format (Laravel, Symfony)
+  auto     -- tries all parsers, picks the best match
+  grok     -- custom pattern (set parser_pattern field)
+
+Source fields:
+  file: id, service, kind (file), path, parser (see list above), tags
+  conversation: id, service, kind (conversation), path, provider (claude|codex|gemini), tags
+
+Use $PRJ_ROOT for project-relative paths.
+
+## STEP 2: Confirm with the user
+
+Present the updated config to the user and ask: "Does this config look
+thorough? Are there other log files, build outputs, or services I should
+add?" Do NOT proceed without user confirmation.
+"##;
+
+const CONFIG_BODY_EMPTY_SOURCES: &str = r##"# daemon8 project config
 
 REQUIRED: This config is incomplete. daemon8 cannot observe this project until
 the steps below are finished. Do NOT skip or defer these steps.
@@ -518,18 +573,7 @@ value in the frontmatter.
 After completing Steps 1 and 2, present the updated config to the user and
 ask: "Does this config look thorough? Are there other log files, build
 outputs, or services I should add?" Do NOT proceed without user confirmation.
-"##,
-        schema = PROJECT_CONFIG_SCHEMA,
-        created_at = yaml_string(&now),
-        updated_at = yaml_string(&now),
-        name = yaml_string(name),
-        id = yaml_string(&id),
-        root = yaml_string(&root),
-        languages = yaml_array(&stack.languages),
-        frameworks = yaml_array(&stack.frameworks),
-        tools = yaml_array(&stack.tools),
-    )
-}
+"##;
 
 fn canonical_project_dir(path: &Path) -> Result<PathBuf, String> {
     if !path.exists() {
@@ -555,7 +599,7 @@ fn yaml_string(value: &str) -> String {
     serde_json::to_string(value).expect("JSON string serialization cannot fail")
 }
 
-fn yaml_array(values: &[&str]) -> String {
+fn yaml_array(values: &[String]) -> String {
     serde_json::to_string(values).expect("JSON array serialization cannot fail")
 }
 
@@ -572,11 +616,11 @@ mod tests {
     fn template_includes_project_name_and_schema() {
         let root = Path::new("/tmp/my-proj");
         let stack = DetectedStack {
-            languages: vec!["generic"],
+            languages: vec!["generic".into()],
             frameworks: Vec::new(),
             tools: Vec::new(),
         };
-        let out = render_project_config("my-proj", root, &stack);
+        let out = render_project_config("my-proj", root, &stack, &[]);
         assert!(out.contains("daemon8_schema: 1"));
         assert!(out.contains(r#"name: "my-proj""#));
         assert!(out.contains(r#"PRJ_ROOT: "/tmp/my-proj""#));
@@ -587,11 +631,11 @@ mod tests {
     fn template_uses_empty_alpha_sources_array() {
         let root = Path::new("/tmp/my-app");
         let stack = DetectedStack {
-            languages: vec!["rust"],
+            languages: vec!["rust".into()],
             frameworks: Vec::new(),
-            tools: vec!["cargo"],
+            tools: vec!["cargo".into()],
         };
-        let out = render_project_config("my-app", root, &stack);
+        let out = render_project_config("my-app", root, &stack, &[]);
         assert!(out.contains("sources: []"));
         assert!(!out.contains("kind: sqlite"));
         assert!(!out.contains("kind: log"));
@@ -604,7 +648,7 @@ mod tests {
         assert_eq!(
             detect_stack(tmp.path()),
             DetectedStack {
-                languages: vec!["generic"],
+                languages: vec!["generic".into()],
                 frameworks: Vec::new(),
                 tools: Vec::new(),
             }
@@ -615,14 +659,9 @@ mod tests {
     fn detect_stack_identifies_rust_project() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
-        assert_eq!(
-            detect_stack(tmp.path()),
-            DetectedStack {
-                languages: vec!["rust"],
-                frameworks: Vec::new(),
-                tools: vec!["cargo"],
-            }
-        );
+        let stack = detect_stack(tmp.path());
+        assert!(stack.languages.contains(&"rust".to_string()));
+        assert!(stack.tools.contains(&"cargo".to_string()));
     }
 
     #[test]
@@ -853,5 +892,86 @@ mod tests {
         assert_eq!(outcome.envelope.status, AlphaStatus::Success);
         assert_eq!(outcome.envelope.code, "remove_pending");
         assert!(tmp.path().join(".daemon8").join("config.md").exists());
+    }
+
+    #[test]
+    fn render_config_with_auto_sources() {
+        let root = Path::new("/tmp/test-proj");
+        let stack = DetectedStack {
+            languages: vec!["php".into()],
+            frameworks: vec!["laravel".into()],
+            tools: vec!["composer".into()],
+        };
+        let sources = vec![crate::detect::SourceSuggestion {
+            id: "laravel.logs".into(),
+            service: "laravel".into(),
+            path: "storage/logs/laravel.log".into(),
+            parser: "monolog".into(),
+        }];
+        let out = render_project_config("test-proj", root, &stack, &sources);
+        assert!(out.contains("laravel.logs"));
+        assert!(out.contains("$PRJ_ROOT/storage/logs/laravel.log"));
+        assert!(out.contains("parser: monolog"));
+        assert!(out.contains("kind: file"));
+        assert!(!out.contains("sources: []"));
+    }
+
+    #[test]
+    fn rendered_config_with_sources_parses() {
+        let root = Path::new("/tmp/test-proj");
+        let stack = DetectedStack {
+            languages: vec!["php".into()],
+            frameworks: vec!["laravel".into()],
+            tools: vec!["composer".into()],
+        };
+        let sources = vec![crate::detect::SourceSuggestion {
+            id: "laravel.logs".into(),
+            service: "laravel".into(),
+            path: "storage/logs/laravel.log".into(),
+            parser: "monolog".into(),
+        }];
+        let out = render_project_config("test-proj", root, &stack, &sources);
+        let config = parse_project_config_str(&out).unwrap();
+        assert_eq!(config.sources.len(), 1);
+    }
+
+    #[test]
+    fn init_auto_populates_sources_for_laravel() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("artisan"), "#!/usr/bin/env php").unwrap();
+        std::fs::write(tmp.path().join("composer.json"), "{}").unwrap();
+        mark_project(tmp.path());
+
+        let outcome = init_project(InitRequest {
+            project_path: tmp.path().to_path_buf(),
+            name: Some("laravel-app".into()),
+            overwrite: false,
+        });
+        assert_eq!(outcome.envelope.status, AlphaStatus::Success);
+
+        let config_path = tmp.path().join(".daemon8").join("config.md");
+        let contents = std::fs::read_to_string(config_path).unwrap();
+        let config = parse_project_config_str(&contents).unwrap();
+        assert!(
+            !config.sources.is_empty(),
+            "laravel project should have auto-detected sources"
+        );
+    }
+
+    #[test]
+    fn init_empty_sources_when_no_detection() {
+        let tmp = tempfile::tempdir().unwrap();
+        mark_project(tmp.path());
+
+        let outcome = init_project(InitRequest {
+            project_path: tmp.path().to_path_buf(),
+            name: Some("empty-proj".into()),
+            overwrite: false,
+        });
+        assert_eq!(outcome.envelope.status, AlphaStatus::Success);
+
+        let config_path = tmp.path().join(".daemon8").join("config.md");
+        let contents = std::fs::read_to_string(config_path).unwrap();
+        assert!(contents.contains("sources: []"));
     }
 }

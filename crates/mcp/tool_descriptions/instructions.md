@@ -14,7 +14,7 @@ Observations are real-time and change constantly. Do not answer questions about 
 Tool selection:
 - Learn the control flow or envelope shape: `daemon8_help` (available before connect).
 - Bind this MCP session to a project/general scope: `daemon8_connect`.
-- Initialize missing project config: `daemon8_init`, then retry `daemon8_connect`.
+- Initialize missing project config: `daemon8_init`, then retry `daemon8_connect`. daemon8 detects workspaces and monorepos by scanning child directories for ecosystem markers.
 - Snapshot daemon and MCP session state: `daemon8_status`.
 - See console output, network traffic, device logs, or app telemetry: `read_live_feed` (use `since_checkpoint` for incremental polling).
 - Run JavaScript in the browser: `issue_command` with action="eval_js".

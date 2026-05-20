@@ -2,5 +2,6 @@
 // Copyright (c) 2026 Havy.tech, LLC
 
 pub mod control;
+pub mod detect;
 pub mod init;
 pub mod project_config;
