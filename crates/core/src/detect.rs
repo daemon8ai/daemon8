@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LicenseRef-FCL-1.0-ALv2
 // Copyright (c) 2026 Havy.tech, LLC
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
@@ -136,40 +137,42 @@ fn matches_ecosystem(root: &Path, entry: &EcosystemEntry) -> bool {
 
 pub fn detect_ecosystems(root: &Path) -> Vec<DetectedEcosystem> {
     let entries = load_ecosystems();
-    let mut matches: Vec<DetectedEcosystem> = entries
-        .iter()
+
+    let (matched, supersedes): (Vec<_>, Vec<_>) = entries
+        .into_iter()
         .filter(|entry| matches_ecosystem(root, entry))
-        .map(|entry| DetectedEcosystem {
-            id: entry.id.clone(),
-            category: entry.category.clone(),
-            language: entry.language.clone(),
-            log_paths: entry.log_paths.clone(),
-            superseded: false,
+        .map(|entry| {
+            let sup = entry.supersedes.clone();
+            let eco = DetectedEcosystem {
+                id: entry.id,
+                category: entry.category,
+                language: entry.language,
+                log_paths: entry.log_paths,
+                superseded: false,
+            };
+            (eco, sup)
         })
-        .collect();
+        .unzip();
 
-    let supersedes_map: Vec<(String, Vec<String>)> = entries
+    let matched_ids: HashSet<&str> = matched.iter().map(|m| m.id.as_str()).collect();
+    let superseded_ids: HashSet<&str> = supersedes
         .iter()
-        .filter(|e| !e.supersedes.is_empty())
-        .map(|e| (e.id.clone(), e.supersedes.clone()))
+        .zip(&matched)
+        .filter(|(_, m)| matched_ids.contains(m.id.as_str()))
+        .flat_map(|(targets, _)| targets.iter().map(String::as_str))
         .collect();
 
-    let matched_ids: Vec<String> = matches.iter().map(|m| m.id.clone()).collect();
-    for (parent_id, targets) in &supersedes_map {
-        if matched_ids.contains(parent_id) {
-            for target in targets {
-                if let Some(m) = matches.iter_mut().find(|m| &m.id == target) {
-                    m.superseded = true;
-                }
-            }
-        }
-    }
-
-    matches
+    matched
+        .into_iter()
+        .map(|mut m| {
+            m.superseded = superseded_ids.contains(m.id.as_str());
+            m
+        })
+        .collect()
 }
 
 pub fn detect_workspace_children(root: &Path) -> Vec<(PathBuf, Vec<DetectedEcosystem>)> {
-    let entries = match std::fs::read_dir(root) {
+    let dir_entries = match std::fs::read_dir(root) {
         Ok(e) => e,
         Err(_) => return Vec::new(),
     };
@@ -177,16 +180,16 @@ pub fn detect_workspace_children(root: &Path) -> Vec<(PathBuf, Vec<DetectedEcosy
     let ecosystems = load_ecosystems();
     let mut results = Vec::new();
 
-    for entry in entries.flatten() {
+    for entry in dir_entries.flatten() {
         let path = entry.path();
         if !path.is_dir() {
             continue;
         }
-        let name = match entry.file_name().into_string() {
-            Ok(n) => n,
-            Err(_) => continue,
-        };
-        if name.starts_with('.') {
+        if entry
+            .file_name()
+            .to_str()
+            .is_some_and(|n| n.starts_with('.'))
+        {
             continue;
         }
 
@@ -211,14 +214,12 @@ pub fn detect_workspace_children(root: &Path) -> Vec<(PathBuf, Vec<DetectedEcosy
 }
 
 pub fn ecosystems_to_stack(ecosystems: &[DetectedEcosystem]) -> crate::init::DetectedStack {
-    let mut languages = Vec::new();
-    let mut frameworks = Vec::new();
-    let mut tools = Vec::new();
+    let mut languages = HashSet::new();
+    let mut frameworks = HashSet::new();
+    let mut tools = HashSet::new();
 
     for eco in ecosystems {
-        if !languages.contains(&eco.language) {
-            languages.push(eco.language.clone());
-        }
+        languages.insert(eco.language.clone());
 
         if eco.superseded {
             continue;
@@ -226,25 +227,21 @@ pub fn ecosystems_to_stack(ecosystems: &[DetectedEcosystem]) -> crate::init::Det
 
         match eco.category {
             EcosystemCategory::Framework => {
-                if !frameworks.contains(&eco.id) {
-                    frameworks.push(eco.id.clone());
-                }
+                frameworks.insert(eco.id.clone());
             }
             EcosystemCategory::Tool | EcosystemCategory::PackageManager => {
-                if !tools.contains(&eco.id) {
-                    tools.push(eco.id.clone());
-                }
+                tools.insert(eco.id.clone());
             }
             EcosystemCategory::Language => {}
         }
     }
 
+    let mut languages: Vec<_> = languages.into_iter().collect();
+    let mut frameworks: Vec<_> = frameworks.into_iter().collect();
+    let mut tools: Vec<_> = tools.into_iter().collect();
     languages.sort();
-    languages.dedup();
     frameworks.sort();
-    frameworks.dedup();
     tools.sort();
-    tools.dedup();
 
     crate::init::DetectedStack {
         languages,
@@ -255,7 +252,7 @@ pub fn ecosystems_to_stack(ecosystems: &[DetectedEcosystem]) -> crate::init::Det
 
 pub fn ecosystems_to_sources(ecosystems: &[DetectedEcosystem]) -> Vec<SourceSuggestion> {
     let mut sources = Vec::new();
-    let mut seen_ids = Vec::new();
+    let mut seen_ids = HashSet::new();
 
     for eco in ecosystems {
         if eco.superseded {
@@ -263,10 +260,9 @@ pub fn ecosystems_to_sources(ecosystems: &[DetectedEcosystem]) -> Vec<SourceSugg
         }
         for log in &eco.log_paths {
             let id = format!("{}.{}", eco.id, log.id_suffix);
-            if seen_ids.contains(&id) {
+            if !seen_ids.insert(id.clone()) {
                 continue;
             }
-            seen_ids.push(id.clone());
             sources.push(SourceSuggestion {
                 id,
                 service: log.service.clone(),
@@ -474,6 +470,35 @@ mod tests {
             results.is_empty(),
             "single project should have no workspace children"
         );
+    }
+
+    #[test]
+    fn glob_matches_suffix_pattern() {
+        assert!(glob_matches("*.sln", "MyApp.sln"));
+        assert!(glob_matches("*.csproj", "Web.csproj"));
+        assert!(!glob_matches("*.sln", "MyApp.txt"));
+        assert!(!glob_matches("*.sln", "sln"));
+    }
+
+    #[test]
+    fn glob_matches_prefix_pattern() {
+        assert!(glob_matches("lib*", "libfoo"));
+        assert!(glob_matches("lib*", "lib"));
+        assert!(!glob_matches("lib*", "notlib"));
+    }
+
+    #[test]
+    fn glob_matches_exact() {
+        assert!(glob_matches("Makefile", "Makefile"));
+        assert!(!glob_matches("Makefile", "makefile"));
+    }
+
+    #[test]
+    fn match_glob_finds_file_in_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("App.sln"), "").unwrap();
+        assert!(match_glob(dir.path(), "*.sln"));
+        assert!(!match_glob(dir.path(), "*.csproj"));
     }
 
     #[test]

@@ -125,11 +125,7 @@ pub fn init_project(request: InitRequest) -> InitOutcome {
     };
     let ecosystems = crate::detect::detect_ecosystems(&scope_root);
     let stack = if ecosystems.is_empty() {
-        DetectedStack {
-            languages: vec!["generic".into()],
-            frameworks: Vec::new(),
-            tools: Vec::new(),
-        }
+        default_stack()
     } else {
         crate::detect::ecosystems_to_stack(&ecosystems)
     };
@@ -375,16 +371,21 @@ pub fn derive_name(cwd: &Path) -> String {
         .to_string()
 }
 
+pub fn default_stack() -> DetectedStack {
+    DetectedStack {
+        languages: vec!["generic".into()],
+        frameworks: Vec::new(),
+        tools: Vec::new(),
+    }
+}
+
 pub fn detect_stack(cwd: &Path) -> DetectedStack {
     let ecosystems = crate::detect::detect_ecosystems(cwd);
     if ecosystems.is_empty() {
-        return DetectedStack {
-            languages: vec!["generic".into()],
-            frameworks: Vec::new(),
-            tools: Vec::new(),
-        };
+        default_stack()
+    } else {
+        crate::detect::ecosystems_to_stack(&ecosystems)
     }
-    crate::detect::ecosystems_to_stack(&ecosystems)
 }
 
 pub fn render_project_config(
@@ -587,9 +588,9 @@ fn canonical_project_dir(path: &Path) -> Result<PathBuf, String> {
 }
 
 fn merge_data(mut base: Value, extra: Value) -> Value {
-    if let (Some(base), Some(extra)) = (base.as_object_mut(), extra.as_object()) {
-        for (key, value) in extra {
-            base.insert(key.clone(), value.clone());
+    if let (Some(base_map), Value::Object(extra_map)) = (base.as_object_mut(), extra) {
+        for (key, value) in extra_map {
+            base_map.insert(key, value);
         }
     }
     base
@@ -645,14 +646,7 @@ mod tests {
     #[test]
     fn detect_stack_defaults_to_generic() {
         let tmp = tempfile::tempdir().unwrap();
-        assert_eq!(
-            detect_stack(tmp.path()),
-            DetectedStack {
-                languages: vec!["generic".into()],
-                frameworks: Vec::new(),
-                tools: Vec::new(),
-            }
-        );
+        assert_eq!(detect_stack(tmp.path()), default_stack());
     }
 
     #[test]
