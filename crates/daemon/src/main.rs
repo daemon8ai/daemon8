@@ -11,7 +11,7 @@ pub(crate) mod style;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(
@@ -87,9 +87,13 @@ enum ServiceSubcommand {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let command = cli
-        .command
-        .unwrap_or(Commands::Serve(cli::serve::ServeArgs::default()));
+    let command = match cli.command {
+        Some(cmd) => cmd,
+        None => {
+            Cli::command().print_help()?;
+            return Ok(());
+        }
+    };
 
     let _log_guard = match &command {
         Commands::Serve(args) => {
@@ -116,7 +120,6 @@ async fn main() -> Result<()> {
         Commands::Logs { follow } => cli::logs::cmd_logs(cli.config, follow),
         Commands::Config(sub) => cli::config_cmd::cmd_config(cli.config, sub),
         Commands::Completions { shell } => {
-            use clap::CommandFactory;
             cli::completions::cmd_completions(shell, &mut Cli::command())
         }
         Commands::Connect(args) => cli::connect::cmd_connect(cli.config, args).await,
