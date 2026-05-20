@@ -239,8 +239,122 @@ pub fn init_project(request: InitRequest) -> InitOutcome {
                 "connect this MCP session to the initialized project",
                 json!({"project_path": scope_root.display().to_string()}),
             ))
-            .with_hint("sources is empty -- after connecting, add file and conversation source entries to .daemon8/config.md for this project's logs, build output, and provider transcripts"),
+            .with_requirement("REQUIRED: open .daemon8/config.md and complete ALL steps in the markdown body before proceeding. The config is not usable until sources are populated."),
         config_path: Some(config_path),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoveRequest {
+    pub project_path: PathBuf,
+}
+
+pub fn remove_project_config(request: RemoveRequest, confirmed: bool) -> InitOutcome {
+    let requested_path = request.project_path.display().to_string();
+    let canonical = match canonical_project_dir(&request.project_path) {
+        Ok(path) => path,
+        Err(reason) => {
+            return InitOutcome {
+                envelope: AlphaEnvelope::non_success(
+                    AlphaStatus::Error,
+                    "invalid_scope",
+                    "path cannot be used as a daemon8 project",
+                    reason,
+                )
+                .with_data(json!({
+                    "requested_path": requested_path,
+                })),
+                config_path: None,
+            };
+        }
+    };
+
+    let config_dir = canonical.join(PROJECT_CONFIG_DIR);
+    let config_path = config_dir.join(PROJECT_CONFIG_FILENAME);
+    let common_data = json!({
+        "requested_path": requested_path,
+        "scope_root": canonical.display().to_string(),
+    });
+
+    if !config_dir.exists() {
+        return InitOutcome {
+            envelope: AlphaEnvelope::success(
+                "already_removed",
+                "no .daemon8/ directory",
+                common_data,
+            ),
+            config_path: None,
+        };
+    }
+
+    match std::fs::symlink_metadata(&config_dir) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            return InitOutcome {
+                envelope: AlphaEnvelope::non_success(
+                    AlphaStatus::Blocked,
+                    "unsafe_config_dir",
+                    "project config directory is a symlink",
+                    ".daemon8 must be a real project-local directory before removal",
+                )
+                .with_data(common_data),
+                config_path: Some(config_path),
+            };
+        }
+        Ok(_) => {}
+        Err(err) => {
+            return InitOutcome {
+                envelope: AlphaEnvelope::non_success(
+                    AlphaStatus::Error,
+                    "remove_failed",
+                    "failed to inspect .daemon8",
+                    format!("{}: {err}", config_dir.display()),
+                )
+                .with_data(common_data),
+                config_path: None,
+            };
+        }
+    }
+
+    if !config_path.exists() {
+        return InitOutcome {
+            envelope: AlphaEnvelope::non_success(
+                AlphaStatus::Blocked,
+                "not_initialized",
+                ".daemon8/ exists but has no config.md",
+                "manual cleanup required -- daemon8 will not delete a .daemon8 directory it did not create",
+            )
+            .with_data(common_data),
+            config_path: None,
+        };
+    }
+
+    if !confirmed {
+        return InitOutcome {
+            envelope: AlphaEnvelope::success(
+                "remove_pending",
+                "ready to remove .daemon8/",
+                common_data,
+            ),
+            config_path: Some(config_path),
+        };
+    }
+
+    if let Err(err) = std::fs::remove_dir_all(&config_dir) {
+        return InitOutcome {
+            envelope: AlphaEnvelope::non_success(
+                AlphaStatus::Error,
+                "remove_failed",
+                "failed to delete .daemon8/",
+                format!("{}: {err}", config_dir.display()),
+            )
+            .with_data(common_data),
+            config_path: None,
+        };
+    }
+
+    InitOutcome {
+        envelope: AlphaEnvelope::success("removed", ".daemon8/ deleted", common_data),
+        config_path: None,
     }
 }
 
@@ -312,7 +426,98 @@ sources: []
 ---
 # daemon8 project config
 
-daemon8 and LLM sessions read the YAML frontmatter above. Keep runtime behavior in frontmatter.
+REQUIRED: This config is incomplete. daemon8 cannot observe this project until
+the steps below are finished. Do NOT skip or defer these steps.
+
+## STEP 1: Full project audit
+
+You MUST build a complete picture of this project before adding sources.
+Do all of the following IN ORDER:
+
+1. Read the package manager files to identify ALL dependencies:
+   - package.json, Cargo.toml, composer.json, pyproject.toml, go.mod, Gemfile
+   - Lock files (package-lock.json, yarn.lock, Cargo.lock, composer.lock)
+
+2. Scan the project structure for a full understanding of scope:
+
+       tree -L 3 -I 'node_modules|vendor|target|.git|dist|build|__pycache__' .
+
+   On Windows: tree /F (then filter manually)
+
+3. Review containerization and infrastructure:
+   - Dockerfile, docker-compose.yml, .dockerignore
+   - Kubernetes manifests, terraform files, serverless configs
+
+4. Review deployment and CI/CD:
+   - .github/workflows/, .gitlab-ci.yml, Jenkinsfile
+   - Deploy scripts, Procfile, Caddyfile, nginx configs
+
+5. Review runtime configuration:
+   - .env.example, config files, environment-specific settings
+   - Database configs, queue configs, cache configs
+
+After this audit, update the stack section above with ALL languages,
+frameworks, and tools found across the ENTIRE project. The auto-detected
+values are a starting point -- they are NOT complete.
+
+## STEP 2: Add sources
+
+Using what you learned in Step 1, add file and conversation source entries
+to the sources array in the frontmatter above. You MUST investigate every
+log path, build output, and error stream the project produces. Do NOT stop
+at the obvious ones -- dig through config files, docker entrypoints, and
+supervisor configs to find ALL log outputs.
+
+daemon8 supports these log parsers. ANY log file that matches one of these
+formats MUST be added as a source:
+
+  line     -- plain text, one observation per line (catch-all)
+  json     -- structured JSON logs (one JSON object per line)
+  syslog   -- RFC 3164/5424 syslog format
+  logfmt   -- key=value structured logs (Heroku, Go stdlib)
+  clf      -- Common/Combined Log Format (Apache, nginx access logs)
+  monolog  -- PHP Monolog format (Laravel, Symfony)
+  auto     -- tries all parsers, picks the best match
+  grok     -- custom pattern (set parser_pattern field)
+
+Search for ALL of these across the entire project:
+- Application logs (storage/logs/, logs/, log/, *.log, stdout/stderr)
+- Build output and compilation logs
+- Web server access and error logs (nginx, Apache, Caddy)
+- Database query logs (slow query logs, general logs)
+- Queue and worker logs (Redis, RabbitMQ, SQS worker output)
+- Error tracking output (crash logs, exception dumps)
+- Container logs (docker-compose log paths, k8s pod logs)
+- Provider transcripts for session continuity
+
+File source format:
+
+    - id: app.logs
+      service: app
+      kind: file
+      path: "$PRJ_ROOT/logs/app.log"
+      parser: line
+
+Conversation source format:
+
+    - id: claude.sessions
+      service: claude
+      kind: conversation
+      provider: claude
+      path: "~/.claude/projects"
+
+Source fields:
+  file: id, service, kind (file), path, parser (see list above), tags
+  conversation: id, service, kind (conversation), path, provider (claude|codex|gemini), tags
+
+Use $PRJ_ROOT for project-relative paths. It resolves to the vars.PRJ_ROOT
+value in the frontmatter.
+
+## STEP 3: Confirm with the user
+
+After completing Steps 1 and 2, present the updated config to the user and
+ask: "Does this config look thorough? Are there other log files, build
+outputs, or services I should add?" Do NOT proceed without user confirmation.
 "##,
         schema = PROJECT_CONFIG_SCHEMA,
         created_at = yaml_string(&now),
@@ -551,5 +756,102 @@ mod tests {
         assert_eq!(outcome.envelope.status, AlphaStatus::Blocked);
         assert_eq!(outcome.envelope.code, "unsafe_config_file");
         assert_eq!(std::fs::read_to_string(outside).unwrap(), "do not replace");
+    }
+
+    #[test]
+    fn remove_deletes_daemon8_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        mark_project(tmp.path());
+        let outcome = init_project(InitRequest {
+            project_path: tmp.path().to_path_buf(),
+            name: Some("alpha".into()),
+            overwrite: false,
+        });
+        assert_eq!(outcome.envelope.status, AlphaStatus::Success);
+        assert!(tmp.path().join(".daemon8").exists());
+
+        let outcome = remove_project_config(
+            RemoveRequest {
+                project_path: tmp.path().to_path_buf(),
+            },
+            true,
+        );
+        assert_eq!(outcome.envelope.status, AlphaStatus::Success);
+        assert_eq!(outcome.envelope.code, "removed");
+        assert!(!tmp.path().join(".daemon8").exists());
+    }
+
+    #[test]
+    fn remove_idempotent_when_no_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        mark_project(tmp.path());
+
+        let outcome = remove_project_config(
+            RemoveRequest {
+                project_path: tmp.path().to_path_buf(),
+            },
+            true,
+        );
+        assert_eq!(outcome.envelope.status, AlphaStatus::Success);
+        assert_eq!(outcome.envelope.code, "already_removed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remove_blocks_on_symlinked_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        mark_project(tmp.path());
+        let outside = tmp.path().join("outside-daemon8");
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(outside.join("config.md"), "# fake\n").unwrap();
+        std::os::unix::fs::symlink(&outside, tmp.path().join(".daemon8")).unwrap();
+
+        let outcome = remove_project_config(
+            RemoveRequest {
+                project_path: tmp.path().to_path_buf(),
+            },
+            true,
+        );
+        assert_eq!(outcome.envelope.status, AlphaStatus::Blocked);
+        assert_eq!(outcome.envelope.code, "unsafe_config_dir");
+        assert!(outside.exists());
+    }
+
+    #[test]
+    fn remove_blocks_when_config_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        mark_project(tmp.path());
+        std::fs::create_dir(tmp.path().join(".daemon8")).unwrap();
+
+        let outcome = remove_project_config(
+            RemoveRequest {
+                project_path: tmp.path().to_path_buf(),
+            },
+            true,
+        );
+        assert_eq!(outcome.envelope.status, AlphaStatus::Blocked);
+        assert_eq!(outcome.envelope.code, "not_initialized");
+        assert!(tmp.path().join(".daemon8").exists());
+    }
+
+    #[test]
+    fn remove_pending_does_not_delete() {
+        let tmp = tempfile::tempdir().unwrap();
+        mark_project(tmp.path());
+        init_project(InitRequest {
+            project_path: tmp.path().to_path_buf(),
+            name: Some("alpha".into()),
+            overwrite: false,
+        });
+
+        let outcome = remove_project_config(
+            RemoveRequest {
+                project_path: tmp.path().to_path_buf(),
+            },
+            false,
+        );
+        assert_eq!(outcome.envelope.status, AlphaStatus::Success);
+        assert_eq!(outcome.envelope.code, "remove_pending");
+        assert!(tmp.path().join(".daemon8").join("config.md").exists());
     }
 }

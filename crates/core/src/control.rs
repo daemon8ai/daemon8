@@ -65,6 +65,8 @@ pub struct AlphaEnvelope {
     pub message: String,
     pub why: Option<String>,
     pub data: Option<Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requirements: Vec<String>,
     #[serde(default)]
     pub hints: Vec<String>,
     #[serde(default)]
@@ -79,6 +81,7 @@ impl AlphaEnvelope {
             message: message.into(),
             why: None,
             data: Some(data),
+            requirements: Vec::new(),
             hints: Vec::new(),
             next_actions: Vec::new(),
         }
@@ -96,6 +99,7 @@ impl AlphaEnvelope {
             message: message.into(),
             why: Some(why.into()),
             data: None,
+            requirements: Vec::new(),
             hints: Vec::new(),
             next_actions: Vec::new(),
         }
@@ -103,6 +107,11 @@ impl AlphaEnvelope {
 
     pub fn with_data(mut self, data: Value) -> Self {
         self.data = Some(data);
+        self
+    }
+
+    pub fn with_requirement(mut self, req: impl Into<String>) -> Self {
+        self.requirements.push(req.into());
         self
     }
 
@@ -349,8 +358,15 @@ fn connect_project(
         data["related_projects"] = json!(config.related_projects.keys().collect::<Vec<_>>());
     }
 
+    let mut envelope = AlphaEnvelope::success("connected", "connected to project", data);
+    if config.sources.is_empty() {
+        envelope = envelope.with_requirement(
+            "REQUIRED: sources is empty. Open .daemon8/config.md and complete ALL steps in the markdown body NOW. daemon8 cannot observe this project without sources.",
+        );
+    }
+
     ConnectOutcome {
-        envelope: AlphaEnvelope::success("connected", "connected to project", data),
+        envelope,
         connection: Some(connection),
     }
 }

@@ -462,15 +462,14 @@ fn cli_doctor_command_is_removed() {
 }
 
 #[test]
-fn cli_init_yes_flag_is_removed() {
+fn cli_init_yes_flag_accepted() {
     let (_tmp, work, home) = setup_dirs();
     mark_project(&work);
     let out = run_init(&work, &home, &["--yes"]);
-    assert!(!out.status.success(), "removed --yes flag must stay gone");
-    let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("unexpected argument") || stderr.contains("unrecognized"),
-        "stderr: {stderr}"
+        out.status.success(),
+        "init --yes should succeed: {}",
+        String::from_utf8_lossy(&out.stderr)
     );
 }
 

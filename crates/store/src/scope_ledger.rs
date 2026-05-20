@@ -277,6 +277,30 @@ impl ScopeLedgerStore for SurrealScopeLedgerStore {
             recent_failures,
         })
     }
+
+    async fn remove_scope_records(&self, scope_root: &str) -> Result<usize, StoreError> {
+        let sql = "
+            DELETE FROM recent_scope WHERE scope_root = $root;
+            DELETE FROM scope_session WHERE scope_root = $root;
+            DELETE FROM scope_connect_failure WHERE scope_root = $root;
+            DELETE FROM scope_ignore WHERE scope_root = $root;
+        ";
+        let mut result = self
+            .db
+            .query(sql)
+            .bind(("root", scope_root.to_string()))
+            .await
+            .map_err(|e| StoreError::Db(format!("remove scope records: {e}")))?;
+
+        let mut total = 0usize;
+        for i in 0..4 {
+            let rows: Vec<serde_json::Value> = result
+                .take(i)
+                .map_err(|e| StoreError::Db(format!("remove scope records read {i}: {e}")))?;
+            total += rows.len();
+        }
+        Ok(total)
+    }
 }
 
 impl SurrealScopeLedgerStore {

@@ -4,12 +4,13 @@
 //! `daemon8 init` -- scaffold `.daemon8/config.md`.
 
 use std::env;
-use std::path::PathBuf;
+use std::io::{self, IsTerminal, Write};
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Result, bail};
 use daemon8_core::control::{AlphaEnvelope, AlphaStatus};
-use daemon8_core::init::{InitRequest, init_project};
+use daemon8_core::init::{InitRequest, RemoveRequest, init_project, remove_project_config};
 use daemon8_store::{RecentScopeRecord, ScopeLedgerStore, SurrealStore};
 
 use crate::config;
@@ -31,13 +32,25 @@ pub struct InitArgs {
     /// Emit the common alpha JSON envelope.
     #[arg(long)]
     pub json: bool,
+
+    /// Remove `.daemon8/` from this project directory.
+    #[arg(long)]
+    pub remove: bool,
+
+    /// Skip the confirmation prompt for destructive operations.
+    #[arg(long, short = 'y')]
+    pub yes: bool,
 }
 
 pub async fn cmd_init(config_path: Option<String>, args: InitArgs) -> Result<()> {
-    let path = match args.path {
-        Some(path) => path,
+    let path = match &args.path {
+        Some(path) => path.clone(),
         None => env::current_dir()?,
     };
+
+    if args.remove {
+        return cmd_remove(config_path, &path, args.yes, args.json).await;
+    }
 
     let outcome = init_project(InitRequest {
         project_path: path,
@@ -91,6 +104,92 @@ pub async fn cmd_init(config_path: Option<String>, args: InitArgs) -> Result<()>
                 .unwrap_or(&outcome.envelope.message)
         ),
     }
+}
+
+async fn cmd_remove(
+    config_path: Option<String>,
+    project_path: &Path,
+    yes: bool,
+    json: bool,
+) -> Result<()> {
+    let request = RemoveRequest {
+        project_path: project_path.to_path_buf(),
+    };
+
+    let check = remove_project_config(request.clone(), false);
+
+    match check.envelope.code.as_str() {
+        "already_removed" => {
+            if json {
+                println!("{}", check.envelope.render());
+            } else {
+                println!("nothing to remove");
+            }
+            return Ok(());
+        }
+        "remove_pending" => {}
+        _ => {
+            if json {
+                println!("{}", check.envelope.render());
+                return Ok(());
+            }
+            println!("{}", check.envelope.message);
+            if let Some(why) = &check.envelope.why {
+                println!("{why}");
+            }
+            return Ok(());
+        }
+    }
+
+    let scope_root = envelope_data_str(&check.envelope, "scope_root")
+        .unwrap_or_else(|| project_path.display().to_string());
+
+    if !yes {
+        eprint!("Delete .daemon8/ from {scope_root}? This removes the project config. [y/N] ");
+        io::stderr().flush()?;
+        let confirmed = if io::stdin().is_terminal() {
+            let mut input = String::new();
+            io::stdin().read_line(&mut input)?;
+            input.trim().eq_ignore_ascii_case("y")
+        } else {
+            false
+        };
+        if !confirmed {
+            eprintln!("Aborted.");
+            return Ok(());
+        }
+    }
+
+    let outcome = remove_project_config(request, true);
+
+    if outcome.envelope.status == AlphaStatus::Success
+        && outcome.envelope.code == "removed"
+        && let Err(err) = cleanup_removed_scope(config_path.as_deref(), &scope_root).await
+    {
+        tracing::warn!(error = %err, "scope ledger cleanup failed");
+    }
+
+    if json {
+        println!("{}", outcome.envelope.render());
+    } else {
+        println!("{}", outcome.envelope.message);
+    }
+    Ok(())
+}
+
+async fn cleanup_removed_scope(config_path: Option<&str>, scope_root: &str) -> Result<()> {
+    let cfg = config::load(config_path)?;
+    let db_path = config::resolve_db_path(cfg.storage.path.as_deref());
+    if !db_path.exists() {
+        return Ok(());
+    }
+    let store = SurrealStore::open(&db_path).await?;
+    let ledger = store.scope_ledger_store();
+    let removed = ledger.remove_scope_records(scope_root).await?;
+    if removed > 0 {
+        tracing::debug!(removed, scope_root, "cleaned scope ledger records");
+    }
+    Ok(())
 }
 
 fn print_next_actions(envelope: &AlphaEnvelope) {

@@ -105,6 +105,14 @@ daemon8 init
 
 This writes `.daemon8/config.md`: Markdown for the agent, YAML frontmatter for daemon8. Project config is explicit on purpose. No hidden project scan, no mystery registry.
 
+To remove daemon8 from a project:
+
+```bash
+daemon8 init --remove
+```
+
+This deletes `.daemon8/` and cleans up scope ledger records. It does not affect daemon-owned state (observations, memories, debug sessions) -- use `daemon8 reset` for that.
+
 Source entries use `kind`, not `type`. The alpha source kinds are strict:
 
 ```yaml

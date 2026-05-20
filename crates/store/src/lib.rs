@@ -281,4 +281,5 @@ pub trait ScopeLedgerStore: Send + Sync {
     async fn is_scope_ignored(&self, scope_root: &str) -> Result<bool, StoreError>;
     async fn set_scope_ignored(&self, scope_root: &str) -> Result<(), StoreError>;
     async fn remove_scope_ignored(&self, scope_root: &str) -> Result<(), StoreError>;
+    async fn remove_scope_records(&self, scope_root: &str) -> Result<usize, StoreError>;
 }
