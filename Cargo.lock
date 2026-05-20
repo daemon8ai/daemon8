@@ -1405,6 +1405,7 @@ dependencies = [
  "axum",
  "daemon8-core",
  "daemon8-parse",
+ "daemon8-providers",
  "daemon8-store",
  "daemon8-types",
  "http-body-util",

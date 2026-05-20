@@ -154,6 +154,41 @@ impl AiProvider for CodexProvider {
     fn history_file(&self, home: &Path) -> Option<PathBuf> {
         Some(home.join(".codex/history.jsonl"))
     }
+    fn project_conversation_files(
+        &self,
+        home: &Path,
+        scope_root: &Path,
+        since_ms: u64,
+    ) -> Vec<PathBuf> {
+        let db_path = home.join(".codex/state_5.sqlite");
+        if !db_path.exists() {
+            return Vec::new();
+        }
+        let scope_str = scope_root.to_string_lossy();
+        let query = format!(
+            "SELECT id FROM threads WHERE cwd = '{}' AND COALESCE(updated_at_ms, updated_at * 1000) >= {} ORDER BY COALESCE(updated_at_ms, updated_at * 1000) DESC",
+            scope_str.replace('\'', "''"),
+            since_ms,
+        );
+        let Ok(output) = std::process::Command::new("sqlite3")
+            .arg(&db_path)
+            .arg(&query)
+            .output()
+        else {
+            return Vec::new();
+        };
+        if !output.status.success() {
+            return Vec::new();
+        }
+        let sessions_dir = home.join(".codex/sessions");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        stdout
+            .lines()
+            .filter(|id| !id.is_empty())
+            .filter_map(|id| find_session_file(&sessions_dir, id))
+            .collect()
+    }
+
     fn list_projects(&self, home: &Path) -> Vec<super::traits::ProjectEntry> {
         let db_path = home.join(".codex/state_5.sqlite");
         if !db_path.exists() {
@@ -257,6 +292,27 @@ impl HookProvider for CodexProvider {
         let path = self.hooks_path(scope, cwd, home);
         remove_json_hooks(&path, service.hook_marker)
     }
+}
+
+fn find_session_file(sessions_dir: &Path, id: &str) -> Option<PathBuf> {
+    let suffix = format!("-{id}.jsonl");
+    fn walk(dir: &Path, suffix: &str) -> Option<PathBuf> {
+        for entry in std::fs::read_dir(dir).ok()?.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if let Some(found) = walk(&path, suffix) {
+                    return Some(found);
+                }
+            } else if path
+                .file_name()
+                .is_some_and(|n| n.to_string_lossy().ends_with(suffix))
+            {
+                return Some(path);
+            }
+        }
+        None
+    }
+    walk(sessions_dir, &suffix)
 }
 
 fn write_codex_toml_config(
@@ -442,5 +498,32 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let entries = CodexProvider.list_projects(home.path());
         assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn find_session_file_locates_by_id() {
+        let tmp = tempdir().unwrap();
+        let day_dir = tmp.path().join("2026/05/20");
+        std::fs::create_dir_all(&day_dir).unwrap();
+        let target = day_dir.join("rollout-2026-05-20T10-00-abc123.jsonl");
+        std::fs::write(&target, b"{}").unwrap();
+
+        let found = find_session_file(tmp.path(), "abc123");
+        assert_eq!(found, Some(target));
+    }
+
+    #[test]
+    fn find_session_file_returns_none_for_missing() {
+        let tmp = tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("2026/05")).unwrap();
+        assert!(find_session_file(tmp.path(), "nonexistent").is_none());
+    }
+
+    #[test]
+    fn project_conversation_files_no_db() {
+        let home = tempdir().unwrap();
+        let files =
+            CodexProvider.project_conversation_files(home.path(), Path::new("/tmp/project"), 0);
+        assert!(files.is_empty());
     }
 }

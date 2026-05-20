@@ -1069,8 +1069,10 @@ fn conversation_instances(path: &Path) -> std::io::Result<Vec<PathBuf>> {
         return Ok(vec![path.to_path_buf()]);
     }
 
+    let cutoff_ms =
+        (current_ns() / 1_000_000).saturating_sub(daemon8_providers::CONVERSATION_RECENCY_MS);
     let mut paths = Vec::new();
-    collect_jsonl_files(path, &mut paths)?;
+    collect_jsonl_files(path, &mut paths, cutoff_ms)?;
     paths.sort();
     Ok(paths)
 }
@@ -1103,26 +1105,35 @@ fn conversation_source_covers_transcript(
     let Ok(path) = canonical_source_path(&path) else {
         return false;
     };
-    let Ok(instances) = conversation_instances(&path) else {
-        return false;
-    };
-    instances.iter().any(|instance| {
-        canonical_source_path(instance)
-            .map(|instance| transcript_path == instance)
-            .unwrap_or(false)
-    })
+    if path.is_dir() {
+        return transcript_path.starts_with(&path);
+    }
+    transcript_path == path
 }
 
-fn collect_jsonl_files(path: &Path, paths: &mut Vec<PathBuf>) -> std::io::Result<()> {
+fn collect_jsonl_files(
+    path: &Path,
+    paths: &mut Vec<PathBuf>,
+    since_ms: u64,
+) -> std::io::Result<()> {
     for entry in std::fs::read_dir(path)? {
         let entry = entry?;
         let path = entry.path();
         let file_type = entry.file_type()?;
         if file_type.is_dir() {
-            collect_jsonl_files(&path, paths)?;
+            collect_jsonl_files(&path, paths, since_ms)?;
             continue;
         }
-        if file_type.is_file() && path.extension().is_some_and(|ext| ext == "jsonl") {
+        if !(file_type.is_file() && path.extension().is_some_and(|ext| ext == "jsonl")) {
+            continue;
+        }
+        let stale = entry
+            .metadata()
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .is_some_and(|d| (d.as_millis() as u64) < since_ms);
+        if !stale {
             paths.push(path);
         }
     }

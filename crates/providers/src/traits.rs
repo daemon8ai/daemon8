@@ -122,6 +122,15 @@ pub trait AiProvider: Send + Sync + 'static {
         let _ = home;
         Vec::new()
     }
+    fn project_conversation_files(
+        &self,
+        home: &Path,
+        scope_root: &Path,
+        since_ms: u64,
+    ) -> Vec<PathBuf> {
+        let _ = (home, scope_root, since_ms);
+        Vec::new()
+    }
 }
 
 #[derive(Debug, Clone)]

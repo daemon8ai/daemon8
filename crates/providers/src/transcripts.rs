@@ -9,9 +9,8 @@ use std::time::UNIX_EPOCH;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{ALL_PROVIDERS, Provider};
+use crate::{ALL_PROVIDERS, CONVERSATION_RECENCY_MS, Provider};
 
-const MAX_TRANSCRIPT_CANDIDATES: usize = 1_000;
 const MAX_METADATA_LINES: usize = 50;
 const AMBIGUOUS_CANDIDATE_LIMIT: usize = 10;
 
@@ -84,21 +83,36 @@ pub fn resolve_transcript(
             .map(TranscriptResolution::Bound);
     }
 
-    let Some(root) = provider.as_provider().conversation_dir(input.home) else {
-        return Ok(TranscriptResolution::NotFound);
-    };
-    if !root.exists() {
-        return Ok(TranscriptResolution::NotFound);
-    }
-
-    let root = match fs::canonicalize(&root) {
-        Ok(root) => root,
-        Err(_) => return Ok(TranscriptResolution::NotFound),
-    };
     let scope_root =
         fs::canonicalize(input.scope_root).unwrap_or_else(|_| input.scope_root.to_path_buf());
-    let mut candidates = Vec::new();
-    collect_candidates(provider_id, &root, &root, &mut candidates)?;
+
+    let conversation_root = provider.as_provider().conversation_dir(input.home);
+    let files = provider.as_provider().project_conversation_files(
+        input.home,
+        &scope_root,
+        CONVERSATION_RECENCY_MS,
+    );
+
+    let files = if files.is_empty() {
+        fallback_conversation_files(conversation_root.as_deref(), CONVERSATION_RECENCY_MS)
+    } else {
+        files
+    };
+
+    let mut candidates: Vec<TranscriptCandidate> = files
+        .iter()
+        .filter_map(|path| {
+            let metadata = fs::metadata(path).ok()?;
+            let canonical = fs::canonicalize(path).ok()?;
+            candidate_from_path(
+                provider_id,
+                conversation_root.as_deref(),
+                &canonical,
+                &metadata,
+            )
+            .ok()
+        })
+        .collect();
     candidates.sort_by(|a, b| {
         b.modified_at_ms
             .cmp(&a.modified_at_ms)
@@ -136,6 +150,45 @@ pub fn resolve_transcript(
     }
 
     Ok(TranscriptResolution::NotFound)
+}
+
+const FALLBACK_MAX_FILES: usize = 50;
+
+fn fallback_conversation_files(root: Option<&Path>, since_ms: u64) -> Vec<PathBuf> {
+    let Some(root) = root else {
+        return Vec::new();
+    };
+    if !root.is_dir() {
+        return Vec::new();
+    }
+    let mut files = Vec::new();
+    walk_jsonl(root, &mut files, since_ms);
+    files
+}
+
+fn walk_jsonl(dir: &Path, files: &mut Vec<PathBuf>, since_ms: u64) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if files.len() >= FALLBACK_MAX_FILES {
+            return;
+        }
+        let path = entry.path();
+        if path.is_dir() {
+            walk_jsonl(&path, files, since_ms);
+        } else if path.extension().is_some_and(|ext| ext == "jsonl") {
+            let dominated = entry
+                .metadata()
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                .is_some_and(|d| (d.as_millis() as u64) < since_ms);
+            if !dominated {
+                files.push(path);
+            }
+        }
+    }
 }
 
 pub fn normalize_provider_id(raw: &str) -> Result<&'static str, TranscriptResolutionError> {
@@ -240,62 +293,6 @@ fn explicit_transcript(
         });
     }
     Ok(candidate)
-}
-
-fn collect_candidates(
-    provider: &str,
-    root: &Path,
-    dir: &Path,
-    candidates: &mut Vec<TranscriptCandidate>,
-) -> Result<(), TranscriptResolutionError> {
-    if candidates.len() >= MAX_TRANSCRIPT_CANDIDATES {
-        return Ok(());
-    }
-
-    let entries = match fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(err) => {
-            return Err(TranscriptResolutionError {
-                code: TranscriptResolutionErrorCode::TranscriptUnreadable,
-                message: format!(
-                    "failed to read transcript directory {}: {err}",
-                    dir.display()
-                ),
-            });
-        }
-    };
-
-    for entry in entries.flatten() {
-        if candidates.len() >= MAX_TRANSCRIPT_CANDIDATES {
-            return Ok(());
-        }
-        let path = entry.path();
-        let Ok(file_type) = entry.file_type() else {
-            continue;
-        };
-        if file_type.is_dir() {
-            collect_candidates(provider, root, &path, candidates)?;
-            continue;
-        }
-        if !file_type.is_file() || !provider_path_matches(provider, root, &path) {
-            continue;
-        }
-        let Ok(metadata) = entry.metadata() else {
-            continue;
-        };
-        let Ok(canonical) = fs::canonicalize(&path) else {
-            continue;
-        };
-        if sniff_provider(&canonical).as_deref() != Some(provider) {
-            continue;
-        }
-        let Ok(candidate) = candidate_from_path(provider, Some(root), &canonical, &metadata) else {
-            continue;
-        };
-        candidates.push(candidate);
-    }
-
-    Ok(())
 }
 
 fn candidate_from_path(

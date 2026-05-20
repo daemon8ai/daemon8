@@ -203,6 +203,17 @@ impl AiProvider for ClaudeCodeProvider {
     fn memory_dir(&self, home: &Path) -> Option<PathBuf> {
         Some(home.join(".claude/projects"))
     }
+    fn project_conversation_files(
+        &self,
+        home: &Path,
+        scope_root: &Path,
+        since_ms: u64,
+    ) -> Vec<PathBuf> {
+        let slug = encode_project_slug(scope_root);
+        let dir = home.join(".claude/projects").join(&slug);
+        jsonl_files_since(&dir, since_ms)
+    }
+
     fn list_projects(&self, home: &Path) -> Vec<super::traits::ProjectEntry> {
         let projects_dir = home.join(".claude/projects");
         let Ok(entries) = std::fs::read_dir(&projects_dir) else {
@@ -230,6 +241,10 @@ impl AiProvider for ClaudeCodeProvider {
     }
 }
 
+fn encode_project_slug(path: &Path) -> String {
+    path.to_string_lossy().replace('/', "-")
+}
+
 fn decode_project_slug(slug: &str) -> Option<PathBuf> {
     if !slug.starts_with('-') {
         return None;
@@ -239,20 +254,39 @@ fn decode_project_slug(slug: &str) -> Option<PathBuf> {
     if path.is_absolute() { Some(path) } else { None }
 }
 
+fn mtime_ms(entry: &std::fs::DirEntry) -> Option<u64> {
+    entry
+        .metadata()
+        .ok()?
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_millis() as u64)
+}
+
+pub(crate) fn jsonl_files_since(dir: &Path, since_ms: u64) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut files: Vec<(u64, PathBuf)> = entries
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "jsonl"))
+        .filter_map(|e| {
+            let ms = mtime_ms(&e)?;
+            (ms >= since_ms).then(|| (ms, e.path()))
+        })
+        .collect();
+    files.sort_by(|a, b| b.0.cmp(&a.0));
+    files.into_iter().map(|(_, p)| p).collect()
+}
+
 fn newest_jsonl_mtime_ms(dir: &Path) -> Option<u64> {
     std::fs::read_dir(dir)
         .ok()?
         .filter_map(|e| e.ok())
         .filter(|e| e.path().extension().is_some_and(|ext| ext == "jsonl"))
-        .filter_map(|e| {
-            e.metadata()
-                .ok()?
-                .modified()
-                .ok()?
-                .duration_since(std::time::UNIX_EPOCH)
-                .ok()
-                .map(|d| d.as_millis() as u64)
-        })
+        .filter_map(|e| mtime_ms(&e))
         .max()
 }
 
@@ -409,5 +443,59 @@ mod tests {
         let provider = ClaudeCodeProvider;
         let entries = provider.list_projects(home.path());
         assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn project_conversation_files_returns_recent() {
+        let home = tempfile::tempdir().unwrap();
+        let scope_root = PathBuf::from("/workspace/daemon8");
+        let slug = encode_project_slug(&scope_root);
+        let dir = home.path().join(".claude/projects").join(&slug);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        std::fs::write(dir.join("session1.jsonl"), b"{}").unwrap();
+        std::fs::write(dir.join("session2.jsonl"), b"{}").unwrap();
+        std::fs::write(dir.join("not-jsonl.txt"), b"{}").unwrap();
+
+        let provider = ClaudeCodeProvider;
+        let files = provider.project_conversation_files(home.path(), &scope_root, 0);
+        assert_eq!(files.len(), 2);
+        assert!(files.iter().all(|f| f.extension().unwrap() == "jsonl"));
+    }
+
+    #[test]
+    fn project_conversation_files_respects_cutoff() {
+        let home = tempfile::tempdir().unwrap();
+        let scope_root = PathBuf::from("/workspace/daemon8");
+        let slug = encode_project_slug(&scope_root);
+        let dir = home.path().join(".claude/projects").join(&slug);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        std::fs::write(dir.join("session.jsonl"), b"{}").unwrap();
+
+        let future_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64
+            + 60_000;
+
+        let provider = ClaudeCodeProvider;
+        let files = provider.project_conversation_files(home.path(), &scope_root, future_ms);
+        assert!(files.is_empty());
+    }
+
+    #[test]
+    fn project_conversation_files_unknown_scope() {
+        let home = tempfile::tempdir().unwrap();
+        let provider = ClaudeCodeProvider;
+        let files = provider.project_conversation_files(home.path(), Path::new("/nonexistent"), 0);
+        assert!(files.is_empty());
+    }
+
+    #[test]
+    fn encode_decode_slug_roundtrip() {
+        let path = PathBuf::from("/Users/jhavens/Code/Me/Rust/daemon8");
+        let slug = encode_project_slug(&path);
+        assert_eq!(decode_project_slug(&slug), Some(path));
     }
 }

@@ -560,11 +560,11 @@ Conversation source format:
       service: claude
       kind: conversation
       provider: claude
-      path: "~/.claude/projects"
+      path: "~/.claude/projects"   # informational; provider resolves files via metadata
 
 Source fields:
   file: id, service, kind (file), path, parser (see list above), tags
-  conversation: id, service, kind (conversation), path, provider (claude|codex|gemini), tags
+  conversation: id, service, kind (conversation), provider (claude|codex|gemini), path (informational when provider is set), tags
 
 Use $PRJ_ROOT for project-relative paths. It resolves to the vars.PRJ_ROOT
 value in the frontmatter.

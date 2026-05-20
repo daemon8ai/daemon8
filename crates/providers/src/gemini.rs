@@ -156,6 +156,19 @@ impl AiProvider for GeminiProvider {
     fn session_id_from_env(&self) -> Option<String> {
         std::env::var("GEMINI_SESSION_ID").ok()
     }
+    fn project_conversation_files(
+        &self,
+        home: &Path,
+        scope_root: &Path,
+        since_ms: u64,
+    ) -> Vec<PathBuf> {
+        let Some(slug) = read_gemini_project_slug(home, scope_root) else {
+            return Vec::new();
+        };
+        let chats_dir = home.join(".gemini/tmp").join(&slug).join("chats");
+        super::claude::jsonl_files_since(&chats_dir, since_ms)
+    }
+
     fn list_projects(&self, home: &Path) -> Vec<super::traits::ProjectEntry> {
         let projects_path = home.join(".gemini/projects.json");
         let Ok(content) = std::fs::read_to_string(&projects_path) else {
@@ -255,6 +268,17 @@ impl HookProvider for GeminiProvider {
         let path = self.hooks_path(scope, cwd, home);
         remove_json_hooks(&path, service.hook_marker)
     }
+}
+
+fn read_gemini_project_slug(home: &Path, scope_root: &Path) -> Option<String> {
+    let content = std::fs::read_to_string(home.join(".gemini/projects.json")).ok()?;
+    let root: serde_json::Value = serde_json::from_str(&content).ok()?;
+    let projects = root.get("projects")?.as_object()?;
+    let scope_str = scope_root.to_string_lossy();
+    projects
+        .get(scope_str.as_ref())
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
 }
 
 #[cfg(test)]
@@ -400,5 +424,42 @@ mod tests {
 
         let entries = GeminiProvider.list_projects(home.path());
         assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn project_conversation_files_returns_recent() {
+        let home = tempdir().unwrap();
+        let gemini_dir = home.path().join(".gemini");
+        std::fs::create_dir_all(&gemini_dir).unwrap();
+        std::fs::write(
+            gemini_dir.join("projects.json"),
+            r#"{"projects":{"/tmp/myproject":"myslug"}}"#,
+        )
+        .unwrap();
+
+        let chats_dir = home.path().join(".gemini/tmp/myslug/chats");
+        std::fs::create_dir_all(&chats_dir).unwrap();
+        std::fs::write(chats_dir.join("session-abc.jsonl"), b"{}").unwrap();
+        std::fs::write(chats_dir.join("session-def.jsonl"), b"{}").unwrap();
+
+        let files =
+            GeminiProvider.project_conversation_files(home.path(), Path::new("/tmp/myproject"), 0);
+        assert_eq!(files.len(), 2);
+    }
+
+    #[test]
+    fn project_conversation_files_unknown_scope() {
+        let home = tempdir().unwrap();
+        let gemini_dir = home.path().join(".gemini");
+        std::fs::create_dir_all(&gemini_dir).unwrap();
+        std::fs::write(
+            gemini_dir.join("projects.json"),
+            r#"{"projects":{"/tmp/myproject":"myslug"}}"#,
+        )
+        .unwrap();
+
+        let files =
+            GeminiProvider.project_conversation_files(home.path(), Path::new("/tmp/unknown"), 0);
+        assert!(files.is_empty());
     }
 }

@@ -15,6 +15,8 @@ pub use traits::{
     ProjectEntry,
 };
 
+pub const CONVERSATION_RECENCY_MS: u64 = 12 * 60 * 60 * 1000;
+
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
