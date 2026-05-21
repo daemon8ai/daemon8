@@ -392,14 +392,15 @@ fn prepend_instruction_block(path: &Path) -> io::Result<InstructionWrite> {
 fn print_install_outro(configured_providers: &[ProviderSetupTarget], instruction_setup: bool) {
     println!();
     println!("Important note:");
-    println!("  daemon8 is self-guided from here. Your manual setup should be done now.");
-    println!("  Start a fresh AI CLI/REPL session and confirm daemon8 appears in its MCP list.");
+    println!("  daemon8 is self-guided from here. If the steps above completed without errors,");
+    println!("  your manual setup should be done. Start a fresh AI CLI/REPL session and confirm");
+    println!("  daemon8 appears in its MCP list.");
     println!(
         "  The agent should call daemon8_connect first; daemon8 will guide daemon8_init only when a project needs it."
     );
-    println!(
-        "  No browser extension is needed. For Claude Code, use daemon8 Chromium tools instead of Claude for Chrome."
-    );
+    println!("  No browser extension is needed.");
+    println!("  For Claude Code users, be sure to disable Claude for Chrome and explicitly tell");
+    println!("  CLAUDE.md to use daemon8 instead of Claude for Chrome.");
 
     if configured_providers.is_empty() {
         println!("  No provider MCP settings were configured during this install.");
