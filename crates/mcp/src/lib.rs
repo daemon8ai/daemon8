@@ -2322,7 +2322,6 @@ impl DaemonMcp {
     }
 
     async fn link_conversation_inner(&self, params: LinkConversationParams) -> String {
-        let home = self.home_dir.clone();
         let mut connection_guard = self.connection.lock().expect("connection mutex poisoned");
         let Some(connection) = connection_guard.as_mut() else {
             return self.err("connect_required", "no active connection", None, None);
@@ -2335,7 +2334,7 @@ impl DaemonMcp {
                 .transcript_path
                 .as_ref()
                 .map(|p| Path::new(p.as_str())),
-            home: &home,
+            home: &self.home_dir,
         };
 
         match link_conversation(connection, request) {

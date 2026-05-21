@@ -465,6 +465,7 @@ fn current_tool_policy_is_explicit() {
         "create_checkpoint",
         "resolve_debug_session",
         "end_debug_session",
+        "link_conversation",
     ] {
         assert_eq!(tool_policy(tool), Some(ToolPolicy::ProjectOnly), "{tool}");
     }

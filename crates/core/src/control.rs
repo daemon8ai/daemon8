@@ -693,18 +693,12 @@ pub fn link_conversation(
         )));
     };
 
-    if connection
+    if let Some(existing) = connection
         .linked_transcripts
         .iter()
-        .any(|lt| lt.path == path)
+        .find(|lt| lt.path == path)
     {
-        let existing = connection
-            .linked_transcripts
-            .iter()
-            .find(|lt| lt.path == path)
-            .unwrap()
-            .clone();
-        return Ok(existing);
+        return Ok(existing.clone());
     }
 
     let now = humantime::format_rfc3339(SystemTime::now()).to_string();
@@ -945,21 +939,33 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let project = tmp.path().join("project");
         let home = tmp.path().join("home");
-        let sessions = home.join(".codex/sessions");
         std::fs::create_dir_all(&project).unwrap();
-        std::fs::create_dir_all(&sessions).unwrap();
         std::fs::write(project.join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
         write_project_config(&project);
-        let transcript = sessions.join("one.jsonl");
-        write_codex_session(&transcript, "s1", &project);
+
+        let canonical_project = std::fs::canonicalize(&project).unwrap();
+        let slug = canonical_project.to_string_lossy().replace('/', "-");
+        let claude_dir = home.join(".claude/projects").join(&slug);
+        std::fs::create_dir_all(&claude_dir).unwrap();
+
+        let primary = claude_dir.join("primary.jsonl");
+        let other = claude_dir.join("other.jsonl");
+        let content = r#"{"type":"permission-mode","permissionMode":"auto","sessionId":"test"}"#;
+        std::fs::write(&primary, content).unwrap();
+        std::fs::write(&other, content).unwrap();
 
         let mut req = request(&project);
-        req.transcript_path = Some(transcript.clone());
-        let outcome = resolve_connect_transcript(connect(req), Some(&transcript), &home);
+        req.provider = "claude".into();
+        req.transcript_path = Some(primary.clone());
+        let outcome = resolve_connect_transcript(connect(req), Some(&primary), &home);
 
         let data = outcome.envelope.data.unwrap();
         let available = data["conversations"]["available"].as_array().unwrap();
-        let bound_path = std::fs::canonicalize(&transcript)
+        assert!(
+            !available.is_empty(),
+            "available should contain non-primary transcripts"
+        );
+        let bound_path = std::fs::canonicalize(&primary)
             .unwrap()
             .display()
             .to_string();
@@ -1114,5 +1120,6 @@ mod tests {
         assert!(result.is_err());
         let envelope = result.unwrap_err();
         assert_eq!(envelope.status, AlphaStatus::Error);
+        assert_eq!(envelope.code, "missing_params");
     }
 }

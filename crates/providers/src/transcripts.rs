@@ -158,6 +158,8 @@ pub fn discover_project_conversations(
     exclude_path: Option<&str>,
 ) -> Vec<TranscriptCandidate> {
     let scope_root = fs::canonicalize(scope_root).unwrap_or_else(|_| scope_root.to_path_buf());
+    let exclude_canonical =
+        exclude_path.and_then(|e| fs::canonicalize(e).ok().map(|p| p.display().to_string()));
 
     let mut candidates = Vec::new();
     for provider in ALL_PROVIDERS {
@@ -171,7 +173,10 @@ pub fn discover_project_conversations(
                 continue;
             };
             let canonical = fs::canonicalize(path).unwrap_or_else(|_| path.clone());
-            if exclude_path.is_some_and(|e| canonical.display().to_string() == e) {
+            if exclude_canonical
+                .as_ref()
+                .is_some_and(|e| canonical.display().to_string() == *e)
+            {
                 continue;
             }
             if let Ok(candidate) = candidate_from_path(
@@ -924,11 +929,7 @@ mod tests {
         write_claude_transcript(&home, &project, "session-b.jsonl");
 
         let candidates = discover_project_conversations(&project, &home, None);
-        assert!(
-            candidates.len() >= 2,
-            "expected at least 2 candidates, got {}",
-            candidates.len()
-        );
+        assert_eq!(candidates.len(), 2, "expected exactly 2 candidates");
         assert!(candidates.iter().all(|c| c.provider == "claude"));
     }
 

@@ -437,8 +437,7 @@ impl ConfiguredSourceTrigger {
             ..Default::default()
         };
         let source_id = if active.linked {
-            use std::hash::{Hash, Hasher};
-            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            let mut hasher = DefaultHasher::new();
             active.path.hash(&mut hasher);
             let hash = format!("{:x}", hasher.finish());
             format!("linked.transcript.{}.{}", active.provider, &hash[..8])
