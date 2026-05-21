@@ -2,16 +2,16 @@
 // Copyright (c) 2026 Havy.tech, LLC
 
 use std::future::Future;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use daemon8_core::control::{
-    AlphaEnvelope, AlphaStatus, ConnectRequest, NextAction, ScopeMode, SessionConnection,
-    connect as connect_scope, normalize_provider_for_connect, resolve_connect_transcript,
-    status_envelope,
+    AlphaEnvelope, AlphaStatus, ConnectRequest, LinkConversationRequest, NextAction, ScopeMode,
+    SessionConnection, connect as connect_scope, link_conversation, normalize_provider_for_connect,
+    resolve_connect_transcript, status_envelope,
 };
 use daemon8_core::init::{InitRequest, init_project};
 use daemon8_ingest::source_sync::{
@@ -179,6 +179,22 @@ pub struct Daemon8InitParams {
         description = "When true, mark this project as ignored instead of initializing it. daemon8_connect will skip setup_required for ignored projects. Call again with ignore=false to re-enable."
     )]
     pub ignore: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct LinkConversationParams {
+    #[schemars(
+        description = "AI provider id (claude, codex, gemini) or alias (claude-code, codex-cli)."
+    )]
+    pub provider: String,
+
+    #[schemars(
+        description = "Project path for transcript discovery. Uses the most recent transcript found."
+    )]
+    pub project_path: Option<String>,
+
+    #[schemars(description = "Absolute path to a specific transcript file to link directly.")]
+    pub transcript_path: Option<String>,
 }
 
 pub use daemon8_types::DebugAction;
@@ -1071,6 +1087,18 @@ impl DaemonMcp {
     #[tool(name = "list_connections")]
     async fn list_connections(&self) -> String {
         wrap_inner_result(self, &self.connections_json().await)
+    }
+
+    #[doc = include_str!("../tool_descriptions/link_conversation.md")]
+    #[tool(name = "link_conversation")]
+    async fn link_conversation_tool(
+        &self,
+        Parameters(params): Parameters<LinkConversationParams>,
+    ) -> String {
+        if let Some(preflight) = self.connect_preflight("link_conversation") {
+            return preflight;
+        }
+        self.link_conversation_inner(params).await
     }
 
     #[doc = include_str!("../tool_descriptions/write_to_live_feed.md")]
@@ -2098,31 +2126,35 @@ impl DaemonMcp {
 
     async fn trigger_project_sources(&self) -> Option<SourceSyncReport> {
         let trigger = self.source_trigger.as_ref()?;
-        let (scope_root, active_transcript) = {
+        let (scope_root, active_transcripts) = {
             let connection = self.connection.lock().expect("connection mutex poisoned");
             let connection = connection.as_ref()?;
             if connection.mode != ScopeMode::Project {
                 return None;
             }
-            let active_transcript =
-                connection
-                    .transcript_path
-                    .as_ref()
-                    .map(|path| ActiveTranscriptSource {
-                        provider: connection.provider.clone(),
-                        path: PathBuf::from(path),
-                    });
-            (
-                PathBuf::from(connection.scope_root.as_ref()?),
-                active_transcript,
-            )
+            let mut transcripts = Vec::new();
+            if let Some(path) = &connection.transcript_path {
+                transcripts.push(ActiveTranscriptSource {
+                    provider: connection.provider.clone(),
+                    path: PathBuf::from(path),
+                    linked: false,
+                });
+            }
+            for lt in &connection.linked_transcripts {
+                transcripts.push(ActiveTranscriptSource {
+                    provider: lt.provider.clone(),
+                    path: PathBuf::from(&lt.path),
+                    linked: true,
+                });
+            }
+            (PathBuf::from(connection.scope_root.as_ref()?), transcripts)
         };
 
         Some(
             trigger
                 .trigger_sources(SourceTriggerRequest {
                     scope_root,
-                    active_transcript,
+                    active_transcripts,
                 })
                 .await,
         )
@@ -2241,6 +2273,7 @@ pub const TOOL_POLICY_TABLE: &[(&str, ToolPolicy)] = &[
     ("create_checkpoint", ToolPolicy::ProjectOnly),
     ("resolve_debug_session", ToolPolicy::ProjectOnly),
     ("end_debug_session", ToolPolicy::ProjectOnly),
+    ("link_conversation", ToolPolicy::ProjectOnly),
 ];
 
 pub fn tool_policy(tool: &str) -> Option<ToolPolicy> {
@@ -2280,6 +2313,32 @@ impl DaemonMcp {
                     None,
                 )
             }
+        }
+    }
+
+    async fn link_conversation_inner(&self, params: LinkConversationParams) -> String {
+        let home = self.home_dir.clone();
+        let mut connection_guard = self.connection.lock().expect("connection mutex poisoned");
+        let Some(connection) = connection_guard.as_mut() else {
+            return self.err("connect_required", "no active connection", None, None);
+        };
+
+        let request = LinkConversationRequest {
+            provider: &params.provider,
+            project_path: params.project_path.as_ref().map(|p| Path::new(p.as_str())),
+            transcript_path: params
+                .transcript_path
+                .as_ref()
+                .map(|p| Path::new(p.as_str())),
+            home: &home,
+        };
+
+        match link_conversation(connection, request) {
+            Ok(linked) => {
+                let data = serde_json::to_value(&linked).unwrap_or_default();
+                self.ok(data)
+            }
+            Err(envelope) => envelope.render(),
         }
     }
 

@@ -194,20 +194,20 @@ async fn trigger_project_sources(
         hash_cache: ObservationHashCache::new(),
     })));
     let trigger = ConfiguredSourceTrigger::new(Arc::new(surreal_store.cursor_store()), writer);
-    let active_transcript =
-        connection
-            .transcript_path
-            .as_ref()
-            .map(|path| ActiveTranscriptSource {
-                provider: connection.provider.clone(),
-                path: PathBuf::from(path),
-            });
+    let mut active_transcripts = Vec::new();
+    if let Some(path) = &connection.transcript_path {
+        active_transcripts.push(ActiveTranscriptSource {
+            provider: connection.provider.clone(),
+            path: PathBuf::from(path),
+            linked: false,
+        });
+    }
 
     Ok(Some(
         trigger
             .trigger_sources(SourceTriggerRequest {
                 scope_root: PathBuf::from(scope_root),
-                active_transcript,
+                active_transcripts,
             })
             .await,
     ))

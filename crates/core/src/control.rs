@@ -2,11 +2,13 @@
 // Copyright (c) 2026 Havy.tech, LLC
 
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use daemon8_providers::transcripts::{
     TranscriptCandidate, TranscriptResolution, TranscriptResolver, discover_project_conversations,
     normalize_provider_id, resolve_transcript,
 };
+use daemon8_providers::{CONVERSATION_RECENCY_MS, Provider};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -139,6 +141,14 @@ pub fn status_envelope(data: Value) -> AlphaEnvelope {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LinkedTranscript {
+    pub provider: String,
+    pub path: String,
+    pub scope_root: String,
+    pub linked_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionConnection {
     pub session_id: String,
     pub mode: ScopeMode,
@@ -151,6 +161,8 @@ pub struct SessionConnection {
     pub transcript_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub linked_transcripts: Vec<LinkedTranscript>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -251,6 +263,7 @@ pub fn connect(request: ConnectRequest) -> ConnectOutcome {
                     .unwrap_or_else(|| format!("{provider}-agent")),
                 transcript_path: None,
                 project_id: None,
+                linked_transcripts: Vec::new(),
             };
             ConnectOutcome {
                 envelope: AlphaEnvelope::success(
@@ -349,6 +362,7 @@ fn connect_project(
             .transcript_path
             .map(|path| path.display().to_string()),
         project_id: Some(project_id),
+        linked_transcripts: Vec::new(),
     };
     let mut data = serde_json::to_value(&connection).unwrap_or(Value::Null);
     data["project_name"] = json!(config.project.name);
@@ -580,6 +594,121 @@ fn is_project_marker_dir(path: &Path) -> bool {
         || path.join("bin/console").exists()
 }
 
+pub struct LinkConversationRequest<'a> {
+    pub provider: &'a str,
+    pub project_path: Option<&'a Path>,
+    pub transcript_path: Option<&'a Path>,
+    pub home: &'a Path,
+}
+
+pub fn link_conversation(
+    connection: &mut SessionConnection,
+    request: LinkConversationRequest<'_>,
+) -> Result<LinkedTranscript, Box<AlphaEnvelope>> {
+    let provider_id = normalize_provider_id(request.provider).map_err(|err| {
+        Box::new(AlphaEnvelope::non_success(
+            AlphaStatus::Error,
+            "invalid_provider",
+            &err.message,
+            err.message.clone(),
+        ))
+    })?;
+
+    let scope_root = connection.scope_root.as_deref().ok_or_else(|| {
+        Box::new(AlphaEnvelope::non_success(
+            AlphaStatus::Error,
+            "no_scope_root",
+            "no project scope root in current connection",
+            "link_conversation requires a project-scoped connection with a scope_root",
+        ))
+    })?;
+
+    let (path, resolved_scope) = if let Some(tp) = request.transcript_path {
+        let canonical = std::fs::canonicalize(tp).map_err(|err| {
+            Box::new(AlphaEnvelope::non_success(
+                AlphaStatus::Error,
+                "transcript_unreadable",
+                "transcript path cannot be read",
+                format!("{}: {err}", tp.display()),
+            ))
+        })?;
+        if !canonical.is_file() {
+            return Err(Box::new(AlphaEnvelope::non_success(
+                AlphaStatus::Error,
+                "transcript_not_file",
+                "transcript path is not a file",
+                format!("{} is not a file", canonical.display()),
+            )));
+        }
+        let link_scope = request
+            .project_path
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| scope_root.to_string());
+        (canonical.display().to_string(), link_scope)
+    } else if let Some(pp) = request.project_path {
+        let canonical_scope = std::fs::canonicalize(pp).unwrap_or_else(|_| pp.to_path_buf());
+        let provider_enum = Provider::from_id_or_alias(provider_id).ok_or_else(|| {
+            Box::new(AlphaEnvelope::non_success(
+                AlphaStatus::Error,
+                "invalid_provider",
+                format!("unknown provider '{provider_id}'"),
+                format!("cannot resolve provider '{provider_id}' for discovery"),
+            ))
+        })?;
+        let ai = provider_enum.as_provider();
+        let files =
+            ai.project_conversation_files(request.home, &canonical_scope, CONVERSATION_RECENCY_MS);
+        let most_recent = files.into_iter().next();
+        let file = most_recent.ok_or_else(|| {
+            Box::new(AlphaEnvelope::non_success(
+                AlphaStatus::Error,
+                "no_transcripts_found",
+                "no recent transcripts found for provider and project path",
+                format!(
+                    "no {provider_id} transcripts found under {}",
+                    canonical_scope.display()
+                ),
+            ))
+        })?;
+        let canonical = std::fs::canonicalize(&file).unwrap_or(file);
+        (
+            canonical.display().to_string(),
+            canonical_scope.display().to_string(),
+        )
+    } else {
+        return Err(Box::new(AlphaEnvelope::non_success(
+            AlphaStatus::Error,
+            "missing_params",
+            "either project_path or transcript_path is required",
+            "provide project_path to discover transcripts, or transcript_path to link directly",
+        )));
+    };
+
+    if connection
+        .linked_transcripts
+        .iter()
+        .any(|lt| lt.path == path)
+    {
+        let existing = connection
+            .linked_transcripts
+            .iter()
+            .find(|lt| lt.path == path)
+            .unwrap()
+            .clone();
+        return Ok(existing);
+    }
+
+    let now = humantime::format_rfc3339(SystemTime::now()).to_string();
+    let linked = LinkedTranscript {
+        provider: provider_id.to_string(),
+        path,
+        scope_root: resolved_scope,
+        linked_at: now,
+    };
+    connection.linked_transcripts.push(linked.clone());
+    Ok(linked)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -807,5 +936,117 @@ mod tests {
             ScopeCandidate::Project(root) => assert_eq!(root, dir.path()),
             ScopeCandidate::General(_) => panic!("project with .git should classify as project"),
         }
+    }
+
+    fn test_connection(scope_root: &Path) -> SessionConnection {
+        SessionConnection {
+            session_id: "mcp-1".into(),
+            mode: ScopeMode::Project,
+            requested_path: scope_root.display().to_string(),
+            scope_root: Some(scope_root.display().to_string()),
+            provider: "claude".into(),
+            agent_name: "claude-agent".into(),
+            transcript_path: None,
+            project_id: Some("test-project".into()),
+            linked_transcripts: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn link_conversation_adds_to_linked_transcripts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let transcript = tmp.path().join("session.jsonl");
+        std::fs::write(&transcript, "{}").unwrap();
+        let mut conn = test_connection(tmp.path());
+
+        let result = link_conversation(
+            &mut conn,
+            LinkConversationRequest {
+                provider: "codex",
+                project_path: None,
+                transcript_path: Some(&transcript),
+                home: tmp.path(),
+            },
+        );
+
+        let linked = result.unwrap();
+        assert_eq!(linked.provider, "codex");
+        assert_eq!(conn.linked_transcripts.len(), 1);
+        assert_eq!(conn.linked_transcripts[0].provider, "codex");
+    }
+
+    #[test]
+    fn link_conversation_idempotent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let transcript = tmp.path().join("session.jsonl");
+        std::fs::write(&transcript, "{}").unwrap();
+        let mut conn = test_connection(tmp.path());
+
+        let req = || LinkConversationRequest {
+            provider: "codex",
+            project_path: None,
+            transcript_path: Some(transcript.as_path()),
+            home: tmp.path(),
+        };
+
+        let first = link_conversation(&mut conn, req()).unwrap();
+        let second = link_conversation(&mut conn, req()).unwrap();
+
+        assert_eq!(first.path, second.path);
+        assert_eq!(conn.linked_transcripts.len(), 1);
+    }
+
+    #[test]
+    fn link_conversation_discovers_via_project_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("myproject");
+        let home = tmp.path().join("home");
+        std::fs::create_dir_all(&project).unwrap();
+
+        let canonical = std::fs::canonicalize(&project).unwrap();
+        let slug = canonical.to_string_lossy().replace('/', "-");
+        let dir = home.join(".claude/projects").join(&slug);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("session.jsonl"),
+            r#"{"type":"permission-mode","permissionMode":"auto","sessionId":"s1"}"#,
+        )
+        .unwrap();
+
+        let mut conn = test_connection(&project);
+
+        let result = link_conversation(
+            &mut conn,
+            LinkConversationRequest {
+                provider: "claude",
+                project_path: Some(&project),
+                transcript_path: None,
+                home: &home,
+            },
+        );
+
+        let linked = result.unwrap();
+        assert_eq!(linked.provider, "claude");
+        assert_eq!(conn.linked_transcripts.len(), 1);
+    }
+
+    #[test]
+    fn link_conversation_missing_params_errors() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut conn = test_connection(tmp.path());
+
+        let result = link_conversation(
+            &mut conn,
+            LinkConversationRequest {
+                provider: "codex",
+                project_path: None,
+                transcript_path: None,
+                home: tmp.path(),
+            },
+        );
+
+        assert!(result.is_err());
+        let envelope = result.unwrap_err();
+        assert_eq!(envelope.status, AlphaStatus::Error);
     }
 }

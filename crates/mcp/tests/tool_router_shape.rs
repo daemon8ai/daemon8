@@ -18,12 +18,13 @@ use daemon8_types::{Filter, Observation};
 use rmcp::ServiceExt as _;
 use tokio_util::sync::CancellationToken;
 
-const EXPECTED_TOOLS: [&str; 13] = [
+const EXPECTED_TOOLS: [&str; 14] = [
     "read_live_feed",
     "daemon8_connect",
     "daemon8_init",
     "daemon8_status",
     "list_connections",
+    "link_conversation",
     "write_to_live_feed",
     "watch_live_feed",
     "issue_command",

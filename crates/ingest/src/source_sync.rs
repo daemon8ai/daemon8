@@ -80,14 +80,14 @@ pub struct SourceSyncFailure {
 #[derive(Debug, Clone)]
 pub struct SourceTriggerRequest {
     pub scope_root: PathBuf,
-    pub active_transcript: Option<ActiveTranscriptSource>,
+    pub active_transcripts: Vec<ActiveTranscriptSource>,
 }
 
 impl SourceTriggerRequest {
     pub fn project(scope_root: PathBuf) -> Self {
         Self {
             scope_root,
-            active_transcript: None,
+            active_transcripts: Vec::new(),
         }
     }
 }
@@ -96,6 +96,7 @@ impl SourceTriggerRequest {
 pub struct ActiveTranscriptSource {
     pub provider: String,
     pub path: PathBuf,
+    pub linked: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -151,10 +152,9 @@ impl SourceTrigger for ConfiguredSourceTrigger {
         };
 
         let derived_tags = config.derived_tags();
-        let active_transcript = request.active_transcript;
-        let active_transcript_path = active_transcript
-            .as_ref()
-            .and_then(|active| canonical_source_path(&active.path).ok());
+        let active_transcripts = request.active_transcripts;
+        let primary = active_transcripts.first();
+        let primary_path = primary.and_then(|a| canonical_source_path(&a.path).ok());
         let mut report = SourceSyncReport::default();
         for source in &config.sources {
             let source_report = match source {
@@ -163,8 +163,8 @@ impl SourceTrigger for ConfiguredSourceTrigger {
                         .await
                 }
                 ProjectSource::Conversation(conversation) => {
-                    if let Some(active) = active_transcript.as_ref()
-                        && let Some(path) = active_transcript_path.as_ref()
+                    if let Some(active) = primary
+                        && let Some(path) = primary_path.as_ref()
                         && active.provider == conversation.provider
                         && conversation_source_covers_transcript(&config, conversation, path)
                     {
@@ -188,9 +188,9 @@ impl SourceTrigger for ConfiguredSourceTrigger {
             };
             report.absorb(source_report);
         }
-        if let Some(active_transcript) = active_transcript {
+        for transcript in &active_transcripts {
             let source_report = self
-                .ingest_active_transcript(&scope_root, &config, &active_transcript, &derived_tags)
+                .ingest_active_transcript(&scope_root, &config, transcript, &derived_tags)
                 .await;
             report.absorb(source_report);
         }
@@ -436,7 +436,15 @@ impl ConfiguredSourceTrigger {
             sources_considered: 1,
             ..Default::default()
         };
-        let source_id = format!("runtime.transcript.{}", active.provider);
+        let source_id = if active.linked {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            active.path.hash(&mut hasher);
+            let hash = format!("{:x}", hasher.finish());
+            format!("linked.transcript.{}.{}", active.provider, &hash[..8])
+        } else {
+            format!("runtime.transcript.{}", active.provider)
+        };
         if !matches!(active.provider.as_str(), "claude" | "codex" | "gemini") {
             report.failure(
                 &source_id,
@@ -1463,10 +1471,11 @@ sources:
         let report = trigger
             .trigger_sources(SourceTriggerRequest {
                 scope_root: tmp.path().to_path_buf(),
-                active_transcript: Some(ActiveTranscriptSource {
+                active_transcripts: vec![ActiveTranscriptSource {
                     provider: "codex".into(),
                     path: transcript.clone(),
-                }),
+                    linked: false,
+                }],
             })
             .await;
 
@@ -1510,10 +1519,11 @@ sources:
         let trigger = ConfiguredSourceTrigger::new(Arc::new(store.cursor_store()), writer.clone());
         let request = || SourceTriggerRequest {
             scope_root: tmp.path().to_path_buf(),
-            active_transcript: Some(ActiveTranscriptSource {
+            active_transcripts: vec![ActiveTranscriptSource {
                 provider: "codex".into(),
                 path: transcript.clone(),
-            }),
+                linked: false,
+            }],
         };
 
         trigger.trigger_sources(request()).await;
@@ -1560,10 +1570,11 @@ sources:
         let report = trigger
             .trigger_sources(SourceTriggerRequest {
                 scope_root: tmp.path().to_path_buf(),
-                active_transcript: Some(ActiveTranscriptSource {
+                active_transcripts: vec![ActiveTranscriptSource {
                     provider: "codex".into(),
                     path: transcript,
-                }),
+                    linked: false,
+                }],
             })
             .await;
 
@@ -1602,10 +1613,11 @@ sources:
         let report = trigger
             .trigger_sources(SourceTriggerRequest {
                 scope_root: tmp.path().to_path_buf(),
-                active_transcript: Some(ActiveTranscriptSource {
+                active_transcripts: vec![ActiveTranscriptSource {
                     provider: "codex".into(),
                     path: sessions.join("../sessions/active.jsonl"),
-                }),
+                    linked: false,
+                }],
             })
             .await;
 
@@ -1842,5 +1854,42 @@ sources:
 
         assert_eq!(report.observations_written, 1);
         assert_eq!(writer.observations().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn linked_transcript_uses_distinct_source_id() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sessions = tmp.path().join("linked-sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        let transcript = sessions.join("linked.jsonl");
+        std::fs::write(
+            &transcript,
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"s1\",\"cwd\":\"/tmp/project\"}}\n",
+        )
+        .unwrap();
+        write_config(tmp.path(), "  []");
+        let store = SurrealStore::memory().await.unwrap();
+        let writer = Arc::new(VecWriter::default());
+        let trigger = ConfiguredSourceTrigger::new(Arc::new(store.cursor_store()), writer.clone());
+
+        let report = trigger
+            .trigger_sources(SourceTriggerRequest {
+                scope_root: tmp.path().to_path_buf(),
+                active_transcripts: vec![ActiveTranscriptSource {
+                    provider: "codex".into(),
+                    path: transcript,
+                    linked: true,
+                }],
+            })
+            .await;
+
+        assert_eq!(report.sources_considered, 1);
+        assert_eq!(report.observations_written, 1);
+        let obs = &writer.observations()[0];
+        let source = obs.source.as_deref().unwrap();
+        assert!(
+            source.starts_with("linked.transcript.codex."),
+            "expected linked source id, got {source}"
+        );
     }
 }
