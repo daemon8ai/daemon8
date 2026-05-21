@@ -71,6 +71,8 @@ enum Commands {
     Service(ServiceSubcommand),
     /// Wipe all daemon8 state and reinitialize the database
     Reset(cli::reset::ResetArgs),
+    /// Pipe process stdout into the observation bus (passthrough)
+    Pipe(cli::pipe::PipeArgs),
     /// Real-time alert relay for MCP clients (experimental)
     Channel,
 }
@@ -129,6 +131,7 @@ async fn main() -> Result<()> {
             ServiceSubcommand::Uninstall => cli::service::cmd_uninstall(),
         },
         Commands::Reset(args) => cli::reset::cmd_reset(cli.config, args).await,
+        Commands::Pipe(args) => cli::pipe::cmd_pipe(args).await,
         Commands::Channel => cli::channel::cmd_channel().await,
     }
 }
