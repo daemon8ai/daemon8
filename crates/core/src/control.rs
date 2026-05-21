@@ -1122,4 +1122,74 @@ mod tests {
         assert_eq!(envelope.status, AlphaStatus::Error);
         assert_eq!(envelope.code, "missing_params");
     }
+
+    #[test]
+    fn link_conversation_rejects_invalid_provider() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut conn = test_connection(tmp.path());
+
+        let result = link_conversation(
+            &mut conn,
+            LinkConversationRequest {
+                provider: "bogus_provider",
+                project_path: None,
+                transcript_path: None,
+                home: tmp.path(),
+            },
+        );
+
+        let envelope = result.unwrap_err();
+        assert_eq!(envelope.status, AlphaStatus::Error);
+        assert_eq!(envelope.code, "invalid_provider");
+    }
+
+    #[test]
+    fn link_conversation_rejects_nonexistent_transcript() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut conn = test_connection(tmp.path());
+
+        let result = link_conversation(
+            &mut conn,
+            LinkConversationRequest {
+                provider: "codex",
+                project_path: None,
+                transcript_path: Some(Path::new("/tmp/does-not-exist-abc123.jsonl")),
+                home: tmp.path(),
+            },
+        );
+
+        let envelope = result.unwrap_err();
+        assert_eq!(envelope.status, AlphaStatus::Error);
+        assert_eq!(envelope.code, "transcript_unreadable");
+    }
+
+    #[test]
+    fn link_conversation_requires_scope_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut conn = SessionConnection {
+            session_id: "mcp-1".into(),
+            mode: ScopeMode::Project,
+            requested_path: tmp.path().display().to_string(),
+            scope_root: None,
+            provider: "claude".into(),
+            agent_name: "test".into(),
+            transcript_path: None,
+            project_id: None,
+            linked_transcripts: Vec::new(),
+        };
+
+        let result = link_conversation(
+            &mut conn,
+            LinkConversationRequest {
+                provider: "codex",
+                project_path: Some(tmp.path()),
+                transcript_path: None,
+                home: tmp.path(),
+            },
+        );
+
+        let envelope = result.unwrap_err();
+        assert_eq!(envelope.status, AlphaStatus::Error);
+        assert_eq!(envelope.code, "no_scope_root");
+    }
 }

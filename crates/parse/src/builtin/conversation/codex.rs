@@ -311,7 +311,9 @@ mod tests {
         let events = parse_line(line);
         assert_eq!(events.len(), 1);
         assert!(matches!(&events[0],
-            ConversationEvent::AssistantMessage { text, .. } if text == "Here is my analysis."
+            ConversationEvent::AssistantMessage { text, timestamp }
+                if text == "Here is my analysis."
+                && timestamp.as_deref() == Some("2026-01-01T00:00:00Z")
         ));
     }
 
