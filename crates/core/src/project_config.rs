@@ -513,11 +513,6 @@ sources:
     kind: file
     parser: line
     path: "$PRJ_ROOT/target/daemon8/cargo-check.log"
-  - id: claude.conversations
-    service: claude
-    kind: conversation
-    provider: claude
-    path: "/tmp/claude/sessions"
 ---
 # daemon8
 "#
@@ -533,7 +528,7 @@ sources:
         let config = parse(valid_config()).unwrap();
         assert_eq!(config.daemon8_schema, PROJECT_CONFIG_SCHEMA);
         assert_eq!(config.project.name, "daemon8");
-        assert_eq!(config.sources.len(), 2);
+        assert_eq!(config.sources.len(), 1);
     }
 
     #[test]
@@ -597,12 +592,7 @@ sources:
     service: cargo
     kind: file
     parser: line
-    path: "$PRJ_ROOT/target/daemon8/cargo-check.log"
-  - id: claude.conversations
-    service: claude
-    kind: conversation
-    provider: claude
-    path: "/tmp/claude/sessions""#,
+    path: "$PRJ_ROOT/target/daemon8/cargo-check.log""#,
             r#"sources:
   cargo.check:
     service: cargo
@@ -666,7 +656,10 @@ sources:
 
     #[test]
     fn rejects_duplicate_source_ids() {
-        let input = valid_config().replace("claude.conversations", "cargo.check");
+        let input = valid_config().replace(
+            "---\n# daemon8",
+            "  - id: cargo.check\n    service: cargo\n    kind: file\n    path: \"/tmp/other.log\"\n---\n# daemon8",
+        );
         let err = parse(input).unwrap_err();
         assert!(err.to_string().contains("duplicate source id"));
     }
@@ -694,9 +687,56 @@ sources:
 
     #[test]
     fn requires_conversation_provider() {
-        let input = valid_config().replace("    provider: claude\n", "");
-        let err = parse(input).unwrap_err();
+        let input = r#"---
+daemon8_schema: 1
+created_at: "2026-05-17T00:00:00Z"
+updated_at: "2026-05-17T00:00:00Z"
+project:
+  name: test
+  stack:
+    languages: [rust]
+    frameworks: []
+    tools: []
+vars:
+  PRJ_ROOT: "/tmp/test"
+sources:
+  - id: claude.sessions
+    service: claude
+    kind: conversation
+    path: "/tmp/claude/sessions"
+---
+# test
+"#;
+        let err = parse(input.to_string()).unwrap_err();
         assert!(err.to_string().contains("missing field `provider`"));
+    }
+
+    #[test]
+    fn parses_conversation_source_backward_compat() {
+        let input = r#"---
+daemon8_schema: 1
+created_at: "2026-05-17T00:00:00Z"
+updated_at: "2026-05-17T00:00:00Z"
+project:
+  name: test
+  stack:
+    languages: [rust]
+    frameworks: []
+    tools: []
+vars:
+  PRJ_ROOT: "/tmp/test"
+sources:
+  - id: claude.sessions
+    service: claude
+    kind: conversation
+    provider: claude
+    path: "/tmp/claude/sessions"
+---
+# test
+"#;
+        let config = parse(input.to_string()).unwrap();
+        assert_eq!(config.sources.len(), 1);
+        assert!(matches!(&config.sources[0], ProjectSource::Conversation(_)));
     }
 
     #[test]

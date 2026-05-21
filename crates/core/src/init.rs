@@ -454,7 +454,6 @@ Review the frontmatter for accuracy:
    - Database query logs (slow query logs, general logs)
    - Queue and worker logs (Redis, RabbitMQ, SQS worker output)
    - Container logs (docker-compose log paths, k8s pod logs)
-   - Provider transcripts for session continuity
 
 daemon8 supports these log parsers:
 
@@ -469,7 +468,8 @@ daemon8 supports these log parsers:
 
 Source fields:
   file: id, service, kind (file), path, parser (see list above), tags
-  conversation: id, service, kind (conversation), path, provider (claude|codex|gemini), tags
+
+# Conversation transcripts are ingested automatically on connect — no config source needed.
 
 Use $PRJ_ROOT for project-relative paths.
 
@@ -518,7 +518,7 @@ values are a starting point -- they are NOT complete.
 
 ## STEP 2: Add sources
 
-Using what you learned in Step 1, add file and conversation source entries
+Using what you learned in Step 1, add file source entries
 to the sources array in the frontmatter above. You MUST investigate every
 log path, build output, and error stream the project produces. Do NOT stop
 at the obvious ones -- dig through config files, docker entrypoints, and
@@ -544,7 +544,6 @@ Search for ALL of these across the entire project:
 - Queue and worker logs (Redis, RabbitMQ, SQS worker output)
 - Error tracking output (crash logs, exception dumps)
 - Container logs (docker-compose log paths, k8s pod logs)
-- Provider transcripts for session continuity
 
 File source format:
 
@@ -554,17 +553,10 @@ File source format:
       path: "$PRJ_ROOT/logs/app.log"
       parser: line
 
-Conversation source format:
-
-    - id: claude.sessions
-      service: claude
-      kind: conversation
-      provider: claude
-      path: "~/.claude/projects"   # informational; provider resolves files via metadata
-
 Source fields:
   file: id, service, kind (file), path, parser (see list above), tags
-  conversation: id, service, kind (conversation), provider (claude|codex|gemini), path (informational when provider is set), tags
+
+# Conversation transcripts are ingested automatically on connect — no config source needed.
 
 Use $PRJ_ROOT for project-relative paths. It resolves to the vars.PRJ_ROOT
 value in the frontmatter.
