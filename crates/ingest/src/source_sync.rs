@@ -778,6 +778,17 @@ fn conversation_observation(
                 "timestamp": timestamp
             }),
         ),
+        ConversationEvent::AssistantMessage { text, timestamp } => (
+            ObservationKind::Custom {
+                channel: "conversation.assistant_message".into(),
+            },
+            json!({
+                "event": "assistant_message",
+                "provider": source.provider,
+                "text": text,
+                "timestamp": timestamp
+            }),
+        ),
         ConversationEvent::RawEvent {
             line_type,
             timestamp,

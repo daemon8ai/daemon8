@@ -80,10 +80,23 @@ fn parse_assistant(obj: &serde_json::Value, timestamp: Option<&str>) -> Vec<Conv
     };
 
     for block in content {
-        if block.get("type").and_then(|t| t.as_str()) == Some("tool_use")
-            && let Some(event) = parse_tool_use_block(block, timestamp)
-        {
-            events.push(event);
+        match block.get("type").and_then(|t| t.as_str()) {
+            Some("text") => {
+                if let Some(text) = block.get("text").and_then(|t| t.as_str())
+                    && !text.trim().is_empty()
+                {
+                    events.push(ConversationEvent::AssistantMessage {
+                        text: text.to_string(),
+                        timestamp: timestamp.map(String::from),
+                    });
+                }
+            }
+            Some("tool_use") => {
+                if let Some(event) = parse_tool_use_block(block, timestamp) {
+                    events.push(event);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -131,7 +144,7 @@ fn parse_user(obj: &serde_json::Value, timestamp: Option<&str>) -> Vec<Conversat
         match block_type {
             Some("text") => {
                 if let Some(text) = block.get("text").and_then(|t| t.as_str())
-                    && !text.is_empty()
+                    && !text.trim().is_empty()
                 {
                     events.push(ConversationEvent::UserPrompt {
                         text: text.to_string(),
@@ -275,11 +288,15 @@ mod tests {
     #[test]
     fn parse_parallel_tool_calls() {
         let line = r#"{"type":"assistant","timestamp":"2026-01-01T00:00:00Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Read","input":{"file_path":"a.rs"}},{"type":"text","text":"reading files"},{"type":"tool_use","id":"toolu_2","name":"Bash","input":{"command":"ls"}}]}}"#;
-        let tool_uses: Vec<_> = parse_line(line)
-            .into_iter()
+        let events = parse_line(line);
+        let tool_uses: Vec<_> = events
+            .iter()
             .filter(|e| matches!(e, ConversationEvent::ToolUse { .. }))
             .collect();
         assert_eq!(tool_uses.len(), 2);
+        assert!(events.iter().any(|e| matches!(e,
+            ConversationEvent::AssistantMessage { text, .. } if text == "reading files"
+        )));
     }
 
     #[test]
@@ -387,7 +404,7 @@ mod tests {
     }
 
     #[test]
-    fn assistant_without_tool_use_returns_turn_meta_only() {
+    fn assistant_without_tool_use_returns_turn_meta_and_message() {
         let line = r#"{"type":"assistant","message":{"role":"assistant","model":"claude-sonnet-4-5","content":[{"type":"text","text":"hello"}]}}"#;
         let events = parse_line(line);
         assert!(
@@ -395,10 +412,56 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, ConversationEvent::TurnMeta { .. }))
         );
+        assert!(events.iter().any(|e| matches!(e,
+            ConversationEvent::AssistantMessage { text, .. } if text == "hello"
+        )));
         assert!(
             !events
                 .iter()
                 .any(|e| matches!(e, ConversationEvent::ToolUse { .. }))
+        );
+    }
+
+    #[test]
+    fn assistant_text_extracted_as_message() {
+        let line = r#"{"type":"assistant","timestamp":"2026-05-20T12:00:00Z","message":{"role":"assistant","content":[{"type":"text","text":"Here is the fix for your bug."}]}}"#;
+        let events = parse_line(line);
+        assert!(events.iter().any(|e| matches!(e,
+            ConversationEvent::AssistantMessage { text, timestamp: Some(ts) }
+            if text == "Here is the fix for your bug." && ts == "2026-05-20T12:00:00Z"
+        )));
+    }
+
+    #[test]
+    fn assistant_mixed_text_and_tool_use() {
+        let line = r#"{"type":"assistant","timestamp":"2026-05-20T12:00:00Z","message":{"role":"assistant","model":"claude-opus-4-6","content":[{"type":"text","text":"Let me read that file."},{"type":"tool_use","id":"toolu_1","name":"Read","input":{"file_path":"a.rs"}},{"type":"text","text":"Now I'll edit it."},{"type":"tool_use","id":"toolu_2","name":"Edit","input":{"file_path":"a.rs"}}]}}"#;
+        let events = parse_line(line);
+        let messages: Vec<_> = events
+            .iter()
+            .filter(|e| matches!(e, ConversationEvent::AssistantMessage { .. }))
+            .collect();
+        let tool_uses: Vec<_> = events
+            .iter()
+            .filter(|e| matches!(e, ConversationEvent::ToolUse { .. }))
+            .collect();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(tool_uses.len(), 2);
+        assert!(
+            matches!(&messages[0], ConversationEvent::AssistantMessage { text, .. } if text == "Let me read that file.")
+        );
+        assert!(
+            matches!(&messages[1], ConversationEvent::AssistantMessage { text, .. } if text == "Now I'll edit it.")
+        );
+    }
+
+    #[test]
+    fn whitespace_only_text_skipped() {
+        let line = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"   \n  "}]}}"#;
+        let events = parse_line(line);
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, ConversationEvent::AssistantMessage { .. }))
         );
     }
 

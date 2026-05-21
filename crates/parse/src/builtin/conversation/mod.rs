@@ -49,6 +49,10 @@ pub enum ConversationEvent {
         path: String,
         timestamp: Option<String>,
     },
+    AssistantMessage {
+        text: String,
+        timestamp: Option<String>,
+    },
     RawEvent {
         line_type: String,
         timestamp: Option<String>,

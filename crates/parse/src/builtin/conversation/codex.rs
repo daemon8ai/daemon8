@@ -143,25 +143,53 @@ fn parse_response_item(obj: &serde_json::Value, timestamp: Option<&str>) -> Vec<
             }]
         }
         "message" => {
-            if let Some(text) = payload
-                .get("content")
-                .and_then(|c| c.as_array())
-                .and_then(|arr| {
-                    arr.iter()
-                        .find(|b| b.get("type").and_then(|t| t.as_str()) == Some("input_text"))
-                        .and_then(|b| b.get("text").and_then(|t| t.as_str()))
-                })
-                && payload.get("role").and_then(|r| r.as_str()) == Some("user")
-                && !text.is_empty()
-            {
-                return vec![ConversationEvent::UserPrompt {
-                    text: text.to_string(),
-                    timestamp: timestamp.map(String::from),
-                }];
+            let role = payload.get("role").and_then(|r| r.as_str());
+            let content_blocks = payload.get("content").and_then(|c| c.as_array());
+            match role {
+                Some("user") => {
+                    if let Some(text) = content_blocks.and_then(|arr| {
+                        arr.iter()
+                            .find(|b| b.get("type").and_then(|t| t.as_str()) == Some("input_text"))
+                            .and_then(|b| b.get("text").and_then(|t| t.as_str()))
+                    }) && !text.trim().is_empty()
+                    {
+                        vec![ConversationEvent::UserPrompt {
+                            text: text.to_string(),
+                            timestamp: timestamp.map(String::from),
+                        }]
+                    } else {
+                        Vec::new()
+                    }
+                }
+                Some("assistant") => {
+                    let Some(blocks) = content_blocks else {
+                        return Vec::new();
+                    };
+                    blocks
+                        .iter()
+                        .filter_map(|b| {
+                            if b.get("type").and_then(|t| t.as_str()) == Some("output_text") {
+                                let text = b.get("text").and_then(|t| t.as_str())?;
+                                if text.trim().is_empty() {
+                                    return None;
+                                }
+                                Some(ConversationEvent::AssistantMessage {
+                                    text: text.to_string(),
+                                    timestamp: timestamp.map(String::from),
+                                })
+                            } else {
+                                None
+                            }
+                        })
+                        .collect()
+                }
+                _ => Vec::new(),
             }
-            Vec::new()
         }
-        _ => Vec::new(),
+        _ => vec![ConversationEvent::RawEvent {
+            line_type: format!("response_item.{payload_type}"),
+            timestamp: timestamp.map(String::from),
+        }],
     }
 }
 
@@ -173,7 +201,7 @@ fn parse_user_message(obj: &serde_json::Value, timestamp: Option<&str>) -> Vec<C
         .and_then(|v| v.as_str());
 
     match text {
-        Some(t) if !t.is_empty() => vec![ConversationEvent::UserPrompt {
+        Some(t) if !t.trim().is_empty() => vec![ConversationEvent::UserPrompt {
             text: t.to_string(),
             timestamp: timestamp.map(String::from),
         }],
@@ -278,9 +306,40 @@ mod tests {
     }
 
     #[test]
-    fn unknown_response_item_returns_empty() {
+    fn parse_assistant_message() {
+        let line = r#"{"timestamp":"2026-01-01T00:00:00Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Here is my analysis."}]}}"#;
+        let events = parse_line(line);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0],
+            ConversationEvent::AssistantMessage { text, .. } if text == "Here is my analysis."
+        ));
+    }
+
+    #[test]
+    fn parse_assistant_message_multiple_blocks() {
+        let line = r#"{"timestamp":"2026-01-01T00:00:00Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"First part."},{"type":"refusal","refusal":"no"},{"type":"output_text","text":"Second part."}]}}"#;
+        let events = parse_line(line);
+        let messages: Vec<_> = events
+            .iter()
+            .filter(|e| matches!(e, ConversationEvent::AssistantMessage { .. }))
+            .collect();
+        assert_eq!(messages.len(), 2);
+        assert!(
+            matches!(&messages[0], ConversationEvent::AssistantMessage { text, .. } if text == "First part.")
+        );
+        assert!(
+            matches!(&messages[1], ConversationEvent::AssistantMessage { text, .. } if text == "Second part.")
+        );
+    }
+
+    #[test]
+    fn unknown_response_item_emits_raw() {
         let line = r#"{"timestamp":"2026-01-01T00:00:00Z","type":"response_item","payload":{"type":"reasoning","content":"thinking..."}}"#;
-        assert!(parse_line(line).is_empty());
+        let events = parse_line(line);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0],
+            ConversationEvent::RawEvent { line_type, .. } if line_type == "response_item.reasoning"
+        ));
     }
 
     #[test]
@@ -290,6 +349,12 @@ mod tests {
         assert!(events.iter().any(|e| matches!(e,
             ConversationEvent::RawEvent { line_type, .. } if line_type == "session_end"
         )));
+    }
+
+    #[test]
+    fn whitespace_only_assistant_text_skipped() {
+        let line = r#"{"timestamp":"2026-01-01T00:00:00Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"  \n  "}]}}"#;
+        assert!(parse_line(line).is_empty());
     }
 
     #[test]

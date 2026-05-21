@@ -61,6 +61,15 @@ fn parse_gemini_line(obj: &serde_json::Value, timestamp: Option<&str>) -> Vec<Co
         });
     }
 
+    if let Some(text) = obj.get("content").and_then(|c| c.as_str())
+        && !text.trim().is_empty()
+    {
+        events.push(ConversationEvent::AssistantMessage {
+            text: text.to_string(),
+            timestamp: timestamp.map(String::from),
+        });
+    }
+
     let Some(tool_calls) = obj.get("toolCalls").and_then(|t| t.as_array()) else {
         return events;
     };
@@ -116,7 +125,7 @@ fn parse_user_line(obj: &serde_json::Value, timestamp: Option<&str>) -> Vec<Conv
         .iter()
         .filter_map(|block| {
             let text = block.get("text").and_then(|t| t.as_str())?;
-            if text.is_empty() {
+            if text.trim().is_empty() {
                 return None;
             }
             Some(ConversationEvent::UserPrompt {
@@ -194,7 +203,7 @@ mod tests {
     }
 
     #[test]
-    fn gemini_text_only_returns_turn_meta() {
+    fn gemini_text_only_returns_turn_meta_and_message() {
         let line = r#"{"id":"msg1","timestamp":"2026-01-01T00:00:00Z","type":"gemini","content":"hello world","model":"gemini-3-flash","thoughts":[]}"#;
         let events = parse_line(line);
         assert!(
@@ -202,11 +211,38 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, ConversationEvent::TurnMeta { .. }))
         );
+        assert!(events.iter().any(|e| matches!(e,
+            ConversationEvent::AssistantMessage { text, .. } if text == "hello world"
+        )));
         assert!(
             !events
                 .iter()
                 .any(|e| matches!(e, ConversationEvent::ToolUse { .. }))
         );
+    }
+
+    #[test]
+    fn gemini_assistant_text_extracted() {
+        let line = r#"{"id":"msg1","timestamp":"2026-01-01T00:00:00Z","type":"gemini","content":"I found the issue in your code."}"#;
+        let events = parse_line(line);
+        assert!(events.iter().any(|e| matches!(e,
+            ConversationEvent::AssistantMessage { text, .. } if text == "I found the issue in your code."
+        )));
+    }
+
+    #[test]
+    fn gemini_mixed_text_and_tools() {
+        let line = r#"{"id":"msg1","timestamp":"2026-01-01T00:00:00Z","type":"gemini","content":"Let me check that file.","model":"gemini-3-flash","toolCalls":[{"id":"tc1","name":"read_file","args":{"path":"a.rs"},"status":"success","timestamp":"2026-01-01T00:00:01Z"}]}"#;
+        let events = parse_line(line);
+        assert!(events.iter().any(|e| matches!(e,
+            ConversationEvent::AssistantMessage { text, .. } if text == "Let me check that file."
+        )));
+        assert!(events.iter().any(|e| matches!(e,
+            ConversationEvent::ToolUse { tool, .. } if tool == "read_file"
+        )));
+        assert!(events.iter().any(|e| matches!(e,
+            ConversationEvent::TurnMeta { model: Some(m), .. } if m == "gemini-3-flash"
+        )));
     }
 
     #[test]
@@ -222,6 +258,17 @@ mod tests {
     fn malformed_json_returns_empty() {
         assert!(parse_line("not json").is_empty());
         assert!(parse_line("").is_empty());
+    }
+
+    #[test]
+    fn whitespace_only_content_skipped() {
+        let line = r#"{"id":"msg1","timestamp":"2026-01-01T00:00:00Z","type":"gemini","content":"   \n  "}"#;
+        let events = parse_line(line);
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, ConversationEvent::AssistantMessage { .. }))
+        );
     }
 
     #[test]
