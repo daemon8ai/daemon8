@@ -1857,6 +1857,85 @@ sources:
     }
 
     #[tokio::test]
+    async fn double_trigger_without_changes_produces_zero_observations() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sessions = tmp.path().join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        let transcript = sessions.join("active.jsonl");
+        std::fs::write(
+            &transcript,
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"s1\",\"cwd\":\"/tmp/project\"}}\n",
+        )
+        .unwrap();
+        write_config(tmp.path(), "  []");
+        let store = SurrealStore::memory().await.unwrap();
+        let writer = Arc::new(VecWriter::default());
+        let trigger = ConfiguredSourceTrigger::new(Arc::new(store.cursor_store()), writer.clone());
+
+        let request = || SourceTriggerRequest {
+            scope_root: tmp.path().to_path_buf(),
+            active_transcripts: vec![ActiveTranscriptSource {
+                provider: "codex".into(),
+                path: transcript.clone(),
+                linked: false,
+            }],
+        };
+
+        let first = trigger.trigger_sources(request()).await;
+        assert_eq!(first.observations_written, 1);
+
+        let second = trigger.trigger_sources(request()).await;
+        assert_eq!(
+            second.observations_written, 0,
+            "second trigger with no changes should write zero"
+        );
+    }
+
+    #[tokio::test]
+    async fn assistant_message_round_trip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sessions = tmp.path().join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        let transcript = sessions.join("active.jsonl");
+        std::fs::write(
+            &transcript,
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"s1\",\"cwd\":\"/tmp/project\"}}\n{\"timestamp\":\"2026-01-01T00:00:00Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Here is my analysis of the code.\"}]}}\n",
+        )
+        .unwrap();
+        write_config(tmp.path(), "  []");
+        let store = SurrealStore::memory().await.unwrap();
+        let writer = Arc::new(VecWriter::default());
+        let trigger = ConfiguredSourceTrigger::new(Arc::new(store.cursor_store()), writer.clone());
+
+        trigger
+            .trigger_sources(SourceTriggerRequest {
+                scope_root: tmp.path().to_path_buf(),
+                active_transcripts: vec![ActiveTranscriptSource {
+                    provider: "codex".into(),
+                    path: transcript,
+                    linked: false,
+                }],
+            })
+            .await;
+
+        let obs = writer.observations();
+        let assistant_obs: Vec<_> = obs
+            .iter()
+            .filter(|o| matches!(&o.kind, ObservationKind::Custom { channel } if channel == "conversation.assistant_message"))
+            .collect();
+        assert_eq!(
+            assistant_obs.len(),
+            1,
+            "expected 1 assistant_message observation"
+        );
+        assert_eq!(
+            assistant_obs[0].data["text"],
+            "Here is my analysis of the code."
+        );
+        assert_eq!(assistant_obs[0].data["event"], "assistant_message");
+    }
+
+    #[tokio::test]
     async fn linked_transcript_uses_distinct_source_id() {
         let tmp = tempfile::tempdir().unwrap();
         let sessions = tmp.path().join("linked-sessions");

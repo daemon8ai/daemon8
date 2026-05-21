@@ -961,6 +961,36 @@ mod tests {
     }
 
     #[test]
+    fn discovery_returns_candidates_from_multiple_providers() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("myproject");
+        let home = tmp.path().join("home");
+        fs::create_dir_all(&project).unwrap();
+
+        write_claude_transcript(&home, &project, "claude-session.jsonl");
+
+        let canonical = fs::canonicalize(&project).unwrap();
+        let scope_str = canonical.to_string_lossy();
+        let gemini_slug = "test-slug";
+        let projects_json = format!(r#"{{"projects":{{"{}":"{}"}}}}"#, scope_str, gemini_slug);
+        let gemini_projects = home.join(".gemini");
+        fs::create_dir_all(&gemini_projects).unwrap();
+        fs::write(gemini_projects.join("projects.json"), projects_json).unwrap();
+        let chats_dir = home.join(".gemini/tmp").join(gemini_slug).join("chats");
+        fs::create_dir_all(&chats_dir).unwrap();
+        fs::write(
+            chats_dir.join("gemini-session.jsonl"),
+            r#"{"sessionId":"g1","startTime":"2026-01-01T00:00:00Z","lastUpdated":"2026-01-01T00:00:00Z"}"#,
+        )
+        .unwrap();
+
+        let candidates = discover_project_conversations(&project, &home, None);
+        let providers: Vec<&str> = candidates.iter().map(|c| c.provider.as_str()).collect();
+        assert!(providers.contains(&"claude"), "expected claude candidate");
+        assert!(providers.contains(&"gemini"), "expected gemini candidate");
+    }
+
+    #[test]
     fn discovery_returns_empty_for_unknown_scope() {
         let tmp = tempfile::tempdir().unwrap();
         let project = tmp.path().join("nonexistent");
