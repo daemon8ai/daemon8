@@ -442,11 +442,20 @@ pub fn resolve_connect_transcript(
         .as_ref()
         .and_then(|c| c.transcript_path.clone());
     let discovered = discover_project_conversations(&scope_root, home, exclude.as_deref());
-    if !discovered.is_empty() {
-        let mut data = outcome.envelope.data.take().unwrap_or_else(|| json!({}));
-        data["discovered_conversations"] = json!(discovered);
-        outcome.envelope.data = Some(data);
-    }
+
+    let mut data = outcome.envelope.data.take().unwrap_or_else(|| json!({}));
+    let primary = data.get("transcript").cloned().unwrap_or(Value::Null);
+    let linked: Value = outcome
+        .connection
+        .as_ref()
+        .map(|c| json!(c.linked_transcripts))
+        .unwrap_or(json!([]));
+    data["conversations"] = json!({
+        "primary": primary,
+        "available": discovered,
+        "linked": linked,
+    });
+    outcome.envelope.data = Some(data);
 
     outcome
 }
@@ -900,6 +909,63 @@ mod tests {
         assert_eq!(
             outcome.envelope.next_actions[0].params["transcript_path"],
             "<candidate path>"
+        );
+    }
+
+    #[test]
+    fn connect_response_contains_conversations() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project");
+        let home = tmp.path().join("home");
+        let sessions = home.join(".codex/sessions");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::write(project.join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
+        write_project_config(&project);
+        let transcript = sessions.join("one.jsonl");
+        write_codex_session(&transcript, "s1", &project);
+
+        let mut req = request(&project);
+        req.transcript_path = Some(transcript.clone());
+        let outcome = resolve_connect_transcript(connect(req), Some(&transcript), &home);
+
+        assert_eq!(outcome.envelope.status, AlphaStatus::Success);
+        let data = outcome.envelope.data.unwrap();
+        let conversations = &data["conversations"];
+        assert!(!conversations.is_null(), "conversations key missing");
+        assert!(!conversations["primary"].is_null(), "primary missing");
+        assert_eq!(conversations["primary"]["status"], "bound");
+        assert!(conversations["available"].is_array());
+        assert!(conversations["linked"].is_array());
+        assert!(conversations["linked"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn connect_primary_excluded_from_available() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project");
+        let home = tmp.path().join("home");
+        let sessions = home.join(".codex/sessions");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::write(project.join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
+        write_project_config(&project);
+        let transcript = sessions.join("one.jsonl");
+        write_codex_session(&transcript, "s1", &project);
+
+        let mut req = request(&project);
+        req.transcript_path = Some(transcript.clone());
+        let outcome = resolve_connect_transcript(connect(req), Some(&transcript), &home);
+
+        let data = outcome.envelope.data.unwrap();
+        let available = data["conversations"]["available"].as_array().unwrap();
+        let bound_path = std::fs::canonicalize(&transcript)
+            .unwrap()
+            .display()
+            .to_string();
+        assert!(
+            !available.iter().any(|c| c["path"] == bound_path),
+            "primary transcript should not appear in available"
         );
     }
 

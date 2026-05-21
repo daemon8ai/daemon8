@@ -21,6 +21,11 @@ None.
 
 Common envelope with `status`, `code`, `message`, `data`, and structured `next_actions`. Project success includes `data.project_id` (the deterministic project slug from config), `data.source_count`, `data.transcript.status` as `bound` or `not_found`, and `data.related_projects` (list of sibling project IDs, if any are declared in config). Structured tags (`project:{id}`, `lang:`, `framework:`, `tool:`) are automatically applied to all observations from this project -- use `tags: ["project:{id}"]` in `read_live_feed` to scope queries.
 
+Project connect responses include `data.conversations`:
+  - `primary`: the bound transcript metadata (provider, path, session_id, status), or null if not found.
+  - `available`: other provider transcripts discovered for this project scope, sorted by recency. Use `link_conversation` to link any of these.
+  - `linked`: transcripts linked via `link_conversation` (empty on fresh connect).
+
 daemon8 detects workspace roots by scanning immediate child directories for ecosystem markers. A directory without root-level markers (no `.git`, `Cargo.toml`, etc.) can still be classified as a project if its children contain recognizable ecosystems. This means `setup_required` fires for workspaces too -- the init flow handles them the same as single projects.
 
 When `data.source_count` is 0, the response includes a `requirements` field. The `requirements` field lists MANDATORY actions -- every listed action MUST be completed before proceeding with any other daemon8 tools. daemon8 cannot observe the project without sources. Open `.daemon8/config.md` and complete ALL steps in the markdown body to populate the config.

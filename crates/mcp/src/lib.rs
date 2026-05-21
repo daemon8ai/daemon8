@@ -1045,7 +1045,12 @@ impl DaemonMcp {
                         .lock()
                         .expect("connection mutex poisoned")
                         .clone();
+                    let linked_count = connection
+                        .as_ref()
+                        .map(|c| c.linked_transcripts.len())
+                        .unwrap_or(0);
                     val["connection"] = serde_json::to_value(connection).unwrap_or_default();
+                    val["linked_conversations"] = serde_json::json!(linked_count);
                     if let Some(ledger) = &self.scope_ledger_store {
                         match ledger.scope_ledger_summary(5).await {
                             Ok(summary) => {
