@@ -1,7 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="340" height="70" viewBox="0 0 340 70">
-  <rect width="340" height="70" fill="#0e0a07"/>
-  <text x="20" y="38" fill="#ede8d9" font-family="'JetBrains Mono', monospace" font-size="28" font-weight="600" letter-spacing="4" dominant-baseline="central">DAEMON</text>
-  <text x="210" y="38" font-family="'Instrument Serif', Georgia, serif" font-size="38" dominant-baseline="central">
-    <tspan fill="#ede8d9">(</tspan><tspan fill="#c2410c">8</tspan><tspan fill="#ede8d9">)</tspan>
-  </text>
-</svg>

@@ -1,5 +1,9 @@
 <p align="center">
-  <img src="logo.svg" alt="daemon8" width="240">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/daemon8ai/daemon8/main/mark-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/daemon8ai/daemon8/main/mark-light.svg">
+    <img src="https://raw.githubusercontent.com/daemon8ai/daemon8/main/mark-dark.svg" alt="daemon8" width="240">
+  </picture>
 </p>
 
 # daemon8
