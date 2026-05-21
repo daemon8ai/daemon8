@@ -4,8 +4,8 @@
 use std::path::{Path, PathBuf};
 
 use daemon8_providers::transcripts::{
-    TranscriptCandidate, TranscriptResolution, TranscriptResolver, normalize_provider_id,
-    resolve_transcript,
+    TranscriptCandidate, TranscriptResolution, TranscriptResolver, discover_project_conversations,
+    normalize_provider_id, resolve_transcript,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -391,7 +391,7 @@ pub fn resolve_connect_transcript(
 
     let provider = connection.provider.clone();
     let scope_root = PathBuf::from(scope_root);
-    match resolve_transcript(TranscriptResolver {
+    let mut outcome = match resolve_transcript(TranscriptResolver {
         provider: &provider,
         scope_root: &scope_root,
         home,
@@ -421,7 +421,20 @@ pub fn resolve_connect_transcript(
             "provider transcript cannot be bound",
             err.message,
         ),
+    };
+
+    let exclude = outcome
+        .connection
+        .as_ref()
+        .and_then(|c| c.transcript_path.clone());
+    let discovered = discover_project_conversations(&scope_root, home, exclude.as_deref());
+    if !discovered.is_empty() {
+        let mut data = outcome.envelope.data.take().unwrap_or_else(|| json!({}));
+        data["discovered_conversations"] = json!(discovered);
+        outcome.envelope.data = Some(data);
     }
+
+    outcome
 }
 
 fn connect_outcome_with_transcript(

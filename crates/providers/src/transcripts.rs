@@ -152,6 +152,47 @@ pub fn resolve_transcript(
     Ok(TranscriptResolution::NotFound)
 }
 
+pub fn discover_project_conversations(
+    scope_root: &Path,
+    home: &Path,
+    exclude_path: Option<&str>,
+) -> Vec<TranscriptCandidate> {
+    let scope_root = fs::canonicalize(scope_root).unwrap_or_else(|_| scope_root.to_path_buf());
+
+    let mut candidates = Vec::new();
+    for provider in ALL_PROVIDERS {
+        let ai = provider.as_provider();
+        let provider_id = ai.id();
+        let conversation_root = ai.conversation_dir(home);
+        let files = ai.project_conversation_files(home, &scope_root, CONVERSATION_RECENCY_MS);
+
+        for path in &files {
+            let Some(metadata) = fs::metadata(path).ok() else {
+                continue;
+            };
+            let canonical = fs::canonicalize(path).unwrap_or_else(|_| path.clone());
+            if exclude_path.is_some_and(|e| canonical.display().to_string() == e) {
+                continue;
+            }
+            if let Ok(candidate) = candidate_from_path(
+                provider_id,
+                conversation_root.as_deref(),
+                &canonical,
+                &metadata,
+            ) {
+                candidates.push(candidate);
+            }
+        }
+    }
+
+    candidates.sort_by(|a, b| {
+        b.modified_at_ms
+            .cmp(&a.modified_at_ms)
+            .then_with(|| a.path.cmp(&b.path))
+    });
+    candidates
+}
+
 const FALLBACK_MAX_FILES: usize = 50;
 
 fn fallback_conversation_files(root: Option<&Path>, since_ms: u64) -> Vec<PathBuf> {
@@ -856,5 +897,77 @@ mod tests {
         .unwrap();
 
         assert_eq!(resolution, TranscriptResolution::NotFound);
+    }
+
+    fn write_claude_transcript(home: &Path, scope_root: &Path, filename: &str) -> PathBuf {
+        let canonical = fs::canonicalize(scope_root).unwrap_or_else(|_| scope_root.to_path_buf());
+        let slug = canonical.to_string_lossy().replace('/', "-");
+        let dir = home.join(".claude/projects").join(&slug);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(filename);
+        fs::write(
+            &path,
+            r#"{"type":"permission-mode","permissionMode":"auto","sessionId":"test-session"}"#,
+        )
+        .unwrap();
+        path
+    }
+
+    #[test]
+    fn discovery_returns_candidates() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("myproject");
+        let home = tmp.path().join("home");
+        fs::create_dir_all(&project).unwrap();
+
+        write_claude_transcript(&home, &project, "session-a.jsonl");
+        write_claude_transcript(&home, &project, "session-b.jsonl");
+
+        let candidates = discover_project_conversations(&project, &home, None);
+        assert!(
+            candidates.len() >= 2,
+            "expected at least 2 candidates, got {}",
+            candidates.len()
+        );
+        assert!(candidates.iter().all(|c| c.provider == "claude"));
+    }
+
+    #[test]
+    fn discovery_excludes_bound_transcript() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("myproject");
+        let home = tmp.path().join("home");
+        fs::create_dir_all(&project).unwrap();
+
+        let bound = write_claude_transcript(&home, &project, "bound.jsonl");
+        write_claude_transcript(&home, &project, "other.jsonl");
+
+        let bound_canonical = fs::canonicalize(&bound).unwrap();
+        let candidates = discover_project_conversations(
+            &project,
+            &home,
+            Some(&bound_canonical.display().to_string()),
+        );
+        assert!(
+            !candidates
+                .iter()
+                .any(|c| c.path == bound_canonical.display().to_string()),
+            "bound transcript should be excluded"
+        );
+        assert!(
+            !candidates.is_empty(),
+            "other transcript should still be present"
+        );
+    }
+
+    #[test]
+    fn discovery_returns_empty_for_unknown_scope() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("nonexistent");
+        let home = tmp.path().join("home");
+        fs::create_dir_all(&home).unwrap();
+
+        let candidates = discover_project_conversations(&project, &home, None);
+        assert!(candidates.is_empty());
     }
 }
