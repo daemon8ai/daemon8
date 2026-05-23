@@ -8,55 +8,31 @@
 
 # daemon8
 
-daemon8 gives AI coding agents project awareness while the work is happening.
+daemon8 gives AI coding agents situational awareness while the work is happening.
 
-Your agent should not guess what the app logged, what the browser console said, what the last agent tried, or whether a fix actually changed the runtime state. daemon8 keeps the focused and peripheral context close: what is happening now, what happened recently, and what the agent should check before it acts.
-
-<!--
-Recording notes:
-- Use GitHub user-attachment URLs or committed repo-relative assets.
-- GitHub strips most inline CSS, autoplay, loop, and playsinline.
-- width, controls, muted, valign, table, td, video, and img render through GitHub's Markdown pipeline.
-- Keep videos H.264 MP4 where possible.
--->
+AI agents are strongest when they can work from evidence: what the app is doing, what the browser reported, what another provider already tried, and what changed after a fix. daemon8 creates that layer locally. It centralizes runtime signals, recent provider activity, and debugging structure so agents can keep moving without guessing.
 
 <table>
   <tr>
     <td valign="top" width="420">
-      <p align="center"><strong>App logging awareness</strong><br><sub>Recording coming soon</sub></p>
-      <p>The agent sees application logs and runtime observations without asking you to paste terminal output.</p>
-      <ul>
-        <li>Configured log sources</li>
-        <li>Structured parser support</li>
-        <li>Queryable live feed</li>
-      </ul>
+      <p align="center"><strong>Application Runtime Awareness</strong></p>
+      <p>daemon8 helps the agent find and centralize project-specific logging sources, then turns those logs and errors into queryable runtime context.</p>
+      <p><sub>Useful when the code looks fine, but the running system is telling a different story.</sub></p>
     </td>
     <td valign="top" width="420">
-      <p align="center"><strong>Recent conversation awareness - cross-provider</strong><br><sub>Recording coming soon</sub></p>
-      <p>The agent catches up on recent Claude, Codex, and Gemini work from the same project.</p>
-      <ul>
-        <li>Provider transcript discovery</li>
-        <li>Linked conversations</li>
-        <li>Faceted context snapshots</li>
-      </ul>
+      <p align="center"><strong>Cross-Provider Conversation Recovery</strong></p>
+      <p>daemon8 reads recent provider activity across Claude, Codex, and Gemini so a new session can recover what happened and continue from there.</p>
+      <p><sub>Useful when you switch agents, restart a session, or need another provider to pick up the thread.</sub></p>
     </td>
     <td valign="top" width="420">
-      <p align="center"><strong>Browser awareness and control</strong><br><sub>Recording coming soon</sub></p>
-      <p>The agent reads console/network state and can navigate, inspect, screenshot, and act through DevTools.</p>
-      <ul>
-        <li>Console and network events</li>
-        <li>DOM, storage, and viewport actions</li>
-        <li>Browser screenshots</li>
-      </ul>
+      <p align="center"><strong>Browser & Device Awareness</strong></p>
+      <p>daemon8 streams browser, network, DOM, screenshot, and device signals into the same working context the agent already uses.</p>
+      <p><sub>Useful when the bug only exists in the live page, the device, or the request/response path.</sub></p>
     </td>
     <td valign="top" width="420">
-      <p align="center"><strong>Debug session awareness</strong><br><sub>Recording coming soon</sub></p>
-      <p>The agent checkpoints before a repro or patch, reads only what changed, and resolves the session with the fix.</p>
-      <ul>
-        <li>Named investigations</li>
-        <li>Before/after checkpoints</li>
-        <li>Durable fix summaries</li>
-      </ul>
+      <p align="center"><strong>Debug Session Structure</strong></p>
+      <p>daemon8 gives debugging a shape: named investigations, before/after checkpoints, focused slices, and durable summaries when the fix is real.</p>
+      <p><sub>Useful when you need the agent to prove what changed instead of narrating what it hopes changed.</sub></p>
     </td>
   </tr>
 </table>
