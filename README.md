@@ -55,6 +55,10 @@ It gives agents one place to ask:
 - What recent project context should I know before touching this?
 - Which debug sessions are still open, abandoned, or resolved?
 
+> Look useful? Consider starring the repo.
+>
+> Follow along on X: [![Follow @j_havenz on X](https://img.shields.io/badge/Follow%20%40j_havenz-000000?logo=x&logoColor=white)](https://x.com/j_havenz)
+
 ## Alpha Release
 
 My blue-sky goals are larger than this alpha release represents. Situational awareness is the first foundation for a broader, provider-agnostic cortex for AI agents. The details and planned features will come in time.
