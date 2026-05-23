@@ -277,7 +277,7 @@ pub(crate) fn jsonl_files_since(dir: &Path, since_ms: u64) -> Vec<PathBuf> {
             (ms >= since_ms).then(|| (ms, e.path()))
         })
         .collect();
-    files.sort_by(|a, b| b.0.cmp(&a.0));
+    files.sort_by_key(|b| std::cmp::Reverse(b.0));
     files.into_iter().map(|(_, p)| p).collect()
 }
 
