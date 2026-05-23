@@ -8,38 +8,82 @@
 
 # daemon8
 
-daemon8 gives AI coding agents runtime awareness _while the work is happening_.
+daemon8 gives AI coding agents project awareness while the work is happening.
 
-Static context is not enough. daemon8 keeps the agent connected to what is actually happening.
+Your agent should not guess what the app logged, what the browser console said, what the last agent tried, or whether a fix actually changed the runtime state. daemon8 keeps the focused and peripheral context close: what is happening now, what happened recently, and what the agent should check before it acts.
 
-1. Runtime signals stream into one queryable feed.
-2. Lenses, checkpoints, and debug sessions create boundaries and controlled context while debugging.
-3. An _awareness profile_ - managed without manual intervention - keeps the project's docs, sources, and metadata close at hand.
-4. Provider-agnostic conversation sync helps agents pick up where you left off - _**across** the vendor divide_.
+<!--
+Recording notes:
+- Use GitHub user-attachment URLs or committed repo-relative assets.
+- GitHub strips most inline CSS, autoplay, loop, and playsinline.
+- width, controls, muted, valign, table, td, video, and img render through GitHub's Markdown pipeline.
+- Keep videos H.264 MP4 where possible.
+-->
 
-> Look useful? Consider starring the repo.
->
-> Follow along on X: [![Follow @j_havenz on X](https://img.shields.io/badge/Follow%20%40j_havenz-000000?logo=x&logoColor=white)](https://x.com/j_havenz)
+<table>
+  <tr>
+    <td valign="top" width="420">
+      <p align="center"><strong>App logging awareness</strong><br><sub>Recording coming soon</sub></p>
+      <p>The agent sees application logs and runtime observations without asking you to paste terminal output.</p>
+      <ul>
+        <li>Configured log sources</li>
+        <li>Structured parser support</li>
+        <li>Queryable live feed</li>
+      </ul>
+    </td>
+    <td valign="top" width="420">
+      <p align="center"><strong>Recent conversation awareness - cross-provider</strong><br><sub>Recording coming soon</sub></p>
+      <p>The agent catches up on recent Claude, Codex, and Gemini work from the same project.</p>
+      <ul>
+        <li>Provider transcript discovery</li>
+        <li>Linked conversations</li>
+        <li>Faceted context snapshots</li>
+      </ul>
+    </td>
+    <td valign="top" width="420">
+      <p align="center"><strong>Browser awareness and control</strong><br><sub>Recording coming soon</sub></p>
+      <p>The agent reads console/network state and can navigate, inspect, screenshot, and act through DevTools.</p>
+      <ul>
+        <li>Console and network events</li>
+        <li>DOM, storage, and viewport actions</li>
+        <li>Browser screenshots</li>
+      </ul>
+    </td>
+    <td valign="top" width="420">
+      <p align="center"><strong>Debug session awareness</strong><br><sub>Recording coming soon</sub></p>
+      <p>The agent checkpoints before a repro or patch, reads only what changed, and resolves the session with the fix.</p>
+      <ul>
+        <li>Named investigations</li>
+        <li>Before/after checkpoints</li>
+        <li>Durable fix summaries</li>
+      </ul>
+    </td>
+  </tr>
+</table>
 
-**Awareness profile:** A small project-local profile that points daemon8 at the debugging/logging context the agent needs:
+## What daemon8 does
 
-```plaintext
-your-project/
-`-- .daemon8/
-    |-- config.md
-    |-- conversations/
-    |-- knowledge/
-    |   |-- DOCS.md
-    |   |-- fixes/
-    |   |-- patterns/
-    |   |-- sessions/
-    |   `-- services/
-    `-- sources/
-```
+Put simply: daemon8 is an awareness layer for human-in-the-loop, agentic development.
 
-Daemon8 uses [SurrealDB](https://surrealdb.com/) for the high-demand persistence: live-feed history, cursor state, debug sessions, checkpoints, and the query layer behind the lenses. Your project's awareness profile stays small (by design); SurrealDB carries the context for agents to search, slice, and traverse as needed. It's the real workhorse behind daemon8's existing features - both now, and for the ambitious roadmap ahead.
+It gives agents focused knowledge of what is happening right now and peripheral knowledge of what has already happened in the project (and any related project(s), e.g. frontend/backend). App logs, browser events, debug checkpoints, open investigations, and recent conversations **across AI providers** become one cohesive field of context the agent can query instead of guessing.
 
----
+**This matters because AI coding tools still live in provider-shaped rooms**. Claude has one view of the work. Codex has another. Gemini has another. daemon8 starts stitching those views together with the live runtime state of the project. For this alpha, the core path is MCP-first and source-driven; provider hooks exist as utilities, but they are not the runtime foundation.
+
+It gives agents one place to ask:
+
+- What's been discussed recently in this project? (across Gemini, Codex, and Claude)
+- What just happened in the app?
+- What changed after this checkpoint?
+- What is the browser doing right now?
+- What did Claude, Codex, or Gemini already try?
+- What recent project context should I know before touching this?
+- Which debug sessions are still open, abandoned, or resolved?
+
+## Alpha Release
+
+My blue-sky goals are larger than this alpha release represents. Situational awareness is the first foundation for a broader, provider-agnostic cortex for AI agents. The details and planned features will come in time.
+
+This alpha is that foundation. Not the whole vision yet. The point is better loops today: observe, change, verify, remember.
 
 ## Install
 
@@ -55,73 +99,41 @@ Windows PowerShell:
 iwr https://daemon8.ai/install.ps1 -UseB | iex
 ```
 
-The installer downloads the latest release, verifies `checksums.sha256`, installs the `daemon8` binary, updates PATH when needed, registers daemon8 as the user-level service, and asks whether to add daemon8 MCP settings for Claude Code, Gemini CLI, and Codex.
+The installer downloads the release, verifies a checksum, installs the `daemon8` binary, registers daemon8 as a user-level service, and can add daemon8 MCP settings for Claude Code, Gemini CLI, and Codex.
 
-After install, daemon8 is running locally as the global MCP server for your machine. "Local" means it serves your machine only; "global" means your AI CLIs can see the same daemon8 MCP server across projects. Start a fresh AI CLI/REPL session and check that `daemon8` appears in the provider's MCP server list.
+> [!IMPORTANT]
+> Finish the instruction-file step during install. This is _the one place_ daemon8 needs manual setup from you: let the installer add the daemon8 instruction block to your global agent instruction files (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`), or choose print/copy and add it yourself. That standing instruction is what makes agents connect first, use daemon8 for logs/browser/conversation state, and run the checkpointed debug loop instead of falling back to guessing.
 
-A browser extension is not needed. daemon8 controls Chromium through the local DevTools endpoint and exposes that control to the agent through MCP.
+After install, start a fresh AI CLI session. daemon8 runs locally as a machine-wide MCP server, so supported agents can talk to the same daemon across projects.
 
-## Additional Setup
+A browser extension is _not_ required. daemon8 has its own purpose-built Chromium integration using CDP (Chrome DevTools Protocol).
 
-The installer prints this block and can add it to the top of your detected global instruction files: `CLAUDE.md`, `AGENTS.md`, and `GEMINI.md`.
+## First project setup
 
-Important note: daemon8 is built to be a self-guided and evolving MCP experience for your agent's debugging workflow. Your manual participation should only be needed for this first setup.
+> daemon8 supports Gemini CLI, not `agy` yet.
 
-As daemon8's MCP tools are called, your agent receives guidance to steer debugging sessions. If needed, your agent can call `daemon8_help` for additional insight on specific daemon8 topics.
+Start in a fresh Claude Code, Codex, or Gemini CLI session after install. The `daemon8` MCP server should already be available because the installer configured the provider for you.
 
-```markdown
-## Daemon8 -- Runtime Observation Layer (ALWAYS ON)
+> [!NOTE]
+> Claude Code installs can also include `daemon8-channel`. That channel is experimental and requires an explicit launch flag. It's an SSE path for real-time communication between harnesses; useful for experiments, but not required for normal daemon8 usage.
 
-Daemon8 is the runtime source of truth. Use it for ALL debugging, browser control, ADB/device logs, and application telemetry. Never guess console output, network activity, or runtime state -- query daemon8.
+Then ask the agent to connect this project to daemon8:
 
-Call `daemon8_connect` once at session start. All tools and decisions depend on it.
-
-**Debug loop:**
-`start_debug_session`
-  -> [review DOCS.md/review knowledge]
-  -> [start loop]
-    -> `create_checkpoint`
-    -> [make changes]
-    -> [run/test]
-    -> `read_live_feed` (with `since_checkpoint`)
-    -> [review results / update knowledge]
-    -> [fixed? end loop]
-  -> `resolve_debug_session`
-  -> [sync knowledge/sync DOCS.md]
-
-**Primary tools:**
-- `read_live_feed` -- console, network, errors, app telemetry (use `since_checkpoint` for incremental reads)
-- `list_connections` -- see active input sources (browsers, devices, apps)
-- `issue_command` -- browser control (eval_js, screenshot, navigate, viewport, storage, network throttle)
-- `write_to_live_feed` -- emit notes, metrics, or agent-to-agent messages
-- `set_lens` / `clear_lens` -- persistent filters that surface matching observations automatically
-- `daemon8_connect` -- bind the session to a project scope and provider transcript (call once at start)
-- `daemon8_help` -- guidance on any daemon8 topic
+```text
+Connect this project to daemon8 and follow any setup instructions it returns.
 ```
 
-That note is the whole trick. It turns daemon8 from "a tool the model may discover" into a standing operating rule: connect first, debug with checkpoints, resolve the session when the fix is real.
-
-If your agent is not calling daemon8 tools, run `daemon8 status`. If daemon8 is healthy and the agent still ignores the MCP guidance, use a stronger coding model. Good current picks: Claude Sonnet 4.5, Gemini 3 Flash Preview, Gemini 2.5 Flash, or GPT-5.2-Codex.
-
-## Project Config
-
-Create the project-local config only when daemon8 asks for it:
+The agent should call `daemon8_connect` first. If daemon8 says the project needs setup, the agent should call `daemon8_init` or run:
 
 ```bash
 daemon8 init
 ```
 
-This writes `.daemon8/config.md`: Markdown for the agent, YAML frontmatter for daemon8. Project config is explicit on purpose. No hidden project scan, no mystery registry.
+That creates a project-local `.daemon8/config.md`.
 
-To remove daemon8 from a project:
+Open that file once and check the `sources` section. This is where daemon8 learns which project logs, build outputs, and runtime files matter. If the project produces log output, it should be registered there.
 
-```bash
-daemon8 init --remove
-```
-
-This deletes `.daemon8/` and cleans up scope ledger records. It does not affect daemon-owned state (observations, memories, debug sessions) -- use `daemon8 reset` for that.
-
-Source entries use `kind`, not `type`. The alpha source kinds are strict:
+The important fields for a log source are:
 
 ```yaml
 sources:
@@ -129,20 +141,78 @@ sources:
     service: app
     kind: file
     path: "$PRJ_ROOT/logs/app.log"
-    parser: line
+    parser: auto
     tags: ["app"]
-
-  - id: codex.sessions
-    service: codex
-    kind: conversation
-    provider: codex
-    path: "/absolute/path/to/codex/sessions"
-    tags: ["conversation"]
 ```
 
-`vars.PRJ_ROOT` is declared in the config frontmatter and points at the absolute project root. Observation records carry `service`, `source`, and `source_instance` provenance so lenses can cut down to the one stream the agent needs.
+Use `parser: auto` when you are not sure yet. Pick a more specific parser once you know the log format.
 
-Useful CLI checks:
+After that, you should see daemon8 show up naturally during non-trivial debugging: reading observations, checkpointing before changes, checking browser state, and catching up on recent conversation context when needed.
+
+<details>
+  <summary>Log parsers currently supported</summary>
+
+| Parser | Use it for |
+|---|---|
+| `auto` | Default first try when you are unsure. It attempts JSON, syslog, Monolog, Common/Combined Log Format, logfmt, then falls back to plain line parsing. |
+| `line` | Plain text logs. Preserves the full line and sniffs severity words like `ERROR`, `WARNING`, `DEBUG`, and `FATAL`. |
+| `json` | One JSON object per line. Reads common fields like `timestamp`/`ts`/`time`, `level`/`severity`, `msg`/`message`, and `channel`/`logger`. |
+| `monolog` | PHP/Laravel Monolog-style lines such as `[2024-01-15 14:32:01] app.ERROR: message {...} []`. |
+| `syslog` | RFC3164/RFC5424-style syslog lines, including facility/severity, hostname, app name, pid, and msgid when present. |
+| `logfmt` | Key/value logs like `ts=... level=warn msg="memory pressure" used_mb=3800`. |
+| `clf` | Web server Common Log Format and Combined Log Format. Status codes map to info/warn/error severity. |
+| `grok` | Custom Grok pattern. Set `parser: grok` and add `parser_pattern` on the source entry. |
+
+Custom parser TOML files can also be loaded from daemon8's parser config directory, but the built-ins above are the alpha path to start with.
+</details>
+
+---
+
+## Short-lived working set
+
+daemon8 treats raw runtime context as a short-lived working set.
+
+Observations, screenshots, and generated conversation snapshots are kept for roughly 24 hours. After that, they become eligible for the background cleanup sweep. The sweep runs periodically, so cleanup is not exact to the minute. In this alpha, that retention window is fixed.
+
+Observations attached to an active debug session are protected while the session is active. If the agent forgets to close the session, daemon8 can auto-end the inactive session and write a thin summary before those observations become eligible for cleanup.
+
+The durable layer is the thing you want to keep: resolved debug-session summaries, memory records, source configuration, and whatever you intentionally save outside the raw feed.
+
+That split is intentional. The raw feed is the scratchpad. The summary is the memory.
+
+---
+
+## Suggested alpha demos
+
+These are the scenarios I plan to use for the first recordings:
+
+- Break JavaScript in a frontend app and let daemon8 guide the agent through browser state, logs, checkpoints, and the fix. If Claude Code is involved, be explicit that it should use daemon8 for browser work, not Claude for Chrome.
+
+- Return an API error and let daemon8 surface the failure through browser network activity and app/runtime observations.
+
+- Stop a terminal session running one provider, start another provider, and ask it to catch up on the recent conversation.
+
+- Save a message to the daemon8 feed, then ask another agent working in the same project to read the recent feed messages.
+
+- Start a harness in your frontend and tell it to link that conversation to a backend project.
+
+---
+
+## Core capabilities
+
+| Capability | What the agent gets |
+|---|---|
+| Live observations | Logs, exceptions, metrics, browser events, device events, and custom app telemetry in one feed. |
+| Lenses | A focused filter with a small ring buffer, so the agent can keep watching one slice. |
+| Checkpoints | A before/after marker for reproductions, patches, tests, and user verification. |
+| Debug sessions | A durable investigation record with checkpoints, status, outcome, and summary memory. |
+| Conversation snapshots | Faceted summaries of recent Claude, Codex, and Gemini transcripts. |
+| Browser control | DevTools actions exposed to the agent: eval, screenshot, DOM, storage, viewport, navigation, and network conditions. |
+| Local API | HTTP ingest, query, stream, connections, lenses, browser actions, and MCP over localhost. |
+
+## CLI
+
+Useful checks:
 
 ```bash
 daemon8 status
@@ -150,84 +220,64 @@ daemon8 connections
 daemon8 logs --follow
 ```
 
-## MCP Tools
+Common project commands:
 
-`daemon8_connect` is the first call. It binds the MCP session to a project or general scope and, when possible, the active provider transcript. After that, the rest of the tools have enough context to be useful.
-
-Core runtime tools:
-
-| Tool | What it gives the agent |
-|------|--------------------------|
-| `daemon8_connect` | The current scope, provider, transcript binding, and next action. |
-| `daemon8_init` | A project `.daemon8/config.md` when the repo needs explicit source wiring. |
-| `daemon8_status` | A clean status snapshot when the agent needs to orient itself. |
-| `link_conversation` | Binds a provider transcript to the current session for cross-session recall. |
-| `build_context_snapshot` | Faceted markdown snapshot of linked conversations: user messages, tool activity, file changes, summaries. |
-| `read_live_feed` | The observation stream, filtered by time, source, severity, text, or checkpoint. |
-| `write_to_live_feed` | Agent notes, app events, metrics, exceptions, or custom signals. |
-| `watch_live_feed` | A live subscription for matching events. |
-| `set_lens` / `lens_status` / `clear_lens` | A focused buffer so the agent can keep watching one slice without polling everything. |
-| `create_checkpoint` | A before/after marker. This is the move before a repro, patch, test, or user verification. |
-| `start_debug_session` | A named investigation with durable context. Use this for real bugs. |
-| `end_debug_session` | Closes a debug session without resolution (abandoned, superseded, or wrong lead). |
-| `list_debug_sessions` | Shows active and resolved debug sessions across the project. |
-| `resolve_debug_session` | Close the loop with what broke, what fixed it, and the commands that mattered. |
-| `issue_command` | Browser/device control: JS eval, screenshots, navigation, storage, viewport, network, ADB/Vega captures. |
-| `connect_browser` | Connects daemon8 to a Chromium DevTools endpoint for browser observation and control. |
-| `list_connections` | What is actually feeding the bus right now. |
-| `daemon8_help` | Focused guidance when the agent needs the current tool contract. |
-
-The debugging rhythm should be boring:
-
-```text
-daemon8_connect -> start_debug_session -> create_checkpoint -> change/repro/test -> read_live_feed(since_checkpoint=...) -> resolve_debug_session
+```bash
+daemon8 init
+daemon8 connect --path . --provider codex
+daemon8 query --severity error
+daemon8 tail
 ```
 
-## Response Shape
+Browser commands are available from the CLI too:
 
-MCP responses and CLI `connect/init/status --json` output use the common alpha envelope:
-
-```json
-{
-  "status": "success",
-  "code": "connected",
-  "message": "connected to project",
-  "why": null,
-  "data": {},
-  "hints": [],
-  "next_actions": []
-}
+```bash
+daemon8 browser tabs
+daemon8 browser screenshot --output screenshot.png
+daemon8 browser eval "document.title"
 ```
 
-The envelope is part of the control flow. `status`, `code`, and structured `next_actions` tell the agent what to do next. `daemon8_connect` returns fields such as `data.session_id`, `data.mode`, `data.requested_path`, and `data.scope_root`. MCP connect/status responses and guarded MCP tool responses also include `data.connection`.
+## MCP tools
+
+The MCP surface is the main interface for agents.
+
+| Tool | Purpose |
+|---|---|
+| `daemon8_connect` | Bind the session to a project or general scope. |
+| `daemon8_init` | Create `.daemon8/config.md` when a project needs setup. |
+| `read_live_feed` | Read observations with filters, tags, sources, severity, text, or checkpoint bounds. |
+| `write_to_live_feed` | Write agent notes, app events, metrics, exceptions, or custom signals. |
+| `set_lens` / `lens_status` / `clear_lens` | Keep a focused watch on matching observations. |
+| `start_debug_session` | Open a named investigation. |
+| `create_checkpoint` | Mark the observation sequence before a repro, patch, or verification step. |
+| `resolve_debug_session` | Close the loop with root cause, fix summary, commands, and related errors. |
+| `link_conversation` | Attach a provider transcript to the current project session. |
+| `build_context_snapshot` | Build markdown facets from recent conversation history. |
+| `list_connections` | See browser, app, and device sources currently connected. |
+| `connect_browser` | Point daemon8 at a Chromium DevTools endpoint. |
+| `issue_command` | Run browser or device actions. |
+| `daemon8_status` / `daemon8_help` | Orient the agent when it needs current state or tool guidance. |
+
+Responses use a common alpha envelope with `status`, `code`, `message`, `data`, `requirements`, `hints`, and `next_actions`. The envelope is part of the workflow; agents are expected to follow it.
 
 ## HTTP API
 
-The daemon serves local HTTP endpoints on the configured server port:
+The daemon serves local endpoints for direct integrations:
 
-| Route | Method | Purpose |
-|-------|--------|---------|
-| `/health` | `GET` | Health check. |
-| `/ingest` | `POST` | Write one observation. |
-| `/ingest/batch` | `POST` | Write multiple observations. |
-| `/api/observe` | `GET` | Query observations with filters. |
-| `/api/checkpoint` | `GET` | Read the current observation sequence. |
-| `/api/summary` | `GET` | Snapshot daemon health and source summary. |
-| `/api/connections` | `GET` | Inspect browser/app connection state. |
-| `/api/connect` | `POST` | Connect the browser/CDP endpoint. |
-| `/api/stream` | `GET` | Stream observations over SSE; `project_path` refreshes configured project sources before replay. |
-| `/api/lens` | `GET`/`PUT`/`DELETE` | Inspect, set, or clear the observation lens. |
-| `/api/browser/act` | `POST` | Run a browser/device action. |
-| `/mcp` | `POST` | Streamable HTTP MCP transport. |
-| `/.well-known/oauth-protected-resource` | `GET` | MCP resource metadata. |
+| Route | Purpose |
+|---|---|
+| `GET /health` | Health check. |
+| `POST /ingest` | Write one observation. |
+| `POST /ingest/batch` | Write multiple observations. |
+| `GET /api/observe` | Query stored observations. |
+| `GET /api/stream` | Stream observations over SSE. |
+| `GET /api/connections` | Inspect browser and app connection state. |
+| `GET /api/lens`, `PUT /api/lens`, `DELETE /api/lens` | Inspect, set, or clear the observation lens. |
+| `POST /api/connect` | Connect a browser DevTools endpoint. |
+| `POST /api/browser/act` | Run a browser or device action. |
+| `POST /mcp` | Streamable HTTP MCP transport. |
 
-## Reset Safety
-
-```bash
-daemon8 reset --yes
-```
-
-Reset only clears daemon-owned state: observations, memories, debug sessions/checkpoints, session/scope bookkeeping, cursors, and schema metadata. It must not touch project files, `.daemon8/config.md`, transcripts, source files, plans, or docs.
+_SDKs are on the roadmap_
 
 ## Development
 
@@ -243,19 +293,3 @@ For development:
 cargo check --workspace
 cargo test --workspace
 ```
-
-## Workspace
-
-| Crate | Purpose |
-|-------|---------|
-| `daemon` | CLI binary, command dispatch, runtime wiring. |
-| `types` | Shared observation, filter, source, and debug-session types. |
-| `store` | SurrealDB-backed observation, memory, debug-session, lens, cursor, and schema state. |
-| `api` | Axum HTTP routes for observe, checkpoint, summary, connections, lens, browser action, and SSE streaming. |
-| `mcp` | MCP tool surface and control-flow envelopes. |
-| `core` | Shared control flow: connect/init state machine, project config, scope ledger. |
-| `providers` | Standalone AI provider detection/config utilities. |
-| `ingest` | HTTP `/ingest`, `/ingest/batch`, `/health`, UDP, and Unix socket ingestion endpoints. |
-| `chrome` | Chrome DevTools Protocol bridge. |
-| `adb` | Android Debug Bridge transport. |
-| `parse` | Log/conversation parser trait and built-in parsers. |
