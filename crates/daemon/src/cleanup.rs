@@ -8,7 +8,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
-use daemon8_store::{DebugSessionStore, MemoryStore, StateModel};
+use daemon8_store::{DebugSessionStore, MemoryStore, ScopeLedgerStore, StateModel};
 use daemon8_types::{DebugSessionOutcome, DebugSessionStatus, MemoryKind};
 
 pub const RETENTION_SECS: u64 = 24 * 60 * 60;
@@ -28,6 +28,7 @@ pub struct CleanupCtx {
     pub store: Arc<dyn StateModel>,
     pub debug_session_store: Option<Arc<dyn DebugSessionStore>>,
     pub memory_store: Option<Arc<dyn MemoryStore>>,
+    pub scope_ledger_store: Option<Arc<dyn ScopeLedgerStore>>,
     pub inactivity_auto_end_secs: u64,
 }
 
@@ -35,7 +36,8 @@ pub struct CleanupCtx {
 /// 1) auto-ends debug sessions whose `last_activity` is older than the
 ///    configured inactivity threshold;
 /// 2) deletes stale observations (skipping rows linked to active sessions);
-/// 3) deletes stale screenshot files.
+/// 3) deletes stale screenshot files;
+/// 4) deletes stale project-local context snapshot directories.
 ///
 /// Per-session last_activity flushing is handled by each DaemonMcp instance's
 /// background flush task (B1.6), so the cleanup task only queries the DB.
@@ -77,6 +79,7 @@ pub(crate) async fn run_cleanup_pass(ctx: &CleanupCtx, screenshot_dir: &std::pat
     }
 
     cleanup_screenshots(screenshot_dir);
+    cleanup_project_snapshots(ctx).await;
 }
 
 async fn auto_end_stale_debug_sessions(ctx: &CleanupCtx, now_ns: u64) {
@@ -188,6 +191,39 @@ fn cleanup_screenshots(dir: &std::path::Path) {
     }
 }
 
+async fn cleanup_project_snapshots(ctx: &CleanupCtx) {
+    let Some(ledger) = ctx.scope_ledger_store.as_ref() else {
+        return;
+    };
+    let scopes = match ledger.list_recent_scopes().await {
+        Ok(scopes) => scopes,
+        Err(e) => {
+            tracing::warn!("snapshot cleanup scope lookup failed: {e}");
+            return;
+        }
+    };
+    let now = SystemTime::now();
+    let retention = Duration::from_secs(RETENTION_SECS);
+
+    for scope in scopes {
+        let snapshots_dir = std::path::Path::new(&scope.scope_root)
+            .join(".daemon8")
+            .join("snapshots");
+        match daemon8_ingest::snapshot::cleanup_stale_snapshots(&snapshots_dir, now, retention) {
+            Ok(0) => {}
+            Ok(deleted) => tracing::debug!(
+                deleted,
+                scope_root = %scope.scope_root,
+                "project snapshot cleanup"
+            ),
+            Err(e) => tracing::warn!(
+                scope_root = %scope.scope_root,
+                "project snapshot cleanup failed: {e}"
+            ),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -253,6 +289,7 @@ mod tests {
             store: store.clone(),
             debug_session_store: Some(Arc::new(store.debug_session_store())),
             memory_store: Some(Arc::new(store.memory_store())),
+            scope_ledger_store: Some(Arc::new(store.scope_ledger_store())),
             inactivity_auto_end_secs: threshold_secs,
         }
     }
@@ -375,6 +412,134 @@ mod tests {
             .unwrap();
         assert_eq!(summaries.len(), 1);
         assert!(summaries[0].tags.contains(&"auto_ended:true".to_string()));
+    }
+
+    #[tokio::test]
+    async fn cleanup_pass_removes_stale_project_snapshots() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project");
+        let stale_run = project.join(".daemon8/snapshots/mcp-1/run-old");
+        let fresh_run = project.join(".daemon8/snapshots/mcp-1/run-fresh");
+        let config = project.join(".daemon8/config.md");
+        std::fs::create_dir_all(&stale_run).unwrap();
+        std::fs::create_dir_all(&fresh_run).unwrap();
+        std::fs::write(stale_run.join("summary.md"), "old").unwrap();
+        std::fs::write(fresh_run.join("summary.md"), "fresh").unwrap();
+        std::fs::write(&config, "config").unwrap();
+
+        let past = SystemTime::now() - Duration::from_secs(RETENTION_SECS + 3600);
+        let times = std::fs::FileTimes::new().set_modified(past);
+        std::fs::File::options()
+            .read(true)
+            .open(&stale_run)
+            .unwrap()
+            .set_times(times)
+            .unwrap();
+
+        let store = Arc::new(SurrealStore::memory().await.unwrap());
+        store
+            .scope_ledger_store()
+            .record_recent_scope(daemon8_store::RecentScopeRecord {
+                id: None,
+                mode: "project".into(),
+                requested_path: project.display().to_string(),
+                scope_root: project.display().to_string(),
+                provider: Some("codex".into()),
+                agent_name: None,
+                session_id: Some("mcp-1".into()),
+                project_name: Some("project".into()),
+                source_count: Some(1),
+                first_seen_at: 1,
+                last_seen_at: 2,
+            })
+            .await
+            .unwrap();
+
+        let ctx = build_ctx(store, 4 * 3600);
+        run_cleanup_pass(&ctx, tmp.path().join("screenshots").as_path()).await;
+
+        assert!(!stale_run.exists(), "stale snapshot run should be deleted");
+        assert!(fresh_run.exists(), "fresh snapshot run should be kept");
+        assert!(config.exists(), "project config must never be deleted");
+    }
+
+    #[tokio::test]
+    async fn cleanup_pass_tolerates_missing_project_snapshots_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project");
+        std::fs::create_dir_all(project.join(".daemon8")).unwrap();
+
+        let store = Arc::new(SurrealStore::memory().await.unwrap());
+        store
+            .scope_ledger_store()
+            .record_recent_scope(daemon8_store::RecentScopeRecord {
+                id: None,
+                mode: "project".into(),
+                requested_path: project.display().to_string(),
+                scope_root: project.display().to_string(),
+                provider: Some("codex".into()),
+                agent_name: None,
+                session_id: Some("mcp-1".into()),
+                project_name: Some("project".into()),
+                source_count: Some(1),
+                first_seen_at: 1,
+                last_seen_at: 2,
+            })
+            .await
+            .unwrap();
+
+        let ctx = build_ctx(store, 4 * 3600);
+        run_cleanup_pass(&ctx, tmp.path().join("screenshots").as_path()).await;
+
+        assert!(!project.join(".daemon8/snapshots").exists());
+    }
+
+    #[tokio::test]
+    async fn cleanup_pass_scans_all_known_project_snapshot_dirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Arc::new(SurrealStore::memory().await.unwrap());
+        let stale_project = tmp.path().join("project-00");
+        let stale_run = stale_project.join(".daemon8/snapshots/mcp-1/run-old");
+        std::fs::create_dir_all(&stale_run).unwrap();
+        std::fs::write(stale_run.join("summary.md"), "old").unwrap();
+
+        let past = SystemTime::now() - Duration::from_secs(RETENTION_SECS + 3600);
+        let times = std::fs::FileTimes::new().set_modified(past);
+        std::fs::File::options()
+            .read(true)
+            .open(&stale_run)
+            .unwrap()
+            .set_times(times)
+            .unwrap();
+
+        for index in 0..55 {
+            let project = tmp.path().join(format!("project-{index:02}"));
+            store
+                .scope_ledger_store()
+                .record_recent_scope(daemon8_store::RecentScopeRecord {
+                    id: None,
+                    mode: "project".into(),
+                    requested_path: project.display().to_string(),
+                    scope_root: project.display().to_string(),
+                    provider: Some("codex".into()),
+                    agent_name: None,
+                    session_id: Some("mcp-1".into()),
+                    project_name: Some(format!("project-{index:02}")),
+                    source_count: Some(1),
+                    first_seen_at: index,
+                    last_seen_at: index,
+                })
+                .await
+                .unwrap();
+        }
+
+        let ctx = build_ctx(store, 4 * 3600);
+        run_cleanup_pass(&ctx, tmp.path().join("screenshots").as_path()).await;
+
+        assert!(
+            !stale_run.exists(),
+            "snapshot cleanup should not be limited to the 50 most recent scopes"
+        );
     }
 
     /// Per-MCP-session flush tasks (B1.6) replaced the global flush_active_last_activity.

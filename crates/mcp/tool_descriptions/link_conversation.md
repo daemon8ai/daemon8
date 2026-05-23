@@ -1,10 +1,10 @@
 ## Purpose
 
-Link an additional conversation transcript from another AI provider to the current project session. Linked transcripts become available through `read_live_feed` queries and `build_context_snapshot` faceted decomposition.
+Link a conversation transcript from another AI provider to the current project session. Linked transcripts become available to `build_context_snapshot`.
 
 ## When
 
-You know another AI agent (Claude, Codex, Gemini) has worked on this project and you want its conversation history available as observations. Use after `daemon8_connect` in project scope.
+You know another AI agent (Claude, Codex, Gemini) has worked on this project and you want its conversation history available for faceted catch-up. Use after `daemon8_connect` in project scope.
 
 ## Prereq
 
@@ -16,10 +16,10 @@ Project-scoped connection via `daemon8_connect`.
   - transcript_path: optional string. Absolute path to a specific transcript file to link directly.
   - conversation_lookback_hours: optional discovery lookback when using project_path. When omitted, daemon8 includes the current project workday starting at the earliest matching project conversation modified today, falling back to local midnight.
 
-At least one of `project_path` or `transcript_path` must be provided. If both are given, `transcript_path` takes precedence for the file, and `project_path` is recorded as the scope root. When linking a candidate returned by `daemon8_connect`, prefer passing that candidate's `transcript_path`; otherwise repeat the same `conversation_lookback_hours` used during connect.
+One of `project_path` or `transcript_path` required. Both given → `transcript_path` takes precedence. When linking a `daemon8_connect` candidate, pass its `transcript_path` directly; otherwise repeat the same `conversation_lookback_hours`.
 
 ## Returns
-Common envelope with `data` containing the linked transcript metadata: provider, path, scope_root, linked_at. Linking is idempotent: linking the same transcript path again returns the existing link without duplicating. Linked transcripts use `linked.transcript.{provider}.{hash}` source IDs to avoid cursor collisions with the primary transcript.
+Common envelope with linked transcript metadata: provider, path, scope_root, linked_at. Idempotent -- relinking returns the existing link.
 
 ## Errors
   - invalid_provider: unrecognized provider id or alias.
@@ -30,4 +30,4 @@ Common envelope with `data` containing the linked transcript metadata: provider,
 
 ## Next
 
-Call `build_context_snapshot` to decompose linked conversation history into faceted markdown. For real-time project observations, use `read_live_feed` with `service` or `source` filters.
+Call `build_context_snapshot` to decompose linked conversation history into faceted markdown. For real-time project observations, use `read_live_feed` with `service` or `source` filters against configured file sources and live ingested observations.

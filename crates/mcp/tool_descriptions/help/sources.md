@@ -1,6 +1,6 @@
 # Sources
 
-Sources are the runtime signals daemon8 watches -- log files, build output, error streams, and conversation transcripts. They are declared in `.daemon8/config.md` under the `sources:` frontmatter key. Without sources, daemon8 has no visibility into the project.
+Sources are the runtime signals daemon8 watches -- log files, build output, and error streams. They are declared in `.daemon8/config.md` under the `sources:` frontmatter key. Without file sources, daemon8 has no live project visibility.
 
 ## File sources
 
@@ -17,7 +17,7 @@ Fields:
 
 ## Conversation sources
 
-Conversation sources watch a project-owned directory for provider transcripts.
+Conversation sources declare a curated project-owned transcript path. They are config metadata today, not live-feed read-through sources. For current cross-provider catch-up, use `daemon8_connect` / `link_conversation` and then `build_context_snapshot`.
 
 Fields:
 - `id` -- unique identifier (e.g. "project.codex.sessions")
@@ -76,12 +76,10 @@ If these return nothing, ask the user for the path or command.
 
 ## Related projects
 
-Declare sibling projects (frontend/backend pairs, API + mobile app) under `related_projects` in config frontmatter:
+Declare sibling projects under `related_projects` in config frontmatter so agents can see the relationship during `daemon8_connect`. Automatic cross-project query expansion is not implemented today.
 
 ```yaml
 related_projects:
   frontend:
     path: "$PRJ_ROOT/../frontend"
 ```
-
-Related projects share observation context and conversation discovery.

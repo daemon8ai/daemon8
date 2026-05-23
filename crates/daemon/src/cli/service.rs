@@ -19,30 +19,29 @@ const SETUP_PROVIDERS: &[Provider] = &[Provider::ClaudeCode, Provider::Gemini, P
 const INSTRUCTION_HEADING: &str = "## Daemon8 -- Runtime Observation Layer (ALWAYS ON)";
 const INSTRUCTION_BLOCK: &str = r#"## Daemon8 -- Runtime Observation Layer (ALWAYS ON)
 
-Daemon8 is the runtime source of truth. Use it for ALL debugging, browser control, ADB/device logs, and application telemetry. Never guess console output, network activity, or runtime state -- query daemon8.
+Daemon8 is the runtime awareness layer for this agent. Use it for debugging, app logs, browser control, device logs, and recent cross-provider conversation context. Never guess console output, network activity, DOM state, application logs, or what another agent already tried -- query daemon8.
 
-Call `daemon8_connect` once at session start. All tools and decisions depend on it.
+Call `daemon8_connect` once at session start. If it returns `setup_required`, call `daemon8_init`, complete `.daemon8/config.md`, and then reconnect. Treat daemon8 response `requirements` and `next_actions` as control flow, not optional advice.
 
-**Debug loop:**
-`start_debug_session`
-  -> [review DOCS.md/review knowledge]
-  -> start loop
-    -> `create_checkpoint`
-    -> [make changes]
-    -> [run/test]
-    -> `read_live_feed` (with `since_checkpoint`)
-    -> [review results / update knowledge]
-    -> fixed? end loop
-  -> `resolve_debug_session`
-  -> [sync knowledge/sync DOCS.md]
+When catching up on prior work or another provider's session, use `link_conversation` and `build_context_snapshot` before assuming context is missing.
+
+For real bugs, use the checkpointed loop:
+`daemon8_connect`
+  -> `start_debug_session`
+  -> `create_checkpoint`
+  -> [reproduce/change/test]
+  -> `read_live_feed` with `since_checkpoint`
+  -> repeat until the evidence explains the result
+  -> `resolve_debug_session` with the root cause, fix, and commands that mattered
 
 **Primary tools:**
 - `read_live_feed` -- console, network, errors, app telemetry (use `since_checkpoint` for incremental reads)
-- `list_connections` -- see active input sources (browsers, devices, apps)
+- `link_conversation` / `build_context_snapshot` -- recent cross-provider project context
 - `issue_command` -- browser control (eval_js, screenshot, navigate, viewport, storage, network throttle)
+- `list_connections` -- see active input sources (browsers, devices, apps)
 - `write_to_live_feed` -- emit notes, metrics, or agent-to-agent messages
 - `set_lens` / `clear_lens` -- persistent filters that surface matching observations automatically
-- `daemon8_connect` -- bind the session to a project scope and provider transcript (call once at start)
+- `start_debug_session` / `create_checkpoint` / `resolve_debug_session` -- durable investigations with before/after evidence
 - `daemon8_help` -- guidance on any daemon8 topic
 "#;
 

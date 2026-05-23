@@ -33,4 +33,4 @@ Common envelope with `data.observations`, `data.summary.total`, optional `data.l
 
 ## Next
 
-Call `create_checkpoint` before testing a fix. Treat returned observations as runtime signals only; record durable conclusions through `resolve_debug_session` after interpreting what the signal means.
+Call `create_checkpoint` before testing a fix. Observations are runtime signals -- record durable conclusions via `resolve_debug_session`.

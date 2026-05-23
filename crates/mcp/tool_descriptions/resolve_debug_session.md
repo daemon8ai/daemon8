@@ -1,6 +1,6 @@
 ## Purpose
 
-Close the active debug session WITH a captured fix. Writes a typed SessionSummary for future error/session recall. THIS is the high-value operation — every field you fill in here makes the fix more retrievable later.
+Close the active debug session with a captured fix. Writes a typed SessionSummary for future error/session recall. Every field filled increases future retrievability.
 
 ## When
 
@@ -14,7 +14,7 @@ A connected project-scope MCP session (`data.connection.mode == "project"`) and 
   - summary: REQUIRED. One paragraph in your own words: what was wrong, what you tried, what fixed it. The single field that future search will hit hardest. Be specific.
   - root_cause: optional one-sentence "the real reason this broke" — distinguishes the fix from the symptom. Worth filling in.
   - fix_diff: optional unified-diff or short patch string. Even partial is valuable.
-  - commands_used: optional array of CLI commands that were part of the investigation or fix (e.g. ["pg_dump …", "rg 'TimeoutError'"]). Conversation/tool observation sources capture tool activity; this field is the curated subset that mattered.
+  - commands_used: optional array of CLI commands from the investigation (e.g. ["pg_dump …", "rg 'TimeoutError'"]). The curated subset that mattered -- tool activity is captured separately.
   - related_errors: optional array of error_hash strings from read_live_feed that this fix resolves. Lets future occurrences of those errors surface this session.
   - tags: optional array of additional tags ("auth", "race-condition", "flaky-test"). These join automatic tags ("kind:debug_session_summary", project_slug) on the SessionSummary.
 

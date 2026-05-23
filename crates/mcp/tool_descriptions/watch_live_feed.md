@@ -4,7 +4,7 @@ Configure which observations trigger live MCP alerts (notifications/message) in 
 
 ## When
 
-Call to watch for a specific failure pattern, monitor a particular app, or listen for inter-agent messages on a known origin. Default subscribes to severity >= warn.
+Watch for a specific failure pattern, monitor an app, or listen for inter-agent messages. Default: severity >= warn.
 
 ## Prereq
 

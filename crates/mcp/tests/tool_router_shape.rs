@@ -871,6 +871,57 @@ async fn daemon8_connect_succeeds_with_file_source_config() {
 }
 
 #[tokio::test]
+async fn daemon8_connect_guides_generated_body_replacement() {
+    let mcp = make_mcp_with_writer().await;
+    let tmp = tempfile::tempdir().unwrap();
+    mark_project(tmp.path());
+    std::fs::write(tmp.path().join("artisan"), "#!/usr/bin/env php").unwrap();
+    std::fs::write(tmp.path().join("composer.json"), "{}").unwrap();
+
+    let init = mcp
+        .daemon8_init_for_tests(Daemon8InitParams {
+            project_path: tmp.path().display().to_string(),
+            name: Some("laravel-project".into()),
+            overwrite: None,
+            ignore: None,
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&init).unwrap();
+    assert_eq!(parsed["status"], "success");
+
+    let connect = mcp
+        .daemon8_connect_for_tests(Daemon8ConnectParams {
+            provider: "codex".into(),
+            project_path: tmp.path().display().to_string(),
+            agent_name: None,
+            transcript_path: None,
+            conversation_lookback_hours: None,
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&connect).unwrap();
+    assert_eq!(parsed["status"], "success");
+    assert!(parsed["data"]["source_count"].as_u64().unwrap() > 0);
+    assert_eq!(
+        parsed["data"]["config_body_status"],
+        "generated_setup_instructions_present"
+    );
+    assert_eq!(
+        parsed["data"]["config_body_action"],
+        "replace_with_project_notes"
+    );
+    assert!(
+        parsed["requirements"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|req| req
+                .as_str()
+                .unwrap()
+                .contains("Do not repeat log paths or sources"))
+    );
+}
+
+#[tokio::test]
 async fn daemon8_connect_succeeds_with_conversation_source_config() {
     let mcp = make_mcp_with_writer().await;
     let tmp = tempfile::tempdir().unwrap();
@@ -2629,7 +2680,7 @@ async fn build_context_snapshot_with_transcript() {
     assert!(!data["facets"].as_object().unwrap().is_empty());
 
     let snapshot_path = data["snapshot_path"].as_str().unwrap();
-    let snapshot_dir = std::path::Path::new(snapshot_path);
+    let snapshot_dir = std::path::PathBuf::from(snapshot_path);
     assert!(
         snapshot_dir.join("user-messages.md").exists(),
         "user-messages.md should exist"
@@ -2672,6 +2723,20 @@ async fn build_context_snapshot_with_transcript() {
     let parsed: serde_json::Value = serde_json::from_str(&snap_subset).unwrap();
     assert_eq!(parsed["status"], "success");
     assert_eq!(parsed["data"]["facets"].as_object().unwrap().len(), 1);
+    let second_snapshot_dir =
+        std::path::PathBuf::from(parsed["data"]["snapshot_path"].as_str().unwrap());
+    assert_ne!(
+        snapshot_dir, second_snapshot_dir,
+        "each snapshot build should get a unique run directory"
+    );
+    assert!(
+        snapshot_dir.exists(),
+        "first snapshot should not be overwritten"
+    );
+    assert!(
+        second_snapshot_dir.exists(),
+        "second snapshot should be written separately"
+    );
 }
 
 #[tokio::test]

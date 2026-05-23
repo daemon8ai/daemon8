@@ -4,7 +4,7 @@ Enumerate debug sessions, optionally filtered by status or feature. Used to resu
 
 ## When
 
-Looking for "what was I working on yesterday", "which sessions are still open", "is anyone else investigating the 'auth' feature", or "show me recent resolved fixes for project X".
+Triggers: "what was I working on?", checking open sessions, discovering overlapping agent work on a feature, reviewing recent resolved fixes.
 
 ## Prereq
 

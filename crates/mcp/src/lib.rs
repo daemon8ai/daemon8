@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use daemon8_core::control::{
     AlphaEnvelope, AlphaStatus, ConnectRequest, LinkConversationRequest, NextAction, ScopeMode,
@@ -33,10 +33,24 @@ use help::FeatureGate;
 
 const INSTRUCTIONS: &str = include_str!("../tool_descriptions/instructions.md");
 static MCP_SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
+static SNAPSHOT_RUN_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 fn next_mcp_session_id() -> String {
     let id = MCP_SESSION_COUNTER.fetch_add(1, Ordering::Relaxed);
     format!("mcp-{id}")
+}
+
+fn snapshot_run_dir(scope_root: &Path, session_id: &str) -> PathBuf {
+    let now_ns = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let id = SNAPSHOT_RUN_COUNTER.fetch_add(1, Ordering::Relaxed);
+    scope_root
+        .join(".daemon8")
+        .join("snapshots")
+        .join(session_id)
+        .join(format!("{now_ns}-{id}"))
 }
 
 pub struct DeviceScreenshotResult {
@@ -2541,16 +2555,11 @@ impl DaemonMcp {
             );
         }
 
-        let output_dir = scope_root_path
-            .join(".daemon8")
-            .join("snapshots")
-            .join(&session_id);
-
         let request = daemon8_ingest::snapshot::SnapshotRequest {
             since,
             facets: params.facets.unwrap_or_default(),
             sources,
-            output_dir,
+            output_dir: snapshot_run_dir(&scope_root_path, &session_id),
         };
 
         match daemon8_ingest::snapshot::build_snapshot(&request) {

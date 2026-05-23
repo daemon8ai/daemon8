@@ -14,4 +14,4 @@ Same shape as `read_live_feed`: `kinds`, `severity_min`, `origins`, `service`, `
 
 ## Why
 
-Lens is push-side filtering against the live broadcast. Querying with the same filter is pull-side. Use lens when you want continuous capture of "everything matching X" without burning round trips on `read_live_feed(text_match="X")` between every action.
+Lens is push-side filtering against the live broadcast. Use when you need continuous capture of "everything matching X" without polling `read_live_feed` between actions.

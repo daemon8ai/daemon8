@@ -278,6 +278,24 @@ impl ScopeLedgerStore for SurrealScopeLedgerStore {
         })
     }
 
+    async fn list_recent_scopes(&self) -> Result<Vec<RecentScopeRecord>, StoreError> {
+        let mut result = self
+            .db
+            .query("SELECT * FROM recent_scope ORDER BY last_seen_at DESC")
+            .await
+            .map_err(|e| StoreError::Db(format!("list recent scopes: {e}")))?;
+
+        let recent_raw: Vec<serde_json::Value> = result
+            .take(0)
+            .map_err(|e| StoreError::Db(format!("list recent scopes read: {e}")))?;
+
+        recent_raw
+            .into_iter()
+            .map(|val| serde_json::from_value(rehydrate_id(val, "recent_scope")))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
     async fn remove_scope_records(&self, scope_root: &str) -> Result<usize, StoreError> {
         let sql = "
             DELETE FROM recent_scope WHERE scope_root = $root;

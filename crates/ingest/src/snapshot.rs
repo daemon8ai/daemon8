@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use daemon8_parse::ConversationEvent;
 
@@ -79,10 +79,10 @@ pub fn build_snapshot(request: &SnapshotRequest) -> Result<SnapshotResult, Snaps
         return Err(SnapshotError::NoSources);
     }
 
-    if request.output_dir.exists() {
-        std::fs::remove_dir_all(&request.output_dir).map_err(SnapshotError::OutputDir)?;
+    if let Some(parent) = request.output_dir.parent() {
+        std::fs::create_dir_all(parent).map_err(SnapshotError::OutputDir)?;
     }
-    std::fs::create_dir_all(&request.output_dir).map_err(SnapshotError::OutputDir)?;
+    std::fs::create_dir(&request.output_dir).map_err(SnapshotError::OutputDir)?;
 
     let cutoff = resolve_since_cutoff_ns(&request.since);
     let mut all_events: Vec<ConversationEvent> = Vec::new();
@@ -455,19 +455,85 @@ fn build_summary_facet(events: &[ConversationEvent]) -> (String, usize) {
     (out, count)
 }
 
-pub fn cleanup_session_snapshots(snapshot_dir: &Path) -> std::io::Result<()> {
-    if snapshot_dir.exists() {
-        std::fs::remove_dir_all(snapshot_dir)?;
+pub fn cleanup_stale_snapshots(
+    snapshots_dir: &Path,
+    now: SystemTime,
+    retention: Duration,
+) -> std::io::Result<u64> {
+    let session_dirs = match std::fs::read_dir(snapshots_dir) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(err) => return Err(err),
+    };
+
+    let mut deleted = 0;
+    for session in session_dirs {
+        let session = session?;
+        let session_path = session.path();
+        if !session.file_type()?.is_dir() {
+            continue;
+        }
+
+        if is_stale_snapshot_dir(&session_path, now, retention)? {
+            std::fs::remove_dir_all(&session_path)?;
+            deleted += 1;
+            continue;
+        }
+
+        let mut session_empty = true;
+        for run in std::fs::read_dir(&session_path)? {
+            let run = run?;
+            let run_path = run.path();
+            session_empty = false;
+            if run.file_type()?.is_dir() && is_stale_dir(&run_path, now, retention)? {
+                std::fs::remove_dir_all(&run_path)?;
+                deleted += 1;
+            }
+        }
+
+        if !session_empty && session_path.read_dir()?.next().is_none() {
+            std::fs::remove_dir(&session_path)?;
+        }
     }
-    Ok(())
+
+    Ok(deleted)
 }
 
-pub fn cleanup_all_snapshots(daemon8_dir: &Path) -> std::io::Result<()> {
-    let snapshots_dir = daemon8_dir.join("snapshots");
-    if snapshots_dir.exists() {
-        std::fs::remove_dir_all(&snapshots_dir)?;
+fn is_stale_snapshot_dir(
+    path: &Path,
+    now: SystemTime,
+    retention: Duration,
+) -> std::io::Result<bool> {
+    if contains_facet_files(path)? && !contains_child_dirs(path)? {
+        return is_stale_dir(path, now, retention);
     }
-    Ok(())
+    Ok(false)
+}
+
+fn contains_child_dirs(path: &Path) -> std::io::Result<bool> {
+    for entry in std::fs::read_dir(path)? {
+        if entry?.file_type()?.is_dir() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn contains_facet_files(path: &Path) -> std::io::Result<bool> {
+    for entry in std::fs::read_dir(path)? {
+        let entry = entry?;
+        if entry.file_type()?.is_file()
+            && entry.path().extension().and_then(|ext| ext.to_str()) == Some("md")
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn is_stale_dir(path: &Path, now: SystemTime, retention: Duration) -> std::io::Result<bool> {
+    let modified = path.metadata()?.modified()?;
+    Ok(now.duration_since(modified).unwrap_or_default() > retention)
 }
 
 #[cfg(test)]
@@ -694,7 +760,7 @@ mod tests {
     }
 
     #[test]
-    fn build_snapshot_replaces_previous() {
+    fn build_snapshot_rejects_existing_output_dir() {
         let tmp = tempfile::tempdir().unwrap();
         let transcript = tmp.path().join("session.jsonl");
         std::fs::write(
@@ -719,10 +785,13 @@ mod tests {
         let stale = output_dir.join("stale-marker.txt");
         std::fs::write(&stale, "leftover").unwrap();
 
-        let _second = build_snapshot(&request).unwrap();
+        assert!(matches!(
+            build_snapshot(&request),
+            Err(SnapshotError::OutputDir(_))
+        ));
         assert!(
-            !stale.exists(),
-            "previous snapshot dir should be wiped clean"
+            stale.exists(),
+            "existing snapshot dir must not be deleted as normal build behavior"
         );
     }
 
@@ -853,23 +922,109 @@ mod tests {
     }
 
     #[test]
-    fn cleanup_session_snapshots_removes_dir() {
+    fn cleanup_stale_snapshots_removes_old_run_dir() {
         let tmp = tempfile::tempdir().unwrap();
-        let snap_dir = tmp.path().join("snapshots").join("sess1");
-        std::fs::create_dir_all(&snap_dir).unwrap();
-        std::fs::write(snap_dir.join("test.md"), "data").unwrap();
-        cleanup_session_snapshots(&snap_dir).unwrap();
-        assert!(!snap_dir.exists());
+        let snapshots = tmp.path().join(".daemon8/snapshots");
+        let run_dir = snapshots.join("sess1/run1");
+        std::fs::create_dir_all(&run_dir).unwrap();
+        std::fs::write(run_dir.join("summary.md"), "data").unwrap();
+        set_dir_modified(
+            &run_dir,
+            SystemTime::now() - Duration::from_secs(25 * 60 * 60),
+        );
+
+        let deleted = cleanup_stale_snapshots(
+            &snapshots,
+            SystemTime::now(),
+            Duration::from_secs(24 * 60 * 60),
+        )
+        .unwrap();
+
+        assert_eq!(deleted, 1);
+        assert!(!run_dir.exists());
+        assert!(!snapshots.join("sess1").exists());
     }
 
     #[test]
-    fn cleanup_all_snapshots_removes_parent() {
+    fn cleanup_stale_snapshots_keeps_fresh_run_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let snapshots = tmp.path().join(".daemon8/snapshots");
+        let run_dir = snapshots.join("sess1/run1");
+        std::fs::create_dir_all(&run_dir).unwrap();
+        std::fs::write(run_dir.join("summary.md"), "data").unwrap();
+
+        let deleted = cleanup_stale_snapshots(
+            &snapshots,
+            SystemTime::now(),
+            Duration::from_secs(24 * 60 * 60),
+        )
+        .unwrap();
+
+        assert_eq!(deleted, 0);
+        assert!(run_dir.exists());
+    }
+
+    #[test]
+    fn cleanup_stale_snapshots_removes_legacy_session_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let snapshots = tmp.path().join(".daemon8/snapshots");
+        let legacy_dir = snapshots.join("sess1");
+        std::fs::create_dir_all(&legacy_dir).unwrap();
+        std::fs::write(legacy_dir.join("summary.md"), "data").unwrap();
+        set_dir_modified(
+            &legacy_dir,
+            SystemTime::now() - Duration::from_secs(25 * 60 * 60),
+        );
+
+        let deleted = cleanup_stale_snapshots(
+            &snapshots,
+            SystemTime::now(),
+            Duration::from_secs(24 * 60 * 60),
+        )
+        .unwrap();
+
+        assert_eq!(deleted, 1);
+        assert!(!legacy_dir.exists());
+    }
+
+    #[test]
+    fn cleanup_stale_snapshots_leaves_daemon8_sibling_files() {
         let tmp = tempfile::tempdir().unwrap();
         let daemon8_dir = tmp.path().join(".daemon8");
         let snapshots = daemon8_dir.join("snapshots");
-        std::fs::create_dir_all(snapshots.join("sess1")).unwrap();
-        cleanup_all_snapshots(&daemon8_dir).unwrap();
-        assert!(!snapshots.exists());
+        let config = daemon8_dir.join("config.md");
+        let other = daemon8_dir.join("notes.txt");
+        std::fs::create_dir_all(&snapshots).unwrap();
+        std::fs::write(&config, "config").unwrap();
+        std::fs::write(&other, "notes").unwrap();
+
+        let deleted = cleanup_stale_snapshots(
+            &snapshots,
+            SystemTime::now() + Duration::from_secs(25 * 60 * 60),
+            Duration::from_secs(24 * 60 * 60),
+        )
+        .unwrap();
+
+        assert_eq!(deleted, 0);
+        assert!(config.exists());
+        assert!(other.exists());
+    }
+
+    #[test]
+    fn cleanup_stale_snapshots_surfaces_unreadable_snapshot_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let snapshots = tmp.path().join(".daemon8/snapshots");
+        std::fs::create_dir_all(snapshots.parent().unwrap()).unwrap();
+        std::fs::write(&snapshots, "not a directory").unwrap();
+
+        let err = cleanup_stale_snapshots(
+            &snapshots,
+            SystemTime::now(),
+            Duration::from_secs(24 * 60 * 60),
+        )
+        .unwrap_err();
+
+        assert_eq!(err.kind(), std::io::ErrorKind::NotADirectory);
     }
 
     #[test]
@@ -908,6 +1063,16 @@ mod tests {
         assert!(content.contains("recent prompt"));
         assert!(!content.contains("old prompt"));
         assert_eq!(result.facets["user_messages"].entry_count, 1);
+    }
+
+    fn set_dir_modified(path: &Path, modified: SystemTime) {
+        let times = std::fs::FileTimes::new().set_modified(modified);
+        std::fs::File::options()
+            .read(true)
+            .open(path)
+            .unwrap()
+            .set_times(times)
+            .unwrap();
     }
 
     #[test]

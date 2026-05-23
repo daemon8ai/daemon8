@@ -173,6 +173,9 @@ fn print_envelope_guidance(envelope: &AlphaEnvelope) {
     if let Some(why) = &envelope.why {
         println!("{why}");
     }
+    for requirement in &envelope.requirements {
+        println!("{requirement}");
+    }
     for action in &envelope.next_actions {
         println!("next: {} ({})", action.tool, action.reason);
     }

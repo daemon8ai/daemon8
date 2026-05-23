@@ -4,7 +4,7 @@ List active browser and application connections feeding observations into the da
 
 ## When
 
-Call to confirm the daemon is receiving telemetry from the expected source, or to diagnose missing observations -- a source not listed is not connected.
+Confirm the daemon receives telemetry from the expected source, or diagnose missing observations -- unlisted sources are not connected.
 
 ## Prereq
 

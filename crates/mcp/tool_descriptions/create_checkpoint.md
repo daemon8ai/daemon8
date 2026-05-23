@@ -1,8 +1,8 @@
 ## Purpose
 
-Bookmark a moment in the observation stream. Used to ask "what happened since this point" — typically right before applying a change you might want to roll back through, or before a verification step.
+Bookmark a moment in the observation stream. Call right before applying a change or running a verification step -- pair with `read_live_feed(since_checkpoint=...)` to see only what changed.
 
-Checkpoint ids and returned observations are runtime signals. They explain what changed, but the agent still has to interpret the signal before recording a durable conclusion.
+Checkpoint data is a runtime signal -- interpret before recording durable conclusions via `resolve_debug_session`.
 
 ## When
 

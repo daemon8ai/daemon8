@@ -1,6 +1,6 @@
 ## Purpose
 
-Install a per-session observation filter (lens) plus a ring buffer. Matching observations accumulate behind the scenes; subsequent `read_live_feed` calls auto-include the buffered matches.
+Install a per-session observation filter. Matching observations accumulate; subsequent `read_live_feed` calls auto-include buffered matches.
 
 ## When
 

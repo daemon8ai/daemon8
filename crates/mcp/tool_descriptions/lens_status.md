@@ -4,7 +4,7 @@ Inspect the active lens (if any) and the ring buffer behind it. Read-only.
 
 ## When
 
-Call to verify the lens filter matches expectations, check buffer depth before `read_live_feed` (deep buffer means the next query will return many matches), or confirm the lens survived a long session.
+Verify lens filter matches expectations, check buffer depth, or confirm lens survived a long session.
 
 ## Prereq
 

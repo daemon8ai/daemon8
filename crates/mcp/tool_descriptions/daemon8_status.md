@@ -16,9 +16,11 @@ none.
 
 ## Returns
 
-Common envelope with summary data in `data`, including `connection` when this MCP session is connected. A project connection includes `connection.transcript_path` when an active transcript is bound. The `scope_ledger.recent_scopes` and `scope_ledger.recent_failures` fields contain scope history.
+Common envelope with daemon health in `data`, including `connection` when this MCP session is connected. Project connections include `connection.transcript_path` only when a transcript is bound. `scope_ledger.recent_scopes` and `scope_ledger.recent_failures` contain scope history.
 
-If `data.connection` is null, this MCP session has no bound scope -- call `daemon8_connect` before project work because project-scoped tools require a bound session. If `data.connection.mode` is "general", reconnect with a project path to unlock project-scoped tools. If sources show zero entries, the project config needs source population.
+- `data.connection` null → call `daemon8_connect` before project work.
+- `data.connection.mode == "general"` → reconnect with a project path for project-scoped tools.
+- Sources show zero entries → project config needs source population.
 
 ## Errors
 

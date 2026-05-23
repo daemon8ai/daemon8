@@ -5,9 +5,9 @@ A debug session is the lifecycle that bookends a debugging investigation. Every 
 ## Lifecycle
 
 0. `daemon8_connect(provider, project_path)` — bind this MCP session to project mode before starting a debug session.
-1. `start_debug_session(agent_id, project?, description?, feature?)` — opens a session. `agent_id` is required in format `:host/tool+role>` (e.g. `:mbp/claude+plan-agent>`). Errors if one is already active in THIS MCP session. Other agents can each have their own active session simultaneously. Returns `debug_session_id`. Follow with `create_checkpoint` before the action you want to compare.
+1. `start_debug_session(agent_id, project?, description?, feature?)` — opens a session. Errors if one is already active in this MCP session. Other agents can each have their own active session simultaneously. Returns `debug_session_id`. Follow with `create_checkpoint`.
 2. `create_checkpoint(description)` — bookmark a moment. Required prereq: a connected project-mode session and an active debug session. Returns `checkpoint_id` plus `seq_at_creation`. Pair with `read_live_feed(since_checkpoint=<seq_at_creation>)` to see only what came after.
-3. `resolve_debug_session(summary, root_cause?, fix_diff?, commands_used?, related_errors?, tags?)` — close on success with rich capture. Writes a SessionSummary of kind `session_summary`. Every optional field you fill in increases retrievability when a similar error recurs.
+3. `resolve_debug_session(summary, root_cause?, fix_diff?, commands_used?, related_errors?, tags?)` — close on success with rich capture. Writes a SessionSummary of kind `session_summary`. Each optional field increases future retrievability.
 4. `end_debug_session(outcome)` — close without a fix (abandoned). Writes a thin SessionSummary so the row never silently disappears.
 
 ## Multi-agent coordination
@@ -20,7 +20,7 @@ Multiple agents (Claude Code, Codex, Gemini — in separate MCP sessions) can ea
 
 ## Auto-end safety net
 
-If a session has no activity for 4 hours, daemon8 marks it `abandoned` and writes a thin SessionSummary automatically. Observations from auto-ended sessions then become eligible for the 24-hour reaper.
+No activity for 4 hours → daemon8 marks the session `abandoned` with a thin SessionSummary. Auto-ended observations become eligible for the 24-hour reaper.
 
 ## Source observation linkage
 

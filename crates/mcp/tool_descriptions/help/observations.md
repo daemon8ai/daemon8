@@ -25,7 +25,7 @@ Observations are the raw runtime telemetry stream — logs, queries, exceptions,
 
 ## Per-observation linkage
 
-While an active debug session exists, observations ingested through that session's MCP connection get `debug_session_id` and (if a checkpoint is set) `checkpoint_id` stamped automatically. Error observations also get `error_hash` computed and first-sight promotion to an internal error signature record.
+MCP-written observations from `write_to_live_feed` get the active `debug_session_id`, and get `checkpoint_id` when a checkpoint exists. Error observations written through that path also get `error_hash` and first-sight error signature promotion. File read-through and external runtime sources keep their own provenance.
 
 ## Search
 

@@ -9,7 +9,9 @@ use serde_json::{Value, json};
 use crate::control::{
     AlphaEnvelope, AlphaStatus, NextAction, ScopeCandidate, ScopeMode, classify_scope,
 };
-use crate::project_config::{PROJECT_CONFIG_SCHEMA, parse_project_config_str, slugify};
+use crate::project_config::{
+    PROJECT_CONFIG_SCHEMA, parse_project_config_str, slugify, split_project_config,
+};
 
 pub const PROJECT_CONFIG_DIR: &str = ".daemon8";
 pub const PROJECT_CONFIG_FILENAME: &str = "config.md";
@@ -32,6 +34,39 @@ pub struct DetectedStack {
     pub languages: Vec<String>,
     pub frameworks: Vec<String>,
     pub tools: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigBodyStatus {
+    GeneratedSetupInstructionsPresent,
+    ProjectNotes,
+}
+
+impl ConfigBodyStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::GeneratedSetupInstructionsPresent => "generated_setup_instructions_present",
+            Self::ProjectNotes => "project_notes",
+        }
+    }
+
+    pub fn action(self) -> Option<&'static str> {
+        match self {
+            Self::GeneratedSetupInstructionsPresent => Some("replace_with_project_notes"),
+            Self::ProjectNotes => None,
+        }
+    }
+}
+
+pub fn config_body_status(input: &str) -> ConfigBodyStatus {
+    let Ok((_, body)) = split_project_config(input) else {
+        return ConfigBodyStatus::ProjectNotes;
+    };
+    if contains_generated_setup_instructions(body) {
+        ConfigBodyStatus::GeneratedSetupInstructionsPresent
+    } else {
+        ConfigBodyStatus::ProjectNotes
+    }
 }
 
 pub fn init_project(request: InitRequest) -> InitOutcome {
@@ -237,6 +272,11 @@ pub fn init_project(request: InitRequest) -> InitOutcome {
             "source_count": config.sources.len(),
         }),
     );
+    let requirement = if config.sources.is_empty() {
+        "REQUIRED: open .daemon8/config.md and complete ALL steps in the markdown body before proceeding. The config is not usable until sources are populated."
+    } else {
+        "REQUIRED: open .daemon8/config.md, verify the generated frontmatter, confirm the source list with the user, and replace the generated markdown body with concise project-specific notes before proceeding."
+    };
 
     InitOutcome {
         envelope: AlphaEnvelope::success("initialized", "project config written", data)
@@ -245,7 +285,7 @@ pub fn init_project(request: InitRequest) -> InitOutcome {
                 "connect this MCP session to the initialized project",
                 json!({"project_path": scope_root.display().to_string()}),
             ))
-            .with_requirement("REQUIRED: open .daemon8/config.md and complete ALL steps in the markdown body before proceeding. The config is not usable until sources are populated."),
+            .with_requirement(requirement),
         config_path: Some(config_path),
     }
 }
@@ -429,6 +469,22 @@ fn render_sources_yaml(sources: &[crate::detect::SourceSuggestion]) -> String {
         ));
     }
     yaml
+}
+
+fn contains_generated_setup_instructions(body: &str) -> bool {
+    generated_body_with_sources_present(body) || generated_body_empty_sources_present(body)
+}
+
+fn generated_body_with_sources_present(body: &str) -> bool {
+    body.contains("daemon8 detected ecosystem markers and pre-populated")
+        && body.contains("Complete the steps below to finalize the config.")
+        && body.contains("Present the updated config to the user")
+}
+
+fn generated_body_empty_sources_present(body: &str) -> bool {
+    body.contains("REQUIRED: This config is incomplete. daemon8 cannot observe this project until")
+        && body.contains("You MUST build a complete picture of this project before adding sources.")
+        && body.contains("After completing Steps 1 and 2, present the updated config to the user")
 }
 
 const CONFIG_BODY_WITH_SOURCES: &str = r##"# daemon8 project config
@@ -633,6 +689,72 @@ mod tests {
         assert!(!out.contains("kind: sqlite"));
         assert!(!out.contains("kind: log"));
         assert!(!out.contains("type ="));
+    }
+
+    #[test]
+    fn generated_empty_source_body_is_detected() {
+        let root = Path::new("/tmp/my-app");
+        let stack = DetectedStack {
+            languages: vec!["rust".into()],
+            frameworks: Vec::new(),
+            tools: vec!["cargo".into()],
+        };
+        let out = render_project_config("my-app", root, &stack, &[]);
+
+        assert_eq!(
+            config_body_status(&out),
+            ConfigBodyStatus::GeneratedSetupInstructionsPresent
+        );
+    }
+
+    #[test]
+    fn generated_auto_source_body_is_detected() {
+        let root = Path::new("/tmp/my-app");
+        let stack = DetectedStack {
+            languages: vec!["php".into()],
+            frameworks: vec!["laravel".into()],
+            tools: vec!["composer".into()],
+        };
+        let sources = vec![crate::detect::SourceSuggestion {
+            id: "laravel.logs".into(),
+            service: "laravel".into(),
+            path: "storage/logs/laravel.log".into(),
+            parser: "monolog".into(),
+        }];
+        let out = render_project_config("my-app", root, &stack, &sources);
+
+        assert_eq!(
+            config_body_status(&out),
+            ConfigBodyStatus::GeneratedSetupInstructionsPresent
+        );
+    }
+
+    #[test]
+    fn custom_body_is_project_notes() {
+        let input = r#"---
+daemon8_schema: 1
+---
+# daemon8
+"#;
+
+        assert_eq!(config_body_status(input), ConfigBodyStatus::ProjectNotes);
+    }
+
+    #[test]
+    fn generated_body_with_appended_notes_still_needs_replacement() {
+        let root = Path::new("/tmp/my-app");
+        let stack = DetectedStack {
+            languages: vec!["rust".into()],
+            frameworks: Vec::new(),
+            tools: vec!["cargo".into()],
+        };
+        let mut out = render_project_config("my-app", root, &stack, &[]);
+        out.push_str("\n## Local Notes\nRun cargo test before release.\n");
+
+        assert_eq!(
+            config_body_status(&out),
+            ConfigBodyStatus::GeneratedSetupInstructionsPresent
+        );
     }
 
     #[test]

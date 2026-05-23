@@ -21,7 +21,7 @@ An explicit `project_path`.
 
 Common envelope. Success returns `code=initialized` with a `requirements` field listing mandatory actions. The `requirements` field is NOT optional -- every listed action MUST be completed before proceeding. daemon8 returns `status=blocked`, `code=config_exists` when a config already exists and `overwrite` is false. With `ignore=true`, returns `code=project_ignored`. With `ignore=false`, returns `code=project_unignored` with a `next_action` to retry `daemon8_connect`.
 
-The generated config includes `project.id` (a slug derived from the project name) used for structured tag scoping. Structured tags (`project:`, `lang:`, `framework:`, `tool:`) are derived automatically from the config's stack metadata and applied to all observations from this project.
+The generated config includes `project.id` (slug from project name). Structured tags (`project:`, `lang:`, `framework:`, `tool:`) derive from stack metadata and apply to all observations automatically.
 
 ## Errors
   - invalid_scope: the supplied path cannot be resolved or used as a daemon8 project.
@@ -29,11 +29,11 @@ The generated config includes `project.id` (a slug derived from the project name
 
 ## Requirements
 
-After a successful init, the config may have auto-detected sources or an empty `sources: []` array depending on whether daemon8 recognized the project's ecosystem. Sources are the runtime signals daemon8 watches -- logs, build output, error streams, and similar files -- so it can surface what is happening in real time. daemon8 links provider catch-up transcripts at runtime through `daemon8_connect` / `link_conversation`; do not add broad global provider transcript directories such as `~/.claude/projects` to `.daemon8/config.md` during setup. daemon8 supports explicit, intentionally curated conversation sources when the project owns that transcript path. The config is NOT usable until you verify and complete it. You MUST complete ALL of the following steps. Do NOT skip or defer any step.
+After init, the config may have auto-detected sources or an empty `sources: []` depending on ecosystem recognition. Sources are the runtime signals daemon8 watches -- logs, build output, error streams. **Do not** add broad provider directories (`~/.claude/projects`) -- daemon8 links transcripts at runtime via `daemon8_connect` / `link_conversation`. The config is **not usable** until all steps below are complete.
 
 ### STEP 1: Verify and complete the stack
 
-daemon8 auto-detects languages, frameworks, and tools from ecosystem markers (package manager files, framework config files, build files). The auto-detected values may be substantially correct but are NOT guaranteed complete. You MUST:
+daemon8 auto-detects languages, frameworks, and tools from ecosystem markers. Auto-detection may be incomplete. **Verify and complete:**
 
 1. Read ALL package manager files to identify every dependency across the ENTIRE project: package.json, Cargo.toml, composer.json, pyproject.toml, go.mod, Gemfile, and their lock files.
 
@@ -60,10 +60,14 @@ Use runtime tools to discover log paths programmatically. Call `daemon8_help(top
 
 ### STEP 3: Confirm with the user
 
-After completing Steps 1 and 2, explain the sources in user terms, present the updated config, and ask: "Does this config look thorough? Are there other log files, build outputs, or services I should add?" Also ask: "Are there related projects -- a frontend, backend, API, mobile app, or docs site -- that share context with this one?" If yes, add them under `related_projects`. Do NOT proceed without user confirmation.
+Present the updated config and ask: "Does this config look thorough? Are there other log files, build outputs, or services I should add?" Also ask about related projects (frontend, backend, API, mobile app). Add confirmed ones under `related_projects`. **Do not proceed without user confirmation.**
+
+### STEP 4: Replace generated config body
+
+The generated config body contains daemon8's setup instructions. After completing Steps 1-3, **replace** the markdown body (everything after the frontmatter `---`) with concise project-specific notes: dev/test commands, service startup, build outputs, environment assumptions, project-specific gotchas. Do not repeat sources or stack already in frontmatter. `daemon8_connect` will continue flagging this as a requirement until the generated instructions are replaced.
 
 ## Next
 
 Retry `daemon8_connect` after a successful init. If the connect response includes a `requirements` field, complete every listed action before doing any other work -- daemon8 has no visibility into the project without sources.
 
-After connect succeeds post-init, orient the user with a cohesive handoff. State how many sources daemon8 is watching and name them. Mention any discovered conversations by provider. Summarize what daemon8 can do from here: real-time log monitoring via `read_live_feed`, before/after comparisons via `create_checkpoint`, cross-session awareness via `build_context_snapshot`, and structured debugging via `start_debug_session`.
+After connect succeeds post-init, state source count and names, mention discovered conversations by provider, summarize capabilities: `read_live_feed`, `create_checkpoint`, `build_context_snapshot`, `start_debug_session`.

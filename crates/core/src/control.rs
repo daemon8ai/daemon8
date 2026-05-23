@@ -11,7 +11,15 @@ use daemon8_providers::transcripts::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::project_config::{ProjectConfigError, parse_project_config_file};
+use crate::init::{ConfigBodyStatus, config_body_status};
+use crate::project_config::parse_project_config_str;
+
+const GENERATED_CONFIG_BODY_REQUIREMENT: &str = concat!(
+    "REQUIRED: .daemon8/config.md still contains daemon8's generated setup instructions. ",
+    "Replace the markdown body after the frontmatter with concise project-specific notes an LLM should know whenever it checks this config. ",
+    "Do not repeat log paths or sources already listed in frontmatter. ",
+    "Use this area for non-log operational context: important executables, dev/test commands, service startup notes, build outputs, generated artifacts, environment assumptions, project-specific gotchas, and config constraints.",
+);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -314,20 +322,27 @@ fn connect_project(
         };
     }
 
-    let config = match parse_project_config_file(&config_path) {
-        Ok(config) => config,
-        Err(ProjectConfigError::Read { path, source }) => {
+    let config_contents = match std::fs::read_to_string(&config_path) {
+        Ok(contents) => contents,
+        Err(source) => {
             return ConnectOutcome {
                 envelope: AlphaEnvelope::non_success(
                     AlphaStatus::Blocked,
                     "config_unreadable",
                     "project config cannot be read",
-                    format!("daemon8 cannot safely repair {}: {source}", path.display()),
+                    format!(
+                        "daemon8 cannot safely repair {}: {source}",
+                        config_path.display()
+                    ),
                 )
                 .with_data(common_data),
                 connection: None,
             };
         }
+    };
+    let body_status = config_body_status(&config_contents);
+    let config = match parse_project_config_str(&config_contents) {
+        Ok(config) => config,
         Err(err) => {
             return ConnectOutcome {
                 envelope: AlphaEnvelope::non_success(
@@ -371,6 +386,10 @@ fn connect_project(
     data["project_name"] = json!(config.project.name);
     data["source_count"] = json!(config.sources.len());
     data["config_path"] = json!(config_path.display().to_string());
+    data["config_body_status"] = json!(body_status.as_str());
+    if let Some(action) = body_status.action() {
+        data["config_body_action"] = json!(action);
+    }
     if !config.related_projects.is_empty() {
         data["related_projects"] = json!(config.related_projects.keys().collect::<Vec<_>>());
     }
@@ -380,6 +399,9 @@ fn connect_project(
         envelope = envelope.with_requirement(
             "REQUIRED: sources is empty. Open .daemon8/config.md and complete ALL steps in the markdown body NOW. daemon8 cannot observe this project without sources.",
         );
+    }
+    if body_status == ConfigBodyStatus::GeneratedSetupInstructionsPresent {
+        envelope = envelope.with_requirement(GENERATED_CONFIG_BODY_REQUIREMENT);
     }
 
     ConnectOutcome {
@@ -848,6 +870,64 @@ mod tests {
         let outcome = connect(request(&file));
         assert_eq!(outcome.envelope.status, AlphaStatus::Error);
         assert_eq!(outcome.envelope.code, "invalid_scope");
+    }
+
+    #[test]
+    fn generated_empty_source_body_adds_body_requirement() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
+        write_project_config(tmp.path());
+
+        let outcome = connect(request(tmp.path()));
+
+        assert_eq!(outcome.envelope.status, AlphaStatus::Success);
+        assert_eq!(outcome.envelope.requirements.len(), 2);
+        assert!(
+            outcome
+                .envelope
+                .requirements
+                .iter()
+                .any(|req| req.contains("sources is empty"))
+        );
+        assert!(
+            outcome
+                .envelope
+                .requirements
+                .iter()
+                .any(|req| req.contains("generated setup instructions"))
+        );
+        let data = outcome.envelope.data.unwrap();
+        assert_eq!(
+            data["config_body_status"],
+            "generated_setup_instructions_present"
+        );
+        assert_eq!(data["config_body_action"], "replace_with_project_notes");
+    }
+
+    #[test]
+    fn generated_auto_source_body_adds_body_requirement() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("artisan"), "#!/usr/bin/env php").unwrap();
+        std::fs::write(tmp.path().join("composer.json"), "{}").unwrap();
+        std::fs::write(tmp.path().join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
+        write_project_config(tmp.path());
+
+        let outcome = connect(request(tmp.path()));
+
+        assert_eq!(outcome.envelope.status, AlphaStatus::Success);
+        assert_eq!(outcome.envelope.requirements.len(), 1);
+        assert!(
+            outcome.envelope.requirements[0].contains("Do not repeat log paths or sources"),
+            "{:?}",
+            outcome.envelope.requirements
+        );
+        let data = outcome.envelope.data.unwrap();
+        assert!(data["source_count"].as_u64().unwrap() > 0);
+        assert_eq!(
+            data["config_body_status"],
+            "generated_setup_instructions_present"
+        );
+        assert_eq!(data["config_body_action"], "replace_with_project_notes");
     }
 
     #[test]

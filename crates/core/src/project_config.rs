@@ -105,7 +105,7 @@ pub struct ConversationSource {
 }
 
 pub fn parse_project_config_str(input: &str) -> Result<ProjectConfig> {
-    let frontmatter = extract_frontmatter(input)?;
+    let (frontmatter, _) = split_project_config(input)?;
     let config: ProjectConfig = serde_norway::from_str(frontmatter)
         .map_err(|err| ProjectConfigError::InvalidYaml(err.to_string()))?;
     validate_project_config(&config)?;
@@ -225,7 +225,7 @@ pub fn validate_project_config(config: &ProjectConfig) -> Result<()> {
     Ok(())
 }
 
-fn extract_frontmatter(input: &str) -> Result<&str> {
+pub fn split_project_config(input: &str) -> Result<(&str, &str)> {
     let mut lines = input.lines();
     let Some(first) = lines.next() else {
         return Err(ProjectConfigError::MissingFrontmatter);
@@ -253,7 +253,7 @@ fn extract_frontmatter(input: &str) -> Result<&str> {
             offset += 1;
         }
         if line.trim() == "---" {
-            return Ok(&input[start..line_start]);
+            return Ok((&input[start..line_start], &input[offset..]));
         }
     }
 

@@ -4,11 +4,11 @@ Issue a browser DevTools command (eval_js, screenshot, inject_css, navigate, sto
 
 ## When
 
-Reading DOM state, capturing visual proof of a fix, prototyping CSS, simulating mobile/network conditions, or driving any browser action that's not pure observation.
+Read DOM state, capture visual proof, prototype CSS, simulate conditions, or drive any non-observation browser action.
 
 ## Prereq
 
-A connected MCP session and a connected browser. Call `daemon8_connect` first. Browser auto-connect handles localhost:9222; use `connect_browser` for non-standard endpoints.
+Connected MCP session + connected browser. Browser auto-connects on localhost:9222; use `connect_browser` for non-standard endpoints.
 
 ## Args
   - action: required string. One of: eval_js, screenshot, inject_css, revert_css, list_tabs, get_perf_metrics, get_dom, set_viewport, clear_viewport, network_conditions, navigate, storage_clear, storage_inspect, storage_set, element_at_point, new_tab, close_tab.

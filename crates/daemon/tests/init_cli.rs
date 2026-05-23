@@ -825,6 +825,35 @@ fn cli_connect_after_init_returns_connected_json() {
 }
 
 #[test]
+fn cli_connect_human_prints_generated_body_requirement() {
+    let (_tmp, work, home) = setup_dirs();
+    mark_project(&work);
+    let init = run_init(&work, &home, &[]);
+    assert!(
+        init.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+
+    let out = run_connect(
+        &work,
+        &home,
+        &["--path", work.to_str().unwrap(), "--provider", "codex"],
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("connected to project"));
+    assert!(stdout.contains("REQUIRED:"));
+    assert!(stdout.contains("generated setup instructions"));
+    assert!(stdout.contains("Do not repeat log paths or sources"));
+}
+
+#[test]
 fn cli_connect_succeeds_with_project_source_config() {
     let (_tmp, work, home) = setup_dirs();
     mark_project(&work);

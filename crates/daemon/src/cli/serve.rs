@@ -108,6 +108,7 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
             store: store.clone(),
             debug_session_store: Some(debug_session_store.clone()),
             memory_store: Some(memory_store.clone()),
+            scope_ledger_store: Some(scope_ledger_store.clone()),
             inactivity_auto_end_secs: cfg
                 .debug_session
                 .inactivity_auto_end_secs
