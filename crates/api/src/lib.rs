@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: LicenseRef-FCL-1.0-ALv2
 // Copyright (c) 2026 Havy.tech, LLC
 
+use std::collections::HashMap;
 use std::convert::Infallible;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -14,8 +16,8 @@ use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post};
 use daemon8_chrome::BrowserAction;
 use daemon8_mcp::ChromeCommand;
-use daemon8_store::{LensManager, StateModel};
-use daemon8_types::{Checkpoint, Filter, Observation};
+use daemon8_store::{CursorStore, LensManager, StateModel};
+use daemon8_types::{Checkpoint, Filter, Observation, SliceSummary, StateSlice};
 use serde::Deserialize;
 use tokio::sync::broadcast::error::RecvError;
 use tokio_stream::wrappers::ReceiverStream;
@@ -29,6 +31,7 @@ pub struct ApiState {
     pub chrome_state: tokio::sync::watch::Receiver<daemon8_chrome::ConnectionState>,
     pub chrome_endpoint: Arc<std::sync::Mutex<Option<Arc<str>>>>,
     pub lens: Arc<LensManager>,
+    pub cursor_store: Option<Arc<dyn CursorStore>>,
 }
 
 pub fn api_router(state: ApiState) -> Router {
@@ -155,18 +158,14 @@ pub enum ActRequest {
     },
     StorageSet {
         tab_id: Option<String>,
-        #[serde(default = "default_store_type")]
         store_type: String,
-        #[serde(default)]
         storage_key: String,
         #[serde(default)]
         storage_value: String,
     },
     ElementAtPoint {
         tab_id: Option<String>,
-        #[serde(default)]
         x: f64,
-        #[serde(default)]
         y: f64,
     },
     NewTab {
@@ -202,10 +201,6 @@ fn default_new_tab_url() -> String {
 fn default_storage_types() -> String {
     "all".into()
 }
-fn default_store_type() -> String {
-    "localstorage".into()
-}
-
 /// Shared parser used by `handle_observe` and `handle_stream`. Unknown values
 /// inside each comma-separated list are logged and skipped; the overall parse
 /// never fails.
@@ -298,7 +293,9 @@ sources:
         )
         .unwrap();
 
-        let store: Arc<dyn StateModel> = Arc::new(SurrealStore::memory().await.unwrap());
+        let surreal_store = Arc::new(SurrealStore::memory().await.unwrap());
+        let cursor_store: Arc<dyn CursorStore> = Arc::new(surreal_store.cursor_store());
+        let store: Arc<dyn StateModel> = surreal_store;
         let (stream_tx, _) = tokio::sync::broadcast::channel(16);
         let (chrome_cmd_tx, _) = tokio::sync::mpsc::channel(16);
         let (_, chrome_state) =
@@ -310,12 +307,13 @@ sources:
             chrome_state,
             chrome_endpoint: Arc::new(std::sync::Mutex::new(None)),
             lens: Arc::new(LensManager::new(stream_tx.subscribe())),
+            cursor_store: Some(cursor_store),
         };
         (api_router(state), tmp)
     }
 
     #[tokio::test]
-    async fn observe_does_not_trigger_sources_even_with_project_path() {
+    async fn observe_refreshes_sources_with_project_path() {
         let (app, tmp) = app_with_store().await;
         let uri = format!(
             "/api/observe?project_path={}&source=cargo.check",
@@ -333,7 +331,11 @@ sources:
         assert_eq!(resp.status(), StatusCode::OK);
         let body: serde_json::Value =
             serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
-        assert_eq!(body["observations"].as_array().unwrap().len(), 0);
+        let observations = body["observations"].as_array().unwrap();
+        assert_eq!(observations.len(), 1);
+        assert_eq!(observations[0]["data"]["message"], "cargo check one");
+        assert_eq!(body["summary"]["total"], 1);
+        assert_eq!(body["summary"]["counts_by_kind"]["log"], 1);
     }
 
     #[tokio::test]
@@ -364,6 +366,7 @@ async fn handle_observe(
     State(state): State<ApiState>,
     Query(params): Query<ObserveQueryParams>,
 ) -> Response {
+    let project_path = params.project_path;
     let filter = parse_filter(FilterInput {
         kinds: params.kinds,
         severity_min: params.severity_min,
@@ -381,7 +384,30 @@ async fn handle_observe(
 
     match state.store.query(&filter).await {
         Ok(slice) => {
-            let body = serde_json::to_value(slice).unwrap_or_default();
+            let mut observations = slice.observations;
+            match read_through_project_sources(
+                project_path.as_deref(),
+                &filter,
+                state.cursor_store.as_ref(),
+            )
+            .await
+            {
+                Ok(mut refreshed) => observations.append(&mut refreshed),
+                Err(message) => return error_json(StatusCode::BAD_REQUEST, message),
+            }
+            observations.sort_by_key(|obs| obs.timestamp_ns);
+            if let Some(limit) = filter.limit
+                && observations.len() > limit
+            {
+                let start = observations.len() - limit;
+                observations = observations.split_off(start);
+            }
+            let body = serde_json::to_value(StateSlice {
+                summary: summarize_observations(&observations),
+                observations,
+                checkpoint: slice.checkpoint,
+            })
+            .unwrap_or_default();
             (StatusCode::OK, Json(body)).into_response()
         }
         Err(e) => error_json(
@@ -389,6 +415,63 @@ async fn handle_observe(
             format!("query failed: {e}"),
         ),
     }
+}
+
+fn summarize_observations(observations: &[Observation]) -> SliceSummary {
+    let mut counts_by_kind: HashMap<String, usize> = HashMap::new();
+    let mut counts_by_severity: HashMap<String, usize> = HashMap::new();
+
+    for obs in observations {
+        *counts_by_kind
+            .entry(obs.kind.tag().to_string())
+            .or_default() += 1;
+        *counts_by_severity
+            .entry(obs.severity.to_string())
+            .or_default() += 1;
+    }
+
+    SliceSummary {
+        total: observations.len(),
+        counts_by_kind,
+        counts_by_severity,
+    }
+}
+
+async fn read_through_project_sources(
+    project_path: Option<&str>,
+    filter: &Filter,
+    cursor_store: Option<&Arc<dyn CursorStore>>,
+) -> Result<Vec<Observation>, String> {
+    let Some(project_path) = project_path else {
+        return Ok(Vec::new());
+    };
+    let Some(cursor_store) = cursor_store else {
+        return Ok(Vec::new());
+    };
+
+    let scope_root = Path::new(project_path);
+    let config_path = scope_root.join(".daemon8/config.md");
+    let config = daemon8_core::project_config::parse_project_config_file(&config_path)
+        .map_err(|err| format!("failed to read project config: {err}"))?;
+
+    let mut read_filter = filter.clone();
+    read_filter.since = None;
+    let result = daemon8_ingest::read_through::read_through_file_sources(
+        scope_root,
+        &config,
+        &read_filter,
+        cursor_store.as_ref(),
+    )
+    .await;
+    for err in result.errors {
+        warn!(
+            source = %err.source_id,
+            "read-through: {}: {}",
+            err.code,
+            err.message,
+        );
+    }
+    Ok(result.observations)
 }
 
 async fn handle_checkpoint(State(state): State<ApiState>) -> Response {
@@ -538,6 +621,25 @@ async fn emit_replay(
     Ok(highest)
 }
 
+async fn emit_read_through(
+    tx: &tokio::sync::mpsc::Sender<Result<Event, Infallible>>,
+    observations: Vec<Observation>,
+) -> Result<(), ()> {
+    for obs in observations {
+        let json = match serde_json::to_string(&obs) {
+            Ok(s) => s,
+            Err(e) => {
+                warn!("failed to serialize read-through observation: {e}");
+                continue;
+            }
+        };
+        if tx.send(Ok(Event::default().data(json))).await.is_err() {
+            return Err(());
+        }
+    }
+    Ok(())
+}
+
 async fn handle_stream(
     State(state): State<ApiState>,
     Query(params): Query<StreamQueryParams>,
@@ -549,6 +651,7 @@ async fn handle_stream(
     // overflow.
     let mut broadcast_rx = state.stream_tx.subscribe();
 
+    let project_path = params.project_path;
     let filter = parse_filter(FilterInput {
         kinds: params.kinds,
         severity_min: params.severity_min,
@@ -570,13 +673,24 @@ async fn handle_stream(
         .and_then(|s| s.trim().parse().ok());
 
     let store = state.store.clone();
+    let cursor_store = state.cursor_store.clone();
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(256);
 
     tokio::spawn(async move {
         let mut max_replayed_id: u64 = 0;
         let mut last_sent_id: u64 = 0;
 
-        // Phase 1 — historical replay driven by Last-Event-ID.
+        match read_through_project_sources(project_path.as_deref(), &filter, cursor_store.as_ref())
+            .await
+        {
+            Ok(observations) => {
+                if emit_read_through(&tx, observations).await.is_err() {
+                    return;
+                }
+            }
+            Err(message) => warn!("{message}"),
+        }
+
         if let Some(since_id) = last_event_id {
             // Gap detection: if the store's oldest retained id is greater than
             // since_id + 1, some observations the client expects are gone.

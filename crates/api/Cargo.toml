@@ -13,6 +13,7 @@ daemon8-store.workspace = true
 daemon8-mcp.workspace = true
 daemon8-chrome.workspace = true
 daemon8-ingest.workspace = true
+daemon8-core.workspace = true
 axum.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
-use super::ServiceIdentity;
+use super::{HookIdentity, ServiceIdentity};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum LogLevel {
@@ -161,7 +161,7 @@ pub trait HookProvider: AiProvider {
         cwd: &Path,
         home: &Path,
         force: bool,
-        service: &ServiceIdentity,
+        identity: &HookIdentity,
     ) -> Result<PathBuf>;
 
     fn list_hooks(
@@ -169,7 +169,7 @@ pub trait HookProvider: AiProvider {
         scope: HookScope,
         cwd: &Path,
         home: &Path,
-        service: &ServiceIdentity,
+        identity: &HookIdentity,
     ) -> Result<Vec<InstalledHookEntry>>;
 
     fn remove_hooks(
@@ -177,7 +177,7 @@ pub trait HookProvider: AiProvider {
         scope: HookScope,
         cwd: &Path,
         home: &Path,
-        service: &ServiceIdentity,
+        identity: &HookIdentity,
     ) -> Result<Option<PathBuf>>;
 
     fn update_hooks(
@@ -185,8 +185,8 @@ pub trait HookProvider: AiProvider {
         scope: HookScope,
         cwd: &Path,
         home: &Path,
-        service: &ServiceIdentity,
+        identity: &HookIdentity,
     ) -> Result<PathBuf> {
-        self.install_hooks(scope, cwd, home, true, service)
+        self.install_hooks(scope, cwd, home, true, identity)
     }
 }

@@ -9,8 +9,8 @@ use daemon8_chrome::ConnectionState;
 use daemon8_mcp::{
     ActParams, BuildContextSnapshotParams, CreateCheckpointParams, Daemon8ConnectParams,
     Daemon8InitParams, DaemonMcp, DaemonMcpConfig, DebugAction, IngestParams,
-    LinkConversationParams, ObserveParams, StartDebugSessionParams, TOOL_POLICY_TABLE, ToolPolicy,
-    tool_policy,
+    LinkConversationParams, ListDebugSessionsParams, ObserveParams, StartDebugSessionParams,
+    TOOL_POLICY_TABLE, ToolPolicy, tool_policy,
 };
 use daemon8_store::StateModel;
 use daemon8_types::{Filter, Observation};
@@ -130,7 +130,7 @@ async fn make_mcp_with_debug_and_writer() -> DaemonMcp {
     let store_for_writer = store.clone();
     tokio::spawn(async move {
         while let Some(obs) = obs_rx.recv().await {
-            let _ = store_for_writer.insert(obs).await;
+            let _ = store_for_writer.insert(&obs).await;
         }
     });
 
@@ -230,7 +230,7 @@ async fn make_mcp_with_writer_in_home(home_dir: PathBuf) -> DaemonMcp {
     let store_for_writer = store.clone();
     tokio::spawn(async move {
         while let Some(obs) = obs_rx.recv().await {
-            let _ = store_for_writer.insert(obs).await;
+            let _ = store_for_writer.insert(&obs).await;
         }
     });
 
@@ -267,7 +267,7 @@ async fn make_mcp_with_read_through() -> DaemonMcp {
     let store_for_writer = store.clone();
     tokio::spawn(async move {
         while let Some(obs) = obs_rx.recv().await {
-            let _ = store_for_writer.insert(obs).await;
+            let _ = store_for_writer.insert(&obs).await;
         }
     });
     let (chrome_tx, _) = tokio::sync::mpsc::channel(16);
@@ -2211,6 +2211,64 @@ async fn already_active_debug_session_prefers_resolution_before_abandoning() {
 }
 
 #[tokio::test]
+async fn active_debug_session_flush_persists_touched_activity() {
+    let mcp = make_mcp_with_debug_and_writer().await;
+    let start = mcp
+        .start_debug_session_for_tests(StartDebugSessionParams {
+            project: Some("daemon8".into()),
+            description: Some("touch coverage".into()),
+            agent_id: ":host/codex+agent>".into(),
+            feature: Some("flush".into()),
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&start).unwrap();
+    assert_eq!(parsed["status"], "success");
+
+    let before = mcp
+        .list_debug_sessions_for_tests(ListDebugSessionsParams {
+            status: Some("active".into()),
+            feature: Some("flush".into()),
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&before).unwrap();
+    let before_activity = parsed["data"]["sessions"][0]["last_activity"]
+        .as_u64()
+        .unwrap();
+
+    tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    mcp.write_to_live_feed_for_tests(IngestParams {
+        kind: Some("log".into()),
+        severity: Some("info".into()),
+        app: Some("agent".into()),
+        channel: None,
+        correlation_id: None,
+        parent_id: None,
+        tags: None,
+        session_id: None,
+        node_id: None,
+        service: Some("agent".into()),
+        source: Some("agent.notes".into()),
+        source_instance: Some("mcp".into()),
+        data: serde_json::json!({"message": "activity"}),
+    })
+    .await;
+    mcp.flush_active_debug_session_for_tests().await.unwrap();
+
+    let after = mcp
+        .list_debug_sessions_for_tests(ListDebugSessionsParams {
+            status: Some("active".into()),
+            feature: Some("flush".into()),
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&after).unwrap();
+    let after_activity = parsed["data"]["sessions"][0]["last_activity"]
+        .as_u64()
+        .unwrap();
+
+    assert!(after_activity > before_activity);
+}
+
+#[tokio::test]
 async fn project_mode_allows_project_only_debug_tools() {
     let mcp = make_mcp_with_debug().await;
     let project = tempfile::tempdir().unwrap();
@@ -2999,7 +3057,7 @@ async fn concurrent_sessions_read_live_feed_without_wedge() {
     let store_for_writer = store.clone();
     tokio::spawn(async move {
         while let Some(obs) = obs_rx.recv().await {
-            let _ = store_for_writer.insert(obs).await;
+            let _ = store_for_writer.insert(&obs).await;
         }
     });
     let (broadcast_tx, _) = tokio::sync::broadcast::channel::<(Arc<Observation>, Arc<str>)>(16);
@@ -3079,7 +3137,7 @@ async fn concurrent_read_and_write_live_feed() {
     let store_for_writer = store.clone();
     tokio::spawn(async move {
         while let Some(obs) = obs_rx.recv().await {
-            let _ = store_for_writer.insert(obs).await;
+            let _ = store_for_writer.insert(&obs).await;
         }
     });
     let (broadcast_tx, _) = tokio::sync::broadcast::channel::<(Arc<Observation>, Arc<str>)>(16);
@@ -3179,7 +3237,7 @@ async fn concurrent_sessions_with_growing_file() {
     let store_for_writer = store.clone();
     tokio::spawn(async move {
         while let Some(obs) = obs_rx.recv().await {
-            let _ = store_for_writer.insert(obs).await;
+            let _ = store_for_writer.insert(&obs).await;
         }
     });
     let (broadcast_tx, _) = tokio::sync::broadcast::channel::<(Arc<Observation>, Arc<str>)>(16);

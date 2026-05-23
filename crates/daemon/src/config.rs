@@ -295,8 +295,7 @@ impl Default for McpConfig {
     }
 }
 
-#[allow(clippy::result_large_err)]
-pub fn load(config_path: Option<&str>) -> Result<Config, figment::Error> {
+pub fn load(config_path: Option<&str>) -> Result<Config, Box<figment::Error>> {
     use figment::Figment;
     use figment::providers::{Env, Format, Serialized, Toml};
 
@@ -321,7 +320,7 @@ pub fn load(config_path: Option<&str>) -> Result<Config, figment::Error> {
             .filter(|key| is_config_env_key(key.as_str())),
     );
 
-    let mut cfg: Config = figment.extract()?;
+    let mut cfg: Config = figment.extract().map_err(Box::new)?;
 
     cfg.config_dir = if config_file.exists() {
         config_file

@@ -22,8 +22,6 @@ struct CustomParserToml {
 #[derive(Deserialize)]
 struct ParserMeta {
     name: String,
-    #[allow(dead_code)]
-    version: Option<String>,
 }
 
 #[derive(Deserialize)]

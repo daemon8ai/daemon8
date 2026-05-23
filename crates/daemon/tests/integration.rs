@@ -169,8 +169,7 @@ async fn start_server(
     // stamp id on obs, serialize once, broadcast the tuple.
     tokio::spawn(async move {
         while let Some(mut obs) = obs_rx.recv().await {
-            let insert_copy = obs.clone();
-            if let Ok(id) = store_for_writer.insert(insert_copy).await {
+            if let Ok(id) = store_for_writer.insert(&obs).await {
                 obs.id = id;
                 let json = serde_json::to_string(&obs).unwrap_or_default();
                 let arc_obs = Arc::new(obs);
@@ -189,6 +188,7 @@ async fn start_server(
         chrome_state: chrome_state_rx,
         chrome_endpoint: std::sync::Arc::new(std::sync::Mutex::new(None)),
         lens: std::sync::Arc::new(daemon8_store::LensManager::new(broadcast_tx.subscribe())),
+        cursor_store: None,
     };
 
     let app =
@@ -1166,6 +1166,7 @@ async fn start_act_server() -> (
         chrome_state: chrome_state_rx,
         chrome_endpoint: std::sync::Arc::new(std::sync::Mutex::new(None)),
         lens: std::sync::Arc::new(daemon8_store::LensManager::new(stream_tx.subscribe())),
+        cursor_store: None,
     };
     let app = daemon8_api::api_router(api_state);
 
@@ -1504,6 +1505,47 @@ async fn act_storage_set_passes_all_three_fields() {
         }
         other => panic!("expected StorageSet, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn act_storage_set_requires_store_type() {
+    let (base, _rx, _h) = start_act_server().await;
+    let (status, body) = post_act(
+        &base,
+        json!({"action": "storage_set", "storage_key": "token"}),
+    )
+    .await;
+
+    assert_eq!(status, 400);
+    assert!(body["error"].as_str().unwrap_or("").contains("store_type"));
+}
+
+#[tokio::test]
+async fn act_storage_set_requires_storage_key() {
+    let (base, _rx, _h) = start_act_server().await;
+    let (status, body) = post_act(
+        &base,
+        json!({"action": "storage_set", "store_type": "localstorage"}),
+    )
+    .await;
+
+    assert_eq!(status, 400);
+    assert!(body["error"].as_str().unwrap_or("").contains("storage_key"));
+}
+
+#[tokio::test]
+async fn act_element_at_point_requires_coordinates() {
+    let (base, _rx, _h) = start_act_server().await;
+
+    let (missing_x, body_x) =
+        post_act(&base, json!({"action": "element_at_point", "y": 5.0})).await;
+    assert_eq!(missing_x, 400);
+    assert!(body_x["error"].as_str().unwrap_or("").contains("x"));
+
+    let (missing_y, body_y) =
+        post_act(&base, json!({"action": "element_at_point", "x": 5.0})).await;
+    assert_eq!(missing_y, 400);
+    assert!(body_y["error"].as_str().unwrap_or("").contains("y"));
 }
 
 #[tokio::test]

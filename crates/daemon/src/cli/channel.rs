@@ -5,31 +5,17 @@ use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use rmcp::handler::server::router::tool::ToolRouter;
+use rmcp::ServerHandler;
 use rmcp::model::{Implementation, ServerCapabilities, ServerInfo};
-use rmcp::{ServerHandler, tool_handler, tool_router};
 
-// ---------------------------------------------------------------------------
-// ChannelMcp -- minimal MCP handler, no tools, only claude/channel capability
-// ---------------------------------------------------------------------------
-
-struct ChannelMcp {
-    #[allow(dead_code)]
-    tool_router: ToolRouter<Self>,
-}
+struct ChannelMcp;
 
 impl ChannelMcp {
     fn new() -> Self {
-        Self {
-            tool_router: Self::tool_router(),
-        }
+        Self
     }
 }
 
-#[tool_router]
-impl ChannelMcp {}
-
-#[tool_handler]
 impl ServerHandler for ChannelMcp {
     fn get_info(&self) -> ServerInfo {
         let mut capabilities = ServerCapabilities::builder().build();
@@ -48,16 +34,11 @@ impl ServerHandler for ChannelMcp {
     }
 }
 
-// ---------------------------------------------------------------------------
-// cmd_channel -- entry point for `daemon8 channel`
-// ---------------------------------------------------------------------------
-
 pub async fn cmd_channel() -> Result<()> {
     let cfg = crate::config::load(None).unwrap_or_default();
     let port = cfg.server.port;
     let stream_url = format!("http://localhost:{port}/api/stream");
 
-    // Probe: is the daemon running?
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(3))
         .build()?;
@@ -79,7 +60,6 @@ pub async fn cmd_channel() -> Result<()> {
         );
     }
 
-    // Start MCP stdio server
     use rmcp::ServiceExt;
     let service = ChannelMcp::new()
         .serve(rmcp::transport::stdio())
@@ -95,10 +75,6 @@ pub async fn cmd_channel() -> Result<()> {
     relay.abort();
     Ok(())
 }
-
-// ---------------------------------------------------------------------------
-// sse_relay -- subscribe to daemon SSE, push warn/error as channel notifications
-// ---------------------------------------------------------------------------
 
 async fn sse_relay(peer: rmcp::service::Peer<rmcp::RoleServer>, port: u16) {
     use reqwest_eventsource::{Event, EventSource};

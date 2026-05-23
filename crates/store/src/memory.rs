@@ -465,7 +465,7 @@ mod tests {
             checkpoint_id: None,
             error_hash: None,
         };
-        store.insert(obs).await.unwrap();
+        store.insert(&obs).await.unwrap();
 
         // Insert a memory
         let mem_id = mem_store

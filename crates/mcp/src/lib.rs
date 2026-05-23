@@ -661,6 +661,12 @@ impl DaemonMcp {
     }
 
     #[cfg(feature = "test-util")]
+    pub async fn flush_active_debug_session_for_tests(&self) -> Result<(), String> {
+        flush_active_debug_session_state(self.debug_session_store.as_deref(), &self.active_state)
+            .await
+    }
+
+    #[cfg(feature = "test-util")]
     pub async fn daemon8_connect_for_tests(&self, params: Daemon8ConnectParams) -> String {
         self.daemon8_connect(Parameters(params)).await
     }
@@ -693,6 +699,11 @@ impl DaemonMcp {
     #[cfg(feature = "test-util")]
     pub async fn start_debug_session_for_tests(&self, params: StartDebugSessionParams) -> String {
         self.start_debug_session(Parameters(params)).await
+    }
+
+    #[cfg(feature = "test-util")]
+    pub async fn list_debug_sessions_for_tests(&self, params: ListDebugSessionsParams) -> String {
+        self.list_debug_sessions(Parameters(params)).await
     }
 
     #[cfg(feature = "test-util")]
@@ -1288,6 +1299,7 @@ impl DaemonMcp {
 
         if let Some(ref session) = self.active_state.current_session() {
             obs.debug_session_id = Some(session.id.clone());
+            session.touch(current_ns());
             let slug_tag = format!(
                 "{}{}",
                 daemon8_types::TAG_PREFIX_PROJECT,
@@ -1960,6 +1972,22 @@ fn current_ns() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos() as u64
+}
+
+async fn flush_active_debug_session_state(
+    store: Option<&dyn DebugSessionStore>,
+    active_state: &ActiveSessionState,
+) -> Result<(), String> {
+    let Some(store) = store else {
+        return Ok(());
+    };
+    let Some(session) = active_state.current_session() else {
+        return Ok(());
+    };
+    store
+        .touch_debug_session(session.id.as_ref(), session.last_activity())
+        .await
+        .map_err(|err| err.to_string())
 }
 
 fn scope_session_record(
@@ -3240,18 +3268,14 @@ impl ServerHandler for DaemonMcp {
                         () = tokio::time::sleep(Duration::from_secs(60)) => {}
                         () = flush_cancel.cancelled() => break,
                     }
-                    if let Some(session) = flush_state.current_session() {
-                        let last = session.last_activity();
-                        if let Err(e) = ds_store
-                            .touch_debug_session(session.id.as_ref(), last)
+                    if let Err(e) =
+                        flush_active_debug_session_state(Some(ds_store.as_ref()), &flush_state)
                             .await
-                        {
-                            tracing::warn!(
-                                session_id = %session.id,
-                                error = %e,
-                                "per-session debug session flush failed"
-                            );
-                        }
+                    {
+                        tracing::warn!(
+                            error = %e,
+                            "per-session debug session flush failed"
+                        );
                     }
                 }
                 tracing::debug!("per-session debug session flush task ended");
@@ -3630,7 +3654,7 @@ mod logging_tests {
         let drain_store = shared_store.clone();
         tokio::spawn(async move {
             while let Some(obs) = shared_obs_rx.recv().await {
-                let _ = drain_store.insert(obs).await;
+                let _ = drain_store.insert(&obs).await;
             }
         });
 

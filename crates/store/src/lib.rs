@@ -43,7 +43,7 @@ pub enum StoreError {
 
 #[async_trait::async_trait]
 pub trait StateModel: Send + Sync {
-    async fn insert(&self, obs: Observation) -> Result<u64, StoreError>;
+    async fn insert(&self, obs: &Observation) -> Result<u64, StoreError>;
     async fn query(&self, filter: &Filter) -> Result<StateSlice, StoreError>;
     async fn summary(&self) -> Result<RuntimeSummary, StoreError>;
     async fn checkpoint(&self) -> Checkpoint;

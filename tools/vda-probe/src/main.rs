@@ -11,7 +11,6 @@ async fn main() {
 
     let transport = AdbTransport::new(addr);
 
-    // Step 1: List devices
     println!("\n--- Device List ---");
     let devices = match transport.list_devices().await {
         Ok(d) => d,
@@ -34,7 +33,6 @@ async fn main() {
 
     let serial = &devices[0].serial;
 
-    // Step 2: Verify shell access
     println!("\n--- Shell Test (uname -a) ---");
     match transport.shell_command(serial, "uname -a").await {
         Ok(output) => println!("  {}", output.trim()),
@@ -44,8 +42,6 @@ async fn main() {
         }
     }
 
-    // Step 3: Stream 10 lines of log output
-    // Try loggingctl first (Vega), fall back to logcat (Android)
     println!("\n--- Log stream (10 lines) ---");
     let cmd = match transport.shell_command(serial, "which loggingctl").await {
         Ok(output) if !output.trim().is_empty() && !output.contains("not found") => {
@@ -70,7 +66,6 @@ async fn main() {
         }
     }
 
-    // Clean up
     drop(rx);
     let _ = handle.join();
 

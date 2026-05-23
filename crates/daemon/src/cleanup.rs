@@ -266,9 +266,9 @@ mod tests {
     async fn cleanup_before_removes_old_observations() {
         let store = Arc::new(SurrealStore::memory().await.unwrap());
 
-        store.insert(make_observation(1_000)).await.unwrap();
-        store.insert(make_observation(2_000)).await.unwrap();
-        store.insert(make_observation(3_000)).await.unwrap();
+        store.insert(&make_observation(1_000)).await.unwrap();
+        store.insert(&make_observation(2_000)).await.unwrap();
+        store.insert(&make_observation(3_000)).await.unwrap();
 
         let deleted = store.cleanup_before(2_500).await.unwrap();
         assert_eq!(
@@ -324,10 +324,10 @@ mod tests {
         // One observation tied to the active session, one untied — both with
         // very old timestamps so the cutoff would normally take both.
         store
-            .insert(make_observation_for_session(1_000, Some(&session_id)))
+            .insert(&make_observation_for_session(1_000, Some(&session_id)))
             .await
             .unwrap();
-        store.insert(make_observation(1_000)).await.unwrap();
+        store.insert(&make_observation(1_000)).await.unwrap();
 
         let deleted = ctx.store.cleanup_before(u64::MAX).await.unwrap();
         assert_eq!(
@@ -357,7 +357,7 @@ mod tests {
             .await
             .unwrap();
         store
-            .insert(make_observation_for_session(1_000, Some(&session_id)))
+            .insert(&make_observation_for_session(1_000, Some(&session_id)))
             .await
             .unwrap();
         ds_store

@@ -8,7 +8,6 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use toml::Table;
 
-use super::ServiceIdentity;
 use super::helpers::{
     HookSpec, codex_has_mcp_server, current_exe_string, install_json_hooks, list_json_hooks,
     quote_command_path, remove_json_hooks,
@@ -16,6 +15,7 @@ use super::helpers::{
 use super::traits::{
     AiProvider, HookEvent, HookEventEntry, HookProvider, HookScope, InstalledHookEntry, LogLevel,
 };
+use super::{HookIdentity, ServiceIdentity};
 
 pub struct CodexProvider;
 
@@ -269,7 +269,7 @@ impl HookProvider for CodexProvider {
         cwd: &Path,
         home: &Path,
         force: bool,
-        service: &ServiceIdentity,
+        identity: &HookIdentity,
     ) -> Result<PathBuf> {
         let settings_path = self.hooks_path(scope, cwd, home);
         let command = format!(
@@ -282,10 +282,10 @@ impl HookProvider for CodexProvider {
                 event: e.native_name,
                 matcher: e.matcher,
                 timeout: None,
-                status_message: service.status_message,
+                status_message: identity.status_message,
             })
             .collect();
-        install_json_hooks(&settings_path, &command, &specs, force, service.hook_marker)
+        install_json_hooks(&settings_path, &command, &specs, force, identity.marker)
     }
 
     fn list_hooks(
@@ -293,10 +293,10 @@ impl HookProvider for CodexProvider {
         scope: HookScope,
         cwd: &Path,
         home: &Path,
-        service: &ServiceIdentity,
+        identity: &HookIdentity,
     ) -> Result<Vec<InstalledHookEntry>> {
         let path = self.hooks_path(scope, cwd, home);
-        list_json_hooks(&path, service.hook_marker)
+        list_json_hooks(&path, identity.marker)
     }
 
     fn remove_hooks(
@@ -304,10 +304,10 @@ impl HookProvider for CodexProvider {
         scope: HookScope,
         cwd: &Path,
         home: &Path,
-        service: &ServiceIdentity,
+        identity: &HookIdentity,
     ) -> Result<Option<PathBuf>> {
         let path = self.hooks_path(scope, cwd, home);
-        remove_json_hooks(&path, service.hook_marker)
+        remove_json_hooks(&path, identity.marker)
     }
 }
 
@@ -426,27 +426,27 @@ mod tests {
         let cwd = tmp.path().to_path_buf();
         let home = tmp.path().join("fakehome");
         std::fs::create_dir_all(cwd.join(".codex")).unwrap();
-        let svc = crate::test_service();
+        let identity = crate::test_hook_identity();
 
         let path = CodexProvider
-            .install_hooks(HookScope::Shared, &cwd, &home, false, &svc)
+            .install_hooks(HookScope::Shared, &cwd, &home, false, &identity)
             .unwrap();
         assert_eq!(path, cwd.join(".codex/hooks.json"));
         assert!(path.exists());
 
         let entries = CodexProvider
-            .list_hooks(HookScope::Shared, &cwd, &home, &svc)
+            .list_hooks(HookScope::Shared, &cwd, &home, &identity)
             .unwrap();
         assert!(!entries.is_empty());
         assert!(entries[0].command.contains("cli-hook --tool codex-cli"));
 
         let removed = CodexProvider
-            .remove_hooks(HookScope::Shared, &cwd, &home, &svc)
+            .remove_hooks(HookScope::Shared, &cwd, &home, &identity)
             .unwrap();
         assert!(removed.is_some());
 
         let after = CodexProvider
-            .list_hooks(HookScope::Shared, &cwd, &home, &svc)
+            .list_hooks(HookScope::Shared, &cwd, &home, &identity)
             .unwrap();
         assert!(after.is_empty());
     }
@@ -456,21 +456,21 @@ mod tests {
         let tmp = tempdir().unwrap();
         let home = tmp.path().to_path_buf();
         std::fs::create_dir_all(home.join(".codex")).unwrap();
-        let svc = crate::test_service();
+        let identity = crate::test_hook_identity();
 
         let path = CodexProvider
-            .install_hooks(HookScope::Global, &PathBuf::new(), &home, false, &svc)
+            .install_hooks(HookScope::Global, &PathBuf::new(), &home, false, &identity)
             .unwrap();
         assert_eq!(path, home.join(".codex/hooks.json"));
         assert!(path.exists());
 
         let entries = CodexProvider
-            .list_hooks(HookScope::Global, &PathBuf::new(), &home, &svc)
+            .list_hooks(HookScope::Global, &PathBuf::new(), &home, &identity)
             .unwrap();
         assert!(!entries.is_empty());
 
         let removed = CodexProvider
-            .remove_hooks(HookScope::Global, &PathBuf::new(), &home, &svc)
+            .remove_hooks(HookScope::Global, &PathBuf::new(), &home, &identity)
             .unwrap();
         assert!(removed.is_some());
     }

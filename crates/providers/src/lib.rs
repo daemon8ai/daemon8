@@ -81,7 +81,12 @@ pub struct ServiceIdentity {
     pub name: &'static str,
     pub channel_name: Option<&'static str>,
     pub display_name: &'static str,
-    pub hook_marker: &'static str,
+    pub status_message: Option<&'static str>,
+}
+
+#[derive(Debug, Clone)]
+pub struct HookIdentity {
+    pub marker: &'static str,
     pub status_message: Option<&'static str>,
 }
 
@@ -247,12 +252,12 @@ pub fn install_hooks_for_provider(
     cwd: &Path,
     home: &Path,
     force: bool,
-    service: &ServiceIdentity,
+    identity: &HookIdentity,
 ) -> Result<PathBuf> {
     let hp = provider
         .as_hook_provider()
         .ok_or_else(|| anyhow::anyhow!("{} does not support hooks", provider.label()))?;
-    hp.install_hooks(scope, cwd, home, force, service)
+    hp.install_hooks(scope, cwd, home, force, identity)
 }
 
 pub fn detect_provider_from_env() -> Option<(&'static str, Provider)> {
@@ -330,7 +335,14 @@ pub(crate) fn test_service() -> ServiceIdentity {
         name: "test-svc",
         channel_name: Some("test-channel"),
         display_name: "Test Service",
-        hook_marker: "daemon8",
+        status_message: Some("test telemetry"),
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_hook_identity() -> HookIdentity {
+    HookIdentity {
+        marker: "daemon8",
         status_message: Some("test telemetry"),
     }
 }

@@ -6,7 +6,6 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use serde_json::json;
 
-use super::ServiceIdentity;
 use super::helpers::{
     HookSpec, current_exe_string, install_json_hooks, json_has_mcp_server, list_json_hooks,
     quote_command_path, remove_json_hooks, shim_command,
@@ -14,6 +13,7 @@ use super::helpers::{
 use super::traits::{
     AiProvider, HookEvent, HookEventEntry, HookProvider, HookScope, InstalledHookEntry, LogLevel,
 };
+use super::{HookIdentity, ServiceIdentity};
 
 pub struct GeminiProvider;
 
@@ -228,7 +228,7 @@ impl HookProvider for GeminiProvider {
         cwd: &Path,
         home: &Path,
         force: bool,
-        service: &ServiceIdentity,
+        identity: &HookIdentity,
     ) -> Result<PathBuf> {
         let settings_path = self.hooks_path(scope, cwd, home);
         let command = format!(
@@ -244,7 +244,7 @@ impl HookProvider for GeminiProvider {
                 status_message: None,
             })
             .collect();
-        install_json_hooks(&settings_path, &command, &specs, force, service.hook_marker)
+        install_json_hooks(&settings_path, &command, &specs, force, identity.marker)
     }
 
     fn list_hooks(
@@ -252,10 +252,10 @@ impl HookProvider for GeminiProvider {
         scope: HookScope,
         cwd: &Path,
         home: &Path,
-        service: &ServiceIdentity,
+        identity: &HookIdentity,
     ) -> Result<Vec<InstalledHookEntry>> {
         let path = self.hooks_path(scope, cwd, home);
-        list_json_hooks(&path, service.hook_marker)
+        list_json_hooks(&path, identity.marker)
     }
 
     fn remove_hooks(
@@ -263,10 +263,10 @@ impl HookProvider for GeminiProvider {
         scope: HookScope,
         cwd: &Path,
         home: &Path,
-        service: &ServiceIdentity,
+        identity: &HookIdentity,
     ) -> Result<Option<PathBuf>> {
         let path = self.hooks_path(scope, cwd, home);
-        remove_json_hooks(&path, service.hook_marker)
+        remove_json_hooks(&path, identity.marker)
     }
 }
 
@@ -291,10 +291,10 @@ mod tests {
         let tmp = tempdir().unwrap();
         let home = tmp.path().to_path_buf();
         std::fs::create_dir_all(home.join(".gemini")).unwrap();
-        let svc = crate::test_service();
+        let identity = crate::test_hook_identity();
 
         let path = GeminiProvider
-            .install_hooks(HookScope::Global, &PathBuf::new(), &home, false, &svc)
+            .install_hooks(HookScope::Global, &PathBuf::new(), &home, false, &identity)
             .unwrap();
         assert!(path.exists());
 
@@ -317,25 +317,25 @@ mod tests {
         let tmp = tempdir().unwrap();
         let home = tmp.path().to_path_buf();
         std::fs::create_dir_all(home.join(".gemini")).unwrap();
-        let svc = crate::test_service();
+        let identity = crate::test_hook_identity();
 
         GeminiProvider
-            .install_hooks(HookScope::Global, &PathBuf::new(), &home, false, &svc)
+            .install_hooks(HookScope::Global, &PathBuf::new(), &home, false, &identity)
             .unwrap();
 
         let entries = GeminiProvider
-            .list_hooks(HookScope::Global, &PathBuf::new(), &home, &svc)
+            .list_hooks(HookScope::Global, &PathBuf::new(), &home, &identity)
             .unwrap();
         assert!(!entries.is_empty());
         assert!(entries[0].command.contains("cli-hook --tool gemini-cli"));
 
         let removed = GeminiProvider
-            .remove_hooks(HookScope::Global, &PathBuf::new(), &home, &svc)
+            .remove_hooks(HookScope::Global, &PathBuf::new(), &home, &identity)
             .unwrap();
         assert!(removed.is_some());
 
         let after = GeminiProvider
-            .list_hooks(HookScope::Global, &PathBuf::new(), &home, &svc)
+            .list_hooks(HookScope::Global, &PathBuf::new(), &home, &identity)
             .unwrap();
         assert!(after.is_empty());
     }
@@ -367,26 +367,26 @@ mod tests {
         let cwd = tmp.path().to_path_buf();
         let home = tmp.path().join("fakehome");
         std::fs::create_dir_all(cwd.join(".gemini")).unwrap();
-        let svc = crate::test_service();
+        let identity = crate::test_hook_identity();
 
         let path = GeminiProvider
-            .install_hooks(HookScope::Shared, &cwd, &home, false, &svc)
+            .install_hooks(HookScope::Shared, &cwd, &home, false, &identity)
             .unwrap();
         assert_eq!(path, cwd.join(".gemini/settings.json"));
         assert!(path.exists());
 
         let entries = GeminiProvider
-            .list_hooks(HookScope::Shared, &cwd, &home, &svc)
+            .list_hooks(HookScope::Shared, &cwd, &home, &identity)
             .unwrap();
         assert!(!entries.is_empty());
 
         let removed = GeminiProvider
-            .remove_hooks(HookScope::Shared, &cwd, &home, &svc)
+            .remove_hooks(HookScope::Shared, &cwd, &home, &identity)
             .unwrap();
         assert!(removed.is_some());
 
         let after = GeminiProvider
-            .list_hooks(HookScope::Shared, &cwd, &home, &svc)
+            .list_hooks(HookScope::Shared, &cwd, &home, &identity)
             .unwrap();
         assert!(after.is_empty());
     }

@@ -297,6 +297,7 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
         chrome_state: chrome_state_rx.clone(),
         chrome_endpoint: chrome_endpoint.clone(),
         lens: api_lens,
+        cursor_store: Some(Arc::new(surreal_store.cursor_store())),
     };
     let port = cfg.server.port;
     let app = daemon8_ingest::ingest_router(obs_tx.clone())
@@ -483,8 +484,7 @@ async fn handle_observation(
         }
     }
 
-    let insert_copy = obs.clone();
-    let inserted_id = match ctx.store.insert(insert_copy).await {
+    let inserted_id = match ctx.store.insert(&obs).await {
         Ok(id) => id,
         Err(e) => {
             return Err(anyhow::anyhow!("store insert failed: {e}"));
@@ -553,7 +553,6 @@ mod writer_tests {
     use super::*;
     use daemon8_store::{ActiveDebugSession, MemoryFilter, MemoryStore};
     use daemon8_types::{AppName, MemoryKind, ObservationKind, Origin, Severity};
-    use std::sync::atomic::AtomicU64;
 
     fn fresh_obs(severity: Severity, kind: ObservationKind) -> Observation {
         Observation {
@@ -690,32 +689,6 @@ mod writer_tests {
             "second occurrence must reuse the same ErrorSignature"
         );
         assert!(signatures[0].tags.contains(&"seen:2".to_string()));
-    }
-
-    /// Multi-session stamping is now handled at the MCP ingest level (B1.4).
-    /// Writer-level touch tests moved to `crates/mcp/tests/multi_session_behavior.rs`.
-    #[ignore = "touch responsibility moved to MCP ingest + per-session flush (B1.4/B1.6)"]
-    #[tokio::test]
-    async fn touch_bumps_active_session_last_activity() {
-        let last = Arc::new(AtomicU64::new(1_000));
-        let session = ActiveDebugSession {
-            id: Arc::from("ds_t"),
-            project_slug: Arc::from("p"),
-            started_at_ns: 1_000,
-            last_activity_ns: last.clone(),
-            agent_id: Arc::from(":test/claude+plan-agent>"),
-            feature: None,
-        };
-        let (ctx, _store, _mem) = build_ctx_with_active(Some(session), None).await;
-
-        handle_observation(fresh_obs(Severity::Info, ObservationKind::Log), &ctx)
-            .await
-            .unwrap();
-
-        assert!(
-            last.load(std::sync::atomic::Ordering::Relaxed) > 1_000,
-            "active session last_activity_ns must be touched on each insert"
-        );
     }
 }
 

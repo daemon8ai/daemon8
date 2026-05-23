@@ -15,7 +15,6 @@ const SERVICE: ServiceIdentity = ServiceIdentity {
     name: "daemon8",
     channel_name: Some("daemon8-channel"),
     display_name: "Daemon8",
-    hook_marker: "daemon8",
     status_message: Some("daemon8 telemetry"),
 };
 

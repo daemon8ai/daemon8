@@ -5,7 +5,6 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
-use super::ServiceIdentity;
 use super::helpers::{
     HookSpec, current_exe_string, install_json_hooks, json_has_mcp_server, list_json_hooks,
     quote_command_path, remove_json_hooks, shim_command,
@@ -13,6 +12,7 @@ use super::helpers::{
 use super::traits::{
     AiProvider, HookEvent, HookEventEntry, HookProvider, HookScope, InstalledHookEntry, LogLevel,
 };
+use super::{HookIdentity, ServiceIdentity};
 
 pub struct ClaudeCodeProvider;
 
@@ -321,7 +321,7 @@ impl HookProvider for ClaudeCodeProvider {
         cwd: &Path,
         home: &Path,
         force: bool,
-        service: &ServiceIdentity,
+        identity: &HookIdentity,
     ) -> Result<PathBuf> {
         let settings_path = self.hooks_path(scope, cwd, home);
         let command = format!("{} cli-hook", quote_command_path(&current_exe_string()));
@@ -334,7 +334,7 @@ impl HookProvider for ClaudeCodeProvider {
                 status_message: None,
             })
             .collect();
-        install_json_hooks(&settings_path, &command, &specs, force, service.hook_marker)
+        install_json_hooks(&settings_path, &command, &specs, force, identity.marker)
     }
 
     fn list_hooks(
@@ -342,10 +342,10 @@ impl HookProvider for ClaudeCodeProvider {
         scope: HookScope,
         cwd: &Path,
         home: &Path,
-        service: &ServiceIdentity,
+        identity: &HookIdentity,
     ) -> Result<Vec<InstalledHookEntry>> {
         let path = self.hooks_path(scope, cwd, home);
-        list_json_hooks(&path, service.hook_marker)
+        list_json_hooks(&path, identity.marker)
     }
 
     fn remove_hooks(
@@ -353,10 +353,10 @@ impl HookProvider for ClaudeCodeProvider {
         scope: HookScope,
         cwd: &Path,
         home: &Path,
-        service: &ServiceIdentity,
+        identity: &HookIdentity,
     ) -> Result<Option<PathBuf>> {
         let path = self.hooks_path(scope, cwd, home);
-        remove_json_hooks(&path, service.hook_marker)
+        remove_json_hooks(&path, identity.marker)
     }
 }
 

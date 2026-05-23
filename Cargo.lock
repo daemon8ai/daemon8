@@ -1348,6 +1348,7 @@ dependencies = [
  "async-trait",
  "axum",
  "daemon8-chrome",
+ "daemon8-core",
  "daemon8-ingest",
  "daemon8-mcp",
  "daemon8-store",

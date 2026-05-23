@@ -965,14 +965,14 @@ mod tests {
     }
 
     #[test]
-    fn cleanup_stale_snapshots_removes_legacy_session_dir() {
+    fn cleanup_stale_snapshots_removes_stale_flat_session_dir() {
         let tmp = tempfile::tempdir().unwrap();
         let snapshots = tmp.path().join(".daemon8/snapshots");
-        let legacy_dir = snapshots.join("sess1");
-        std::fs::create_dir_all(&legacy_dir).unwrap();
-        std::fs::write(legacy_dir.join("summary.md"), "data").unwrap();
+        let flat_dir = snapshots.join("sess1");
+        std::fs::create_dir_all(&flat_dir).unwrap();
+        std::fs::write(flat_dir.join("summary.md"), "data").unwrap();
         set_dir_modified(
-            &legacy_dir,
+            &flat_dir,
             SystemTime::now() - Duration::from_secs(25 * 60 * 60),
         );
 
@@ -984,7 +984,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(deleted, 1);
-        assert!(!legacy_dir.exists());
+        assert!(!flat_dir.exists());
     }
 
     #[test]

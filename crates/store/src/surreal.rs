@@ -619,9 +619,9 @@ impl SurrealStore {
 
 #[async_trait::async_trait]
 impl StateModel for SurrealStore {
-    async fn insert(&self, obs: Observation) -> Result<u64, StoreError> {
+    async fn insert(&self, obs: &Observation) -> Result<u64, StoreError> {
         let seq = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let record = ObsRecord::from_observation(&obs, seq)?;
+        let record = ObsRecord::from_observation(obs, seq)?;
         let json_content = serde_json::to_value(&record)?;
 
         self.db
@@ -942,7 +942,7 @@ mod tests {
     async fn insert_and_query_round_trip() {
         let store = SurrealStore::memory().await.unwrap();
         let obs = make_obs(Severity::Info, 1_000_000);
-        let id = store.insert(obs).await.unwrap();
+        let id = store.insert(&obs).await.unwrap();
         assert!(id > 0);
 
         let slice = store.query(&Filter::default()).await.unwrap();
@@ -959,13 +959,13 @@ mod tests {
         matching.service = Some("cargo".into());
         matching.source = Some("cargo.check".into());
         matching.source_instance = Some("target/daemon8/cargo-check.log".into());
-        store.insert(matching).await.unwrap();
+        store.insert(&matching).await.unwrap();
 
         let mut other = make_obs(Severity::Info, 2_000);
         other.service = Some("claude".into());
         other.source = Some("claude.conversations".into());
         other.source_instance = Some("session.jsonl".into());
-        store.insert(other).await.unwrap();
+        store.insert(&other).await.unwrap();
 
         let filter = Filter {
             service: Some(vec!["cargo".into()]),
@@ -990,12 +990,15 @@ mod tests {
         assert_eq!(store.checkpoint().await.0, 0);
 
         let id1 = store
-            .insert(make_obs(Severity::Debug, 1_000))
+            .insert(&make_obs(Severity::Debug, 1_000))
             .await
             .unwrap();
         assert_eq!(store.checkpoint().await.0, id1);
 
-        let id2 = store.insert(make_obs(Severity::Warn, 2_000)).await.unwrap();
+        let id2 = store
+            .insert(&make_obs(Severity::Warn, 2_000))
+            .await
+            .unwrap();
         assert!(id2 > id1);
         assert_eq!(store.checkpoint().await.0, id2);
 
@@ -1131,7 +1134,7 @@ mod tests {
     #[tokio::test]
     async fn schema_check_rejects_existing_state_without_schema_metadata() {
         let store = SurrealStore::memory().await.unwrap();
-        store.insert(make_obs(Severity::Info, 1)).await.unwrap();
+        store.insert(&make_obs(Severity::Info, 1)).await.unwrap();
         store
             .db
             .query("REMOVE TABLE daemon_meta")
@@ -1214,11 +1217,11 @@ mod tests {
     async fn severity_filter() {
         let store = SurrealStore::memory().await.unwrap();
         store
-            .insert(make_obs(Severity::Debug, 1_000))
+            .insert(&make_obs(Severity::Debug, 1_000))
             .await
             .unwrap();
         store
-            .insert(make_obs(Severity::Error, 2_000))
+            .insert(&make_obs(Severity::Error, 2_000))
             .await
             .unwrap();
 
@@ -1234,9 +1237,18 @@ mod tests {
     #[tokio::test]
     async fn cleanup_removes_old() {
         let store = SurrealStore::memory().await.unwrap();
-        store.insert(make_obs(Severity::Info, 1_000)).await.unwrap();
-        store.insert(make_obs(Severity::Info, 2_000)).await.unwrap();
-        store.insert(make_obs(Severity::Info, 3_000)).await.unwrap();
+        store
+            .insert(&make_obs(Severity::Info, 1_000))
+            .await
+            .unwrap();
+        store
+            .insert(&make_obs(Severity::Info, 2_000))
+            .await
+            .unwrap();
+        store
+            .insert(&make_obs(Severity::Info, 3_000))
+            .await
+            .unwrap();
 
         let deleted = store.cleanup_before(2_500).await.unwrap();
         assert_eq!(deleted, 2);
@@ -1251,19 +1263,28 @@ mod tests {
         let store = SurrealStore::memory().await.unwrap();
         assert_eq!(store.oldest_id().await, None);
 
-        let id1 = store.insert(make_obs(Severity::Info, 1_000)).await.unwrap();
+        let id1 = store
+            .insert(&make_obs(Severity::Info, 1_000))
+            .await
+            .unwrap();
         assert_eq!(store.oldest_id().await, Some(id1));
 
-        store.insert(make_obs(Severity::Info, 2_000)).await.unwrap();
+        store
+            .insert(&make_obs(Severity::Info, 2_000))
+            .await
+            .unwrap();
         assert_eq!(store.oldest_id().await, Some(id1));
     }
 
     #[tokio::test]
     async fn summary_counts() {
         let store = SurrealStore::memory().await.unwrap();
-        store.insert(make_obs(Severity::Info, 1_000)).await.unwrap();
         store
-            .insert(make_obs(Severity::Error, 2_000))
+            .insert(&make_obs(Severity::Info, 1_000))
+            .await
+            .unwrap();
+        store
+            .insert(&make_obs(Severity::Error, 2_000))
             .await
             .unwrap();
 
@@ -1277,11 +1298,11 @@ mod tests {
 
         let mut obs1 = make_obs(Severity::Info, 1_000);
         obs1.correlation_id = Some("req-123".into());
-        store.insert(obs1).await.unwrap();
+        store.insert(&obs1).await.unwrap();
 
         let mut obs2 = make_obs(Severity::Info, 2_000);
         obs2.correlation_id = Some("req-456".into());
-        store.insert(obs2).await.unwrap();
+        store.insert(&obs2).await.unwrap();
 
         let filter = Filter {
             correlation_id: Some("req-123".to_string()),
@@ -1299,14 +1320,17 @@ mod tests {
     async fn origin_filter_by_type() {
         let store = SurrealStore::memory().await.unwrap();
 
-        store.insert(make_obs(Severity::Info, 1_000)).await.unwrap();
+        store
+            .insert(&make_obs(Severity::Info, 1_000))
+            .await
+            .unwrap();
 
         let mut browser_obs = make_obs(Severity::Info, 2_000);
         browser_obs.origin = Origin::Browser {
             tab_id: "tab-1".into(),
             url: "https://example.com".into(),
         };
-        store.insert(browser_obs).await.unwrap();
+        store.insert(&browser_obs).await.unwrap();
 
         let filter = Filter {
             origins: Some(vec![OriginPattern::AnyBrowser]),
@@ -1324,13 +1348,16 @@ mod tests {
     async fn origin_filter_by_name() {
         let store = SurrealStore::memory().await.unwrap();
 
-        store.insert(make_obs(Severity::Info, 1_000)).await.unwrap();
+        store
+            .insert(&make_obs(Severity::Info, 1_000))
+            .await
+            .unwrap();
 
         let mut obs2 = make_obs(Severity::Info, 2_000);
         obs2.origin = Origin::Application {
             name: "other-app".into(),
         };
-        store.insert(obs2).await.unwrap();
+        store.insert(&obs2).await.unwrap();
 
         let filter = Filter {
             origins: Some(vec![OriginPattern::ApplicationNamed("test-app".into())]),
@@ -1348,21 +1375,24 @@ mod tests {
     async fn origin_filter_multiple_patterns() {
         let store = SurrealStore::memory().await.unwrap();
 
-        store.insert(make_obs(Severity::Info, 1_000)).await.unwrap();
+        store
+            .insert(&make_obs(Severity::Info, 1_000))
+            .await
+            .unwrap();
 
         let mut browser_obs = make_obs(Severity::Info, 2_000);
         browser_obs.origin = Origin::Browser {
             tab_id: "tab-1".into(),
             url: "https://example.com".into(),
         };
-        store.insert(browser_obs).await.unwrap();
+        store.insert(&browser_obs).await.unwrap();
 
         let mut device_obs = make_obs(Severity::Info, 3_000);
         device_obs.origin = Origin::Device {
             serial: "ABC123".into(),
             platform: daemon8_types::DevicePlatform::Android,
         };
-        store.insert(device_obs).await.unwrap();
+        store.insert(&device_obs).await.unwrap();
 
         let filter = Filter {
             origins: Some(vec![
@@ -1381,11 +1411,11 @@ mod tests {
 
         let mut obs1 = make_obs(Severity::Info, 1_000);
         obs1.data = serde_json::json!({"msg": "connection timeout on port 443"});
-        store.insert(obs1).await.unwrap();
+        store.insert(&obs1).await.unwrap();
 
         let mut obs2 = make_obs(Severity::Info, 2_000);
         obs2.data = serde_json::json!({"msg": "request completed successfully"});
-        store.insert(obs2).await.unwrap();
+        store.insert(&obs2).await.unwrap();
 
         let filter = Filter {
             text_match: Some("TIME".to_string()),
@@ -1418,7 +1448,7 @@ mod tests {
         obs.correlation_id = Some("corr-1".into());
         obs.session_id = Some("session-1".into());
         obs.node_id = Some("node-1".into());
-        store.insert(obs).await.unwrap();
+        store.insert(&obs).await.unwrap();
 
         for text in [
             "device:ABC123",
@@ -1537,7 +1567,10 @@ mod tests {
     async fn blank_text_match_is_ignored() {
         let store = SurrealStore::memory().await.unwrap();
 
-        store.insert(make_obs(Severity::Info, 1_000)).await.unwrap();
+        store
+            .insert(&make_obs(Severity::Info, 1_000))
+            .await
+            .unwrap();
 
         let filter = Filter {
             text_match: Some("   ".to_string()),
@@ -1553,7 +1586,7 @@ mod tests {
 
         for i in 0..10 {
             store
-                .insert(make_obs(Severity::Info, i * 1000))
+                .insert(&make_obs(Severity::Info, i * 1000))
                 .await
                 .unwrap();
         }
@@ -1563,7 +1596,7 @@ mod tests {
             tab_id: "tab-1".into(),
             url: "https://example.com".into(),
         };
-        store.insert(browser_obs).await.unwrap();
+        store.insert(&browser_obs).await.unwrap();
 
         let filter = Filter {
             origins: Some(vec![OriginPattern::AnyBrowser]),
@@ -1580,11 +1613,11 @@ mod tests {
 
         let mut matching = make_obs(Severity::Info, 1_000);
         matching.tags = Some(vec!["project:daemon8".into(), "domain:runtime".into()]);
-        store.insert(matching).await.unwrap();
+        store.insert(&matching).await.unwrap();
 
         let mut partial = make_obs(Severity::Info, 2_000);
         partial.tags = Some(vec!["project:daemon8".into()]);
-        store.insert(partial).await.unwrap();
+        store.insert(&partial).await.unwrap();
 
         let filter = Filter {
             tags: Some(vec!["project:daemon8".into(), "domain:runtime".into()]),
@@ -1602,9 +1635,12 @@ mod tests {
 
         let mut system_obs = make_obs(Severity::Info, 1_000);
         system_obs.tags = Some(vec![daemon8_types::SYSTEM_TAG.to_string()]);
-        store.insert(system_obs).await.unwrap();
+        store.insert(&system_obs).await.unwrap();
 
-        store.insert(make_obs(Severity::Info, 2_000)).await.unwrap();
+        store
+            .insert(&make_obs(Severity::Info, 2_000))
+            .await
+            .unwrap();
 
         let default_slice = store.query(&Filter::default()).await.unwrap();
         assert_eq!(default_slice.observations.len(), 1);

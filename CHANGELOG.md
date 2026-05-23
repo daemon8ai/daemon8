@@ -33,7 +33,7 @@ For full commit-by-commit detail, use `git log` and
   messages as independently consumable markdown facets.
 - Added `link_conversation` tool for binding provider transcripts to the
   current session, enabling cross-provider recall.
-- Integrated 3-layer UX across tool descriptions: awareness on connect
+- Integrated 3-layer UX across tool descriptions: connect summary
   (what daemon8 found), recall via `build_context_snapshot` (catch me
   up), and monitoring cross-references in debug session tools.
 - Proved concurrent-session safety: 6 MCP sessions sharing one store
@@ -42,7 +42,7 @@ For full commit-by-commit detail, use `git log` and
 ## v0.4.1 - 2026-05-18
 
 - Tightened README onboarding around the self-guided daemon8 install,
-  provider instruction setup, awareness profile shape, and SurrealDB-backed
+  MCP provider config, connect summary shape, and SurrealDB-backed
   runtime context.
 - Updated public release docs for the next patch tag.
 
