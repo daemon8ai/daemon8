@@ -1,6 +1,6 @@
 # Response envelope
 
-Alpha MCP tools return one common shape:
+All MCP tools return one common shape:
 
 ```json
 {
@@ -21,12 +21,12 @@ Branch on `status`, then `code`.
 - `success`: continue.
 - `connect_required`: call `daemon8_connect`.
 - `setup_required`: call the next action, usually `daemon8_init`, then retry `daemon8_connect`.
-- `blocked`: follow `next_actions` when present; otherwise adjust the request according to `why`/`message` or ask for explicit user input when required.
+- `blocked`: follow `next_actions` when present; otherwise adjust the request according to `why`/`message`. Ask the user when `why`/`message` indicates a decision only the user can make (e.g., which file to target, which transcript to prefer).
 - `error`: surface `message` and `why`.
 
 ## Connect-first flow
 
-`daemon8_connect` binds the MCP session to project or general mode. `daemon8_status` and `daemon8_help` are diagnostic pre-connect exceptions. `daemon8_init` is also allowed before connect when setup is required or the user explicitly asks to initialize a path. All other tools start with `daemon8_connect`.
+`daemon8_connect` binds the MCP session to project or general mode. `daemon8_status` and `daemon8_help` are diagnostic pre-connect exceptions. Call `daemon8_init` before connect when `daemon8_connect` returns `setup_required` or the user explicitly asks to initialize a path. All other tools start with `daemon8_connect`.
 
 `daemon8_connect` returns flattened scope fields such as `data.session_id`, `data.mode`, `data.requested_path`, and `data.scope_root`. MCP connect/status responses and guarded MCP tool responses also include the full `data.connection` object.
 

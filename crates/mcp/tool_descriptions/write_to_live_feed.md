@@ -29,4 +29,4 @@ Common envelope with `data.ok=true`, `data.queued=true`, and session context. If
 
 ## Next
 
-read_live_feed to confirm the row landed; if severity=error, resolve or link it through the active debug session when the root cause is known.
+Call `read_live_feed` to confirm the row landed. If severity=error, resolve or link it through the active debug session when the root cause is known.

@@ -4,7 +4,7 @@ Configure which observations trigger live MCP alerts (notifications/message) in 
 
 ## When
 
-Watching for a specific failure pattern, monitoring a particular app, listening for inter-agent messages on a known origin. Default subscribes to severity >= warn.
+Call to watch for a specific failure pattern, monitor a particular app, or listen for inter-agent messages on a known origin. Default subscribes to severity >= warn.
 
 ## Prereq
 
@@ -31,4 +31,4 @@ none expected.
 
 ## Next
 
-subscribe is push; pair with set_lens (pull-side buffer) when you want both live alerts and a queryable backlog of matches.
+`watch_live_feed` is push-side. Pair with `set_lens` (pull-side buffer) when you need both live alerts and a queryable backlog of matches.

@@ -22,4 +22,4 @@ Common envelope with `code="debug_sessions_listed"`, `data.sessions` ordered mos
 
 ## Next
 
-Use the returned session metadata to decide whether to resume context, open a new debug session, or inspect related observations. start_debug_session if you find overlapping work and want to coordinate.
+Use the returned session metadata to decide whether to resume context, open a new debug session, or inspect related observations. Call `start_debug_session` if you find overlapping work and want to coordinate.

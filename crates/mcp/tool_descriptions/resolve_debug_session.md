@@ -27,4 +27,6 @@ Common envelope with `code="debug_session_resolved"`, `data.debug_session_id`, `
 
 ## Next
 
+Future agents discover this resolution through `list_debug_sessions` (which returns the summary and tags) and through `build_context_snapshot` (which surfaces this session's tool activity and file changes in the conversation record).
+
 Call `list_debug_sessions` if you need to confirm the session closed. Start a fresh debug session for unrelated follow-up work.

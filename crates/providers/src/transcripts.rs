@@ -9,7 +9,7 @@ use std::time::UNIX_EPOCH;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{ALL_PROVIDERS, CONVERSATION_RECENCY_MS, Provider};
+use crate::{ALL_PROVIDERS, Provider};
 
 const MAX_METADATA_LINES: usize = 50;
 const AMBIGUOUS_CANDIDATE_LIMIT: usize = 10;
@@ -70,6 +70,7 @@ pub struct TranscriptResolver<'a> {
 
 pub fn resolve_transcript(
     input: TranscriptResolver<'_>,
+    since_ms: u64,
 ) -> Result<TranscriptResolution, TranscriptResolutionError> {
     let provider =
         Provider::from_id_or_alias(input.provider).ok_or_else(|| TranscriptResolutionError {
@@ -87,14 +88,13 @@ pub fn resolve_transcript(
         fs::canonicalize(input.scope_root).unwrap_or_else(|_| input.scope_root.to_path_buf());
 
     let conversation_root = provider.as_provider().conversation_dir(input.home);
-    let files = provider.as_provider().project_conversation_files(
-        input.home,
-        &scope_root,
-        CONVERSATION_RECENCY_MS,
-    );
+    let files =
+        provider
+            .as_provider()
+            .project_conversation_files(input.home, &scope_root, since_ms);
 
     let files = if files.is_empty() {
-        fallback_conversation_files(conversation_root.as_deref(), CONVERSATION_RECENCY_MS)
+        fallback_conversation_files(conversation_root.as_deref(), since_ms)
     } else {
         files
     };
@@ -156,6 +156,7 @@ pub fn discover_project_conversations(
     scope_root: &Path,
     home: &Path,
     exclude_path: Option<&str>,
+    since_ms: u64,
 ) -> Vec<TranscriptCandidate> {
     let scope_root = fs::canonicalize(scope_root).unwrap_or_else(|_| scope_root.to_path_buf());
     let exclude_canonical =
@@ -166,7 +167,15 @@ pub fn discover_project_conversations(
         let ai = provider.as_provider();
         let provider_id = ai.id();
         let conversation_root = ai.conversation_dir(home);
-        let files = ai.project_conversation_files(home, &scope_root, CONVERSATION_RECENCY_MS);
+        let project_files = ai.project_conversation_files(home, &scope_root, since_ms);
+        let (files, from_fallback) = if project_files.is_empty() {
+            (
+                fallback_conversation_files(conversation_root.as_deref(), since_ms),
+                true,
+            )
+        } else {
+            (project_files, false)
+        };
 
         for path in &files {
             let Some(metadata) = fs::metadata(path).ok() else {
@@ -185,6 +194,14 @@ pub fn discover_project_conversations(
                 &canonical,
                 &metadata,
             ) {
+                if from_fallback
+                    && !candidate
+                        .cwd
+                        .as_deref()
+                        .is_some_and(|cwd| cwd_matches_scope(cwd, &scope_root))
+                {
+                    continue;
+                }
                 candidates.push(candidate);
             }
         }
@@ -209,6 +226,18 @@ fn fallback_conversation_files(root: Option<&Path>, since_ms: u64) -> Vec<PathBu
     }
     let mut files = Vec::new();
     walk_jsonl(root, &mut files, since_ms);
+    files.sort_by(|a, b| {
+        let a_ms = fs::metadata(a)
+            .ok()
+            .and_then(|metadata| metadata.modified().ok())
+            .and_then(system_time_ms);
+        let b_ms = fs::metadata(b)
+            .ok()
+            .and_then(|metadata| metadata.modified().ok())
+            .and_then(system_time_ms);
+        b_ms.cmp(&a_ms).then_with(|| a.cmp(b))
+    });
+    files.truncate(FALLBACK_MAX_FILES);
     files
 }
 
@@ -217,9 +246,6 @@ fn walk_jsonl(dir: &Path, files: &mut Vec<PathBuf>, since_ms: u64) {
         return;
     };
     for entry in entries.flatten() {
-        if files.len() >= FALLBACK_MAX_FILES {
-            return;
-        }
         let path = entry.path();
         if path.is_dir() {
             walk_jsonl(&path, files, since_ms);
@@ -631,12 +657,15 @@ mod tests {
         let transcript = sessions.join("one.jsonl");
         write_codex_session(&transcript, "s1", &project);
 
-        let resolution = resolve_transcript(TranscriptResolver {
-            provider: "codex",
-            scope_root: &project,
-            home: &home,
-            transcript_path: Some(&transcript),
-        })
+        let resolution = resolve_transcript(
+            TranscriptResolver {
+                provider: "codex",
+                scope_root: &project,
+                home: &home,
+                transcript_path: Some(&transcript),
+            },
+            0,
+        )
         .unwrap();
 
         let TranscriptResolution::Bound(candidate) = resolution else {
@@ -666,12 +695,15 @@ mod tests {
         .unwrap();
         fs::create_dir_all(home.join(".codex/sessions")).unwrap();
 
-        let err = resolve_transcript(TranscriptResolver {
-            provider: "codex",
-            scope_root: &project,
-            home: &home,
-            transcript_path: Some(&transcript),
-        })
+        let err = resolve_transcript(
+            TranscriptResolver {
+                provider: "codex",
+                scope_root: &project,
+                home: &home,
+                transcript_path: Some(&transcript),
+            },
+            0,
+        )
         .unwrap_err();
 
         assert_eq!(
@@ -690,12 +722,15 @@ mod tests {
         let transcript = tmp.path().join("outside.jsonl");
         write_codex_session(&transcript, "s1", &project);
 
-        let err = resolve_transcript(TranscriptResolver {
-            provider: "codex",
-            scope_root: &project,
-            home: &home,
-            transcript_path: Some(&transcript),
-        })
+        let err = resolve_transcript(
+            TranscriptResolver {
+                provider: "codex",
+                scope_root: &project,
+                home: &home,
+                transcript_path: Some(&transcript),
+            },
+            0,
+        )
         .unwrap_err();
 
         assert_eq!(
@@ -719,12 +754,15 @@ mod tests {
         )
         .unwrap();
 
-        let err = resolve_transcript(TranscriptResolver {
-            provider: "codex",
-            scope_root: &project,
-            home: &home,
-            transcript_path: Some(&transcript),
-        })
+        let err = resolve_transcript(
+            TranscriptResolver {
+                provider: "codex",
+                scope_root: &project,
+                home: &home,
+                transcript_path: Some(&transcript),
+            },
+            0,
+        )
         .unwrap_err();
 
         assert_eq!(
@@ -746,12 +784,15 @@ mod tests {
         let transcript = sessions.join("other.jsonl");
         write_codex_session(&transcript, "s1", &other_project);
 
-        let err = resolve_transcript(TranscriptResolver {
-            provider: "codex",
-            scope_root: &project,
-            home: &home,
-            transcript_path: Some(&transcript),
-        })
+        let err = resolve_transcript(
+            TranscriptResolver {
+                provider: "codex",
+                scope_root: &project,
+                home: &home,
+                transcript_path: Some(&transcript),
+            },
+            0,
+        )
         .unwrap_err();
 
         assert_eq!(
@@ -770,12 +811,15 @@ mod tests {
         fs::create_dir_all(&sessions).unwrap();
         write_codex_session(&sessions.join("one.jsonl"), "s1", &project);
 
-        let resolution = resolve_transcript(TranscriptResolver {
-            provider: "codex",
-            scope_root: &project,
-            home: &home,
-            transcript_path: None,
-        })
+        let resolution = resolve_transcript(
+            TranscriptResolver {
+                provider: "codex",
+                scope_root: &project,
+                home: &home,
+                transcript_path: None,
+            },
+            0,
+        )
         .unwrap();
 
         let TranscriptResolution::Bound(candidate) = resolution else {
@@ -796,12 +840,15 @@ mod tests {
         fs::create_dir_all(&sessions).unwrap();
         write_codex_session(&sessions.join("one.jsonl"), "s1", &other_project);
 
-        let resolution = resolve_transcript(TranscriptResolver {
-            provider: "codex",
-            scope_root: &project,
-            home: &home,
-            transcript_path: None,
-        })
+        let resolution = resolve_transcript(
+            TranscriptResolver {
+                provider: "codex",
+                scope_root: &project,
+                home: &home,
+                transcript_path: None,
+            },
+            0,
+        )
         .unwrap();
 
         assert_eq!(resolution, TranscriptResolution::NotFound);
@@ -820,12 +867,15 @@ mod tests {
         write_codex_session(&sessions.join("one.jsonl"), "s1", &project);
         write_codex_session(&sessions.join("two.jsonl"), "s2", &other_project);
 
-        let resolution = resolve_transcript(TranscriptResolver {
-            provider: "codex",
-            scope_root: &project,
-            home: &home,
-            transcript_path: None,
-        })
+        let resolution = resolve_transcript(
+            TranscriptResolver {
+                provider: "codex",
+                scope_root: &project,
+                home: &home,
+                transcript_path: None,
+            },
+            0,
+        )
         .unwrap();
 
         let TranscriptResolution::Bound(candidate) = resolution else {
@@ -871,12 +921,15 @@ mod tests {
         write_codex_session(&sessions.join("one.jsonl"), "s1", &project);
         write_codex_session(&sessions.join("two.jsonl"), "s2", &project);
 
-        let resolution = resolve_transcript(TranscriptResolver {
-            provider: "codex",
-            scope_root: &project,
-            home: &home,
-            transcript_path: None,
-        })
+        let resolution = resolve_transcript(
+            TranscriptResolver {
+                provider: "codex",
+                scope_root: &project,
+                home: &home,
+                transcript_path: None,
+            },
+            0,
+        )
         .unwrap();
 
         let TranscriptResolution::Ambiguous(candidates) = resolution else {
@@ -893,12 +946,15 @@ mod tests {
         fs::create_dir_all(&project).unwrap();
         fs::create_dir_all(home.join(".codex/sessions")).unwrap();
 
-        let resolution = resolve_transcript(TranscriptResolver {
-            provider: "codex",
-            scope_root: &project,
-            home: &home,
-            transcript_path: None,
-        })
+        let resolution = resolve_transcript(
+            TranscriptResolver {
+                provider: "codex",
+                scope_root: &project,
+                home: &home,
+                transcript_path: None,
+            },
+            0,
+        )
         .unwrap();
 
         assert_eq!(resolution, TranscriptResolution::NotFound);
@@ -928,9 +984,25 @@ mod tests {
         write_claude_transcript(&home, &project, "session-a.jsonl");
         write_claude_transcript(&home, &project, "session-b.jsonl");
 
-        let candidates = discover_project_conversations(&project, &home, None);
+        let candidates = discover_project_conversations(&project, &home, None, 0);
         assert_eq!(candidates.len(), 2, "expected exactly 2 candidates");
         assert!(candidates.iter().all(|c| c.provider == "claude"));
+    }
+
+    #[test]
+    fn discovery_falls_back_to_provider_root_scan() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("myproject");
+        let home = tmp.path().join("home");
+        let sessions = home.join(".codex/sessions");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&sessions).unwrap();
+        write_codex_session(&sessions.join("one.jsonl"), "s1", &project);
+
+        let candidates = discover_project_conversations(&project, &home, None, 0);
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].provider, "codex");
     }
 
     #[test]
@@ -948,6 +1020,7 @@ mod tests {
             &project,
             &home,
             Some(&bound_canonical.display().to_string()),
+            0,
         );
         assert!(
             !candidates
@@ -985,7 +1058,7 @@ mod tests {
         )
         .unwrap();
 
-        let candidates = discover_project_conversations(&project, &home, None);
+        let candidates = discover_project_conversations(&project, &home, None, 0);
         let providers: Vec<&str> = candidates.iter().map(|c| c.provider.as_str()).collect();
         assert!(providers.contains(&"claude"), "expected claude candidate");
         assert!(providers.contains(&"gemini"), "expected gemini candidate");
@@ -998,7 +1071,7 @@ mod tests {
         let home = tmp.path().join("home");
         fs::create_dir_all(&home).unwrap();
 
-        let candidates = discover_project_conversations(&project, &home, None);
+        let candidates = discover_project_conversations(&project, &home, None, 0);
         assert!(candidates.is_empty());
     }
 }

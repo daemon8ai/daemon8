@@ -1284,7 +1284,7 @@ dependencies = [
 
 [[package]]
 name = "daemon8"
-version = "0.4.1"
+version = "0.5.0-alpha.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1330,7 +1330,7 @@ dependencies = [
 
 [[package]]
 name = "daemon8-adb"
-version = "0.4.1"
+version = "0.5.0-alpha.1"
 dependencies = [
  "adb_client",
  "daemon8-types",
@@ -1343,7 +1343,7 @@ dependencies = [
 
 [[package]]
 name = "daemon8-api"
-version = "0.4.1"
+version = "0.5.0-alpha.1"
 dependencies = [
  "async-trait",
  "axum",
@@ -1366,7 +1366,7 @@ dependencies = [
 
 [[package]]
 name = "daemon8-chrome"
-version = "0.4.1"
+version = "0.5.0-alpha.1"
 dependencies = [
  "base64",
  "daemon8-types",
@@ -1385,7 +1385,7 @@ dependencies = [
 
 [[package]]
 name = "daemon8-core"
-version = "0.4.1"
+version = "0.5.0-alpha.1"
 dependencies = [
  "daemon8-providers",
  "humantime",
@@ -1399,9 +1399,8 @@ dependencies = [
 
 [[package]]
 name = "daemon8-ingest"
-version = "0.4.1"
+version = "0.5.0-alpha.1"
 dependencies = [
- "async-trait",
  "axum",
  "daemon8-core",
  "daemon8-parse",
@@ -1421,7 +1420,7 @@ dependencies = [
 
 [[package]]
 name = "daemon8-mcp"
-version = "0.4.1"
+version = "0.5.0-alpha.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1429,6 +1428,7 @@ dependencies = [
  "daemon8-core",
  "daemon8-ingest",
  "daemon8-mcp",
+ "daemon8-providers",
  "daemon8-store",
  "daemon8-types",
  "dirs",
@@ -1443,7 +1443,7 @@ dependencies = [
 
 [[package]]
 name = "daemon8-parse"
-version = "0.4.1"
+version = "0.5.0-alpha.1"
 dependencies = [
  "daemon8-types",
  "dateparser",
@@ -1460,7 +1460,7 @@ dependencies = [
 
 [[package]]
 name = "daemon8-providers"
-version = "0.4.1"
+version = "0.5.0-alpha.1"
 dependencies = [
  "anyhow",
  "daemon8-store",
@@ -1469,13 +1469,14 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "time",
  "toml 0.8.23",
  "tracing",
 ]
 
 [[package]]
 name = "daemon8-store"
-version = "0.4.1"
+version = "0.5.0-alpha.1"
 dependencies = [
  "async-trait",
  "daemon8-types",
@@ -1492,7 +1493,7 @@ dependencies = [
 
 [[package]]
 name = "daemon8-types"
-version = "0.4.1"
+version = "0.5.0-alpha.1"
 dependencies = [
  "rmcp",
  "serde",
@@ -3667,6 +3668,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "num_threads"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c7398b9c8b70908f6371f47ed36737907c87c52af34c268fed0bf0ceb92ead9"
+dependencies = [
+ "libc",
 ]
 
 [[package]]
@@ -6409,7 +6419,9 @@ checksum = "743bd48c283afc0388f9b8827b976905fb217ad9e647fae3a379a9283c4def2c"
 dependencies = [
  "deranged",
  "itoa",
+ "libc",
  "num-conv",
+ "num_threads",
  "powerfmt",
  "serde_core",
  "time-core",

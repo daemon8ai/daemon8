@@ -174,7 +174,7 @@ git ls-files \
   crates \
   | grep -v '^scripts/release-check.sh$' > "$stale_surface_list"
 
-stale_pattern='setup_(apply|status|plan)|\.daemon8\.toml|librarian|discovery|debug_summary|debug_observe|provider hooks|old setup|deprecated alias|migration shim|:host/codex\+worker>'
+stale_pattern='setup_(apply|status|plan)|\.daemon8\.toml|librarian|discovery_daemon|debug_summary|debug_observe|provider hooks|old setup|deprecated alias|migration shim|:host/codex\+worker>'
 if xargs grep -n -E "$stale_pattern" < "$stale_surface_list"; then
   fail "stale alpha release-surface wording found"
 fi

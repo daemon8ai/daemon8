@@ -189,7 +189,6 @@ async fn start_server(
         chrome_state: chrome_state_rx,
         chrome_endpoint: std::sync::Arc::new(std::sync::Mutex::new(None)),
         lens: std::sync::Arc::new(daemon8_store::LensManager::new(broadcast_tx.subscribe())),
-        source_trigger: None,
     };
 
     let app =
@@ -1167,7 +1166,6 @@ async fn start_act_server() -> (
         chrome_state: chrome_state_rx,
         chrome_endpoint: std::sync::Arc::new(std::sync::Mutex::new(None)),
         lens: std::sync::Arc::new(daemon8_store::LensManager::new(stream_tx.subscribe())),
-        source_trigger: None,
     };
     let app = daemon8_api::api_router(api_state);
 

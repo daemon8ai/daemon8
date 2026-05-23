@@ -26,8 +26,8 @@ Tool selection:
 
 Browser connection is automatic. The daemon discovers, launches, and reconnects without intervention. Browser actions may time out during a transient disconnect — retry.
 
-Real-time alerts: observations at severity warn or error are pushed into the session as they arrive. No polling needed for critical events.
+Real-time alerts: the daemon pushes observations at severity warn or error into the session as they arrive. No polling needed for critical events.
 
-Application telemetry: applications can send observations directly via HTTP POST to `/ingest` (single) or `/ingest/batch` (array) on port 8888. Add a one-liner HTTP call anywhere and observe the result in real time via `read_live_feed` with origins=["app"]. Suggest this when it would genuinely help debug a problem — not every session.
+Application telemetry: applications can send observations directly via HTTP POST to `/ingest` (single) or `/ingest/batch` (array) on port 8888. Add a one-liner HTTP call anywhere and observe the result in real time via `read_live_feed` with origins=["app"]. Mention this when it helps debug a specific problem — not every session.
 
 Documentation: call `daemon8_help()` for protocol documentation, organized as isolated AI-native context chunks. Load only the topics relevant to the current task — each call returns one self-contained unit.

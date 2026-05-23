@@ -2,6 +2,8 @@
 // Copyright (c) 2026 Havy.tech, LLC
 
 use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use toml::Table;
@@ -16,6 +18,25 @@ use super::traits::{
 };
 
 pub struct CodexProvider;
+
+fn command_output_with_timeout(mut command: Command, timeout: Duration) -> std::io::Result<Output> {
+    let mut child = command.spawn()?;
+    let started = std::time::Instant::now();
+    loop {
+        if child.try_wait()?.is_some() {
+            return child.wait_with_output();
+        }
+        if started.elapsed() >= timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "sqlite3 command timed out",
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
 
 static HOOK_EVENTS: &[HookEventEntry] = &[
     HookEventEntry {
@@ -170,11 +191,9 @@ impl AiProvider for CodexProvider {
             scope_str.replace('\'', "''"),
             since_ms,
         );
-        let Ok(output) = std::process::Command::new("sqlite3")
-            .arg(&db_path)
-            .arg(&query)
-            .output()
-        else {
+        let mut command = Command::new("sqlite3");
+        command.arg(&db_path).arg(&query);
+        let Ok(output) = command_output_with_timeout(command, Duration::from_secs(2)) else {
             return Vec::new();
         };
         if !output.status.success() {
@@ -194,11 +213,9 @@ impl AiProvider for CodexProvider {
         if !db_path.exists() {
             return Vec::new();
         }
-        let Ok(output) = std::process::Command::new("sqlite3")
-            .arg(&db_path)
-            .arg("SELECT cwd, MAX(COALESCE(updated_at_ms, updated_at * 1000)) FROM threads GROUP BY cwd ORDER BY 2 DESC")
-            .output()
-        else {
+        let mut command = Command::new("sqlite3");
+        command.arg(&db_path).arg("SELECT cwd, MAX(COALESCE(updated_at_ms, updated_at * 1000)) FROM threads GROUP BY cwd ORDER BY 2 DESC");
+        let Ok(output) = command_output_with_timeout(command, Duration::from_secs(2)) else {
             return Vec::new();
         };
         if !output.status.success() {

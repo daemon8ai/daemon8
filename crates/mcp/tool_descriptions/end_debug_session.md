@@ -11,7 +11,7 @@ You're stopping investigation but you don't have a captured fix worth indexing f
 A connected project-scope MCP session (`data.connection.mode == "project"`) and an active debug session. Call `daemon8_connect` with a project path first; call start_debug_session if no debug session is active.
 
 ## Args
-  - outcome: optional string. Defaults to "abandoned". Allowed: "abandoned", "in_progress" (if you intend to resume later in a new session). Do NOT use "resolved" here — use resolve_debug_session for that.
+  - outcome: optional string. Defaults to "abandoned". Allowed: "abandoned", "in_progress" (if you intend to resume later in a new session). Do NOT use "resolved" here — resolve_debug_session writes the richer SessionSummary needed for future retrieval.
 
 ## Returns
 Common envelope with `code="debug_session_ended"`, `data.debug_session_id`, and `data.summary_memory_id`.
@@ -22,4 +22,4 @@ Common envelope with `code="debug_session_ended"`, `data.debug_session_id`, and 
 
 ## Next
 
-Start a fresh debug session for the next investigation, or call list_debug_sessions to review recent sessions.
+Call `start_debug_session` for the next investigation. Call `list_debug_sessions` to review recent sessions.

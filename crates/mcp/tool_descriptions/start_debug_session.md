@@ -8,6 +8,8 @@ Opening a session is not enough by itself. The next step is normally `create_che
 
 At the start of any non-trivial debugging task. Errors observed, tests failing, "this isn't behaving" -- open a session, then work inside it. The session is the persistent artifact future-you (or another agent) will retrieve when a similar issue resurfaces.
 
+Before opening a new session, check if other agents have already investigated this area. Call `list_debug_sessions(feature="...")` to find overlapping work. If `daemon8_connect` showed conversations from other providers in `data.conversations.available`, call `build_context_snapshot` to review what those providers did. Starting from existing context beats rediscovering the same root cause.
+
 ## Prereq
 
 A connected project-scope MCP session (`data.connection.mode == "project"`) and no other debug session currently active IN THIS MCP SESSION. Call `daemon8_connect` with a project path first. Other agents/connections can each have their own active session. If one is active here, end_debug_session or resolve_debug_session must close it first.

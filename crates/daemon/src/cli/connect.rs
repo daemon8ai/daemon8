@@ -12,19 +12,11 @@ use daemon8_core::control::{
     AlphaEnvelope, AlphaStatus, ConnectOutcome, ConnectRequest, ScopeMode, SessionConnection,
     connect, normalize_provider_for_connect, resolve_connect_transcript,
 };
-use daemon8_ingest::source_sync::{
-    ActiveTranscriptSource, ConfiguredSourceTrigger, SourceSyncReport, SourceTrigger,
-    SourceTriggerRequest,
-};
-use daemon8_providers::dirs_home;
+use daemon8_providers::{conversation_since_ms, dirs_home};
 use daemon8_store::{
-    ObservationHashCache, ScopeConnectFailureRecord, ScopeLedgerStore, ScopeSessionRecord,
-    StateModel, SurrealStore,
+    ScopeConnectFailureRecord, ScopeLedgerStore, ScopeSessionRecord, SurrealStore,
 };
-use serde_json::json;
-use tokio::sync::broadcast;
 
-use crate::cli::serve::{ObservationWriteService, StoreWriterCtx};
 use crate::config;
 
 #[derive(clap::Args, Default)]
@@ -45,6 +37,10 @@ pub struct ConnectArgs {
     #[arg(long)]
     pub transcript_path: Option<PathBuf>,
 
+    /// Optional conversation discovery lookback window in hours.
+    #[arg(long)]
+    pub conversation_lookback_hours: Option<u64>,
+
     /// Emit the common alpha JSON envelope.
     #[arg(long)]
     pub json: bool,
@@ -55,6 +51,7 @@ pub async fn cmd_connect(config_path: Option<String>, args: ConnectArgs) -> Resu
     let project_path = args.path;
     let agent_name = args.agent_name;
     let transcript_path = args.transcript_path;
+    let conversation_lookback_hours = args.conversation_lookback_hours;
     let session_id = next_cli_session_id();
     let requested_path = project_path.display().to_string();
     let transcript_path_display = transcript_path
@@ -104,7 +101,25 @@ pub async fn cmd_connect(config_path: Option<String>, args: ConnectArgs) -> Resu
         agent_name: agent_name.clone(),
         transcript_path: transcript_path.clone(),
     });
-    let mut outcome = resolve_connect_transcript(outcome, transcript_path.as_deref(), &dirs_home());
+    let home = dirs_home();
+    let conversation_since_ms = outcome
+        .connection
+        .as_ref()
+        .and_then(|connection| connection.scope_root.as_deref())
+        .map(|scope_root| {
+            conversation_since_ms(
+                &home,
+                std::path::Path::new(scope_root),
+                conversation_lookback_hours,
+            )
+        })
+        .unwrap_or_else(daemon8_providers::conversation_day_start_since_ms);
+    let outcome = resolve_connect_transcript(
+        outcome,
+        transcript_path.as_deref(),
+        &home,
+        conversation_since_ms,
+    );
 
     let connect_store = match open_connect_store(config_path.as_deref()).await {
         Ok(store) => Some(store),
@@ -126,22 +141,6 @@ pub async fn cmd_connect(config_path: Option<String>, args: ConnectArgs) -> Resu
         .await
     {
         tracing::warn!(error = %err, "scope ledger connect recording failed");
-    }
-
-    if outcome.envelope.status == AlphaStatus::Success
-        && let Some(store) = connect_store.as_ref()
-    {
-        match trigger_project_sources(store, &outcome.connection).await {
-            Ok(Some(report)) => {
-                let mut data = outcome.envelope.data.take().unwrap_or_else(|| json!({}));
-                data["triggered_ingestion"] = source_report_value(&report);
-                outcome.envelope.data = Some(data);
-            }
-            Ok(None) => {}
-            Err(err) => {
-                tracing::warn!(error = %err, "configured source trigger failed after connect");
-            }
-        }
     }
 
     if args.json {
@@ -167,54 +166,6 @@ pub async fn cmd_connect(config_path: Option<String>, args: ConnectArgs) -> Resu
                 .unwrap_or(&outcome.envelope.message)
         ),
     }
-}
-
-async fn trigger_project_sources(
-    surreal_store: &Arc<SurrealStore>,
-    connection: &Option<SessionConnection>,
-) -> Result<Option<SourceSyncReport>> {
-    let Some(connection) = connection else {
-        return Ok(None);
-    };
-    if connection.mode != ScopeMode::Project {
-        return Ok(None);
-    }
-    let Some(scope_root) = connection.scope_root.as_ref() else {
-        return Ok(None);
-    };
-
-    let store: Arc<dyn StateModel> = surreal_store.clone();
-    let (broadcast_tx, _broadcast_rx) = broadcast::channel(1);
-    let writer = Arc::new(ObservationWriteService::new(Arc::new(StoreWriterCtx {
-        store,
-        memory_store: None,
-        debug_session_store: None,
-        broadcast_tx,
-        node_id: Arc::from("cli-connect"),
-        hash_cache: ObservationHashCache::new(),
-    })));
-    let trigger = ConfiguredSourceTrigger::new(Arc::new(surreal_store.cursor_store()), writer);
-    let mut active_transcripts = Vec::new();
-    if let Some(path) = &connection.transcript_path {
-        active_transcripts.push(ActiveTranscriptSource {
-            provider: connection.provider.clone(),
-            path: PathBuf::from(path),
-            linked: false,
-        });
-    }
-
-    Ok(Some(
-        trigger
-            .trigger_sources(SourceTriggerRequest {
-                scope_root: PathBuf::from(scope_root),
-                active_transcripts,
-            })
-            .await,
-    ))
-}
-
-fn source_report_value(report: &SourceSyncReport) -> serde_json::Value {
-    serde_json::to_value(report).unwrap_or_else(|_| json!({}))
 }
 
 fn print_envelope_guidance(envelope: &AlphaEnvelope) {

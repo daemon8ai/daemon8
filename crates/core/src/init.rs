@@ -469,7 +469,7 @@ daemon8 supports these log parsers:
 Source fields:
   file: id, service, kind (file), path, parser (see list above), tags
 
-# Conversation transcripts are ingested automatically on connect — no config source needed.
+# Conversation transcripts are discovered automatically on connect and available via build_context_snapshot.
 
 Use $PRJ_ROOT for project-relative paths.
 
@@ -556,7 +556,7 @@ File source format:
 Source fields:
   file: id, service, kind (file), path, parser (see list above), tags
 
-# Conversation transcripts are ingested automatically on connect — no config source needed.
+# Conversation transcripts are discovered automatically on connect and available via build_context_snapshot.
 
 Use $PRJ_ROOT for project-relative paths. It resolves to the vars.PRJ_ROOT
 value in the frontmatter.

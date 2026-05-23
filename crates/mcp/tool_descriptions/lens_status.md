@@ -4,7 +4,7 @@ Inspect the active lens (if any) and the ring buffer behind it. Read-only.
 
 ## When
 
-Verifying the lens filter matches expectations, checking buffer depth before `read_live_feed` (deep buffer means the next query will return many matches), or confirming the lens survived a long session.
+Call to verify the lens filter matches expectations, check buffer depth before `read_live_feed` (deep buffer means the next query will return many matches), or confirm the lens survived a long session.
 
 ## Prereq
 
@@ -23,4 +23,4 @@ none expected.
 
 ## Next
 
-read_live_feed to drain the buffer; clear_lens when done.
+Call `read_live_feed` to drain the buffer. Call `clear_lens` when the focused-watch session is complete.

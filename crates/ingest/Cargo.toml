@@ -13,7 +13,6 @@ daemon8-parse.workspace = true
 daemon8-providers.workspace = true
 daemon8-store.workspace = true
 daemon8-types.workspace = true
-async-trait.workspace = true
 axum.workspace = true
 serde.workspace = true
 serde_json.workspace = true

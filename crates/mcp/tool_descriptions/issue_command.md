@@ -25,4 +25,4 @@ Common envelope with action-specific `data`. Common payload fields include `data
 
 ## Next
 
-read_live_feed(origins=["browser"]) to see browser console activity triggered by your action.
+Call `read_live_feed(origins=["browser"])` to see browser console activity your action triggered.

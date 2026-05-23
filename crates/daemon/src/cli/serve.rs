@@ -9,10 +9,6 @@ use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
-use daemon8_ingest::source_sync::{
-    ConfiguredSourceTrigger, ObservationWriteResult, ObservationWriteStatus, ObservationWriter,
-    SourceTrigger,
-};
 use daemon8_mcp::ChromeCommand;
 use daemon8_store::{
     DebugSessionStore, MemoryStore, ObservationHashCache, StateModel, SurrealStore, error_hash,
@@ -98,11 +94,6 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
         node_id,
         hash_cache: ObservationHashCache::new(),
     })));
-    let source_trigger: Arc<dyn SourceTrigger> = Arc::new(ConfiguredSourceTrigger::new(
-        Arc::new(surreal_store.cursor_store()),
-        observation_writer.clone(),
-    ));
-
     spawn_store_writer(
         &mut tasks,
         obs_rx,
@@ -221,8 +212,8 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
             screenshot_dir: screenshot_dir.clone(),
             home_dir: daemon8_providers::dirs_home(),
             broadcast_tx: broadcast_tx.clone(),
-            source_trigger: Some(source_trigger.clone()),
             lens,
+            cursor_store: Some(Arc::new(surreal_store.cursor_store())),
             cancel: cancel.clone(),
         });
         let cancel_on_eof = cancel.clone();
@@ -256,7 +247,8 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
     let mcp_screenshot_fn = device_screenshot_fn.clone();
     let mcp_screenshot_dir = screenshot_dir.clone();
     let mcp_broadcast_tx = broadcast_tx.clone();
-    let mcp_source_trigger = source_trigger.clone();
+    let mcp_cursor_store: Arc<dyn daemon8_store::CursorStore> =
+        Arc::new(surreal_store.cursor_store());
     let mcp_cancel = cancel.child_token();
     // Daemon-wide cancel cloned into the per-session factory closure. Each
     // `DaemonMcp` then derives its own child token for the push task in
@@ -279,10 +271,10 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
                 screenshot_dir: mcp_screenshot_dir.clone(),
                 home_dir: daemon8_providers::dirs_home(),
                 broadcast_tx: mcp_broadcast_tx.clone(),
-                source_trigger: Some(mcp_source_trigger.clone()),
                 lens: Arc::new(daemon8_store::LensManager::new(
                     mcp_broadcast_tx.subscribe(),
                 )),
+                cursor_store: Some(mcp_cursor_store.clone()),
                 cancel: mcp_root_cancel.clone(),
             }))
         },
@@ -304,7 +296,6 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
         chrome_state: chrome_state_rx.clone(),
         chrome_endpoint: chrome_endpoint.clone(),
         lens: api_lens,
-        source_trigger: Some(source_trigger.clone()),
     };
     let port = cfg.server.port;
     let app = daemon8_ingest::ingest_router(obs_tx.clone())
@@ -421,6 +412,18 @@ fn spawn_store_writer(
     });
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ObservationWriteStatus {
+    Inserted,
+    Deduped,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ObservationWriteResult {
+    pub status: ObservationWriteStatus,
+    pub id: Option<u64>,
+}
+
 pub(crate) struct ObservationWriteService {
     ctx: Arc<StoreWriterCtx>,
 }
@@ -429,10 +432,7 @@ impl ObservationWriteService {
     pub(crate) fn new(ctx: Arc<StoreWriterCtx>) -> Self {
         Self { ctx }
     }
-}
 
-#[async_trait::async_trait]
-impl ObservationWriter for ObservationWriteService {
     async fn write_observation(&self, obs: Observation) -> Result<ObservationWriteResult, String> {
         handle_observation(obs, &self.ctx)
             .await

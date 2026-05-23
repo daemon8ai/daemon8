@@ -14,9 +14,6 @@ use daemon8_core::control::{
     resolve_connect_transcript, status_envelope,
 };
 use daemon8_core::init::{InitRequest, init_project};
-use daemon8_ingest::source_sync::{
-    ActiveTranscriptSource, SourceSyncReport, SourceTrigger, SourceTriggerRequest,
-};
 use daemon8_store::{
     ActiveSessionState, DebugSessionStore, LensManager, MemoryStore, RecentScopeRecord,
     ScopeConnectFailureRecord, ScopeLedgerStore, ScopeSessionRecord, StateModel,
@@ -160,6 +157,11 @@ pub struct Daemon8ConnectParams {
         description = "Optional provider transcript path for runtime conversation binding."
     )]
     pub transcript_path: Option<String>,
+
+    #[schemars(
+        description = "Optional conversation discovery lookback window in hours. Defaults to the earliest matching project conversation modified today, falling back to local midnight."
+    )]
+    pub conversation_lookback_hours: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -195,6 +197,11 @@ pub struct LinkConversationParams {
 
     #[schemars(description = "Absolute path to a specific transcript file to link directly.")]
     pub transcript_path: Option<String>,
+
+    #[schemars(
+        description = "Optional conversation discovery lookback window in hours. Defaults to the earliest matching project conversation modified today, falling back to local midnight."
+    )]
+    pub conversation_lookback_hours: Option<u64>,
 }
 
 pub use daemon8_types::DebugAction;
@@ -501,6 +508,22 @@ pub struct ListDebugSessionsParams {
     pub feature: Option<String>,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct BuildContextSnapshotParams {
+    #[schemars(
+        description = "Time scope: 'conversation_start' (default), 'checkpoint' (since active debug checkpoint), or 'duration:N' (last N minutes)."
+    )]
+    pub since: Option<String>,
+    #[schemars(
+        description = "Which facets to build: user_messages, assistant_messages, tool_activity, file_changes, log_activity, summary. Omit for all."
+    )]
+    pub facets: Option<Vec<String>>,
+    #[schemars(
+        description = "Filter to specific providers: claude, codex, gemini. Omit for all discovered."
+    )]
+    pub providers: Option<Vec<String>>,
+}
+
 pub struct DaemonMcp {
     store: Arc<dyn StateModel>,
     memory_store: Option<Arc<dyn MemoryStore>>,
@@ -511,14 +534,14 @@ pub struct DaemonMcp {
     chrome_tx: tokio::sync::mpsc::Sender<ChromeCommand>,
     chrome_state: tokio::sync::watch::Receiver<daemon8_chrome::ConnectionState>,
     chrome_endpoint: Arc<Mutex<Option<Arc<str>>>>,
-    last_checkpoint: Mutex<Checkpoint>,
+    last_checkpoint: Mutex<(Checkpoint, u64)>,
     device_screenshot_fn: Option<DeviceScreenshotFn>,
     screenshot_dir: std::path::PathBuf,
     home_dir: PathBuf,
     subscription_tx: tokio::sync::watch::Sender<Option<Filter>>,
     broadcast_tx: broadcast::Sender<(Arc<Observation>, Arc<str>)>,
-    source_trigger: Option<Arc<dyn SourceTrigger>>,
     lens: Arc<LensManager>,
+    cursor_store: Option<Arc<dyn daemon8_store::CursorStore>>,
     cancel: tokio_util::sync::CancellationToken,
     enabled_features: Vec<FeatureGate>,
     session_id: String,
@@ -539,8 +562,8 @@ pub struct DaemonMcpConfig {
     pub screenshot_dir: std::path::PathBuf,
     pub home_dir: PathBuf,
     pub broadcast_tx: broadcast::Sender<(Arc<Observation>, Arc<str>)>,
-    pub source_trigger: Option<Arc<dyn SourceTrigger>>,
     pub lens: Arc<LensManager>,
+    pub cursor_store: Option<Arc<dyn daemon8_store::CursorStore>>,
     pub cancel: tokio_util::sync::CancellationToken,
 }
 
@@ -568,14 +591,14 @@ impl DaemonMcp {
             chrome_tx: cfg.chrome_tx,
             chrome_state: cfg.chrome_state,
             chrome_endpoint: cfg.chrome_endpoint,
-            last_checkpoint: Mutex::new(Checkpoint(0)),
+            last_checkpoint: Mutex::new((Checkpoint(0), 0)),
             device_screenshot_fn: cfg.device_screenshot_fn,
             screenshot_dir: cfg.screenshot_dir,
             home_dir: cfg.home_dir,
             subscription_tx,
             broadcast_tx: cfg.broadcast_tx,
-            source_trigger: cfg.source_trigger,
             lens: cfg.lens,
+            cursor_store: cfg.cursor_store,
             cancel: cfg.cancel,
             enabled_features,
             session_id: next_mcp_session_id(),
@@ -659,6 +682,19 @@ impl DaemonMcp {
     }
 
     #[cfg(feature = "test-util")]
+    pub async fn link_conversation_for_tests(&self, params: LinkConversationParams) -> String {
+        self.link_conversation_tool(Parameters(params)).await
+    }
+
+    #[cfg(feature = "test-util")]
+    pub async fn build_context_snapshot_for_tests(
+        &self,
+        params: BuildContextSnapshotParams,
+    ) -> String {
+        self.build_context_snapshot(Parameters(params)).await
+    }
+
+    #[cfg(feature = "test-util")]
     pub fn help_topic_body(&self, topic: &str) -> (String, String) {
         match help::find_topic(topic, &self.enabled_features) {
             Some(t) => (t.name.to_string(), t.body.to_string()),
@@ -738,7 +774,7 @@ impl DaemonMcp {
             .with_data(self.session_context())
             .with_next_action(NextAction::new(
                 "read_live_feed",
-                "retry with at least one narrowing filter",
+                "general mode scopes the entire daemon -- add a narrowing filter (severity_min, kinds, origins, service, source, tags, or text_match) to focus observations",
                 serde_json::json!({"severity_min": "warn"}),
             ))
             .render();
@@ -783,14 +819,58 @@ impl DaemonMcp {
             include_system: params.include_system,
         };
 
-        let source_report = self.trigger_project_sources().await;
-
         match self.store.query(&filter).await {
             Ok(slice) => {
-                let mut result = serde_json::to_value(&slice).unwrap_or_default();
-                if let Some(report) = source_report {
-                    result["triggered_ingestion"] = source_report_value(&report);
+                let mut observations = slice.observations;
+
+                // MutexGuard is not Send -- extract before the async call.
+                let read_through_args = {
+                    let connection = self.connection.lock().expect("connection mutex poisoned");
+                    connection
+                        .as_ref()
+                        .filter(|c| c.mode == ScopeMode::Project)
+                        .and_then(|c| {
+                            let scope_root = c.scope_root.clone()?;
+                            let config = c.project_config.clone()?;
+                            let cursor_store = self.cursor_store.as_ref().map(Arc::clone)?;
+                            Some((scope_root, config, cursor_store))
+                        })
+                };
+                if let Some((scope_root, config, cursor_store)) = read_through_args {
+                    let mut rt_filter = filter.clone();
+                    rt_filter.since = None;
+                    let rt = daemon8_ingest::read_through::read_through_file_sources(
+                        Path::new(&scope_root),
+                        &config,
+                        &rt_filter,
+                        cursor_store.as_ref(),
+                    )
+                    .await;
+                    observations.extend(rt.observations);
+                    for err in &rt.errors {
+                        tracing::warn!(
+                            source = %err.source_id,
+                            "read-through: {}: {}",
+                            err.code,
+                            err.message,
+                        );
+                    }
                 }
+
+                observations.sort_by_key(|obs| obs.timestamp_ns);
+                if let Some(limit) = filter.limit
+                    && observations.len() > limit
+                {
+                    let start = observations.len() - limit;
+                    observations = observations.split_off(start);
+                }
+
+                let merged_slice = daemon8_types::StateSlice {
+                    observations,
+                    checkpoint: slice.checkpoint,
+                    summary: slice.summary,
+                };
+                let mut result = serde_json::to_value(&merged_slice).unwrap_or_default();
 
                 if wants_browser {
                     let chrome_state = *self.chrome_state.borrow();
@@ -805,7 +885,7 @@ impl DaemonMcp {
                 }
 
                 let warned_since_checkpoint = filter.since.is_some()
-                    && slice
+                    && merged_slice
                         .observations
                         .iter()
                         .any(|obs| obs.severity.level() >= daemon8_types::Severity::Warn.level());
@@ -854,6 +934,7 @@ impl DaemonMcp {
         let project_path = params.project_path;
         let agent_name = params.agent_name;
         let transcript_path = params.transcript_path;
+        let conversation_lookback_hours = params.conversation_lookback_hours;
         let provider =
             match normalize_provider_for_connect(&self.session_id, &provider, &project_path) {
                 Ok(provider) => provider,
@@ -891,9 +972,25 @@ impl DaemonMcp {
             agent_name: agent_name.clone(),
             transcript_path: transcript_path.clone().map(PathBuf::from),
         });
+        let conversation_since_ms = outcome
+            .connection
+            .as_ref()
+            .and_then(|connection| connection.scope_root.as_deref())
+            .map(|scope_root| {
+                daemon8_providers::conversation_since_ms(
+                    &self.home_dir,
+                    Path::new(scope_root),
+                    conversation_lookback_hours,
+                )
+            })
+            .unwrap_or_else(daemon8_providers::conversation_day_start_since_ms);
         let transcript_path_buf = transcript_path.as_ref().map(PathBuf::from);
-        let outcome =
-            resolve_connect_transcript(outcome, transcript_path_buf.as_deref(), &self.home_dir);
+        let outcome = resolve_connect_transcript(
+            outcome,
+            transcript_path_buf.as_deref(),
+            &self.home_dir,
+            conversation_since_ms,
+        );
 
         if outcome.envelope.status == AlphaStatus::SetupRequired
             && let Some(ledger) = &self.scope_ledger_store
@@ -940,16 +1037,6 @@ impl DaemonMcp {
         .await;
 
         let mut envelope = outcome.envelope;
-        if envelope.status == AlphaStatus::Success
-            && let Some(report) = self.trigger_project_sources().await
-        {
-            let mut data = envelope
-                .data
-                .take()
-                .unwrap_or_else(|| serde_json::json!({}));
-            data["triggered_ingestion"] = source_report_value(&report);
-            envelope.data = Some(data);
-        }
 
         envelope.data = Some(
             self.with_session_context(
@@ -1104,6 +1191,18 @@ impl DaemonMcp {
             return preflight;
         }
         self.link_conversation_inner(params).await
+    }
+
+    #[doc = include_str!("../tool_descriptions/build_context_snapshot.md")]
+    #[tool(name = "build_context_snapshot")]
+    async fn build_context_snapshot(
+        &self,
+        Parameters(params): Parameters<BuildContextSnapshotParams>,
+    ) -> String {
+        if let Some(preflight) = self.connect_preflight("build_context_snapshot") {
+            return preflight;
+        }
+        self.build_context_snapshot_inner(params).await
     }
 
     #[doc = include_str!("../tool_descriptions/write_to_live_feed.md")]
@@ -1424,27 +1523,6 @@ impl DaemonMcp {
             }
         };
 
-        let source_report = self.trigger_project_sources().await;
-        if let Some(report) = &source_report
-            && report.has_failures()
-        {
-            let mut data = self.session_context();
-            data["triggered_ingestion"] = source_report_value(report);
-            return AlphaEnvelope::non_success(
-                AlphaStatus::Blocked,
-                "checkpoint_source_refresh_failed",
-                "checkpoint source refresh failed",
-                "configured project sources must refresh before daemon8 can create a checkpoint",
-            )
-            .with_data(data)
-            .with_next_action(NextAction::new(
-                "read_live_feed",
-                "inspect source refresh failures before creating a checkpoint",
-                serde_json::json!({}),
-            ))
-            .render();
-        }
-
         let seq = self.store.checkpoint().await;
         let now = current_ns();
         let cp = daemon8_store::DebugCheckpoint {
@@ -1464,16 +1542,13 @@ impl DaemonMcp {
         *self
             .last_checkpoint
             .lock()
-            .expect("last_checkpoint mutex poisoned") = seq;
-        let mut data = serde_json::json!({
+            .expect("last_checkpoint mutex poisoned") = (seq, now);
+        let data = serde_json::json!({
             "checkpoint_id": cp_id,
             "debug_session_id": active.id.as_ref(),
             "seq_at_creation": seq.0,
             "created_at": now
         });
-        if let Some(report) = source_report {
-            data["triggered_ingestion"] = source_report_value(&report);
-        }
         self.ok_with_actions(
             "checkpoint_created",
             "checkpoint created",
@@ -1840,12 +1915,12 @@ async fn end_or_resolve_inner(daemon: &DaemonMcp, intent: EndIntent) -> String {
     let next_actions = vec![
         NextAction::new(
             "start_debug_session",
-            "open a new scoped investigation when follow-up work begins",
+            "open a new debug session so follow-up work gets its own checkpoints and retrievable summary",
             serde_json::json!({}),
         ),
         NextAction::new(
             "list_debug_sessions",
-            "confirm recent debug session state if needed",
+            "review recent sessions to check for overlapping work before starting a new investigation",
             serde_json::json!({}),
         ),
     ];
@@ -1871,10 +1946,6 @@ fn current_ns() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos() as u64
-}
-
-fn source_report_value(report: &SourceSyncReport) -> serde_json::Value {
-    serde_json::to_value(report).unwrap_or_else(|_| serde_json::json!({}))
 }
 
 fn scope_session_record(
@@ -2129,42 +2200,6 @@ impl DaemonMcp {
             .map(|connection| connection.mode)
     }
 
-    async fn trigger_project_sources(&self) -> Option<SourceSyncReport> {
-        let trigger = self.source_trigger.as_ref()?;
-        let (scope_root, active_transcripts) = {
-            let connection = self.connection.lock().expect("connection mutex poisoned");
-            let connection = connection.as_ref()?;
-            if connection.mode != ScopeMode::Project {
-                return None;
-            }
-            let mut transcripts = Vec::new();
-            if let Some(path) = &connection.transcript_path {
-                transcripts.push(ActiveTranscriptSource {
-                    provider: connection.provider.clone(),
-                    path: PathBuf::from(path),
-                    linked: false,
-                });
-            }
-            for lt in &connection.linked_transcripts {
-                transcripts.push(ActiveTranscriptSource {
-                    provider: lt.provider.clone(),
-                    path: PathBuf::from(&lt.path),
-                    linked: true,
-                });
-            }
-            (PathBuf::from(connection.scope_root.as_ref()?), transcripts)
-        };
-
-        Some(
-            trigger
-                .trigger_sources(SourceTriggerRequest {
-                    scope_root,
-                    active_transcripts,
-                })
-                .await,
-        )
-    }
-
     fn connect_preflight(&self, tool: &str) -> Option<String> {
         self.tool_router.get(tool)?;
         let policy = tool_policy(tool)?;
@@ -2246,7 +2281,7 @@ fn next_action_for_tool(tool: &str) -> NextAction {
         ),
         other => NextAction::new(
             other,
-            "continue with the indicated daemon8 tool",
+            "the response indicates this tool as the next step -- call it with the supplied params",
             serde_json::json!({}),
         ),
     }
@@ -2279,6 +2314,7 @@ pub const TOOL_POLICY_TABLE: &[(&str, ToolPolicy)] = &[
     ("resolve_debug_session", ToolPolicy::ProjectOnly),
     ("end_debug_session", ToolPolicy::ProjectOnly),
     ("link_conversation", ToolPolicy::ProjectOnly),
+    ("build_context_snapshot", ToolPolicy::ProjectOnly),
 ];
 
 pub fn tool_policy(tool: &str) -> Option<ToolPolicy> {
@@ -2322,27 +2358,208 @@ impl DaemonMcp {
     }
 
     async fn link_conversation_inner(&self, params: LinkConversationParams) -> String {
-        let mut connection_guard = self.connection.lock().expect("connection mutex poisoned");
-        let Some(connection) = connection_guard.as_mut() else {
-            return self.err("connect_required", "no active connection", None, None);
+        let result = {
+            let mut guard = self.connection.lock().expect("connection mutex poisoned");
+            match guard.as_mut() {
+                None => Err(None),
+                Some(connection) => {
+                    let request = LinkConversationRequest {
+                        provider: &params.provider,
+                        project_path: params.project_path.as_ref().map(|p| Path::new(p.as_str())),
+                        transcript_path: params
+                            .transcript_path
+                            .as_ref()
+                            .map(|p| Path::new(p.as_str())),
+                        home: &self.home_dir,
+                    };
+                    let conversation_since_ms = daemon8_providers::conversation_since_ms(
+                        &self.home_dir,
+                        Path::new(
+                            connection
+                                .scope_root
+                                .as_deref()
+                                .unwrap_or(&connection.requested_path),
+                        ),
+                        params.conversation_lookback_hours,
+                    );
+                    link_conversation(connection, request, conversation_since_ms).map_err(Some)
+                }
+            }
         };
 
-        let request = LinkConversationRequest {
-            provider: &params.provider,
-            project_path: params.project_path.as_ref().map(|p| Path::new(p.as_str())),
-            transcript_path: params
-                .transcript_path
-                .as_ref()
-                .map(|p| Path::new(p.as_str())),
-            home: &self.home_dir,
-        };
-
-        match link_conversation(connection, request) {
+        match result {
+            Err(None) => self.err("connect_required", "no active connection", None, None),
+            Err(Some(envelope)) => envelope.render(),
             Ok(linked) => {
                 let data = serde_json::to_value(&linked).unwrap_or_default();
                 self.ok(data)
             }
-            Err(envelope) => envelope.render(),
+        }
+    }
+
+    async fn build_context_snapshot_inner(&self, params: BuildContextSnapshotParams) -> String {
+        let (scope_root, session_id, provider, transcript_path, linked_transcripts) = {
+            let connection = self.connection.lock().expect("connection mutex poisoned");
+            let conn = match connection.as_ref() {
+                Some(c) => c,
+                None => return self.err("connect_required", "not connected", None, None),
+            };
+            let scope_root = match &conn.scope_root {
+                Some(sr) => sr.clone(),
+                None => return self.err("no_scope_root", "no scope root available", None, None),
+            };
+            (
+                scope_root,
+                conn.session_id.clone(),
+                conn.provider.clone(),
+                conn.transcript_path.clone(),
+                conn.linked_transcripts.clone(),
+            )
+        };
+
+        if let Some(ref facets) = params.facets {
+            for f in facets {
+                if !daemon8_ingest::snapshot::VALID_FACETS.contains(&f.as_str()) {
+                    return self.err(
+                        "invalid_facet",
+                        &format!("unknown facet '{f}'"),
+                        Some(&format!(
+                            "valid facets: {}",
+                            daemon8_ingest::snapshot::VALID_FACETS.join(", ")
+                        )),
+                        None,
+                    );
+                }
+            }
+        }
+
+        let since = match params.since.as_deref().unwrap_or("conversation_start") {
+            "conversation_start" => daemon8_ingest::snapshot::SnapshotSince::ConversationStart,
+            "checkpoint" => {
+                let has_session = self.active_state.current_session().is_some();
+                if !has_session {
+                    return self.err(
+                        "no_active_checkpoint",
+                        "no active debug session",
+                        Some("start a debug session and create a checkpoint, or use 'conversation_start' or 'duration:N'"),
+                        None,
+                    );
+                }
+                let (seq, created_at_ns) = {
+                    let cp = self
+                        .last_checkpoint
+                        .lock()
+                        .expect("checkpoint mutex poisoned");
+                    (cp.0, cp.1)
+                };
+                if seq.0 == 0 {
+                    return self.err(
+                        "no_active_checkpoint",
+                        "no checkpoint has been created in the active debug session",
+                        Some("call create_checkpoint first, or use 'conversation_start'"),
+                        None,
+                    );
+                }
+                daemon8_ingest::snapshot::SnapshotSince::Checkpoint {
+                    timestamp_ns: created_at_ns,
+                }
+            }
+            s if s.starts_with("duration:") => {
+                match s
+                    .strip_prefix("duration:")
+                    .and_then(|n| n.parse::<u64>().ok())
+                {
+                    Some(minutes) => daemon8_ingest::snapshot::SnapshotSince::Duration { minutes },
+                    None => {
+                        return self.err(
+                            "invalid_since_param",
+                            &format!("cannot parse duration from '{s}'"),
+                            Some("expected format: 'duration:N' where N is minutes (e.g. 'duration:30')"),
+                            None,
+                        );
+                    }
+                }
+            }
+            other => {
+                return self.err(
+                    "invalid_since_param",
+                    &format!("unknown since value '{other}'"),
+                    Some("valid values: 'conversation_start', 'checkpoint', 'duration:N'"),
+                    None,
+                );
+            }
+        };
+
+        let mut sources: Vec<daemon8_ingest::snapshot::SnapshotSource> = Vec::new();
+
+        if let Some(ref path) = transcript_path {
+            let p = PathBuf::from(path);
+            sources.push(daemon8_ingest::snapshot::SnapshotSource {
+                provider: provider.clone(),
+                path: std::fs::canonicalize(&p).unwrap_or(p),
+            });
+        }
+
+        for lt in &linked_transcripts {
+            let p = PathBuf::from(&lt.path);
+            sources.push(daemon8_ingest::snapshot::SnapshotSource {
+                provider: lt.provider.clone(),
+                path: std::fs::canonicalize(&p).unwrap_or(p),
+            });
+        }
+
+        let scope_root_path = PathBuf::from(&scope_root);
+        let exclude = transcript_path.as_deref();
+        let discovered = daemon8_providers::transcripts::discover_project_conversations(
+            &scope_root_path,
+            &self.home_dir,
+            exclude,
+            0,
+        );
+        for candidate in discovered {
+            let already_added = sources
+                .iter()
+                .any(|s| s.path.to_str() == Some(&candidate.path));
+            if !already_added {
+                sources.push(daemon8_ingest::snapshot::SnapshotSource {
+                    provider: candidate.provider,
+                    path: PathBuf::from(candidate.path),
+                });
+            }
+        }
+
+        if let Some(ref providers) = params.providers {
+            sources.retain(|s| providers.iter().any(|p| p == &s.provider));
+        }
+
+        if sources.is_empty() {
+            return self.err(
+                "no_transcript_sources",
+                "no provider transcripts found or linked for this project",
+                Some("use link_conversation to bind a transcript, or connect from a provider that creates transcripts"),
+                Some("link_conversation"),
+            );
+        }
+
+        let output_dir = scope_root_path
+            .join(".daemon8")
+            .join("snapshots")
+            .join(&session_id);
+
+        let request = daemon8_ingest::snapshot::SnapshotRequest {
+            since,
+            facets: params.facets.unwrap_or_default(),
+            sources,
+            output_dir,
+        };
+
+        match daemon8_ingest::snapshot::build_snapshot(&request) {
+            Ok(result) => self.ok_code(
+                "snapshot_built",
+                "conversation snapshot built",
+                serde_json::to_value(&result).unwrap_or_default(),
+            ),
+            Err(e) => self.err("snapshot_build_failed", &e.to_string(), None, None),
         }
     }
 
@@ -3153,8 +3370,8 @@ mod logging_tests {
             screenshot_dir: std::env::temp_dir().join("daemon8-test"),
             home_dir: std::env::temp_dir().join("daemon8-test-home"),
             broadcast_tx,
-            source_trigger: None,
             lens,
+            cursor_store: None,
             cancel: tokio_util::sync::CancellationToken::new(),
         })
     }
@@ -3427,8 +3644,8 @@ mod logging_tests {
                 screenshot_dir: std::env::temp_dir().join("daemon8-test"),
                 home_dir: std::env::temp_dir().join("daemon8-test-home"),
                 broadcast_tx,
-                source_trigger: None,
                 lens,
+                cursor_store: None,
                 cancel: tokio_util::sync::CancellationToken::new(),
             })
         };

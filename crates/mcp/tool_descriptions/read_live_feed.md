@@ -25,7 +25,7 @@ A connected MCP session. Call `daemon8_connect` first. Observations are live; re
   - include_system: optional bool. Default excludes "_system"-tagged rows.
 
 ## Returns
-Common envelope with `data.observations`, `data.total`, optional `data.lens_observations`, `data.lens_count`, `data.browser_state`, and session context.
+Common envelope with `data.observations`, `data.summary.total`, optional `data.lens_observations`, `data.lens_count`, `data.browser_state`, and session context.
 
 ## Errors
   - narrow_filter_required: in general mode, add `kinds`, `severity_min`, `origins`, `service`, `source`, `source_instance`, `text_match`, `since_checkpoint`, `correlation_id`, or `tags`.
@@ -33,4 +33,4 @@ Common envelope with `data.observations`, `data.total`, optional `data.lens_obse
 
 ## Next
 
-Create a checkpoint before testing a fix. Treat returned observations as runtime signals only; record durable conclusions through `resolve_debug_session` after interpreting what the signal means.
+Call `create_checkpoint` before testing a fix. Treat returned observations as runtime signals only; record durable conclusions through `resolve_debug_session` after interpreting what the signal means.

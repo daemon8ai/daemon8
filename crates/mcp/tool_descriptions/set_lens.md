@@ -4,7 +4,7 @@ Install a per-session observation filter (lens) plus a ring buffer. Matching obs
 
 ## When
 
-Watching for a specific event over time without polling, focusing on one origin/severity band, or building a working set during a debugging run.
+Call when watching for a specific event over time without polling, focusing on one origin/severity band, or building a working set during a debugging run.
 
 ## Prereq
 
@@ -32,4 +32,6 @@ none expected.
 
 ## Next
 
-lens_status to inspect; read_live_feed to drain the buffer; clear_lens when done.
+- Call `lens_status` to verify the filter is matching what you expect.
+- Call `read_live_feed` to drain buffered matches -- the lens results appear automatically alongside live observations.
+- Call `clear_lens` when the focused-watch session is complete or you need a different filter pattern.

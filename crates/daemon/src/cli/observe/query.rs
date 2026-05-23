@@ -3,13 +3,12 @@
 
 use anyhow::{Context, Result};
 use comfy_table::{Cell, ContentArrangement, Table, presets::UTF8_FULL_CONDENSED};
-use daemon8_ingest::source_sync::SourceSyncReport;
 use daemon8_types::StateSlice;
 use std::path::PathBuf;
 
 use super::{
     base_url, check_response, encoded_project_path, format_origin, format_timestamp,
-    handle_reqwest_error, source_sync_failure_lines, source_sync_summary, truncate, urlenc,
+    handle_reqwest_error, truncate, urlenc,
 };
 
 #[derive(clap::Args)]
@@ -115,10 +114,6 @@ pub async fn cmd_query(args: QueryArgs) -> Result<()> {
         return Ok(());
     }
 
-    let source_report = body
-        .get("triggered_ingestion")
-        .cloned()
-        .and_then(|value| serde_json::from_value::<SourceSyncReport>(value).ok());
     let slice: StateSlice =
         serde_json::from_value(body).context("failed to parse query response")?;
 
@@ -151,12 +146,5 @@ pub async fn cmd_query(args: QueryArgs) -> Result<()> {
         slice.observations.len(),
         slice.checkpoint.0
     );
-    if let Some(report) = source_report {
-        println!("{}", source_sync_summary(&report));
-        for line in source_sync_failure_lines(&report) {
-            println!("{line}");
-        }
-    }
-
     Ok(())
 }

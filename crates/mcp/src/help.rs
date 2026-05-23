@@ -15,6 +15,24 @@ pub struct HelpTopic {
 
 pub static ALL_HELP_TOPICS: &[HelpTopic] = &[
     HelpTopic {
+        name: "getting_started",
+        one_liner: "first session checklist and what you gain after connect",
+        body: include_str!("../tool_descriptions/help/getting_started.md"),
+        requires: None,
+    },
+    HelpTopic {
+        name: "setup",
+        one_liner: "the mandatory setup protocol for new projects",
+        body: include_str!("../tool_descriptions/help/setup.md"),
+        requires: None,
+    },
+    HelpTopic {
+        name: "sources",
+        one_liner: "declaring file and conversation sources in project config",
+        body: include_str!("../tool_descriptions/help/sources.md"),
+        requires: None,
+    },
+    HelpTopic {
         name: "observations",
         one_liner: "querying, filtering, subscribing to runtime telemetry",
         body: include_str!("../tool_descriptions/help/observations.md"),
@@ -22,7 +40,7 @@ pub static ALL_HELP_TOPICS: &[HelpTopic] = &[
     },
     HelpTopic {
         name: "envelope",
-        one_liner: "the common alpha response envelope",
+        one_liner: "the common response envelope",
         body: include_str!("../tool_descriptions/help/envelope.md"),
         requires: None,
     },

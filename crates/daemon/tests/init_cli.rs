@@ -10,8 +10,6 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use daemon8_core::project_config::parse_project_config_str;
-use daemon8_store::{StateModel, SurrealStore};
-use daemon8_types::Filter;
 use serde_json::Value;
 
 fn binary() -> PathBuf {
@@ -92,30 +90,6 @@ fn run_connect(dir: &Path, fake_home: &Path, args: &[&str]) -> std::process::Out
         .stdin(Stdio::null())
         .output()
         .expect("spawn daemon8 connect")
-}
-
-fn run_connect_with_env(
-    dir: &Path,
-    fake_home: &Path,
-    extra_env: &[(&str, &str)],
-    args: &[&str],
-) -> std::process::Output {
-    let mut cmd = Command::new(binary());
-    cmd.arg("connect")
-        .args(args)
-        .current_dir(dir)
-        .env("HOME", fake_home)
-        .env_remove("CI")
-        .stdin(Stdio::null());
-    for (key, _) in std::env::vars() {
-        if key.starts_with("DAEMON8_") {
-            cmd.env_remove(key);
-        }
-    }
-    for (key, value) in extra_env {
-        cmd.env(key, value);
-    }
-    cmd.output().expect("spawn daemon8 connect")
 }
 
 fn setup_dirs() -> (tempfile::TempDir, PathBuf, PathBuf) {
@@ -411,6 +385,14 @@ fn cli_observe_and_lens_help_include_provenance_filters() {
             "missing --project-path in {args:?}"
         );
     }
+}
+
+#[test]
+fn cli_connect_help_includes_conversation_lookback() {
+    let out = run_daemon8(&["connect", "--help"]);
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("--conversation-lookback-hours"));
 }
 
 #[test]
@@ -842,19 +824,16 @@ fn cli_connect_after_init_returns_connected_json() {
     );
 }
 
-#[tokio::test]
-async fn cli_connect_triggers_project_source_ingestion() {
+#[test]
+fn cli_connect_succeeds_with_project_source_config() {
     let (_tmp, work, home) = setup_dirs();
     mark_project(&work);
     std::fs::write(work.join("app.log"), "first\n").unwrap();
     write_source_config(&work);
-    let store_path = home.join("source-store");
-    let store_path_value = store_path.to_str().unwrap();
 
-    let out = run_connect_with_env(
+    let out = run_connect(
         &work,
         &home,
-        &[("DAEMON8_STORAGE__PATH", store_path_value)],
         &[
             "--path",
             work.to_str().unwrap(),
@@ -871,31 +850,6 @@ async fn cli_connect_triggers_project_source_ingestion() {
 
     let parsed: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(parsed["status"], "success");
-    assert_eq!(
-        parsed["data"]["triggered_ingestion"]["observations_written"],
-        1
-    );
-
-    let store = SurrealStore::open(&store_path).await.unwrap();
-    let slice = store
-        .query(&Filter {
-            kinds: None,
-            severity_min: None,
-            origins: None,
-            text_match: None,
-            since: None,
-            limit: Some(10),
-            correlation_id: None,
-            tags: None,
-            service: None,
-            source: Some(vec!["app.logs".into()]),
-            source_instance: None,
-            include_system: Some(true),
-        })
-        .await
-        .unwrap();
-    assert_eq!(slice.observations.len(), 1);
-    assert_eq!(slice.observations[0].data["message"], "first");
 }
 
 #[test]

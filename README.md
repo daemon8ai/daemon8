@@ -17,6 +17,10 @@ Static context is not enough. daemon8 keeps the agent connected to what is actua
 3. An _awareness profile_ - managed without manual intervention - keeps the project's docs, sources, and metadata close at hand.
 4. Provider-agnostic conversation sync helps agents pick up where you left off - _**across** the vendor divide_.
 
+> Look useful? Consider starring the repo.
+>
+> Follow along on X: [![Follow @j_havenz on X](https://img.shields.io/badge/Follow%20%40j_havenz-000000?logo=x&logoColor=white)](https://x.com/j_havenz)
+
 **Awareness profile:** A small project-local profile that points daemon8 at the debugging/logging context the agent needs:
 
 ```plaintext
@@ -157,14 +161,19 @@ Core runtime tools:
 | `daemon8_connect` | The current scope, provider, transcript binding, and next action. |
 | `daemon8_init` | A project `.daemon8/config.md` when the repo needs explicit source wiring. |
 | `daemon8_status` | A clean status snapshot when the agent needs to orient itself. |
+| `link_conversation` | Binds a provider transcript to the current session for cross-session recall. |
+| `build_context_snapshot` | Faceted markdown snapshot of linked conversations: user messages, tool activity, file changes, summaries. |
 | `read_live_feed` | The observation stream, filtered by time, source, severity, text, or checkpoint. |
 | `write_to_live_feed` | Agent notes, app events, metrics, exceptions, or custom signals. |
 | `watch_live_feed` | A live subscription for matching events. |
 | `set_lens` / `lens_status` / `clear_lens` | A focused buffer so the agent can keep watching one slice without polling everything. |
 | `create_checkpoint` | A before/after marker. This is the move before a repro, patch, test, or user verification. |
 | `start_debug_session` | A named investigation with durable context. Use this for real bugs. |
+| `end_debug_session` | Closes a debug session without resolution (abandoned, superseded, or wrong lead). |
+| `list_debug_sessions` | Shows active and resolved debug sessions across the project. |
 | `resolve_debug_session` | Close the loop with what broke, what fixed it, and the commands that mattered. |
 | `issue_command` | Browser/device control: JS eval, screenshots, navigation, storage, viewport, network, ADB/Vega captures. |
+| `connect_browser` | Connects daemon8 to a Chromium DevTools endpoint for browser observation and control. |
 | `list_connections` | What is actually feeding the bus right now. |
 | `daemon8_help` | Focused guidance when the agent needs the current tool contract. |
 
@@ -244,6 +253,7 @@ cargo test --workspace
 | `store` | SurrealDB-backed observation, memory, debug-session, lens, cursor, and schema state. |
 | `api` | Axum HTTP routes for observe, checkpoint, summary, connections, lens, browser action, and SSE streaming. |
 | `mcp` | MCP tool surface and control-flow envelopes. |
+| `core` | Shared control flow: connect/init state machine, project config, scope ledger. |
 | `providers` | Standalone AI provider detection/config utilities. |
 | `ingest` | HTTP `/ingest`, `/ingest/batch`, `/health`, UDP, and Unix socket ingestion endpoints. |
 | `chrome` | Chrome DevTools Protocol bridge. |

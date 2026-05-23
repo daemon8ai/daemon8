@@ -13,6 +13,7 @@ daemon8-types.workspace = true
 daemon8-store.workspace = true
 daemon8-chrome.workspace = true
 daemon8-ingest.workspace = true
+daemon8-providers.workspace = true
 rmcp.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true

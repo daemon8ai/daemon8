@@ -4,6 +4,27 @@ This changelog summarizes major repository changes by release phase.
 For full commit-by-commit detail, use `git log` and
 [daemon8ai/daemon8/releases](https://github.com/daemon8ai/daemon8/releases).
 
+## v0.5.0-alpha.1 - 2026-05-23
+
+- Rewrote all MCP tool descriptions and LLM guidance layers to
+  gold-standard voice: imperative language, WHY at every decision point,
+  zero escape hatches. Added `getting_started`, `sources`, and `setup`
+  help topics.
+- Replaced eager SurrealDB ingestion for file sources with on-demand
+  read-through. File sources are read at cursor position during
+  `read_live_feed` and never written to the store. Eliminates the
+  concurrent-session wedge caused by SurrealKV lock contention.
+- Added `build_context_snapshot` tool for faceted conversation access:
+  summary, user messages, tool activity, file changes, and assistant
+  messages as independently consumable markdown facets.
+- Added `link_conversation` tool for binding provider transcripts to the
+  current session, enabling cross-provider recall.
+- Integrated 3-layer UX across tool descriptions: awareness on connect
+  (what daemon8 found), recall via `build_context_snapshot` (catch me
+  up), and monitoring cross-references in debug session tools.
+- Proved concurrent-session safety: 6 MCP sessions sharing one store
+  poll `read_live_feed` without deadlock under multi-threaded tokio.
+
 ## v0.4.1 - 2026-05-18
 
 - Tightened README onboarding around the self-guided daemon8 install,

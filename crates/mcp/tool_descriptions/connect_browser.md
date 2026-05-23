@@ -4,7 +4,7 @@ Override the Chrome DevTools endpoint the daemon connects to. Automatic browser 
 
 ## When
 
-Browser is on a non-standard port, you're targeting a remote DevTools endpoint over a tunnel, or you want to fail fast on a config mismatch instead of waiting for automatic reconnect. Do NOT call as a debugging shortcut — reconnection is automatic.
+Browser is on a non-standard port, you're targeting a remote DevTools endpoint over a tunnel, or you want to fail fast on a config mismatch instead of waiting for automatic reconnect. Do NOT call as a debugging shortcut -- the daemon reconnects automatically on Chrome restart.
 
 ## Prereq
 
@@ -21,4 +21,4 @@ Common envelope with `data.status="connecting"` and `data.endpoint`.
 
 ## Next
 
-list_connections to confirm the new endpoint is reachable; issue_command for any browser action.
+Call `list_connections` to confirm the new endpoint is reachable. Call `issue_command` for any browser action.

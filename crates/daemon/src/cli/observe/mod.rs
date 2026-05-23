@@ -13,7 +13,6 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use comfy_table::{Cell, ContentArrangement, Table, presets::UTF8_FULL_CONDENSED};
-use daemon8_ingest::source_sync::SourceSyncReport;
 use daemon8_types::{ConnectionInfo, ConnectionKind, Origin, Severity};
 
 #[derive(clap::Args, Clone, Debug)]
@@ -154,34 +153,6 @@ pub fn urlenc(s: &str) -> String {
         }
     }
     out
-}
-
-pub fn source_sync_summary(report: &SourceSyncReport) -> String {
-    format!(
-        "configured sources refreshed: {} written, {} deduped, {} cursor updates, {} failures",
-        report.observations_written,
-        report.observations_deduped,
-        report.cursors_updated,
-        report.failures.len()
-    )
-}
-
-pub fn source_sync_failure_lines(report: &SourceSyncReport) -> Vec<String> {
-    report
-        .failures
-        .iter()
-        .map(|failure| {
-            let instance = failure
-                .source_instance
-                .as_deref()
-                .map(|value| format!(" ({value})"))
-                .unwrap_or_default();
-            format!(
-                "source refresh failed: {}{} [{}] {}",
-                failure.source, instance, failure.code, failure.message
-            )
-        })
-        .collect()
 }
 
 /// Format a number with thousand separators (simple implementation).

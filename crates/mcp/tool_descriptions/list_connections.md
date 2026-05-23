@@ -4,7 +4,7 @@ List active browser and application connections feeding observations into the da
 
 ## When
 
-Confirming the daemon is receiving telemetry from the expected source; diagnosing missing observations (a source not listed is not connected).
+Call to confirm the daemon is receiving telemetry from the expected source, or to diagnose missing observations -- a source not listed is not connected.
 
 ## Prereq
 
@@ -24,4 +24,4 @@ none expected (read-only).
 
 ## Next
 
-connect_browser if the browser endpoint shows disconnected; read_live_feed(origins=["app:<name>"]) once a source is confirmed.
+Call `connect_browser` if the browser endpoint shows disconnected. Call `read_live_feed(origins=["app:<name>"])` once a source is confirmed.

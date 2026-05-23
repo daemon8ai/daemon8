@@ -4,7 +4,7 @@ Remove the active observation lens. Stops buffering and discards the ring buffer
 
 ## When
 
-Done with the focused-watch session for which the lens was set, or you want to switch to a different filter.
+The focused-watch session is complete, or you need a different filter pattern.
 
 ## Prereq
 
@@ -23,4 +23,4 @@ none expected.
 
 ## Next
 
-set_lens with a new filter, or read_live_feed directly without the lens.
+Call `set_lens` with a new filter, or call `read_live_feed` directly without the lens.
