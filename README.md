@@ -6,7 +6,12 @@
   </picture>
 </p>
 
+
 # daemon8
+
+> Look useful? Consider starring the repo.
+>
+> Follow along on X: [![Follow @j_havenz on X](https://img.shields.io/badge/Follow%20%40j_havenz-000000?logo=x&logoColor=white)](https://x.com/j_havenz)
 
 daemon8 gives AI coding agents situational awareness while the work is happening.
 
@@ -54,10 +59,6 @@ It gives agents one place to ask:
 - What did Claude, Codex, or Gemini already try?
 - What recent project context should I know before touching this?
 - Which debug sessions are still open, abandoned, or resolved?
-
-> Look useful? Consider starring the repo.
->
-> Follow along on X: [![Follow @j_havenz on X](https://img.shields.io/badge/Follow%20%40j_havenz-000000?logo=x&logoColor=white)](https://x.com/j_havenz)
 
 ## Alpha Release
 
