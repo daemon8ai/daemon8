@@ -4,6 +4,20 @@ This changelog summarizes major repository changes by release phase.
 For full commit-by-commit detail, use `git log` and
 [daemon8ai/daemon8/releases](https://github.com/daemon8ai/daemon8/releases).
 
+## v0.5.0-alpha.2 - 2026-05-23
+
+- Connect now detects when `.daemon8/config.md` still contains generated
+  setup instructions and adds a requirement to replace the body with
+  project-specific notes. New `config_body_status` and
+  `config_body_action` fields in connect response.
+- Full LLM-efficiency pass across all 24 tool descriptions and help
+  files: imperative voice, trigger-action format, hedge word removal,
+  7.8% token reduction. Added STEP 4 (config body replacement) to
+  `daemon8_init`.
+- LLMs now recognize "d8" as daemon8, use runtime executables for log
+  path discovery, and proactively recall conversation history via
+  `build_context_snapshot`.
+
 ## v0.5.0-alpha.1 - 2026-05-23
 
 - Rewrote all MCP tool descriptions and LLM guidance layers to
