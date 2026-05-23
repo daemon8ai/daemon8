@@ -63,6 +63,17 @@ sources:
     parser: json
 ```
 
+## Discovering log paths
+
+Use runtime tools to find paths. Do not guess.
+
+- **PHP**: `php-fpm -tt 2>&1 | grep error_log` or `php -i | grep error_log`
+- **Python**: `grep -rn "FileHandler\|RotatingFileHandler\|basicConfig.*filename" . --include="*.py"`. Django: check `LOGGING` in settings. gunicorn/uvicorn: check `--access-logfile` / `--error-logfile` in process config.
+- **Ruby**: `grep -rn "Logger\.new" . --include="*.rb"`. Rails default: `log/{environment}.log`.
+- **Node.js**: no default log file (stdout only). Check for pm2 (`~/.pm2/logs/`) or logging library config (winston, pino).
+
+If these return nothing, ask the user for the path or command.
+
 ## Related projects
 
 Declare sibling projects (frontend/backend pairs, API + mobile app) under `related_projects` in config frontmatter:

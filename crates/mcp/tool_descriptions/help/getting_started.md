@@ -18,6 +18,7 @@ Setup is mandatory. daemon8 cannot observe a project without `.daemon8/config.md
 - `issue_command` -- browser DevTools actions (eval_js, screenshot, navigate, inject_css, storage, viewport, network conditions).
 - `write_to_live_feed` -- emit notes, metrics, or agent-to-agent messages into the stream.
 - `link_conversation` -- link transcripts from other AI providers to unify cross-agent history.
+- `build_context_snapshot` -- recall what happened in previous sessions. **Use when the user asks about recent history, another agent's work, or "catch me up."**
 
 ## Deeper topics
 

@@ -47,22 +47,16 @@ For workspace or monorepo roots containing multiple sub-projects, scan ALL sub-p
 
 ### STEP 2: Verify and supplement sources
 
-daemon8 pre-populates the `sources` array based on detected ecosystem log paths. If sources were auto-detected, verify each path is correct for your environment. Then search for additional sources daemon8 did not detect. If sources is empty, you MUST add sources manually.
+Verify auto-detected source paths. Search for sources daemon8 missed — **daemon8 observes only what is declared.**
 
-You MUST investigate every log path, build output, and error stream the project produces -- daemon8 observes only what is declared. Do NOT stop at the obvious ones -- dig through config files, docker entrypoints, and supervisor configs to find ALL log outputs.
+Search the entire project for:
+- Application logs (storage/logs/, logs/, *.log)
+- Web server logs (nginx, Apache, Caddy — access + error)
+- Database query logs (slow query, general)
+- Queue/worker output (Redis, RabbitMQ, SQS)
+- Build output, error tracking, container logs
 
-See the parser list in the generated config body, or call `daemon8_help(topic="sources")` for the full source field reference.
-
-Search for ALL of these across the entire project:
-- Application logs (storage/logs/, logs/, log/, *.log, stdout/stderr)
-- Build output and compilation logs
-- Web server access and error logs (nginx, Apache, Caddy)
-- Database query logs (slow query logs, general logs)
-- Queue and worker logs (Redis, RabbitMQ, SQS worker output)
-- Error tracking output (crash logs, exception dumps)
-- Container logs (docker-compose log paths, k8s pod logs)
-
-Call `daemon8_help(topic="sources")` for the full field schema reference and examples.
+Use runtime tools to discover log paths programmatically. Call `daemon8_help(topic="sources")` for per-language discovery commands and the full field reference. If discovery fails, ask the user.
 
 ### STEP 3: Confirm with the user
 
