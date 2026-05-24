@@ -24,7 +24,7 @@ AI agents are strongest when they can work from evidence: what the app is doing,
         <img src="assets/vids/d8-browser-fix-demo.gif" alt="Browser Debugging demo" width="100%">
       </a>
       <p><a href="https://customer-646xapramdi2nce8.cloudflarestream.com/c348b635bb8b21966c4a63706f6cb1da/watch">Open full video</a></p>
-      <p><strong>Browser Debugging</strong></p>
+      <p><strong>(360) Browser Awareness</strong></p>
       <p>Watch Gemini make quick work of four browser-visible errors using the purpose-built Chrome Devtools Protocol (CDP) daemon8 has access to. The agent can control JS, CSS (w/custom 3D point map layering), mobile simulation, and screenshot control. The agent can see the browser console and network errors as they happen - which land in one place. The bug fix panel shows a live SSE subscription </p>
       <p><sub>Daemon8 provides a single convergence point, built specifically for agentic development. </sub></p>
     </td>
@@ -33,20 +33,20 @@ AI agents are strongest when they can work from evidence: what the app is doing,
         <img src="assets/vids/d8-vegaos-convo-catchup.gif" alt="Conversation Catch-up demo" width="100%">
       </a>
       <p><a href="https://customer-646xapramdi2nce8.cloudflarestream.com/6fc8acc756732a2da058597039d8c86d/watch">Open full video</a></p>
-      <p><strong>Conversation Catch-up</strong></p>
-      <p>A fresh session catches up from recent provider transcripts and builds a faceted project snapshot before continuing the work.</p>
-      <p><sub>Cross-provider recovery across Claude, Codex, and Gemini context.</sub></p>
+      <p><strong>(Provider-agnostic) Conversation Awareness</strong></p>
+      <p>Watch Gemini recover project context from recent cross-provider conversation history before continuing the work. daemon8 reads recent Claude, Codex, and Gemini activity together so the agent can understand what was asked, what changed, which tools ran, and where the previous session left off.</p>
+      <p><sub>Conversation awareness turns scattered provider history into usable project memory.</sub></p>
     </td>
   </tr>
 </table>
 
 ## What daemon8 does
 
-Put simply: daemon8 is an awareness layer for human-in-the-loop, agentic development.
+Put simply: daemon8 is a situational awareness layer for human-in-the-loop, agentic development.
 
 It gives agents focused knowledge of what is happening right now and peripheral knowledge of what has already happened in the project (and any related project(s), e.g. frontend/backend). App logs, browser events, debug checkpoints, open investigations, and recent conversations **across AI providers** become one cohesive field of context the agent can query instead of guessing.
 
-**This matters because AI coding tools still live in provider-shaped rooms**. Claude has one view of the work. Codex has another. Gemini has another. daemon8 starts stitching those views together with the live runtime state of the project. For this alpha, the core path is MCP-first and source-driven; provider integration utilities exist, but they are not the runtime foundation.
+**This matters because AI coding tools still live in provider-shaped rooms**. Claude has one view of the work. Codex has another. Gemini has another. daemon8 starts stitching those views together with the live runtime state of the project. 
 
 It gives agents one place to ask:
 
@@ -60,9 +60,9 @@ It gives agents one place to ask:
 
 ## Alpha Release
 
-My blue-sky goals are larger than this alpha release represents. Situational awareness is the first foundation for a broader, provider-agnostic cortex for AI agents. The details and planned features will come in time.
+daemon8 is in alpha. The core awareness loop is here: connect a project, bring recent conversation and runtime state into reach, checkpoint the work, and verify what changed.
 
-This alpha is that foundation. Not the whole vision yet. The point is better loops today: observe, change, verify, remember.
+This release is the foundation for a local-first, provider-agnostic layer that will be built upon going forward.
 
 ## Install
 
@@ -94,7 +94,7 @@ A browser extension is _not_ required. daemon8 has its own purpose-built Chromiu
 Start in a fresh Claude Code, Codex, or Gemini CLI session after install. The `daemon8` MCP server should already be available because the installer configured the provider for you.
 
 > [!NOTE]
-> Claude Code installs can also include `daemon8-channel`. That channel is experimental and requires an explicit launch flag. It's an SSE path for real-time communication between harnesses; useful for experiments, but not required for normal daemon8 usage.
+> Claude Code installs also include `daemon8-channel`. That channel is experimental and requires an explicit launch flag. It's an SSE path for real-time communication between harnesses; useful for experiments, but not required for normal daemon8 usage.
 
 Then ask the agent to connect this project to daemon8:
 
