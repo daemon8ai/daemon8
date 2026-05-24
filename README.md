@@ -20,19 +20,19 @@ AI agents are strongest when they can work from evidence: what the app is doing,
 <table>
   <tr>
     <td align="center" valign="top" width="50%">
-      <a href="https://daemon8.ai/vids/d8-browser-fix-demo.mp4">
+      <a href="https://customer-646xapramdi2nce8.cloudflarestream.com/c348b635bb8b21966c4a63706f6cb1da/watch">
         <img src="assets/vids/d8-browser-fix-demo.gif" alt="Browser Debugging demo" width="100%">
       </a>
-      <p><a href="https://daemon8.ai/vids/d8-browser-fix-demo.mp4">Open full video</a></p>
+      <p><a href="https://customer-646xapramdi2nce8.cloudflarestream.com/c348b635bb8b21966c4a63706f6cb1da/watch">Open full video</a></p>
       <p><strong>Browser Debugging</strong></p>
-      <p>Four browser-visible errors: one mobile styling issue plus JavaScript and network failures. daemon8 gives the agent direct browser control and a live view of runtime state, then a Vite panel subscribed to the SurrealDB-backed stream shows each fix as it lands.</p>
-      <p><sub>Paired with Gemini, this loop gets fast. Almost like they were made by the same company or something.</sub></p>
+      <p>Watch Gemini make quick work of four browser-visible errors using the purpose-built Chrome Devtools Protocol (CDP) daemon8 has access to. The agent can control JS, CSS (w/custom 3D point map layering), mobile simulation, and screenshot control. The agent can see the browser console and network errors as they happen - which land in one place. The bug fix panel shows a live SSE subscription </p>
+      <p><sub>Daemon8 provides a single convergence point, built specifically for agentic development. </sub></p>
     </td>
     <td align="center" valign="top" width="50%">
-      <a href="https://daemon8.ai/vids/d8-vegaos-convo-catchup.mp4">
+      <a href="https://customer-646xapramdi2nce8.cloudflarestream.com/6fc8acc756732a2da058597039d8c86d/watch">
         <img src="assets/vids/d8-vegaos-convo-catchup.gif" alt="Conversation Catch-up demo" width="100%">
       </a>
-      <p><a href="https://daemon8.ai/vids/d8-vegaos-convo-catchup.mp4">Open full video</a></p>
+      <p><a href="https://customer-646xapramdi2nce8.cloudflarestream.com/6fc8acc756732a2da058597039d8c86d/watch">Open full video</a></p>
       <p><strong>Conversation Catch-up</strong></p>
       <p>A fresh session catches up from recent provider transcripts and builds a faceted project snapshot before continuing the work.</p>
       <p><sub>Cross-provider recovery across Claude, Codex, and Gemini context.</sub></p>
