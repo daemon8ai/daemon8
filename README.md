@@ -20,7 +20,7 @@ AI agents are strongest when they can work from evidence: what the app is doing,
 <table>
   <tr>
     <td align="center" valign="top" width="50%">
-      <a href="assets/vids/d8-browser-fix-demo.mov">
+      <a href="https://daemon8.ai/vids/d8-browser-fix-demo.mov">
         <img src="assets/vids/d8-browser-fix-demo.gif" alt="Browser Debugging demo" width="100%">
       </a>
       <p><strong>Browser Debugging</strong></p>
@@ -28,7 +28,7 @@ AI agents are strongest when they can work from evidence: what the app is doing,
       <p><sub>Paired with Gemini, this loop gets fast. Almost like they were made by the same company or something.</sub></p>
     </td>
     <td align="center" valign="top" width="50%">
-      <a href="assets/vids/d8-vegaos-convo-catchup.mov">
+      <a href="https://daemon8.ai/vids/d8-vegaos-convo-catchup.mov">
         <img src="assets/vids/d8-vegaos-convo-catchup.gif" alt="Conversation Catch-up demo" width="100%">
       </a>
       <p><strong>Conversation Catch-up</strong></p>
