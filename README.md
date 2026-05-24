@@ -20,13 +20,17 @@ AI agents are strongest when they can work from evidence: what the app is doing,
 <table>
   <tr>
     <td align="center" valign="top" width="50%">
-      <video src="assets/vids/d8-browser-fix-demo.mov" controls width="100%"></video>
+      <a href="assets/vids/d8-browser-fix-demo.mov">
+        <img src="assets/vids/d8-browser-fix-demo.jpg" alt="Browser Debugging demo" width="100%">
+      </a>
       <p><strong>Browser Debugging</strong></p>
       <p>Four browser-visible errors: one mobile styling issue plus JavaScript and network failures. daemon8 gives the agent direct browser control and a live view of runtime state, then a Vite panel subscribed to the SurrealDB-backed stream shows each fix as it lands.</p>
       <p><sub>Paired with Gemini, this loop gets fast. Almost like they were made by the same company or something.</sub></p>
     </td>
     <td align="center" valign="top" width="50%">
-      <video src="assets/vids/d8-vegaos-convo-catchup.mov" controls width="100%"></video>
+      <a href="assets/vids/d8-vegaos-convo-catchup.mov">
+        <img src="assets/vids/d8-vegaos-convo-catchup.jpg" alt="Conversation Catch-up demo" width="100%">
+      </a>
       <p><strong>Conversation Catch-up</strong></p>
       <p>A fresh session catches up from recent provider transcripts and builds a faceted project snapshot before continuing the work.</p>
       <p><sub>Cross-provider recovery across Claude, Codex, and Gemini context.</sub></p>
