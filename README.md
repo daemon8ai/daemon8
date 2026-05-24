@@ -19,25 +19,17 @@ AI agents are strongest when they can work from evidence: what the app is doing,
 
 <table>
   <tr>
-    <td valign="top" width="420">
-      <p align="center"><strong>Application Runtime Awareness</strong></p>
-      <p>daemon8 helps the agent find and centralize project-specific logging sources, then turns those logs and errors into queryable runtime context.</p>
-      <p><sub>Useful when the code looks fine, but the running system is telling a different story.</sub></p>
+    <td align="center" valign="top" width="50%">
+      <video src="assets/vids/d8-browser-fix-demo.mov" controls width="100%"></video>
+      <p><strong>Browser Debugging</strong></p>
+      <p>Four browser-visible errors: one mobile styling issue plus JavaScript and network failures. daemon8 gives the agent direct browser control and a live view of runtime state, then a Vite panel subscribed to the SurrealDB-backed stream shows each fix as it lands.</p>
+      <p><sub>Paired with Gemini, this loop gets fast. Almost like they were made by the same company or something.</sub></p>
     </td>
-    <td valign="top" width="420">
-      <p align="center"><strong>Cross-Provider Conversation Recovery</strong></p>
-      <p>daemon8 reads recent provider activity across Claude, Codex, and Gemini so a new session can recover what happened and continue from there.</p>
-      <p><sub>Useful when you switch agents, restart a session, or need another provider to pick up the thread.</sub></p>
-    </td>
-    <td valign="top" width="420">
-      <p align="center"><strong>Browser & Device Awareness</strong></p>
-      <p>daemon8 streams browser, network, DOM, screenshot, and device signals into the same working context the agent already uses.</p>
-      <p><sub>Useful when the bug only exists in the live page, the device, or the request/response path.</sub></p>
-    </td>
-    <td valign="top" width="420">
-      <p align="center"><strong>Debug Session Structure</strong></p>
-      <p>daemon8 gives debugging a shape: named investigations, before/after checkpoints, focused slices, and durable summaries when the fix is real.</p>
-      <p><sub>Useful when you need the agent to prove what changed instead of narrating what it hopes changed.</sub></p>
+    <td align="center" valign="top" width="50%">
+      <video src="assets/vids/d8-vegaos-convo-catchup.mov" controls width="100%"></video>
+      <p><strong>Conversation Catch-up</strong></p>
+      <p>A fresh session catches up from recent provider transcripts and builds a faceted project snapshot before continuing the work.</p>
+      <p><sub>Cross-provider recovery across Claude, Codex, and Gemini context.</sub></p>
     </td>
   </tr>
 </table>
@@ -146,6 +138,48 @@ After that, you should see daemon8 show up naturally during non-trivial debuggin
 
 Custom parser TOML files can also be loaded from daemon8's parser config directory, but the built-ins above are the alpha path to start with.
 </details>
+
+---
+
+## Real-time subscriptions
+
+daemon8 is not only for agents. Frontends, harnesses, dashboards, and test tools can subscribe to tagged slices of the same local observation feed while work is happening.
+
+Observations are persisted in daemon8's local SurrealDB-backed runtime store, then streamed through `GET /api/stream` as Server-Sent Events. That gives a UI one path for live updates and reconnect replay while an agent works, a browser repro runs, or a chaos harness injects failures.
+
+```ts
+const params = new URLSearchParams({
+  tags: "demo:chaos,project:react-chaos",
+  severity_min: "info",
+});
+
+const feed = new EventSource(`/daemon8/api/stream?${params}`);
+
+feed.onmessage = (event) => {
+  const observation = JSON.parse(event.data);
+  console.log(observation);
+};
+```
+
+Tag filters are conjunctive: `tags=demo:chaos,project:react-chaos` only returns observations carrying both tags. The daemon endpoint is local at `http://localhost:8888`; browser frontends commonly route it through a same-origin dev-server proxy like `/daemon8`.
+
+> [!NOTE]
+> Native agents, CLIs, and local tools can call `http://localhost:8888` directly. Browser apps are the exception: during Vite development, proxy `/daemon8` through the dev server so frontend code stays same-origin.
+
+```ts
+// vite.config.ts
+export default {
+  server: {
+    proxy: {
+      "/daemon8": {
+        target: "http://localhost:8888",
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/daemon8/, ""),
+      },
+    },
+  },
+};
+```
 
 ---
 
