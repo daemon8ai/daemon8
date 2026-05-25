@@ -2,10 +2,10 @@ blank_issues_enabled: false
 contact_links:
   - name: Questions and design discussions
     url: https://github.com/daemon8ai/daemon8/discussions
-    about: Use GitHub Discussions for questions, show-and-tell, and design debates. Issues are reserved for actionable bugs and feature requests.
+    about: Use Discussions for questions and design topics. Issues are for bugs and feature requests.
   - name: Security vulnerabilities
     url: https://github.com/daemon8ai/daemon8/blob/main/SECURITY.md
-    about: Do not file security issues publicly. Email mail@daemon8.ai per the disclosure policy.
+    about: Do not file security reports publicly. Email mail@daemon8.ai.
   - name: Trademark inquiries
     url: mailto:mail@daemon8.ai
-    about: DAEMON8™ permitted-use questions, licensing, or takedown requests.
+    about: DAEMON8 trademark questions.

@@ -10,20 +10,18 @@ For full commit-by-commit detail, use `git log` and
   setup instructions and adds a requirement to replace the body with
   project-specific notes. New `config_body_status` and
   `config_body_action` fields in connect response.
-- Full LLM-efficiency pass across all 24 tool descriptions and help
-  files: imperative voice, trigger-action format, hedge word removal,
-  7.8% token reduction. Added STEP 4 (config body replacement) to
+- Updated all 24 MCP tool descriptions and help files for shorter,
+  action-oriented guidance. Added STEP 4 (config body replacement) to
   `daemon8_init`.
-- LLMs now recognize "d8" as daemon8, use runtime executables for log
-  path discovery, and proactively recall conversation history via
+- Provider guidance now treats "d8" as daemon8, uses runtime executables
+  for log path discovery, and routes conversation recall through
   `build_context_snapshot`.
 
 ## v0.5.0-alpha.1 - 2026-05-23
 
-- Rewrote all MCP tool descriptions and LLM guidance layers to
-  gold-standard voice: imperative language, WHY at every decision point,
-  zero escape hatches. Added `getting_started`, `sources`, and `setup`
-  help topics.
+- Rewrote MCP tool descriptions and guidance files around explicit
+  trigger/action behavior. Added `getting_started`, `sources`, and
+  `setup` help topics.
 - Replaced eager SurrealDB ingestion for file sources with on-demand
   read-through. File sources are read at cursor position during
   `read_live_feed` and never written to the store. Eliminates the

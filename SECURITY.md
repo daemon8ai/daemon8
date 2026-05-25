@@ -71,11 +71,6 @@ In exchange, we ask:
   need to probe live infrastructure, email first and we'll set up a staging
   target.
 
-## GPG
-
-A maintainer GPG key will be published here once the OSS release is public.
-Until then, `mail@daemon8.ai` is the canonical channel.
-
 ## Public disclosures
 
 Post-fix, we publish a CVE (where applicable) and link the advisory in

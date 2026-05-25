@@ -1,21 +1,18 @@
 name: Bug report
-description: Something that used to work, or should work, is broken.
+description: Report reproducible behavior that is broken or incorrect.
 title: "bug: "
 labels: ["bug"]
 body:
   - type: markdown
     attributes:
       value: |
-        Thanks for taking the time. A reproducible bug report with environment details gets triaged fastest.
-
-        **Security issues:** do not open a public issue. See [SECURITY.md](../../SECURITY.md).
+        Security issues must be reported privately. See [SECURITY.md](../../SECURITY.md).
 
   - type: textarea
     id: summary
     attributes:
       label: Summary
-      description: One or two sentences on what's broken.
-      placeholder: "daemon8 cli-hook crashes on Bun stdin because..."
+      description: What is broken?
     validations:
       required: true
 
@@ -23,7 +20,7 @@ body:
     id: repro
     attributes:
       label: Reproduction steps
-      description: Minimum sequence to trigger it.
+      description: Minimal steps to trigger the behavior.
       value: |
         1. ...
         2. ...
@@ -34,40 +31,40 @@ body:
   - type: textarea
     id: expected
     attributes:
-      label: What you expected
-      description: The behavior you thought would happen.
+      label: Expected behavior
     validations:
       required: true
 
   - type: textarea
     id: actual
     attributes:
-      label: What actually happened
-      description: Error text, logs, stack traces. Use ``` fences for anything multi-line.
+      label: Actual behavior
+      description: Include errors, logs, or stack traces when relevant.
     validations:
       required: true
 
   - type: input
     id: daemon-version
     attributes:
-      label: Daemon8 version
+      label: daemon8 version
       description: Output of `daemon8 --version`
-      placeholder: "daemon8 1.0.0 (commit abc1234)"
+      placeholder: "daemon8 0.5.0-alpha.2"
     validations:
       required: true
 
   - type: dropdown
-    id: subtree
+    id: area
     attributes:
-      label: Affected subtree
+      label: Area
       options:
-        - "daemon/ (Rust daemon + crates)"
-        - "sdks/php/"
-        - "sdks/php-laravel/"
-        - "sdks/php-symfony/"
-        - "app/ (marketing site)"
-        - "backend/ (API)"
-        - "Docs / meta"
+        - "CLI / service"
+        - "MCP tools"
+        - "Browser / CDP"
+        - "ADB / device logs"
+        - "Config / init / connect"
+        - "Logs / sources / parsers"
+        - "Store / runtime state"
+        - "Docs / repo metadata"
         - "Not sure"
     validations:
       required: true
@@ -76,14 +73,15 @@ body:
     id: os
     attributes:
       label: OS and version
-      placeholder: "macOS 14.5 / Ubuntu 24.04 / Windows 11 23H2"
+      placeholder: "macOS 15 / Ubuntu 24.04 / Windows 11"
     validations:
       required: true
 
   - type: input
     id: chrome-version
     attributes:
-      label: Chrome version (for browser-observation bugs only)
+      label: Chrome version
+      description: Required only for Browser / CDP issues.
       placeholder: "Chrome 130.0.6723.116"
     validations:
       required: false
@@ -92,7 +90,7 @@ body:
     id: logs
     attributes:
       label: Relevant logs
-      description: Paste output from `daemon8 logs -f`, daemon stderr, or the console trace. Redact any secrets.
+      description: Paste daemon logs, command output, or console traces. Redact secrets.
       render: shell
     validations:
       required: false

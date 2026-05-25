@@ -1,138 +1,59 @@
-# Contributing to Daemon8
+# Contributing
 
-Daemon8 is open source. This guide covers how to file issues,
-send pull requests, and write contributions.
+This repository contains the daemon8 Rust workspace and release metadata.
 
-Before anything below: by participating, you agree to the
-[Code of Conduct](./CODE_OF_CONDUCT.md). Enforcement: `mail@daemon8.ai`.
+## Issues
 
-## Where contributions are accepted
+Use the issue templates for bug reports and feature requests.
 
-This repo (`daemon8ai/daemon8`) holds the daemon binary and its workspace
-crates. The marketing site lives separately at
-[`daemon8ai/daemon8-site`](https://github.com/daemon8ai/daemon8-site).
+- Bugs need a daemon8 version, OS, reproduction steps, expected behavior, and actual behavior.
+- Feature requests need a problem statement and proposed behavior.
+- Security reports do not belong in public issues. Use `mail@daemon8.ai`; see [SECURITY.md](./SECURITY.md).
+- Questions and design discussion belong in [GitHub Discussions](https://github.com/daemon8ai/daemon8/discussions).
 
-| Repository                                                                    | Scope                                                        | License                                    | Accepts PRs?                       |
-|-------------------------------------------------------------------------------|--------------------------------------------------------------|--------------------------------------------|------------------------------------|
-| **`daemon8ai/daemon8`** (this repo)                                           | Rust daemon binary and workspace crates                      | [FCL-1.0-ALv2](./LICENSES/FCL-1.0-ALv2.txt) | **Yes**                            |
-| [`daemon8ai/daemon8-site`](https://github.com/daemon8ai/daemon8-site)         | daemon8.ai marketing & docs site (TanStack Start + React 19) | Public-visibility                          | Issues welcome; code PRs case-by-case |
+## Pull Requests
 
-This file covers `daemon8ai/daemon8` only.
+Open an issue first for non-trivial behavior changes. Small fixes, doc updates, and test corrections can go straight to a PR.
 
-## Filing issues
+Keep PRs scoped to one change. Include:
 
-Use the templates in [`.github/ISSUE_TEMPLATE/`](./.github/ISSUE_TEMPLATE/).
+- What changed.
+- Why it changed.
+- What you tested.
+- Any user-visible behavior change.
 
-- **Bug reports** — repro steps, expected vs actual, daemon version from
-  `daemon8 --version`, OS, and (for browser bugs) your Chrome version.
-- **Feature requests** — what problem it solves, who it serves, what you
-  considered instead.
-- **Security vulnerabilities** — **do not** open a public issue. Email
-  `mail@daemon8.ai` per [`SECURITY.md`](./SECURITY.md).
+## Local Checks
 
-Questions and design discussions go to
-[GitHub Discussions](https://github.com/daemon8ai/daemon8/discussions)
-rather than Issues.
-
-## Sending a pull request
-
-### Before opening
-
-1. **Sign the CLA** — first-time contributors will be prompted automatically
-   by CLA Assistant on their first PR. Havy.tech, LLC is the beneficiary.
-   The text is derived from the Apache ICLA.
-2. **Open an issue first** for anything beyond a trivial fix or copy edit.
-   Align on scope before writing the patch; avoids wasted effort on both
-   sides.
-3. **One logical change per PR.** Commits within a PR can be as granular as
-   you want, but the PR itself should be one thing.
-
-### Branch and commit discipline
-
-- Branch off `main`. Branch names are your business — nothing enforced.
-- **Commit messages are one-liners.** No multi-paragraph bodies, no emoji,
-  no conventional-commit prefixes beyond the natural scope prefix
-  (`daemon:`, `repo:`, `ci:`). Example:
-  ```
-  daemon: reduce cold-start allocations in MCP stdio handler
-  ```
-
-### Build and test locally
+Run the relevant checks before opening a PR:
 
 ```bash
+cargo fmt --check
 cargo test --workspace -- --test-threads=1
 cargo clippy --workspace --all-targets -- -D warnings
-cargo fmt --check
-cargo deny check
 ```
 
-All four gates must pass. CI runs the same four.
+CI runs the same core gates plus cross-platform `cargo check` jobs.
 
-The `rust-toolchain.toml` pins the stable channel plus
-rustfmt + clippy components — `cargo` auto-fetches what it needs.
+## Test Expectations
 
-### Tests
-
-New features need new tests. Bug fixes need a regression test that fails
-without the fix.
-
-- Unit tests live alongside the code they cover: `#[cfg(test)] mod tests`
-  inside each source file, or as `crates/<name>/tests/` for
-  cross-module tests.
-- Integration tests that exercise the full HTTP / MCP / SSE stack live
-  in [`crates/daemon/tests/integration.rs`](./crates/daemon/tests/integration.rs).
-- For larger user-perspective coverage (real Chrome, real service install,
-  real MCP clients), coordinate scope in GitHub issues before building
-  additional test harnesses.
-
-### What gets merged
-
-- Code compiles, tests pass, clippy clean, fmt clean, `cargo deny check` passes.
-- Behavior change is described in the PR body.
-- Public API changes include a CHANGELOG entry under `[Unreleased]`.
-- CLA is signed.
-
-### What gets rejected (fast)
-
-- Unsigned CLA.
-- "While I was in there" scope creep — cosmetic refactors bundled with a
-  behavior fix.
-- Premature abstraction — three concrete call sites before a trait or
-  helper is worth it.
-- Fighting the borrow checker with `.clone()` in hot paths without a note
-  explaining why the alternative is worse.
-- Catching errors silently (no `let _ =` on a `Result` that could fail in
-  production).
-- Reintroducing license-key / tier / capability-gate machinery. Daemon8
-  ships OSS, period.
+- Bug fixes should include a regression test when practical.
+- New behavior should include focused coverage near the changed code.
+- CLI, service, MCP, browser, and device behavior should include integration coverage when unit tests would not prove the behavior.
 
 ## Style
 
-- Rust: `rustfmt` defaults. No custom settings. Clippy with `-D warnings`.
-- Comments explain **why**, never **what**. If a function needs a comment
-  explaining what it does, rename the function.
-- Errors are typed enums at public API boundaries (`ChromeError`,
-  `IngestError`, `AdbError`, `StoreError`). `anyhow` is for the binary
-  crate's application-level propagation only, never at a library
-  boundary.
-- Hot-path allocations need a reason. `Arc<str>` over `String` for IDs
-  that cross task boundaries. Mutex poisoning propagates (never silently
-  swallow it).
+- Use `rustfmt` defaults.
+- Keep public errors typed at crate boundaries.
+- Use `anyhow` in the binary crate for application-level propagation, not public library APIs.
+- Comments should explain why the code exists or why an unusual path is necessary.
+- Avoid broad refactors in PRs that are meant to fix one behavior.
 
-## What's out of scope
+## Release Notes
 
-- **A paid tier, license keys, or capability gates.** Daemon8 ships OSS,
-  period. Proposals for "could you add a premium feature" land as
-  feature requests judged on merit, not as gated features.
-- **Telemetry back to daemon8.ai.** The daemon is local; it does not
-  phone home. Any feature that introduces outbound telemetry is a hard
-  no.
+Update [CHANGELOG.md](./CHANGELOG.md) when the change affects installation, commands, MCP behavior, release artifacts, public configuration, or user-visible runtime behavior.
 
-## Getting help
+## Contact
 
-- [GitHub Discussions](https://github.com/daemon8ai/daemon8/discussions)
-  — questions, design, show-and-tell.
-- `mail@daemon8.ai` — vulnerabilities, Code of Conduct enforcement,
-  DAEMON8™ use inquiries.
-
-First-time PRs are reviewed as quickly as possible.
+- Security: `mail@daemon8.ai`
+- Code of Conduct reports: `mail@daemon8.ai`
+- General discussion: [GitHub Discussions](https://github.com/daemon8ai/daemon8/discussions)

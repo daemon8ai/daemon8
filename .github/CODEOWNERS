@@ -1,6 +1,4 @@
 # CODEOWNERS — Daemon8
 # https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-security/customizing-your-repository/about-code-owners
-#
-# Catch-all maintainer. Replace with the canonical GitHub handle before flip day.
 
 *   @jonathanhavens
