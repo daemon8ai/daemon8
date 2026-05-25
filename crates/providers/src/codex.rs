@@ -9,8 +9,8 @@ use anyhow::{Context, Result};
 use toml::Table;
 
 use super::helpers::{
-    HookSpec, codex_has_mcp_server, current_exe_string, install_json_hooks, list_json_hooks,
-    quote_command_path, remove_json_hooks,
+    HookSpec, codex_has_mcp_server, codex_mcp_server_url_matches, current_exe_string,
+    install_json_hooks, list_json_hooks, quote_command_path, remove_json_hooks,
 };
 use super::traits::{
     AiProvider, HookEvent, HookEventEntry, HookProvider, HookScope, InstalledHookEntry, LogLevel,
@@ -116,6 +116,15 @@ impl AiProvider for CodexProvider {
 
     fn is_configured(&self, config_path: &Path, service: &ServiceIdentity) -> bool {
         codex_has_mcp_server(config_path, service.name)
+    }
+
+    fn mcp_config_matches(
+        &self,
+        config_path: &Path,
+        service: &ServiceIdentity,
+        mcp_url: &str,
+    ) -> bool {
+        codex_mcp_server_url_matches(config_path, service.name, mcp_url)
     }
 
     fn write_mcp_config(

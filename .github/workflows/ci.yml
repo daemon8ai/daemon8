@@ -13,6 +13,7 @@ env:
 jobs:
   test:
     name: Tests (Linux x86_64)
+    if: github.event_name != 'workflow_dispatch' || github.ref_name != 'alpha/windows-full-install-test-20260525'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -22,6 +23,7 @@ jobs:
 
   clippy:
     name: Clippy
+    if: github.event_name != 'workflow_dispatch' || github.ref_name != 'alpha/windows-full-install-test-20260525'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -33,6 +35,7 @@ jobs:
 
   fmt:
     name: Format
+    if: github.event_name != 'workflow_dispatch' || github.ref_name != 'alpha/windows-full-install-test-20260525'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -43,6 +46,7 @@ jobs:
 
   tool-descriptions-lint:
     name: Tool descriptions house style
+    if: github.event_name != 'workflow_dispatch' || github.ref_name != 'alpha/windows-full-install-test-20260525'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -50,6 +54,7 @@ jobs:
 
   check-macos:
     name: Check (macOS)
+    if: github.event_name != 'workflow_dispatch' || github.ref_name != 'alpha/windows-full-install-test-20260525'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -61,6 +66,7 @@ jobs:
 
   check-windows:
     name: Check (Windows)
+    if: github.event_name != 'workflow_dispatch' || github.ref_name != 'alpha/windows-full-install-test-20260525'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -74,6 +80,7 @@ jobs:
 
   check-linux-aarch64:
     name: Check (Linux aarch64)
+    if: github.event_name != 'workflow_dispatch' || github.ref_name != 'alpha/windows-full-install-test-20260525'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -88,3 +95,49 @@ jobs:
       - run: cargo check --workspace --target aarch64-unknown-linux-gnu
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+
+  windows-test-artifact:
+    name: Windows test artifact
+    if: github.event_name == 'workflow_dispatch' && github.ref_name == 'alpha/windows-full-install-test-20260525'
+    runs-on: windows-latest
+    env:
+      BINARY_NAME: daemon8
+      TARGET: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ env.TARGET }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-test-artifact-${{ env.TARGET }}
+
+      - name: Build test binary
+        run: cargo build --target ${{ env.TARGET }} -p daemon8
+
+      - name: Package
+        shell: pwsh
+        run: |
+          Copy-Item LICENSE target\${{ env.TARGET }}\debug\
+          Compress-Archive `
+            -Path target\${{ env.TARGET }}\debug\daemon8.exe, `
+                   target\${{ env.TARGET }}\debug\LICENSE `
+            -DestinationPath ${{ env.BINARY_NAME }}-${{ env.TARGET }}.zip
+
+      - name: Smoke packaged artifact
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path smoke | Out-Null
+          Expand-Archive -Path "${{ env.BINARY_NAME }}-${{ env.TARGET }}.zip" -DestinationPath smoke -Force
+          if (-not (Test-Path ".\smoke\daemon8.exe")) { throw "daemon8.exe missing from archive" }
+          if (-not (Test-Path ".\smoke\LICENSE")) { throw "LICENSE missing from archive" }
+          .\smoke\daemon8.exe --version
+          .\smoke\daemon8.exe --help
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.BINARY_NAME }}-${{ env.TARGET }}
+          path: ${{ env.BINARY_NAME }}-${{ env.TARGET }}.zip

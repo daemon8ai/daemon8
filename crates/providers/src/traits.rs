@@ -63,6 +63,15 @@ pub trait AiProvider: Send + Sync + 'static {
     }
 
     fn is_configured(&self, config_path: &Path, service: &ServiceIdentity) -> bool;
+    fn mcp_config_matches(
+        &self,
+        config_path: &Path,
+        service: &ServiceIdentity,
+        mcp_url: &str,
+    ) -> bool {
+        let _ = mcp_url;
+        self.is_configured(config_path, service)
+    }
     fn write_mcp_config(
         &self,
         config_path: &Path,

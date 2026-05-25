@@ -74,6 +74,8 @@ function Repair-Daemon8Config {
     $Lines = Get-Content $ConfigPath
     $Changed = $false
     $Skipping = $false
+    $InServer = $false
+    $PortUpdated = $false
     $Next = New-Object System.Collections.Generic.List[string]
 
     foreach ($Line in $Lines) {
@@ -88,6 +90,23 @@ function Repair-Daemon8Config {
         }
 
         if (-not $Skipping) {
+            if ($Line -match '^\s*\[server\]\s*(#.*)?$') {
+                $InServer = $true
+                $Next.Add($Line)
+                continue
+            }
+
+            if ($Line -match '^\s*\[[^\]]+\]\s*(#.*)?$') {
+                $InServer = $false
+            }
+
+            if ($InServer -and $Line -match '^(\s*port\s*=\s*)9077(\s*(#.*)?)$') {
+                $Next.Add("$($Matches[1])8888$($Matches[2])")
+                $Changed = $true
+                $PortUpdated = $true
+                continue
+            }
+
             $Next.Add($Line)
         }
     }
@@ -97,7 +116,12 @@ function Repair-Daemon8Config {
         $BackupPath = "$ConfigPath.bak-$Stamp"
         Copy-Item $ConfigPath $BackupPath -Force
         Set-Content -Path $ConfigPath -Value $Next -Encoding UTF8
-        Write-Host "  + Removed stale [licensing] config section" -ForegroundColor Green
+        if ($PortUpdated) {
+            Write-Host "  + Updated stale server.port 9077 -> 8888" -ForegroundColor Green
+        }
+        if ($Lines -match '^\s*\[licensing\]\s*(#.*)?$') {
+            Write-Host "  + Removed stale [licensing] config section" -ForegroundColor Green
+        }
         Write-Host "  Backup: $BackupPath" -ForegroundColor DarkGray
     }
 }

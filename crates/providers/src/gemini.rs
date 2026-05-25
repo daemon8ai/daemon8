@@ -7,8 +7,9 @@ use anyhow::Result;
 use serde_json::json;
 
 use super::helpers::{
-    HookSpec, current_exe_string, install_json_hooks, json_has_mcp_server, list_json_hooks,
-    quote_command_path, remove_json_hooks, shim_command,
+    HookSpec, current_exe_string, install_json_hooks, json_has_mcp_server,
+    json_mcp_server_url_matches, list_json_hooks, quote_command_path, remove_json_hooks,
+    shim_command,
 };
 use super::traits::{
     AiProvider, HookEvent, HookEventEntry, HookProvider, HookScope, InstalledHookEntry, LogLevel,
@@ -87,6 +88,15 @@ impl AiProvider for GeminiProvider {
         json_has_mcp_server(config_path, service.name)
     }
 
+    fn mcp_config_matches(
+        &self,
+        config_path: &Path,
+        service: &ServiceIdentity,
+        mcp_url: &str,
+    ) -> bool {
+        json_mcp_server_url_matches(config_path, service.name, mcp_url)
+    }
+
     fn write_mcp_config(
         &self,
         config_path: &Path,
@@ -110,6 +120,13 @@ impl AiProvider for GeminiProvider {
             .unwrap_or(false);
 
         if ok {
+            if !json_mcp_server_url_matches(config_path, service.name, mcp_url) {
+                let entry = json!({ "httpUrl": mcp_url });
+                return super::helpers::write_json_mcp_entries(
+                    config_path,
+                    &[(service.name, entry)],
+                );
+            }
             Ok(())
         } else {
             let entry = json!({ "httpUrl": mcp_url });

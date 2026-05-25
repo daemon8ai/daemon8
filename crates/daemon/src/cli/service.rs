@@ -163,6 +163,7 @@ struct ProviderSetupTarget {
     config_path: PathBuf,
     detected: bool,
     configured: bool,
+    existing_entry: bool,
 }
 
 impl ProviderSetupTarget {
@@ -176,27 +177,31 @@ impl ProviderSetupTarget {
     }
 }
 
-fn provider_setup_targets(home: &Path) -> Vec<ProviderSetupTarget> {
+fn provider_setup_targets(home: &Path, mcp_url: Option<&str>) -> Vec<ProviderSetupTarget> {
     SETUP_PROVIDERS
         .iter()
         .map(|&provider| {
             let p = provider.as_provider();
             let config_path = p.config_path(home);
             let detected = home.join(p.detect_dir()).exists() || config_path.exists();
-            let configured = p.is_configured(&config_path, &crate::cli_config::SERVICE);
+            let existing_entry = p.is_configured(&config_path, &crate::cli_config::SERVICE);
+            let configured = mcp_url.map_or(existing_entry, |url| {
+                p.mcp_config_matches(&config_path, &crate::cli_config::SERVICE, url)
+            });
 
             ProviderSetupTarget {
                 provider,
                 config_path,
                 detected,
                 configured,
+                existing_entry,
             }
         })
         .collect()
 }
 
 fn configured_provider_targets() -> Vec<ProviderSetupTarget> {
-    provider_setup_targets(&daemon8_providers::dirs_home())
+    provider_setup_targets(&daemon8_providers::dirs_home(), None)
         .into_iter()
         .filter(|target| target.configured)
         .collect()
@@ -207,7 +212,7 @@ fn setup_provider_mcp(mcp_url: &str, yes: bool) -> Result<Vec<ProviderSetupTarge
     let mut configured = Vec::new();
 
     println!("Provider MCP setup:");
-    for mut target in provider_setup_targets(&home) {
+    for mut target in provider_setup_targets(&home, Some(mcp_url)) {
         let provider = target.provider.as_provider();
         if target.configured {
             println!(
@@ -228,10 +233,16 @@ fn setup_provider_mcp(mcp_url: &str, yes: bool) -> Result<Vec<ProviderSetupTarge
         }
 
         let question = format!(
-            "  Add daemon8 MCP settings for {} at {}? [Y/n]: ",
+            "  {} daemon8 MCP settings for {} at {}? [Y/n]: ",
+            if target.existing_entry {
+                "Update"
+            } else {
+                "Add"
+            },
             provider.label(),
             target.config_path.display()
         );
+        let was_existing = target.existing_entry;
         if yes || prompt_yes_default(&question)? == Some(true) {
             daemon8_providers::write_provider_config(
                 target.provider,
@@ -242,7 +253,12 @@ fn setup_provider_mcp(mcp_url: &str, yes: bool) -> Result<Vec<ProviderSetupTarge
             )
             .with_context(|| format!("writing {} MCP config", provider.label()))?;
             target.configured = true;
-            println!("  [ok] {} MCP settings added", provider.label());
+            target.existing_entry = true;
+            println!(
+                "  [ok] {} MCP settings {}",
+                provider.label(),
+                if was_existing { "updated" } else { "added" }
+            );
             configured.push(target);
         } else {
             println!("  [--] {} MCP setup skipped", provider.label());
@@ -1217,7 +1233,7 @@ mod tests {
     #[test]
     fn provider_setup_targets_cover_the_three_public_providers() {
         let root = tempfile::tempdir().unwrap();
-        let targets = provider_setup_targets(root.path());
+        let targets = provider_setup_targets(root.path(), None);
         let providers = targets
             .iter()
             .map(|target| target.provider)

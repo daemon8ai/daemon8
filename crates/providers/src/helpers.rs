@@ -206,6 +206,22 @@ pub fn json_has_mcp_server(config_path: &Path, name: &str) -> bool {
             .unwrap_or(false)
 }
 
+pub fn json_mcp_server_url_matches(config_path: &Path, name: &str, mcp_url: &str) -> bool {
+    config_path.exists()
+        && std::fs::read_to_string(config_path)
+            .ok()
+            .and_then(|c| serde_json::from_str::<Value>(&c).ok())
+            .and_then(|v| {
+                let entry = v.get("mcpServers")?.as_object()?.get(name)?;
+                entry
+                    .get("url")
+                    .or_else(|| entry.get("httpUrl"))?
+                    .as_str()
+                    .map(|url| url == mcp_url)
+            })
+            .unwrap_or(false)
+}
+
 pub fn codex_has_mcp_server(config_path: &Path, name: &str) -> bool {
     config_path.exists()
         && std::fs::read_to_string(config_path)
@@ -215,6 +231,22 @@ pub fn codex_has_mcp_server(config_path: &Path, name: &str) -> bool {
                 v.get("mcp_servers")?
                     .as_table()
                     .map(|table| table.contains_key(name))
+            })
+            .unwrap_or(false)
+}
+
+pub fn codex_mcp_server_url_matches(config_path: &Path, name: &str, mcp_url: &str) -> bool {
+    config_path.exists()
+        && std::fs::read_to_string(config_path)
+            .ok()
+            .and_then(|c| toml::from_str::<toml::Value>(&c).ok())
+            .and_then(|v| {
+                v.get("mcp_servers")?
+                    .as_table()?
+                    .get(name)?
+                    .get("url")?
+                    .as_str()
+                    .map(|url| url == mcp_url)
             })
             .unwrap_or(false)
 }
@@ -382,6 +414,33 @@ mod tests {
     }
 
     #[test]
+    fn json_mcp_server_url_matches_url_and_http_url() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.json");
+        std::fs::write(
+            &path,
+            r#"{"mcpServers":{"claude":{"url":"http://localhost:8888/mcp"},"gemini":{"httpUrl":"http://localhost:8888/mcp"}}}"#,
+        )
+        .unwrap();
+
+        assert!(json_mcp_server_url_matches(
+            &path,
+            "claude",
+            "http://localhost:8888/mcp"
+        ));
+        assert!(json_mcp_server_url_matches(
+            &path,
+            "gemini",
+            "http://localhost:8888/mcp"
+        ));
+        assert!(!json_mcp_server_url_matches(
+            &path,
+            "claude",
+            "http://localhost:9077/mcp"
+        ));
+    }
+
+    #[test]
     fn json_has_mcp_server_returns_false_for_missing_file() {
         let tmp = tempfile::tempdir().unwrap();
         assert!(!json_has_mcp_server(&tmp.path().join("nope.json"), "x"));
@@ -399,5 +458,27 @@ mod tests {
 
         assert!(codex_has_mcp_server(&path, "my-svc"));
         assert!(!codex_has_mcp_server(&path, "other-svc"));
+    }
+
+    #[test]
+    fn codex_mcp_server_url_matches_named_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "[mcp_servers.my-svc]\nname = \"My Service\"\nurl = \"http://localhost:8888/mcp\"\n",
+        )
+        .unwrap();
+
+        assert!(codex_mcp_server_url_matches(
+            &path,
+            "my-svc",
+            "http://localhost:8888/mcp"
+        ));
+        assert!(!codex_mcp_server_url_matches(
+            &path,
+            "my-svc",
+            "http://localhost:9077/mcp"
+        ));
     }
 }
