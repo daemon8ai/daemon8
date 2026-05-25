@@ -560,6 +560,7 @@ pub struct DaemonMcp {
     enabled_features: Vec<FeatureGate>,
     session_id: String,
     connection: Arc<Mutex<Option<SessionConnection>>>,
+    connected_at: Arc<Mutex<Option<u64>>>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -617,6 +618,7 @@ impl DaemonMcp {
             enabled_features,
             session_id: next_mcp_session_id(),
             connection: Arc::new(Mutex::new(None)),
+            connected_at: Arc::new(Mutex::new(None)),
             tool_router: router,
         }
     }
@@ -969,6 +971,10 @@ impl DaemonMcp {
                         envelope,
                         connection: None,
                     };
+                    *self
+                        .connected_at
+                        .lock()
+                        .expect("connected_at mutex poisoned") = None;
                     *self.connection.lock().expect("connection mutex poisoned") = None;
                     self.record_connect_outcome(
                         &provider,
@@ -976,6 +982,7 @@ impl DaemonMcp {
                         agent_name.as_deref(),
                         transcript_path.as_deref(),
                         &outcome,
+                        current_ns(),
                     )
                     .await;
                     let mut envelope = outcome.envelope;
@@ -1039,6 +1046,10 @@ impl DaemonMcp {
                     "to re-enable daemon8 for this project, call daemon8_init with project_path and ignore=false",
                 );
                 *self.connection.lock().expect("connection mutex poisoned") = None;
+                *self
+                    .connected_at
+                    .lock()
+                    .expect("connected_at mutex poisoned") = None;
                 envelope.data = Some(
                     self.with_session_context(
                         envelope
@@ -1051,13 +1062,20 @@ impl DaemonMcp {
             }
         }
 
+        let connected_at = current_ns();
         *self.connection.lock().expect("connection mutex poisoned") = outcome.connection.clone();
+        *self
+            .connected_at
+            .lock()
+            .expect("connected_at mutex poisoned") =
+            outcome.connection.as_ref().map(|_| connected_at);
         self.record_connect_outcome(
             &provider,
             &project_path,
             agent_name.as_deref(),
             transcript_path.as_deref(),
             &outcome,
+            connected_at,
         )
         .await;
 
@@ -1161,7 +1179,14 @@ impl DaemonMcp {
                         .as_ref()
                         .map(|c| c.linked_transcripts.len())
                         .unwrap_or(0);
-                    val["connection"] = serde_json::to_value(connection).unwrap_or_default();
+                    val["connection"] = self.connection_context_value(connection.as_ref());
+                    if let Some(connected_at) = *self
+                        .connected_at
+                        .lock()
+                        .expect("connected_at mutex poisoned")
+                    {
+                        val["connected_at"] = serde_json::json!(connected_at);
+                    }
                     val["linked_conversations"] = serde_json::json!(linked_count);
                     if let Some(ledger) = &self.scope_ledger_store {
                         match ledger.scope_ledger_summary(5).await {
@@ -2139,7 +2164,14 @@ impl DaemonMcp {
             if let Some(scope_root) = &connection.scope_root {
                 data["scope_root"] = serde_json::json!(scope_root);
             }
-            data["connection"] = serde_json::to_value(connection).unwrap_or_default();
+            data["connection"] = self.connection_context_value(Some(&connection));
+            if let Some(connected_at) = *self
+                .connected_at
+                .lock()
+                .expect("connected_at mutex poisoned")
+            {
+                data["connected_at"] = serde_json::json!(connected_at);
+            }
         }
 
         if let Some(s) = self.active_state.current_session() {
@@ -2153,6 +2185,25 @@ impl DaemonMcp {
         data
     }
 
+    fn connection_context_value(
+        &self,
+        connection: Option<&SessionConnection>,
+    ) -> serde_json::Value {
+        let Some(connection) = connection else {
+            return serde_json::Value::Null;
+        };
+        let mut value = serde_json::to_value(connection).unwrap_or_default();
+        if let Some(connected_at) = *self
+            .connected_at
+            .lock()
+            .expect("connected_at mutex poisoned")
+            && let Some(object) = value.as_object_mut()
+        {
+            object.insert("connected_at".into(), serde_json::json!(connected_at));
+        }
+        value
+    }
+
     async fn record_connect_outcome(
         &self,
         provider: &str,
@@ -2160,11 +2211,11 @@ impl DaemonMcp {
         agent_name: Option<&str>,
         transcript_path: Option<&str>,
         outcome: &daemon8_core::control::ConnectOutcome,
+        now: u64,
     ) {
         let Some(ledger) = &self.scope_ledger_store else {
             return;
         };
-        let now = current_ns();
 
         let result = match &outcome.connection {
             Some(connection) => {

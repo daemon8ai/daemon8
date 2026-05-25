@@ -16,14 +16,19 @@ use daemon8_providers::Provider;
 #[cfg(target_os = "macos")]
 const LABEL: &str = "dev.daemon8.daemon";
 const SETUP_PROVIDERS: &[Provider] = &[Provider::ClaudeCode, Provider::Gemini, Provider::Codex];
+#[cfg(test)]
 const INSTRUCTION_HEADING: &str = "## Daemon8 -- Runtime Observation Layer (ALWAYS ON)";
+const INSTRUCTION_VERSION_MARKER: &str = "<!-- daemon8-instructions:v2026-05-demand-recall -->";
 const INSTRUCTION_BLOCK: &str = r#"## Daemon8 -- Runtime Observation Layer (ALWAYS ON)
+<!-- daemon8-instructions:v2026-05-demand-recall -->
 
-Daemon8 is the runtime awareness layer for this agent. Use it for debugging, app logs, browser control, device logs, and recent cross-provider conversation context. Never guess console output, network activity, DOM state, application logs, or what another agent already tried -- query daemon8.
+Daemon8 is the runtime awareness layer for this agent. Use it for debugging, app logs, browser control, device logs, and demand-driven cross-provider conversation recovery. Never guess console output, network activity, DOM state, application logs, or what another agent already tried -- query daemon8.
 
 Call `daemon8_connect` once at session start. If it returns `setup_required`, call `daemon8_init`, complete `.daemon8/config.md`, and then reconnect. Treat daemon8 response `requirements` and `next_actions` as control flow, not optional advice.
 
-When catching up on prior work or another provider's session, use `link_conversation` and `build_context_snapshot` before assuming context is missing.
+Do not run conversation recall automatically. After the project is connected and any required setup is complete, ask once whether the user wants to recover recent conversation history across AI providers. If the user asks for or accepts history, review, catch-up, continuity, prior work, or another provider's activity, run full recall with `build_context_snapshot` and omit the `facets` filter so all standard facets are built across available Claude, Codex, and Gemini transcripts. Use `link_conversation` only when daemon8 reports missing/unlinked transcript sources or the user points to a specific provider/session. Do not repeatedly ask once the user has answered in the current session.
+
+Do not rely on the visible chat as the whole project history. daemon8 may have linked conversations, provider transcripts, debug sessions, live observations, browser state, and source logs that are not visible in this chat.
 
 For real bugs, use the checkpointed loop:
 `daemon8_connect`
@@ -36,7 +41,8 @@ For real bugs, use the checkpointed loop:
 
 **Primary tools:**
 - `read_live_feed` -- console, network, errors, app telemetry (use `since_checkpoint` for incremental reads)
-- `link_conversation` / `build_context_snapshot` -- recent cross-provider project context
+- `build_context_snapshot` -- full cross-provider project recall when the user asks for or accepts conversation/history recovery
+- `link_conversation` -- attach missing or explicit provider transcripts before recall
 - `issue_command` -- browser control (eval_js, screenshot, navigate, viewport, storage, network throttle)
 - `list_connections` -- see active input sources (browsers, devices, apps)
 - `write_to_live_feed` -- emit notes, metrics, or agent-to-agent messages
@@ -338,6 +344,9 @@ fn print_instruction_write_result(target: &InstructionTarget) {
         Ok(InstructionWrite::Written) => {
             println!("  [ok] updated {}", target.path.display());
         }
+        Ok(InstructionWrite::Updated) => {
+            println!("  [ok] refreshed {}", target.path.display());
+        }
         Ok(InstructionWrite::AlreadyPresent) => {
             println!("  [ok] already present in {}", target.path.display());
         }
@@ -377,6 +386,7 @@ fn instruction_targets(configured_providers: &[ProviderSetupTarget]) -> Vec<Inst
 
 enum InstructionWrite {
     Written,
+    Updated,
     AlreadyPresent,
 }
 
@@ -387,12 +397,21 @@ fn prepend_instruction_block(path: &Path) -> io::Result<InstructionWrite> {
         Err(err) => return Err(err),
     };
 
-    if existing.contains(INSTRUCTION_HEADING) || existing.contains("daemon8_connect") {
+    if existing.contains(INSTRUCTION_VERSION_MARKER) {
         return Ok(InstructionWrite::AlreadyPresent);
     }
 
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
+    }
+
+    if let Some(next) = replace_existing_instruction_block(&existing) {
+        fs::write(path, next)?;
+        return Ok(InstructionWrite::Updated);
+    }
+
+    if existing.contains("daemon8_connect") {
+        return Ok(InstructionWrite::AlreadyPresent);
     }
 
     let next = if existing.trim().is_empty() {
@@ -402,6 +421,45 @@ fn prepend_instruction_block(path: &Path) -> io::Result<InstructionWrite> {
     };
     fs::write(path, next)?;
     Ok(InstructionWrite::Written)
+}
+
+fn replace_existing_instruction_block(existing: &str) -> Option<String> {
+    let lines = existing.lines().collect::<Vec<_>>();
+    let start = lines
+        .iter()
+        .position(|line| is_daemon8_instruction_heading(line))?;
+    let end = lines
+        .iter()
+        .enumerate()
+        .skip(start + 1)
+        .find_map(|(idx, line)| line.trim_start().starts_with("## ").then_some(idx))
+        .unwrap_or(lines.len());
+
+    let before = lines[..start].join("\n");
+    let after = lines[end..].join("\n");
+    let block = INSTRUCTION_BLOCK.trim_end();
+
+    let mut next = String::new();
+    if !before.trim().is_empty() {
+        next.push_str(before.trim_end());
+        next.push_str("\n\n");
+    }
+    next.push_str(block);
+    next.push('\n');
+    if !after.trim().is_empty() {
+        next.push('\n');
+        next.push_str(after.trim_start());
+        next.push('\n');
+    }
+
+    (next.trim_end() != existing.trim_end()).then_some(next)
+}
+
+fn is_daemon8_instruction_heading(line: &str) -> bool {
+    let line = line.trim();
+    line.starts_with("## Daemon8")
+        && line.contains("Runtime Observation Layer")
+        && line.contains("(ALWAYS ON)")
 }
 
 fn print_install_outro(configured_providers: &[ProviderSetupTarget], instruction_setup: bool) {
@@ -1299,5 +1357,33 @@ mod tests {
 
         let contents = std::fs::read_to_string(path).unwrap();
         assert_eq!(contents.matches(INSTRUCTION_HEADING).count(), 1);
+        assert!(contents.contains(INSTRUCTION_VERSION_MARKER));
+        assert!(contents.contains("ask once whether the user wants to recover recent conversation history across AI providers"));
+        assert!(contents.contains(
+            "run full recall with `build_context_snapshot` and omit the `facets` filter"
+        ));
+    }
+
+    #[test]
+    fn stale_instruction_block_is_replaced() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("AGENTS.md");
+        std::fs::write(
+            &path,
+            "Intro\n\n## Daemon8 — Runtime Observation Layer (ALWAYS ON)\n\nOld daemon8 runtime note.\n\n## Next Section\n\nKeep me.\n",
+        )
+        .unwrap();
+
+        assert!(matches!(
+            prepend_instruction_block(&path).unwrap(),
+            InstructionWrite::Updated
+        ));
+
+        let contents = std::fs::read_to_string(path).unwrap();
+        assert!(contents.starts_with("Intro\n\n## Daemon8 -- Runtime Observation Layer"));
+        assert!(contents.contains(INSTRUCTION_VERSION_MARKER));
+        assert!(contents.contains("Do not run conversation recall automatically."));
+        assert!(contents.contains("## Next Section\n\nKeep me."));
+        assert!(!contents.contains("Old daemon8 runtime note."));
     }
 }

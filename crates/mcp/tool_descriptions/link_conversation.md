@@ -4,7 +4,7 @@ Link a conversation transcript from another AI provider to the current project s
 
 ## When
 
-You know another AI agent (Claude, Codex, Gemini) has worked on this project and you want its conversation history available for faceted catch-up. Use after `daemon8_connect` in project scope.
+Use after `daemon8_connect` in project scope when daemon8 reports missing/unlinked transcript sources, or when the user points to a specific provider/session that should be included in a requested recall. Do not use this as an automatic recall step when daemon8 already discovers provider conversations for the project.
 
 ## Prereq
 

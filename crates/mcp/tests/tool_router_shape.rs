@@ -868,6 +868,18 @@ async fn daemon8_connect_succeeds_with_file_source_config() {
         .await;
     let parsed: serde_json::Value = serde_json::from_str(&connect).unwrap();
     assert_eq!(parsed["status"], "success");
+    assert!(parsed["data"]["connected_at"].is_u64());
+    assert_eq!(
+        parsed["data"]["connection"]["connected_at"],
+        parsed["data"]["connected_at"]
+    );
+
+    let status = mcp.daemon8_status_for_tests().await;
+    let status: serde_json::Value = serde_json::from_str(&status).unwrap();
+    assert_eq!(
+        status["data"]["connection"]["connected_at"],
+        parsed["data"]["connected_at"]
+    );
 }
 
 #[tokio::test]
@@ -2402,6 +2414,19 @@ async fn server_instructions_mention_action_surface() {
         "instructions must mention issue_command. Got: {:?}",
         &text[..text.len().min(300)]
     );
+    for term in [
+        "Do not run conversation recall automatically",
+        "ask once",
+        "build_context_snapshot` with no `facets` filter",
+        "link_conversation",
+        "Do not rely on the visible chat as the whole project history",
+    ] {
+        assert!(
+            text.contains(term),
+            "instructions must contain '{term}'. Got: {:?}",
+            &text[..text.len().min(600)]
+        );
+    }
 }
 
 #[tokio::test]

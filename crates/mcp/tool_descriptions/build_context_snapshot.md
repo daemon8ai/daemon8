@@ -4,7 +4,7 @@ Build a faceted snapshot of provider conversation history. Decomposes Claude, Co
 
 ## When
 
-When catching up on other sessions, reviewing another agent's work, or building context before a complex task. **Trigger phrases**: "catch me up", "what happened while I was away?", "what did the other agent do?" -- build the snapshot, read `summary.md` first, present a conversational overview.
+When the user asks for or accepts conversation/history recovery: prior work, recent activity, a project review, catch-up, continuity, or another provider's activity. Do **not** call this automatically after connect. When recall is requested, omit `facets` for a full cross-provider review unless the user explicitly asks for a narrow summary.
 
 ## Prereq
 
@@ -12,7 +12,7 @@ Project-scoped connection (`data.connection.mode == "project"`) with at least on
 
 ## Args
   - since: optional string. Time scope: `"conversation_start"` (default, full transcript), `"checkpoint"` (since active debug checkpoint), or `"duration:N"` (last N minutes). Use `"duration:30"` for a quick recent-activity check.
-  - facets: optional string array. Which facets to build. Valid values: `user_messages`, `assistant_messages`, `tool_activity`, `file_changes`, `log_activity`, `summary`. Omit for all facets. Use `["summary"]` for a quick orientation.
+  - facets: optional string array. Which facets to build. Valid values: `user_messages`, `assistant_messages`, `tool_activity`, `file_changes`, `log_activity`, `summary`. Omit for all facets when the user asks for recall/review/catch-up. Use `["summary"]` only when the user explicitly asks for a brief or narrow summary.
   - providers: optional string array. Filter to specific providers (`claude`, `codex`, `gemini`). Omit for all discovered.
 
 ## Returns
@@ -29,7 +29,7 @@ Common envelope with `code="snapshot_built"`, `data.snapshot_path` (absolute pat
 ## Next
 
 Read facet files with your file-reading tool:
-- Start with `summary.md` for orientation, present conversationally -- **do not dump raw markdown**.
+- For full recall, read across the generated facets and present a cohesive review -- **do not dump raw markdown**.
 - `file-changes.md` for what changed, `tool-activity.md` for tools used, `user-messages.md` for original requests.
 - No sources found → call `link_conversation`.
 - Empty facets → verify time scope covers the period of interest (`"conversation_start"` for everything).

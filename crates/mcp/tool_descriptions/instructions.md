@@ -11,6 +11,12 @@ When asked about browser state, console output, network activity, device logs, o
 
 Observations are real-time. **Never answer from memory** — re-query with `since_checkpoint`.
 
+Call `daemon8_connect` once at session start. If it returns setup requirements, complete `daemon8_init` / `.daemon8/config.md` setup first, then reconnect.
+
+Do not run conversation recall automatically. After the project is connected and setup is complete, ask once whether the user wants to recover recent conversation history across AI providers. If the user asks for or accepts history, review, catch-up, continuity, prior work, or another provider's activity, call `build_context_snapshot` with no `facets` filter so daemon8 builds the full cross-provider snapshot across all available Claude, Codex, and Gemini transcripts. Use `link_conversation` only when daemon8 reports missing/unlinked transcript sources or when the user points to a specific provider/session. Do not repeatedly ask once the user has answered in the current session.
+
+Do not rely on the visible chat as the whole project history. daemon8 may have provider transcripts, linked conversations, debug sessions, live observations, browser state, and source logs that are not visible in this chat.
+
 Tool selection:
 - Learn the control flow or envelope shape: `daemon8_help` (available before connect).
 - Bind this MCP session to a project/general scope: `daemon8_connect`.
@@ -23,8 +29,7 @@ Tool selection:
 - Watch for specific events in real-time: `watch_live_feed` (live alerts pushed into the session).
 - Buffer matches between queries: `set_lens` (matching rows surface automatically in the next `read_live_feed`). `lens_status` inspects depth; `clear_lens` removes.
 - Standard debug loop: `daemon8_connect`, `start_debug_session`, `create_checkpoint`, change/repro/test, `read_live_feed(since_checkpoint=...)`, then `resolve_debug_session`.
-
-**Session history**: when the user asks about previous work, what another agent did, or recent activity — call `build_context_snapshot(facets: ["summary"])`. All provider transcripts (Claude, Codex, Gemini) for the connected project are accessible. **Never say "I don't have access to previous conversations."**
+- Demand-driven full recall: when the user asks for or accepts history/review/catch-up/continuity, call `build_context_snapshot` with no `facets` filter. All provider transcripts (Claude, Codex, Gemini) for the connected project are accessible. **Never say "I don't have access to previous conversations."**
 
 Browser connection is automatic — the daemon discovers, launches, and reconnects. Retry on timeout.
 
