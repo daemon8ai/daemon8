@@ -16,7 +16,7 @@ Windows PowerShell:
 iwr https://daemon8.ai/install.ps1 -UseB | iex
 ```
 
-The release installers download the matching GitHub Release artifact, verify `checksums.sha256`, install the `daemon8` binary, and run `daemon8 service install`.
+The release installers download the matching GitHub Release artifact, verify `checksums.sha256`, install the `daemon8` binary, and run `daemon8 service install`. When `DAEMON8_VERSION` is unset, installers resolve the newest public release, including prereleases during alpha.
 
 Install destination:
 

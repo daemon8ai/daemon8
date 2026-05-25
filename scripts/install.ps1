@@ -8,12 +8,28 @@ $InstallDir = if ($env:DAEMON8_INSTALL_DIR) { $env:DAEMON8_INSTALL_DIR } else { 
 $Target     = "x86_64-pc-windows-msvc"
 $ArchiveName = "$Binary-$Target.zip"
 
-if ($Version -eq "latest") {
-    $Url = "https://github.com/$Repo/releases/latest/download/$ArchiveName"
-    $ChecksumsUrl = "https://github.com/$Repo/releases/latest/download/checksums.sha256"
-} else {
-    $Url = "https://github.com/$Repo/releases/download/$Version/$ArchiveName"
-    $ChecksumsUrl = "https://github.com/$Repo/releases/download/$Version/checksums.sha256"
+function Resolve-Daemon8Version {
+    if ($Version -ne "latest") {
+        return $Version
+    }
+
+    $Headers = @{ "User-Agent" = "daemon8-installer" }
+
+    try {
+        $Release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" -Headers $Headers -UseBasicParsing
+    } catch {
+        $Releases = @(Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases?per_page=1" -Headers $Headers -UseBasicParsing)
+        if ($Releases.Count -eq 0) {
+            throw "Could not resolve the latest daemon8 release. Set DAEMON8_VERSION to a tag, for example: DAEMON8_VERSION=v0.5.0-alpha.2"
+        }
+        $Release = $Releases[0]
+    }
+
+    if (-not $Release.tag_name) {
+        throw "Could not resolve the latest daemon8 release. Set DAEMON8_VERSION to a tag, for example: DAEMON8_VERSION=v0.5.0-alpha.2"
+    }
+
+    return $Release.tag_name
 }
 
 Write-Host ""
@@ -25,8 +41,13 @@ if ($env:DAEMON8_INSTALLER_SELF_TEST -eq "1") {
     exit 0
 }
 
+$ResolvedVersion = Resolve-Daemon8Version
+$Url = "https://github.com/$Repo/releases/download/$ResolvedVersion/$ArchiveName"
+$ChecksumsUrl = "https://github.com/$Repo/releases/download/$ResolvedVersion/checksums.sha256"
+
 Write-Host "[1/4] Download" -ForegroundColor Cyan
 Write-Host "  Platform: $Target" -ForegroundColor DarkGray
+Write-Host "  Version:  $ResolvedVersion" -ForegroundColor DarkGray
 Write-Host "  Source:   $Url" -ForegroundColor DarkGray
 
 $Tmp = Join-Path ([System.IO.Path]::GetTempPath()) "daemon8-install-$([System.IO.Path]::GetRandomFileName())"
