@@ -891,10 +891,106 @@ fn xml_escape(s: &str) -> String {
 }
 
 #[cfg(windows)]
+const WINDOWS_TASK_NAME: &str = "daemon8-service";
+
+#[cfg(windows)]
+const WINDOWS_LEGACY_TASK_NAMES: &[&str] = &["Daemon8", "daemon8-user"];
+
+#[cfg(any(windows, test))]
+fn windows_powershell_path() -> String {
+    let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".to_string());
+    format!("{system_root}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe")
+}
+
+#[cfg(any(windows, test))]
+fn powershell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+#[cfg(any(windows, test))]
+fn powershell_encoded_command(command: &str) -> String {
+    use base64::Engine as _;
+
+    let bytes = command
+        .encode_utf16()
+        .flat_map(|unit| unit.to_le_bytes())
+        .collect::<Vec<_>>();
+
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+#[cfg(any(windows, test))]
+fn windows_task_action(binary: &str, chrome_endpoint: Option<&str>) -> (String, String) {
+    let mut command = format!("& {} serve", powershell_quote(binary));
+    if let Some(endpoint) = chrome_endpoint {
+        command.push_str(" --browser ");
+        command.push_str(&powershell_quote(endpoint));
+    }
+    command.push_str("; exit $LASTEXITCODE");
+
+    let powershell = windows_powershell_path();
+    let encoded = powershell_encoded_command(&command);
+    let args = format!(
+        "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -EncodedCommand {encoded}"
+    );
+
+    (powershell, args)
+}
+
+#[cfg(windows)]
+fn powershell_script_line(name: &str, value: &str) -> String {
+    format!("${name} = {}\n", powershell_quote(value))
+}
+
+#[cfg(windows)]
+fn install_scheduled_task_with_powershell(
+    task_name: &str,
+    powershell: &str,
+    action_args: &str,
+) -> Result<()> {
+    let mut script = String::from("$ErrorActionPreference = 'Stop'\n");
+    script.push_str(&powershell_script_line("TaskName", task_name));
+    script.push_str(&powershell_script_line("PowerShellExe", powershell));
+    script.push_str(&powershell_script_line("ActionArgs", action_args));
+    script.push_str("$UserId = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name\n");
+    script.push_str(
+        "$Action = New-ScheduledTaskAction -Execute $PowerShellExe -Argument $ActionArgs\n",
+    );
+    script.push_str("$Trigger = New-ScheduledTaskTrigger -AtLogOn -User $UserId\n");
+    script.push_str("$Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 10 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew\n");
+    script.push_str("$Principal = New-ScheduledTaskPrincipal -UserId $UserId -LogonType Interactive -RunLevel Limited\n");
+    script
+        .push_str("foreach ($ExistingTask in @('Daemon8', 'daemon8-user', 'daemon8-service')) {\n");
+    script.push_str("  try { Get-ScheduledTask -TaskName $ExistingTask -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false -ErrorAction Stop } catch {}\n");
+    script.push_str("}\n");
+    script.push_str("Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger -Settings $Settings -Principal $Principal -Force | Out-Null\n");
+
+    let encoded = powershell_encoded_command(&script);
+    let output = Command::new(powershell)
+        .args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-EncodedCommand",
+            &encoded,
+        ])
+        .output()
+        .context("failed to run PowerShell ScheduledTasks fallback")?;
+
+    if !output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("PowerShell ScheduledTasks fallback failed: {stdout}{stderr}");
+    }
+
+    Ok(())
+}
+
+#[cfg(windows)]
 fn install_schtasks(binary: &str, chrome_endpoint: Option<&str>, port: u16) -> Result<()> {
-    let chrome_args = chrome_endpoint
-        .map(|ep| format!(" --browser {ep}"))
-        .unwrap_or_default();
+    let (powershell, action_args) = windows_task_action(binary, chrome_endpoint);
 
     // On domain-joined machines schtasks wants `DOMAIN\User`; standalone boxes
     // accept `.\User`. Bare `USERNAME` silently fails under AD policy.
@@ -906,8 +1002,8 @@ fn install_schtasks(binary: &str, chrome_endpoint: Option<&str>, port: u16) -> R
         _ => format!(".\\{raw_user}"),
     };
     let username = xml_escape(&username);
-    let binary = xml_escape(binary);
-    let chrome_args = xml_escape(&chrome_args);
+    let xml_powershell = xml_escape(&powershell);
+    let xml_action_args = xml_escape(&action_args);
 
     // Task XML: run at logon for current user, restart on failure up to 10
     // times at 1-minute intervals, no execution time limit.
@@ -939,8 +1035,8 @@ fn install_schtasks(binary: &str, chrome_endpoint: Option<&str>, port: u16) -> R
   </Settings>
   <Actions Context="Author">
     <Exec>
-      <Command>{binary}</Command>
-      <Arguments>serve{chrome_args}</Arguments>
+      <Command>{xml_powershell}</Command>
+      <Arguments>{xml_action_args}</Arguments>
     </Exec>
   </Actions>
 </Task>"#
@@ -959,15 +1055,19 @@ fn install_schtasks(binary: &str, chrome_endpoint: Option<&str>, port: u16) -> R
 
     // Remove any existing task first (idempotent upgrade path).
     // `.output()` already captures both streams; no redirection needed.
-    let _ = std::process::Command::new("schtasks")
-        .args(["/Delete", "/TN", "Daemon8", "/F"])
-        .output();
+    for task_name in
+        std::iter::once(WINDOWS_TASK_NAME).chain(WINDOWS_LEGACY_TASK_NAMES.iter().copied())
+    {
+        let _ = std::process::Command::new("schtasks")
+            .args(["/Delete", "/TN", task_name, "/F"])
+            .output();
+    }
 
     let create = std::process::Command::new("schtasks")
         .args([
             "/Create",
             "/TN",
-            "Daemon8",
+            WINDOWS_TASK_NAME,
             "/XML",
             &tmp.display().to_string(),
             "/F",
@@ -979,18 +1079,59 @@ fn install_schtasks(binary: &str, chrome_endpoint: Option<&str>, port: u16) -> R
 
     if !create.status.success() {
         let stderr = String::from_utf8_lossy(&create.stderr);
-        anyhow::bail!("schtasks /Create failed: {stderr}");
+        let task_run = format!("\"{powershell}\" {action_args}");
+        let fallback = std::process::Command::new("schtasks")
+            .args([
+                "/Create",
+                "/TN",
+                WINDOWS_TASK_NAME,
+                "/TR",
+                &task_run,
+                "/SC",
+                "ONLOGON",
+                "/RL",
+                "LIMITED",
+                "/F",
+            ])
+            .output()
+            .context("failed to run fallback schtasks /Create")?;
+
+        if fallback.status.success() {
+            println!("  Service: Task Scheduler task '{WINDOWS_TASK_NAME}' registered");
+        } else {
+            let fallback_stderr = String::from_utf8_lossy(&fallback.stderr);
+            match install_scheduled_task_with_powershell(
+                WINDOWS_TASK_NAME,
+                &powershell,
+                &action_args,
+            ) {
+                Ok(()) => {
+                    println!("  Service: Task Scheduler task '{WINDOWS_TASK_NAME}' registered");
+                }
+                Err(err) => {
+                    anyhow::bail!(
+                        "schtasks /Create failed: {stderr}; fallback schtasks /Create failed: {fallback_stderr}; {err}\n\
+                         Browser control does not require Administrator, but Windows blocked background startup registration. \
+                         Run `daemon8 serve` to start daemon8 now, or rerun `daemon8 service install` from PowerShell as Administrator."
+                    );
+                }
+            }
+        }
+    } else {
+        println!("  Service: Task Scheduler task '{WINDOWS_TASK_NAME}' registered");
     }
-    println!("  Service: Task Scheduler task 'Daemon8' registered (restarts on crash)");
 
     let start = std::process::Command::new("schtasks")
-        .args(["/Run", "/TN", "Daemon8"])
+        .args(["/Run", "/TN", WINDOWS_TASK_NAME])
         .output()
         .context("failed to run schtasks /Run")?;
 
     if !start.status.success() {
         let stderr = String::from_utf8_lossy(&start.stderr);
-        anyhow::bail!("schtasks /Run failed: {stderr}");
+        anyhow::bail!(
+            "schtasks /Run failed: {stderr}\n\
+             The task was registered but Windows would not start it. Run `daemon8 serve` to start daemon8 now."
+        );
     }
 
     for _ in 0..10 {
@@ -1006,26 +1147,35 @@ fn install_schtasks(binary: &str, chrome_endpoint: Option<&str>, port: u16) -> R
 
 #[cfg(windows)]
 fn uninstall_schtasks() -> Result<()> {
-    let query = std::process::Command::new("schtasks")
-        .args(["/Query", "/TN", "Daemon8"])
-        .output()
-        .context("failed to run schtasks /Query")?;
+    let mut found = false;
+    for task_name in
+        std::iter::once(WINDOWS_TASK_NAME).chain(WINDOWS_LEGACY_TASK_NAMES.iter().copied())
+    {
+        let query = std::process::Command::new("schtasks")
+            .args(["/Query", "/TN", task_name])
+            .output()
+            .context("failed to run schtasks /Query")?;
 
-    if !query.status.success() {
-        println!("  Service: not installed (nothing to remove)");
-        return Ok(());
+        if !query.status.success() {
+            continue;
+        }
+
+        found = true;
+        let output = std::process::Command::new("schtasks")
+            .args(["/Delete", "/TN", task_name, "/F"])
+            .output()
+            .context("failed to run schtasks /Delete")?;
+
+        if output.status.success() {
+            println!("  Removed: Task Scheduler task '{task_name}'");
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            println!("  [!!] Task Scheduler task '{task_name}': {stderr}");
+        }
     }
 
-    let output = std::process::Command::new("schtasks")
-        .args(["/Delete", "/TN", "Daemon8", "/F"])
-        .output()
-        .context("failed to run schtasks /Delete")?;
-
-    if output.status.success() {
-        println!("  Removed: Task Scheduler task 'Daemon8'");
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("schtasks /Delete failed: {stderr}");
+    if !found {
+        println!("  Service: not installed (nothing to remove)");
     }
     Ok(())
 }
@@ -1086,6 +1236,35 @@ mod tests {
         assert!(parse_yes_default("YES"));
         assert!(!parse_yes_default("n"));
         assert!(!parse_yes_default("no"));
+    }
+
+    #[test]
+    fn windows_task_action_runs_daemon_hidden_and_synchronously() {
+        use base64::Engine as _;
+
+        let (powershell, args) = windows_task_action(
+            r"C:\Users\Jon's Machine\AppData\Local\Programs\daemon8\daemon8.exe",
+            Some("http://127.0.0.1:9222/devtools/browser/abc"),
+        );
+
+        assert!(powershell.ends_with(r"\System32\WindowsPowerShell\v1.0\powershell.exe"));
+        assert!(args.contains("-WindowStyle Hidden"));
+        assert!(args.contains("-EncodedCommand "));
+
+        let encoded = args.rsplit(' ').next().unwrap();
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .unwrap();
+        let units = bytes
+            .chunks_exact(2)
+            .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+            .collect::<Vec<_>>();
+        let command = String::from_utf16(&units).unwrap();
+
+        assert_eq!(
+            command,
+            "& 'C:\\Users\\Jon''s Machine\\AppData\\Local\\Programs\\daemon8\\daemon8.exe' serve --browser 'http://127.0.0.1:9222/devtools/browser/abc'; exit $LASTEXITCODE"
+        );
     }
 
     #[test]

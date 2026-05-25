@@ -8,7 +8,6 @@ use std::str::FromStr;
 use serde::{Deserialize, Deserializer, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Config {
     #[serde(default = "default_version")]
     pub version: u32,
@@ -473,16 +472,18 @@ mod tests {
     }
 
     #[test]
-    fn removed_embeddings_section_is_rejected() {
-        let result: Result<Config, _> = toml::from_str(
+    fn removed_top_level_sections_are_ignored() {
+        let cfg: Config = toml::from_str(
             r#"[embeddings]
 provider = "none"
+
+[licensing]
+key = "old"
 "#,
-        );
-        assert!(
-            result.is_err(),
-            "removed embeddings config must not be silently accepted"
-        );
+        )
+        .unwrap();
+        assert_eq!(cfg.server.port, 8888);
+        assert_eq!(cfg.logging.level, LogLevel::Info);
     }
 
     #[test]
@@ -513,12 +514,6 @@ role_default = "debugger"
 [ingestion.udp]
 removed_port = 8099
 "#,
-            r#"
-[sources.app]
-kind = "file"
-path = "app.log"
-role_default = "debugger"
-"#,
         ] {
             let result: Result<Config, _> = toml::from_str(toml_text);
             assert!(
@@ -538,17 +533,15 @@ role_default = "debugger"
     }
 
     #[test]
-    fn removed_setup_config_is_rejected() {
-        let result: Result<Config, _> = toml::from_str(
+    fn removed_setup_config_is_ignored() {
+        let cfg: Config = toml::from_str(
             r#"
 [setup.projects.daemon8]
 slug = "daemon8"
 "#,
-        );
-        assert!(
-            result.is_err(),
-            "removed setup config must not be silently accepted"
-        );
+        )
+        .unwrap();
+        assert_eq!(cfg.server.port, 8888);
     }
 
     #[test]
@@ -687,31 +680,27 @@ bind = "0.0.0.0:8889"
     }
 
     #[test]
-    fn removed_sources_config_is_rejected() {
-        let result: Result<Config, _> = toml::from_str(
+    fn removed_sources_config_is_ignored() {
+        let cfg: Config = toml::from_str(
             r#"
 [sources.raw]
 kind = "file"
 path = "/tmp/test.log"
 "#,
-        );
-        assert!(
-            result.is_err(),
-            "global sources config must not be accepted in alpha"
-        );
+        )
+        .unwrap();
+        assert_eq!(cfg.server.port, 8888);
     }
 
     #[test]
-    fn removed_source_config_is_rejected() {
-        let result: Result<Config, _> = toml::from_str(
+    fn removed_source_config_is_ignored() {
+        let cfg: Config = toml::from_str(
             r#"
 [source_config]
 idle_ttl_secs = 1
 "#,
-        );
-        assert!(
-            result.is_err(),
-            "source manager runtime config must not be accepted in alpha"
-        );
+        )
+        .unwrap();
+        assert_eq!(cfg.server.port, 8888);
     }
 }

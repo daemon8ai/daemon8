@@ -32,6 +32,7 @@ clap.workspace = true
 figment.workspace = true
 directories.workspace = true
 anyhow.workspace = true
+base64.workspace = true
 async-trait.workspace = true
 thiserror.workspace = true
 axum.workspace = true

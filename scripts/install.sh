@@ -215,6 +215,11 @@ esac
 
 step 4 $TOTAL_STEPS "Service"
 echo ""
+if [ "${DAEMON8_INSTALLER_SKIP_SERVICE:-}" = "1" ]; then
+  ok "Service install skipped"
+  exit 0
+fi
+
 if ! "$INSTALL_DIR/$BINARY" service install; then
   err "Service install failed. Try again with: $INSTALL_DIR/$BINARY service install"
   exit 1

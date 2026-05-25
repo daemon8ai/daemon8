@@ -1,0 +1,52 @@
+name: Installer Smoke
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - install.sh
+      - install.ps1
+      - scripts/install.sh
+      - scripts/install.ps1
+      - .github/workflows/installer-smoke.yml
+  push:
+    branches: [main]
+    paths:
+      - install.sh
+      - install.ps1
+      - scripts/install.sh
+      - scripts/install.ps1
+      - .github/workflows/installer-smoke.yml
+
+jobs:
+  unix:
+    name: Unix installer (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run installer without service registration
+        env:
+          DAEMON8_INSTALLER_SKIP_SERVICE: "1"
+          DAEMON8_INSTALL_DIR: ${{ runner.temp }}/daemon8-bin
+        run: |
+          bash scripts/install.sh
+          "$DAEMON8_INSTALL_DIR/daemon8" --version
+
+  windows:
+    name: Windows installer
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run installer without service registration
+        shell: pwsh
+        env:
+          DAEMON8_INSTALLER_SKIP_SERVICE: "1"
+        run: |
+          $env:DAEMON8_INSTALL_DIR = Join-Path $env:RUNNER_TEMP "daemon8-bin"
+          ./scripts/install.ps1
+          & (Join-Path $env:DAEMON8_INSTALL_DIR "daemon8.exe") --version
