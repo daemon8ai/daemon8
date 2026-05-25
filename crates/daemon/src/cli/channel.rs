@@ -56,7 +56,7 @@ pub async fn cmd_channel() -> Result<()> {
 
     if !connected {
         anyhow::bail!(
-            "daemon8 is not running — install/start the service with 'daemon8 service install' first"
+            "daemon8 is not running — start the service with 'daemon8 service install' first"
         );
     }
 

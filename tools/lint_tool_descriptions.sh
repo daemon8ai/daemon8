@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: LicenseRef-FCL-1.0-ALv2
 # Copyright (c) 2026 Havy.tech, LLC
 #
-# Lint daemon8 MCP tool descriptions against the alpha house style.
+# Lint daemon8 MCP tool descriptions against the required section format.
 #
 # Every file under crates/mcp/tool_descriptions/*.md must contain the
 # following section headers (in any order, on a line of their own with
@@ -66,9 +66,9 @@ done
 
 if [ "$errors" -gt 0 ]; then
     echo "" >&2
-    echo "$errors tool description file(s) violate the alpha house style." >&2
+    echo "$errors tool description file(s) violate the required section format." >&2
     echo "Required headers per file: ${REQUIRED_HEADERS[*]}" >&2
     exit 1
 fi
 
-echo "tool_descriptions: $checked files conform to house style."
+echo "tool_descriptions: $checked files conform to the required section format."

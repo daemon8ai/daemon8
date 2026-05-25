@@ -317,7 +317,7 @@ impl UninstallPlan {
 
     fn write_manifest(&self) -> io::Result<()> {
         let mut out = String::new();
-        out.push_str("daemon8 install backup\n");
+        out.push_str("daemon8 uninstall backup\n");
         out.push_str(&format!("created_epoch = {}\n", unix_timestamp()));
         out.push_str(&format!("backup_dir = {}\n", self.backup_dir.display()));
         out.push_str(&format!("os = {}\n", env::consts::OS));
@@ -1084,6 +1084,6 @@ fn macos_service_restart() {
         }
     } else {
         eprintln!("No launchd plist found at {plist}. Service not started.");
-        eprintln!("Run 'daemon8 install' to create one, or copy the plist manually.");
+        eprintln!("Run 'daemon8 service install' to create one, or copy the plist manually.");
     }
 }
