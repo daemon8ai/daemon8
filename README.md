@@ -25,8 +25,11 @@ AI agents are strongest when they can work from evidence: what the app is doing,
       </a>
       <p><a href="https://customer-646xapramdi2nce8.cloudflarestream.com/c348b635bb8b21966c4a63706f6cb1da/watch">Open full video</a></p>
       <p><strong>(360) Browser Awareness</strong></p>
-      <p>Watch Gemini make quick work of four browser-visible errors using the purpose-built Chrome Devtools Protocol (CDP) daemon8 has access to. The agent can control JS, CSS (w/custom 3D point map layering), mobile simulation, and screenshot control. The agent can see the browser console and network errors as they happen - which land in one place. The bug fix panel shows a live SSE subscription </p>
-      <p><sub>Daemon8 provides a single convergence point, built specifically for agentic development. </sub></p>
+      <ul align="left">
+        <li>Streams browser console and network errors into the same local feed the agent can query.</li>
+        <li>Exposes CDP control for JavaScript, CSS, screenshots, storage, viewport, navigation, and mobile simulation.</li>
+        <li>Shows frontend state reacting through daemon8's live SSE stream while the fix is underway.</li>
+      </ul>
     </td>
     <td align="center" valign="top" width="50%">
       <a href="https://customer-646xapramdi2nce8.cloudflarestream.com/6fc8acc756732a2da058597039d8c86d/watch">
@@ -34,29 +37,20 @@ AI agents are strongest when they can work from evidence: what the app is doing,
       </a>
       <p><a href="https://customer-646xapramdi2nce8.cloudflarestream.com/6fc8acc756732a2da058597039d8c86d/watch">Open full video</a></p>
       <p><strong>(Provider-agnostic) Conversation Awareness</strong></p>
-      <p>Watch Gemini recover project context from recent cross-provider conversation history before continuing the work. daemon8 reads recent Claude, Codex, and Gemini activity together so the agent can understand what was asked, what changed, which tools ran, and where the previous session left off.</p>
-      <p><sub>Conversation awareness turns scattered provider history into usable project memory.</sub></p>
+      <ul align="left">
+        <li>Reads recent Claude, Codex, and Gemini activity into one project-aware catch-up view.</li>
+        <li>Surfaces what was asked, what changed, which tools ran, and where the prior session left off.</li>
+        <li>Lets a fresh provider continue from the actual recent work instead of starting cold.</li>
+      </ul>
     </td>
   </tr>
 </table>
 
 ## What daemon8 does
 
-Put simply: daemon8 is a situational awareness layer for human-in-the-loop, agentic development.
-
 It gives agents focused knowledge of what is happening right now and peripheral knowledge of what has already happened in the project (and any related project(s), e.g. frontend/backend). App logs, browser events, debug checkpoints, open investigations, and recent conversations **across AI providers** become one cohesive field of context the agent can query instead of guessing.
 
 **This matters because AI coding tools still live in provider-shaped rooms**. Claude has one view of the work. Codex has another. Gemini has another. daemon8 starts stitching those views together with the live runtime state of the project. 
-
-It gives agents one place to ask:
-
-- What's been discussed recently in this project? (across Gemini, Codex, and Claude)
-- What just happened in the app?
-- What changed after this checkpoint?
-- What is the browser doing right now?
-- What did Claude, Codex, or Gemini already try?
-- What recent project context should I know before touching this?
-- Which debug sessions are still open, abandoned, or resolved?
 
 ## Alpha Release
 
@@ -200,24 +194,6 @@ Observations attached to an active debug session are protected while the session
 The durable layer is the thing you want to keep: resolved debug-session summaries, memory records, source configuration, and whatever you intentionally save outside the raw feed.
 
 That split is intentional. The raw feed is the scratchpad. The summary is the memory.
-
----
-
-## Suggested alpha demos
-
-These are the scenarios I plan to use for the first recordings:
-
-- Break JavaScript in a frontend app and let daemon8 guide the agent through browser state, logs, checkpoints, and the fix. If Claude Code is involved, be explicit that it should use daemon8 for browser work, not Claude for Chrome.
-
-- Return an API error and let daemon8 surface the failure through browser network activity and app/runtime observations.
-
-- Stop a terminal session running one provider, start another provider, and ask it to catch up on the recent conversation.
-
-- Save a message to the daemon8 feed, then ask another agent working in the same project to read the recent feed messages.
-
-- Start a harness in your frontend and tell it to link that conversation to a backend project.
-
----
 
 ## Core capabilities
 
