@@ -143,13 +143,13 @@ function Resolve-Daemon8Version {
     } catch {
         $Releases = @(Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases?per_page=1" -Headers $Headers -UseBasicParsing)
         if ($Releases.Count -eq 0) {
-            throw "Could not resolve the latest daemon8 release. Set DAEMON8_VERSION to a tag, for example: DAEMON8_VERSION=v0.5.0-alpha.2"
+            throw "Could not resolve the latest daemon8 release. Set DAEMON8_VERSION to a tag, for example: DAEMON8_VERSION=v0.5.0-alpha.3"
         }
         $Release = $Releases[0]
     }
 
     if (-not $Release.tag_name) {
-        throw "Could not resolve the latest daemon8 release. Set DAEMON8_VERSION to a tag, for example: DAEMON8_VERSION=v0.5.0-alpha.2"
+        throw "Could not resolve the latest daemon8 release. Set DAEMON8_VERSION to a tag, for example: DAEMON8_VERSION=v0.5.0-alpha.3"
     }
 
     return $Release.tag_name

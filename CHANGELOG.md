@@ -4,6 +4,21 @@ This changelog summarizes major repository changes by release phase.
 For full commit-by-commit detail, use `git log` and
 [daemon8ai/daemon8/releases](https://github.com/daemon8ai/daemon8/releases).
 
+## v0.5.0-alpha.3 - 2026-05-26
+
+- Windows installs now use a hidden current-user `daemon8-service` task
+  when built-in service registration is blocked, and stale scheduled tasks
+  are stopped before reinstall so daemon8 does not depend on a visible
+  terminal window staying open.
+- Public install and release flow now includes the Windows service fallback
+  repair, installer prerelease fallback, and release gate checks for the
+  alpha artifact set.
+- Conversation recall is demand-driven across providers: agents can offer a
+  full project-history catch-up when asked without loading transcript
+  history into context unprompted.
+- Refined README alpha positioning, demo embeds, funding metadata, and
+  public project metadata for the alpha launch.
+
 ## v0.5.0-alpha.2 - 2026-05-23
 
 - Connect now detects when `.daemon8/config.md` still contains generated

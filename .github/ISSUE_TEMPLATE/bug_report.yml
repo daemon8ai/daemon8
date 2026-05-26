@@ -48,7 +48,7 @@ body:
     attributes:
       label: daemon8 version
       description: Output of `daemon8 --version`
-      placeholder: "daemon8 0.5.0-alpha.2"
+      placeholder: "daemon8 0.5.0-alpha.3"
     validations:
       required: true
 

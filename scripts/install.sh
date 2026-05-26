@@ -82,7 +82,7 @@ resolve_version() {
 
   if [ -z "$tag" ]; then
     err "Could not resolve the latest daemon8 release."
-    err "Set DAEMON8_VERSION to a tag, for example: DAEMON8_VERSION=v0.5.0-alpha.2"
+    err "Set DAEMON8_VERSION to a tag, for example: DAEMON8_VERSION=v0.5.0-alpha.3"
     exit 1
   fi
 

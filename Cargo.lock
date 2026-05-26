@@ -1284,7 +1284,7 @@ dependencies = [
 
 [[package]]
 name = "daemon8"
-version = "0.5.0-alpha.2"
+version = "0.5.0-alpha.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1331,7 +1331,7 @@ dependencies = [
 
 [[package]]
 name = "daemon8-adb"
-version = "0.5.0-alpha.2"
+version = "0.5.0-alpha.3"
 dependencies = [
  "adb_client",
  "daemon8-types",
@@ -1344,7 +1344,7 @@ dependencies = [
 
 [[package]]
 name = "daemon8-api"
-version = "0.5.0-alpha.2"
+version = "0.5.0-alpha.3"
 dependencies = [
  "async-trait",
  "axum",
@@ -1368,7 +1368,7 @@ dependencies = [
 
 [[package]]
 name = "daemon8-chrome"
-version = "0.5.0-alpha.2"
+version = "0.5.0-alpha.3"
 dependencies = [
  "base64",
  "daemon8-types",
@@ -1387,7 +1387,7 @@ dependencies = [
 
 [[package]]
 name = "daemon8-core"
-version = "0.5.0-alpha.2"
+version = "0.5.0-alpha.3"
 dependencies = [
  "daemon8-providers",
  "humantime",
@@ -1401,7 +1401,7 @@ dependencies = [
 
 [[package]]
 name = "daemon8-ingest"
-version = "0.5.0-alpha.2"
+version = "0.5.0-alpha.3"
 dependencies = [
  "axum",
  "daemon8-core",
@@ -1422,7 +1422,7 @@ dependencies = [
 
 [[package]]
 name = "daemon8-mcp"
-version = "0.5.0-alpha.2"
+version = "0.5.0-alpha.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1445,7 +1445,7 @@ dependencies = [
 
 [[package]]
 name = "daemon8-parse"
-version = "0.5.0-alpha.2"
+version = "0.5.0-alpha.3"
 dependencies = [
  "daemon8-types",
  "dateparser",
@@ -1462,7 +1462,7 @@ dependencies = [
 
 [[package]]
 name = "daemon8-providers"
-version = "0.5.0-alpha.2"
+version = "0.5.0-alpha.3"
 dependencies = [
  "anyhow",
  "daemon8-store",
@@ -1478,7 +1478,7 @@ dependencies = [
 
 [[package]]
 name = "daemon8-store"
-version = "0.5.0-alpha.2"
+version = "0.5.0-alpha.3"
 dependencies = [
  "async-trait",
  "daemon8-types",
@@ -1495,7 +1495,7 @@ dependencies = [
 
 [[package]]
 name = "daemon8-types"
-version = "0.5.0-alpha.2"
+version = "0.5.0-alpha.3"
 dependencies = [
  "rmcp",
  "serde",
