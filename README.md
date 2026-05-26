@@ -13,9 +13,7 @@
 >
 > Follow along on X: [![Follow @j_havenz on X](https://img.shields.io/badge/Follow%20%40j_havenz-000000?logo=x&logoColor=white)](https://x.com/j_havenz)
 
-daemon8 gives AI coding agents situational awareness while the work is happening.
-
-AI agents are strongest when they can work from evidence: what the app is doing, what the browser reported, what another provider already tried, and what changed after a fix. daemon8 creates that layer locally. It centralizes runtime signals, recent provider activity, and debugging structure so agents can keep moving without guessing.
+Daemon8 is a local observation layer that turns scattered logs and agent conversations into first-class tooling for agentic debugging. It auto-discovers project environments to funnel logs, browser consoles, network traffic, and device events into a single, unified stream. By converging this context and surfacing it over MCP, your agent gets a 360-degree view of the most important signals through a single tool—one that can be instantly filtered, checkpointed, and recalled across sessions. One binary. Everything stays local.
 
 <table>
   <tr>
