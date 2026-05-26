@@ -26,6 +26,11 @@ function Install-Daemon8ScheduledTask {
 
     foreach ($ExistingTask in @("Daemon8", "daemon8-user", "daemon8-service")) {
         try {
+            Stop-ScheduledTask -TaskName $ExistingTask -ErrorAction SilentlyContinue
+        } catch {
+        }
+
+        try {
             Get-ScheduledTask -TaskName $ExistingTask -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false -ErrorAction Stop
         } catch {
         }

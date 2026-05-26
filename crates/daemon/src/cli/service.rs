@@ -1059,6 +1059,9 @@ fn install_scheduled_task_with_powershell(
     script.push_str("$Principal = New-ScheduledTaskPrincipal -UserId $UserId -LogonType Interactive -RunLevel Limited\n");
     script
         .push_str("foreach ($ExistingTask in @('Daemon8', 'daemon8-user', 'daemon8-service')) {\n");
+    script.push_str(
+        "  try { Stop-ScheduledTask -TaskName $ExistingTask -ErrorAction SilentlyContinue } catch {}\n",
+    );
     script.push_str("  try { Get-ScheduledTask -TaskName $ExistingTask -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false -ErrorAction Stop } catch {}\n");
     script.push_str("}\n");
     script.push_str("Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger -Settings $Settings -Principal $Principal -Force | Out-Null\n");
@@ -1156,6 +1159,10 @@ fn install_schtasks(binary: &str, chrome_endpoint: Option<&str>, port: u16) -> R
     for task_name in
         std::iter::once(WINDOWS_TASK_NAME).chain(WINDOWS_LEGACY_TASK_NAMES.iter().copied())
     {
+        let _ = std::process::Command::new("schtasks")
+            .args(["/End", "/TN", task_name])
+            .output();
+
         let _ = std::process::Command::new("schtasks")
             .args(["/Delete", "/TN", task_name, "/F"])
             .output();
@@ -1259,6 +1266,10 @@ fn uninstall_schtasks() -> Result<()> {
         }
 
         found = true;
+        let _ = std::process::Command::new("schtasks")
+            .args(["/End", "/TN", task_name])
+            .output();
+
         let output = std::process::Command::new("schtasks")
             .args(["/Delete", "/TN", task_name, "/F"])
             .output()
