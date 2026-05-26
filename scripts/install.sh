@@ -91,11 +91,19 @@ resolve_version() {
 
 download_url() {
   local target="$1"
-  echo "https://github.com/${REPO}/releases/download/${RESOLVED_VERSION}/${BINARY}-${target}.tar.gz"
+  if [ -n "${DAEMON8_RELEASE_BASE_URL:-}" ]; then
+    echo "${DAEMON8_RELEASE_BASE_URL%/}/${BINARY}-${target}.tar.gz"
+  else
+    echo "https://github.com/${REPO}/releases/download/${RESOLVED_VERSION}/${BINARY}-${target}.tar.gz"
+  fi
 }
 
 checksums_url() {
-  echo "https://github.com/${REPO}/releases/download/${RESOLVED_VERSION}/checksums.sha256"
+  if [ -n "${DAEMON8_RELEASE_BASE_URL:-}" ]; then
+    echo "${DAEMON8_RELEASE_BASE_URL%/}/checksums.sha256"
+  else
+    echo "https://github.com/${REPO}/releases/download/${RESOLVED_VERSION}/checksums.sha256"
+  fi
 }
 
 printf "\n${BOLD}Daemon8 Installer${RESET}\n"

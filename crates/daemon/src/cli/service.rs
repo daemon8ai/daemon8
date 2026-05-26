@@ -505,11 +505,20 @@ fn prompt_with_tty(question: &str) -> io::Result<Option<bool>> {
         Ok(file) => file,
         Err(_) => return Ok(None),
     };
-    write!(tty, "{question}")?;
-    tty.flush()?;
-    let mut input = String::new();
-    BufReader::new(tty).read_line(&mut input)?;
-    Ok(Some(parse_yes_default(&input)))
+    let mut reader = BufReader::new(tty.try_clone()?);
+    loop {
+        write!(tty, "{question}")?;
+        tty.flush()?;
+        let mut input = String::new();
+        let n = reader.read_line(&mut input)?;
+        if n == 0 {
+            return Ok(Some(true));
+        }
+        if let Some(ans) = parse_yes_no_default(&input) {
+            return Ok(Some(ans));
+        }
+        writeln!(tty, "  unrecognized input; please type 'y' or 'n'")?;
+    }
 }
 
 #[cfg(not(unix))]
@@ -518,16 +527,31 @@ fn prompt_with_tty(_question: &str) -> io::Result<Option<bool>> {
 }
 
 fn prompt_with_stdio(question: &str) -> io::Result<bool> {
-    eprint!("{question}");
-    io::stderr().flush()?;
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
-    Ok(parse_yes_default(&input))
+    let stdin = io::stdin();
+    loop {
+        eprint!("{question}");
+        io::stderr().flush()?;
+        let mut input = String::new();
+        let n = stdin.read_line(&mut input)?;
+        if n == 0 {
+            return Ok(true);
+        }
+        if let Some(ans) = parse_yes_no_default(&input) {
+            return Ok(ans);
+        }
+        eprintln!("  unrecognized input; please type 'y' or 'n'");
+    }
 }
 
-fn parse_yes_default(input: &str) -> bool {
+fn parse_yes_no_default(input: &str) -> Option<bool> {
     let answer = input.trim();
-    answer.is_empty() || answer.eq_ignore_ascii_case("y") || answer.eq_ignore_ascii_case("yes")
+    if answer.is_empty() || answer.eq_ignore_ascii_case("y") || answer.eq_ignore_ascii_case("yes") {
+        Some(true)
+    } else if answer.eq_ignore_ascii_case("n") || answer.eq_ignore_ascii_case("no") {
+        Some(false)
+    } else {
+        None
+    }
 }
 
 fn prompt_raw(question: &str) -> io::Result<Option<String>> {
@@ -1304,12 +1328,14 @@ mod tests {
     }
 
     #[test]
-    fn parse_yes_default_accepts_blank_and_yes_only() {
-        assert!(parse_yes_default(""));
-        assert!(parse_yes_default("y"));
-        assert!(parse_yes_default("YES"));
-        assert!(!parse_yes_default("n"));
-        assert!(!parse_yes_default("no"));
+    fn parse_yes_no_default_handles_valid_inputs() {
+        assert_eq!(parse_yes_no_default(""), Some(true));
+        assert_eq!(parse_yes_no_default("y"), Some(true));
+        assert_eq!(parse_yes_no_default("YES"), Some(true));
+        assert_eq!(parse_yes_no_default("n"), Some(false));
+        assert_eq!(parse_yes_no_default("no"), Some(false));
+        assert_eq!(parse_yes_no_default("sy"), None);
+        assert_eq!(parse_yes_no_default("asdf"), None);
     }
 
     #[test]
@@ -1323,7 +1349,15 @@ mod tests {
 
         assert!(powershell.ends_with(r"\System32\WindowsPowerShell\v1.0\powershell.exe"));
         assert!(args.contains("-WindowStyle Hidden"));
+        assert!(args.contains("-NoLogo"));
+        assert!(args.contains("-NoProfile"));
+        assert!(args.contains("-NonInteractive"));
+        assert!(args.contains("-ExecutionPolicy Bypass"));
         assert!(args.contains("-EncodedCommand "));
+        assert!(
+            !args.contains("-Command "),
+            "Task Scheduler action must use -EncodedCommand; plain -Command can flash a terminal"
+        );
 
         let encoded = args.rsplit(' ').next().unwrap();
         let bytes = base64::engine::general_purpose::STANDARD
