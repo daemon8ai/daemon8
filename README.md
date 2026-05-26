@@ -46,12 +46,6 @@ By converging this context and surfacing it over MCP, your agent gets a 360-degr
   </tr>
 </table>
 
-## What daemon8 does
-
-It gives agents focused knowledge of what is happening right now and peripheral knowledge of what has already happened in the project (and any related project(s), e.g. frontend/backend). App logs, browser events, debug checkpoints, open investigations, and recent conversations **across AI providers** become one cohesive field of context the agent can query instead of guessing.
-
-**This matters because AI coding tools still live in provider-shaped rooms**. Claude has one view of the work. Codex has another. Gemini has another. daemon8 starts stitching those views together with the live runtime state of the project. 
-
 ## Alpha Release
 
 daemon8 is in alpha. The core awareness loop is here: connect a project, bring recent conversation and runtime state into reach, checkpoint the work, and verify what changed.
