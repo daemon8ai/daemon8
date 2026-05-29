@@ -962,6 +962,20 @@ impl DaemonMcp {
         let agent_name = params.agent_name;
         let transcript_path = params.transcript_path;
         let conversation_lookback_hours = params.conversation_lookback_hours;
+
+        if self.has_connection() {
+            return AlphaEnvelope::success(
+                "already_connected",
+                "session is already connected -- proceed with other tools",
+                self.with_session_context(serde_json::json!({})),
+            )
+            .with_hint(
+                "daemon8_connect already succeeded in this MCP session. Do not call it again.",
+            )
+            .with_next_action(next_action_for_tool("read_live_feed"))
+            .render();
+        }
+
         let provider =
             match normalize_provider_for_connect(&self.session_id, &provider, &project_path) {
                 Ok(provider) => provider,

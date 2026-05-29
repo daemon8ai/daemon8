@@ -622,6 +622,13 @@ value in the frontmatter.
 After completing Steps 1 and 2, present the updated config to the user and
 ask: "Does this config look thorough? Are there other log files, build
 outputs, or services I should add?" Do NOT proceed without user confirmation.
+
+## STEP 4: Delete this body
+
+After the user confirms, DELETE EVERYTHING below the frontmatter `---` and
+replace it with concise project-specific notes: dev commands, service
+startup, build outputs, environment assumptions, gotchas. These setup
+instructions are one-time scaffolding and must not remain in the file.
 "##;
 
 fn canonical_project_dir(path: &Path) -> Result<PathBuf, String> {

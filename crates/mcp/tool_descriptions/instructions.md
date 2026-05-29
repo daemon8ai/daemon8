@@ -11,7 +11,7 @@ When asked about browser state, console output, network activity, device logs, o
 
 Observations are real-time. **Never answer from memory** — re-query with `since_checkpoint`.
 
-Call `daemon8_connect` once at session start. If it returns setup requirements, complete `daemon8_init` / `.daemon8/config.md` setup first, then reconnect.
+Call `daemon8_connect` once at session start. If it returns `setup_required`, complete `daemon8_init` / `.daemon8/config.md` setup first, then retry `daemon8_connect`. After a successful connect, do not call `daemon8_connect` again.
 
 Do not run conversation recall automatically. After the project is connected and setup is complete, ask once whether the user wants to recover recent conversation history across AI providers. If the user asks for or accepts history, review, catch-up, continuity, prior work, or another provider's activity, call `build_context_snapshot` with no `facets` filter so daemon8 builds the full cross-provider snapshot across all available Claude, Codex, and Gemini transcripts. Use `link_conversation` only when daemon8 reports missing/unlinked transcript sources or when the user points to a specific provider/session. Do not repeatedly ask once the user has answered in the current session.
 

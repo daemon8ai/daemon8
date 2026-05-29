@@ -403,6 +403,13 @@ fn connect_project(
     if body_status == ConfigBodyStatus::GeneratedSetupInstructionsPresent {
         envelope = envelope.with_requirement(GENERATED_CONFIG_BODY_REQUIREMENT);
     }
+    if envelope.requirements.is_empty() {
+        envelope = envelope.with_next_action(NextAction::new(
+            "read_live_feed",
+            "connection complete -- use read_live_feed to inspect runtime observations",
+            json!({}),
+        ));
+    }
 
     ConnectOutcome {
         envelope,

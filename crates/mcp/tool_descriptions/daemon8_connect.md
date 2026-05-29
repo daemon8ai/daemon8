@@ -4,7 +4,7 @@ Bind this MCP session to a project or general scope. In project mode, also bind 
 
 ## When
 
-Call once at the start of an LLM session before any MCP tool except `daemon8_init`, `daemon8_status`, and `daemon8_help`. Retry after `daemon8_init` if the first response returns `setup_required` -- daemon8 has no project config yet and cannot observe without one. If the response returns `blocked/transcript_ambiguous`, retry with `transcript_path` set to one returned candidate -- the daemon found multiple plausible transcripts and needs explicit disambiguation.
+Call **exactly once** at the start of an LLM session before any MCP tool except `daemon8_init`, `daemon8_status`, and `daemon8_help`. If the response returns `status=success`, do not call again. Retry **only** after `daemon8_init` if the first response returns `setup_required` -- daemon8 has no project config yet and cannot observe without one. If the response returns `blocked/transcript_ambiguous`, retry with `transcript_path` set to one returned candidate -- the daemon found multiple plausible transcripts and needs explicit disambiguation.
 
 ## Prereq
 
@@ -37,8 +37,11 @@ Project connect includes `data.config_body_status` (`"project_notes"` or `"gener
 
 ## Next
 
-- `status=success`, no `requirements` → continue normally.
-- `status=success` + `requirements` → complete **every** listed requirement before any other tool. This gate fires every session until config is complete.
+After `status=success` with no `requirements`: **stop calling daemon8_connect.** Connection is complete. Proceed with `read_live_feed`, `create_checkpoint`, or `start_debug_session`. Do not call daemon8_connect again in this session.
+
+After `status=success` with `requirements`: complete **every** listed requirement before any other tool. Do not retry daemon8_connect -- the requirements are the next step.
+
+Retry daemon8_connect **only** when the response status is not `success`:
 - `status=setup_required` → call `daemon8_init(project_path)`, then retry `daemon8_connect`.
 - `code=transcript_ambiguous` → retry with `transcript_path` set to one returned candidate.
 - `code=transcript_provider_mismatch` → retry with a transcript from the requested provider.
