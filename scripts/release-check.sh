@@ -74,49 +74,22 @@ if [[ "$ref" == v* ]]; then
 fi
 
 bash -n scripts/install.sh
-bash -n install.sh
 
 if command -v pwsh >/dev/null 2>&1; then
-  pwsh -NoLogo -NoProfile -Command "\$ErrorActionPreference='Stop'; [scriptblock]::Create((Get-Content -Raw 'scripts/install.ps1')) | Out-Null; [scriptblock]::Create((Get-Content -Raw 'install.ps1')) | Out-Null"
+  pwsh -NoLogo -NoProfile -Command "\$ErrorActionPreference='Stop'; [scriptblock]::Create((Get-Content -Raw 'scripts/install.ps1')) | Out-Null"
 fi
 
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
 
 DAEMON8_INSTALLER_SELF_TEST=1 bash scripts/install.sh >/dev/null
-DAEMON8_INSTALLER_SELF_TEST=1 bash install.sh >/dev/null
-mkdir -p "$tmp_dir/delegate-shell/scripts"
-cp install.sh "$tmp_dir/delegate-shell/install.sh"
-cat > "$tmp_dir/delegate-shell/scripts/install.sh" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-printf delegated > delegated.out
-EOF
-chmod +x "$tmp_dir/delegate-shell/scripts/install.sh"
-(cd "$tmp_dir/delegate-shell" && DAEMON8_INSTALLER_SELF_TEST=1 bash install.sh >/dev/null)
-test "$(cat "$tmp_dir/delegate-shell/delegated.out")" = "delegated" || fail "root shell installer must delegate to local scripts/install.sh"
 
-if grep -R "cargo install daemon8" install.sh install.ps1 scripts/install.sh scripts/install.ps1; then
+if grep -R "cargo install daemon8" scripts/install.sh scripts/install.ps1; then
   fail "installer fallback must not imply crates.io publish"
 fi
 
-cp install.sh "$tmp_dir/install.sh"
-if ! (cd "$tmp_dir" && DAEMON8_INSTALLER_SELF_TEST=1 bash install.sh >/dev/null); then
-  fail "root shell installer must work outside a checkout"
-fi
 if command -v pwsh >/dev/null 2>&1; then
-  pwsh -NoLogo -NoProfile -Command "\$ErrorActionPreference='Stop'; \$env:DAEMON8_INSTALLER_SELF_TEST='1'; ./scripts/install.ps1 | Out-Null; ./install.ps1 | Out-Null"
-  mkdir -p "$tmp_dir/delegate-pwsh/scripts"
-  cp install.ps1 "$tmp_dir/delegate-pwsh/install.ps1"
-  cat > "$tmp_dir/delegate-pwsh/scripts/install.ps1" <<'EOF'
-Set-Content -Path delegated.out -Value delegated -NoNewline
-EOF
-  (cd "$tmp_dir/delegate-pwsh" && pwsh -NoLogo -NoProfile -Command "\$ErrorActionPreference='Continue'; /bin/sh -c 'exit 7'; \$ErrorActionPreference='Stop'; \$env:DAEMON8_INSTALLER_SELF_TEST='1'; ./install.ps1 | Out-Null")
-  test "$(cat "$tmp_dir/delegate-pwsh/delegated.out")" = "delegated" || fail "root PowerShell installer must delegate to local scripts/install.ps1"
-  cp install.ps1 "$tmp_dir/install.ps1"
-  if ! (cd "$tmp_dir" && pwsh -NoLogo -NoProfile -Command "\$ErrorActionPreference='Stop'; \$env:DAEMON8_INSTALLER_SELF_TEST='1'; ./install.ps1 | Out-Null"); then
-    fail "root PowerShell installer must work outside a checkout"
-  fi
+  pwsh -NoLogo -NoProfile -Command "\$ErrorActionPreference='Stop'; \$env:DAEMON8_INSTALLER_SELF_TEST='1'; ./scripts/install.ps1 | Out-Null"
 fi
 
 metadata="$(cargo metadata --no-deps --format-version 1)"
@@ -167,8 +140,6 @@ git ls-files \
   CONTRIBUTING.md \
   CODE_OF_CONDUCT.md \
   example-config.toml \
-  install.sh \
-  install.ps1 \
   .github \
   scripts \
   crates \

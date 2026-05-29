@@ -5,16 +5,12 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - install.sh
-      - install.ps1
       - scripts/install.sh
       - scripts/install.ps1
       - .github/workflows/installer-smoke.yml
   push:
     branches: [main]
     paths:
-      - install.sh
-      - install.ps1
       - scripts/install.sh
       - scripts/install.ps1
       - .github/workflows/installer-smoke.yml
