@@ -1,23 +1,19 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/daemon8ai/daemon8/main/mark-dark.svg">
-    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/daemon8ai/daemon8/main/mark-light.svg">
-    <img src="https://raw.githubusercontent.com/daemon8ai/daemon8/main/mark-dark.svg" alt="daemon8" width="240">
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/daemon8ai/daemon8/main/assets/mark-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/daemon8ai/daemon8/main/assets/mark-light.svg">
+    <img src="https://raw.githubusercontent.com/daemon8ai/daemon8/main/assets/mark-dark.svg" alt="daemon8" width="240">
   </picture>
 </p>
 
 
 # daemon8
 
-[![Total Downloads](https://img.shields.io/crates/d/daemon8?label=downloads&color=blue)](https://crates.io/crates/daemon8)
+[![Total Downloads](https://img.shields.io/crates/d/daemon8?label=downloads&color=blue)](https://crates.io/crates/daemon8) [![Say hi on X](https://img.shields.io/badge/Say%20hi%20on%20X-000000?logo=x&logoColor=white)](https://x.com/j_havenz)
 
-> Look useful? Consider starring the repo.
->
-> Follow along on X: [![Follow @j_havenz on X](https://img.shields.io/badge/Follow%20%40j_havenz-000000?logo=x&logoColor=white)](https://x.com/j_havenz)
+[Join the Discussion](https://github.com/daemon8ai/daemon8/discussions) — Share ideas, ask questions, or say hi.
 
 Daemon8 is a local observation layer that turns scattered logs and provider-agnostic agent conversations into first-class tooling for agentic debugging. It auto-discovers project environments to funnel logs, browser consoles, network traffic, and device events into a single, unified stream.
-
-> **[Join the Discussion](https://github.com/daemon8ai/daemon8/discussions)** — Discussions are new. Come share how you're using daemon8, ask questions, propose ideas, or just say hi.
 
 By converging this context and surfacing it over MCP, your agent gets a 360-degree view of the most important signals through a single tool—one that can leverage query lenses, checkpoints, and SurrealDB-backed SSE subscriptions to carry investigations across sessions. One binary. Everything stays local.
 
