@@ -10,7 +10,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use daemon8_types::{DeviceKey, DevicePlatform};
 
-use crate::error::{AdbError, Result};
+use crate::error::Result;
 use crate::transport::AdbTransport;
 
 /// Drives input on one connected device. One impl per platform.
@@ -60,37 +60,56 @@ impl DeviceController for AndroidController {
     }
 }
 
-/// Vega (Fire TV) input. The injection mechanism is unverified against a live VVD;
-/// until Phase 0 discovery confirms it, key/text error explicitly rather than
-/// silently doing nothing. `tap` is permanently unsupported on a 10-foot TV surface.
+/// Vega (Fire TV) input. Vega is a Wayland-based Linux OS with no Android `input`
+/// binary; injection goes through `inputd-cli` (button_press / send_text / touch),
+/// which speaks evdev `KEY_*` names. Touch is supported (the VVD reports 1920x1080).
 pub struct VegaController {
-    #[allow(dead_code)]
     transport: Arc<AdbTransport>,
-    #[allow(dead_code)]
     serial: String,
 }
 
 #[async_trait]
 impl DeviceController for VegaController {
-    async fn key(&self, _key: DeviceKey) -> Result<()> {
-        Err(vega_unverified("key"))
+    async fn key(&self, key: DeviceKey) -> Result<()> {
+        let cmd = format!("inputd-cli button_press {}", vega_button(key));
+        self.transport.shell_command(&self.serial, &cmd).await?;
+        Ok(())
     }
 
-    async fn text(&self, _text: &str) -> Result<()> {
-        Err(vega_unverified("text"))
+    async fn text(&self, text: &str) -> Result<()> {
+        let cmd = format!("inputd-cli send_text {}", shell_quote(text));
+        self.transport.shell_command(&self.serial, &cmd).await?;
+        Ok(())
     }
 
-    async fn tap(&self, _x: f64, _y: f64) -> Result<()> {
-        Err(AdbError::Adb(
-            "tap is not supported on Vega (TV platform has no touch surface)".into(),
-        ))
+    async fn tap(&self, x: f64, y: f64) -> Result<()> {
+        let cmd = format!("inputd-cli touch {} {}", x as i64, y as i64);
+        self.transport.shell_command(&self.serial, &cmd).await?;
+        Ok(())
     }
 }
 
-fn vega_unverified(op: &str) -> AdbError {
-    AdbError::Adb(format!(
-        "vega device {op} not yet implemented: injection mechanism unverified against a live VVD"
-    ))
+/// Map a symbolic key to the Vega evdev key name accepted by `inputd-cli button_press`.
+fn vega_button(key: DeviceKey) -> &'static str {
+    match key {
+        DeviceKey::Up => "KEY_UP",
+        DeviceKey::Down => "KEY_DOWN",
+        DeviceKey::Left => "KEY_LEFT",
+        DeviceKey::Right => "KEY_RIGHT",
+        DeviceKey::Select => "KEY_SELECT",
+        DeviceKey::Back => "KEY_BACK",
+        DeviceKey::Home => "KEY_HOMEPAGE",
+        DeviceKey::Menu => "KEY_MENU",
+        DeviceKey::PlayPause => "KEY_PLAYPAUSE",
+        DeviceKey::VolumeUp => "KEY_VOLUMEUP",
+        DeviceKey::VolumeDown => "KEY_VOLUMEDOWN",
+    }
+}
+
+/// Single-quote a string for the device shell so spaces and metacharacters stay
+/// literal as one argument.
+fn shell_quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', r"'\''"))
 }
 
 /// Map a symbolic key to the Android keyevent code.
@@ -132,34 +151,24 @@ mod tests {
     }
 
     #[test]
+    fn vega_buttons_use_evdev_key_names() {
+        assert_eq!(vega_button(DeviceKey::Up), "KEY_UP");
+        assert_eq!(vega_button(DeviceKey::Select), "KEY_SELECT");
+        assert_eq!(vega_button(DeviceKey::Back), "KEY_BACK");
+        assert_eq!(vega_button(DeviceKey::Home), "KEY_HOMEPAGE");
+        assert_eq!(vega_button(DeviceKey::PlayPause), "KEY_PLAYPAUSE");
+    }
+
+    #[test]
     fn input_text_encodes_spaces_and_quotes() {
         assert_eq!(escape_input_text("hello"), "'hello'");
         assert_eq!(escape_input_text("hello world"), "'hello%sworld'");
         assert_eq!(escape_input_text("it's"), r"'it'\''s'");
     }
 
-    #[tokio::test]
-    async fn vega_key_and_text_error_until_verified() {
-        let transport = Arc::new(AdbTransport::new("127.0.0.1:5037".parse().unwrap()));
-        let vega = VegaController {
-            transport,
-            serial: "vega-test".into(),
-        };
-        assert!(matches!(
-            vega.key(DeviceKey::Up).await,
-            Err(AdbError::Adb(_))
-        ));
-        assert!(matches!(vega.text("hi").await, Err(AdbError::Adb(_))));
-    }
-
-    #[tokio::test]
-    async fn vega_tap_unsupported() {
-        let transport = Arc::new(AdbTransport::new("127.0.0.1:5037".parse().unwrap()));
-        let vega = VegaController {
-            transport,
-            serial: "vega-test".into(),
-        };
-        let err = vega.tap(1.0, 2.0).await.unwrap_err();
-        assert!(matches!(err, AdbError::Adb(msg) if msg.contains("not supported")));
+    #[test]
+    fn shell_quote_wraps_and_escapes() {
+        assert_eq!(shell_quote("hello world"), "'hello world'");
+        assert_eq!(shell_quote("it's"), r"'it'\''s'");
     }
 }

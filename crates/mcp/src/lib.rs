@@ -4371,13 +4371,13 @@ mod device_input_tests {
     #[tokio::test]
     async fn handle_device_input_surfaces_controller_error() {
         let failing: DeviceInputFn = Arc::new(|_, _, _| {
-            Box::pin(async { Err(anyhow::anyhow!("vega device key not yet implemented")) })
+            Box::pin(async { Err(anyhow::anyhow!("device vega-1: not connected")) })
         });
         let mcp = build_mcp(Some(failing)).await;
         let mut p = key_params(Some("vega-1"), Some("down"));
         p.device_platform = Some("vega".into());
         let res = mcp.handle_device_input(&p).await;
         assert!(res.contains("action_failed"), "{res}");
-        assert!(res.contains("not yet implemented"), "{res}");
+        assert!(res.contains("not connected"), "{res}");
     }
 }
