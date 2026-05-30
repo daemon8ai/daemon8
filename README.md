@@ -9,9 +9,9 @@
 
 # daemon8
 
-[![Total Downloads](https://img.shields.io/crates/d/daemon8?label=downloads&color=blue)](https://crates.io/crates/daemon8) [![Say hi on X](https://img.shields.io/badge/Say%20hi%20on%20X-000000?logo=x&logoColor=white)](https://x.com/j_havenz)
+[![Total Downloads](https://img.shields.io/crates/d/daemon8?label=downloads&color=blue)](https://crates.io/crates/daemon8) [![Follow on X](https://img.shields.io/badge/Say%20hi%20on%20X-000000?logo=x&logoColor=white)](https://x.com/j_havenz)
 
-[Join the Discussion](https://github.com/daemon8ai/daemon8/discussions) — Share ideas, ask questions, or say hi.
+[Join the Discussion](https://github.com/daemon8ai/daemon8/discussions)
 
 Daemon8 is a local observation layer that turns scattered logs and provider-agnostic agent conversations into first-class tooling for agentic debugging. It auto-discovers project environments to funnel logs, browser consoles, network traffic, and device events into a single, unified stream.
 
