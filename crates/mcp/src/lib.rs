@@ -4,6 +4,7 @@
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
+use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -18,7 +19,7 @@ use daemon8_store::{
     ActiveSessionState, DebugSessionStore, LensManager, MemoryStore, RecentScopeRecord,
     ScopeConnectFailureRecord, ScopeLedgerStore, ScopeSessionRecord, StateModel,
 };
-use daemon8_types::{Checkpoint, DevicePlatform, Filter, Observation};
+use daemon8_types::{Checkpoint, DeviceInput, DeviceKey, DevicePlatform, Filter, Observation};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{Implementation, ServerCapabilities, ServerInfo, Tool};
@@ -66,6 +67,19 @@ pub type DeviceScreenshotFn = Arc<
             String,
             DevicePlatform,
         ) -> Pin<Box<dyn Future<Output = anyhow::Result<DeviceScreenshotResult>> + Send>>
+        + Send
+        + Sync,
+>;
+
+/// Callback type for device input. Receives (serial, platform, input) and drives
+/// the key/text/tap. Constructed by the daemon crate with access to ADB transport,
+/// keeping this crate free of any adb dependency.
+pub type DeviceInputFn = Arc<
+    dyn Fn(
+            String,
+            DevicePlatform,
+            DeviceInput,
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>>
         + Send
         + Sync,
 >;
@@ -274,13 +288,21 @@ pub struct ActParams {
     #[schemars(description = "Track injected CSS for later revert (for inject_css, default true)")]
     pub temporary: Option<bool>,
     #[schemars(
-        description = "Device serial for device screenshot (e.g. 'emulator-5554'). When provided with action='screenshot', captures from the device instead of the browser. Uses host window capture for emulators, ADB for physical devices."
+        description = "Device serial (e.g. 'emulator-5554'). Required for device actions. With action='screenshot' captures from the device; with action='device_key'/'device_text'/'device_tap' drives input on it. Uses host window capture for emulator screenshots, ADB otherwise."
     )]
     pub device_serial: Option<String>,
     #[schemars(
-        description = "Device platform hint: 'android' or 'vega'. Used with device_serial to select the right capture method. Defaults to 'android'."
+        description = "Device platform hint: 'android' or 'vega'. Used with device_serial to select the right capture/input mechanism. Defaults to 'android'."
     )]
     pub device_platform: Option<String>,
+    #[schemars(
+        description = "Symbolic key for device_key: up, down, left, right, select, back, home, menu, play_pause, volume_up, volume_down. Requires device_serial."
+    )]
+    pub device_key: Option<String>,
+    #[schemars(
+        description = "Text to type on the device (for device_text). Requires device_serial."
+    )]
+    pub device_text: Option<String>,
     #[schemars(
         description = "Viewport width in CSS pixels (for set_viewport). iPhone 15=390, Pixel 8=412, iPad=820, desktop=1280"
     )]
@@ -313,9 +335,9 @@ pub struct ActParams {
         description = "Comma-separated storage types to clear (for storage_clear): 'cookies', 'local_storage', 'session_storage', 'indexeddb', 'cache_storage', 'service_workers', 'all'. Default: 'all'"
     )]
     pub storage_types: Option<String>,
-    #[schemars(description = "X coordinate in CSS pixels (for element_at_point)")]
+    #[schemars(description = "X coordinate in pixels (for element_at_point and device_tap)")]
     pub x: Option<f64>,
-    #[schemars(description = "Y coordinate in CSS pixels (for element_at_point)")]
+    #[schemars(description = "Y coordinate in pixels (for element_at_point and device_tap)")]
     pub y: Option<f64>,
     #[schemars(description = "URL to navigate to (for navigate)")]
     pub url: Option<String>,
@@ -550,6 +572,7 @@ pub struct DaemonMcp {
     chrome_endpoint: Arc<Mutex<Option<Arc<str>>>>,
     last_checkpoint: Mutex<(Checkpoint, u64)>,
     device_screenshot_fn: Option<DeviceScreenshotFn>,
+    device_input_fn: Option<DeviceInputFn>,
     screenshot_dir: std::path::PathBuf,
     home_dir: PathBuf,
     subscription_tx: tokio::sync::watch::Sender<Option<Filter>>,
@@ -574,6 +597,7 @@ pub struct DaemonMcpConfig {
     pub chrome_state: tokio::sync::watch::Receiver<daemon8_chrome::ConnectionState>,
     pub chrome_endpoint: Arc<Mutex<Option<Arc<str>>>>,
     pub device_screenshot_fn: Option<DeviceScreenshotFn>,
+    pub device_input_fn: Option<DeviceInputFn>,
     pub screenshot_dir: std::path::PathBuf,
     pub home_dir: PathBuf,
     pub broadcast_tx: broadcast::Sender<(Arc<Observation>, Arc<str>)>,
@@ -608,6 +632,7 @@ impl DaemonMcp {
             chrome_endpoint: cfg.chrome_endpoint,
             last_checkpoint: Mutex::new((Checkpoint(0), 0)),
             device_screenshot_fn: cfg.device_screenshot_fn,
+            device_input_fn: cfg.device_input_fn,
             screenshot_dir: cfg.screenshot_dir,
             home_dir: cfg.home_dir,
             subscription_tx,
@@ -2668,9 +2693,17 @@ impl DaemonMcp {
     async fn issue_command_inner(&self, params: ActParams) -> String {
         use daemon8_chrome::BrowserAction;
 
-        // Device screenshot: bypass Chrome entirely
+        // Device actions bypass Chrome entirely. Screenshot is dual-mode (browser or
+        // device, gated on device_serial); key/text/tap are device-only and route to
+        // input unconditionally so a missing serial yields a device-specific error.
         if params.action == DebugAction::Screenshot && params.device_serial.is_some() {
             return self.handle_device_screenshot(&params).await;
+        }
+        if matches!(
+            params.action,
+            DebugAction::DeviceKey | DebugAction::DeviceText | DebugAction::DeviceTap
+        ) {
+            return self.handle_device_input(&params).await;
         }
 
         if let Some(message) = validate_action_params(&params) {
@@ -3044,6 +3077,9 @@ impl DaemonMcp {
                 });
                 BrowserAction::CloseTab { tab_id, reply: tx }
             }
+            DebugAction::DeviceKey | DebugAction::DeviceText | DebugAction::DeviceTap => {
+                unreachable!("device actions route to handle_device_input before this match")
+            }
         };
 
         if self
@@ -3135,6 +3171,107 @@ impl DaemonMcp {
                 .unwrap_or_default()
             }
         }
+    }
+
+    async fn handle_device_input(&self, params: &ActParams) -> String {
+        let input_fn = match &self.device_input_fn {
+            Some(f) => f,
+            None => {
+                tracing::warn!("device input requested but ADB support is unavailable");
+                return self.err(
+                    "device_input_unavailable",
+                    "device input not available (ADB not enabled)",
+                    None,
+                    None,
+                );
+            }
+        };
+
+        let serial = match params.device_serial.as_deref() {
+            Some(serial) if !serial.is_empty() => serial.to_string(),
+            _ => {
+                return self.err(
+                    "missing_param",
+                    "device input requires 'device_serial'",
+                    None,
+                    None,
+                );
+            }
+        };
+
+        let input = match build_device_input(params) {
+            Ok(input) => input,
+            Err(message) => return self.err("missing_param", message, None, None),
+        };
+
+        let platform = match params.device_platform.as_deref() {
+            Some("vega") => DevicePlatform::Vega,
+            _ => DevicePlatform::Android,
+        };
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            (input_fn)(serial.clone(), platform.clone(), input.clone()),
+        )
+        .await;
+
+        match result {
+            Err(_) => {
+                tracing::warn!(serial, platform = ?platform, "device input timed out");
+                self.err("action_failed", "device input timed out (15s)", None, None)
+            }
+            Ok(Err(e)) => {
+                tracing::warn!(serial, platform = ?platform, error = %e, "device input failed");
+                self.err(
+                    "action_failed",
+                    &format!("device input failed for {serial}: {e}"),
+                    None,
+                    None,
+                )
+            }
+            Ok(Ok(())) => {
+                tracing::info!(serial, platform = ?platform, ?input, "device input sent");
+                self.ok_code(
+                    "device_input_sent",
+                    "device input sent",
+                    serde_json::json!({
+                        "serial": serial,
+                        "action": params.action,
+                        "input": input,
+                    }),
+                )
+            }
+        }
+    }
+}
+
+/// Build the device input command from action-specific params. Pure so tests can
+/// drive every param permutation without a harness or a live device.
+fn build_device_input(params: &ActParams) -> Result<DeviceInput, &'static str> {
+    match params.action {
+        DebugAction::DeviceKey => {
+            let raw = params
+                .device_key
+                .as_deref()
+                .ok_or("device_key requires 'device_key' parameter")?;
+            let key = DeviceKey::from_str(raw).map_err(|_| {
+                "device_key must be one of: up, down, left, right, select, back, home, menu, play_pause, volume_up, volume_down"
+            })?;
+            Ok(DeviceInput::Key { key })
+        }
+        DebugAction::DeviceText => {
+            let text = params
+                .device_text
+                .clone()
+                .ok_or("device_text requires 'device_text' parameter")?;
+            Ok(DeviceInput::Text { text })
+        }
+        DebugAction::DeviceTap => {
+            let x = params.x.ok_or("device_tap requires 'x' parameter")?;
+            let y = params.y.ok_or("device_tap requires 'y' parameter")?;
+            Ok(DeviceInput::Tap { x, y })
+        }
+        _ => Err("build_device_input called with a non-device action"),
     }
 }
 
@@ -3465,6 +3602,7 @@ mod logging_tests {
             chrome_state,
             chrome_endpoint: Arc::new(Mutex::new(None)),
             device_screenshot_fn: None,
+            device_input_fn: None,
             screenshot_dir: std::env::temp_dir().join("daemon8-test"),
             home_dir: std::env::temp_dir().join("daemon8-test-home"),
             broadcast_tx,
@@ -3739,6 +3877,7 @@ mod logging_tests {
                 chrome_state,
                 chrome_endpoint: Arc::new(Mutex::new(None)),
                 device_screenshot_fn: None,
+                device_input_fn: None,
                 screenshot_dir: std::env::temp_dir().join("daemon8-test"),
                 home_dir: std::env::temp_dir().join("daemon8-test-home"),
                 broadcast_tx,
@@ -4090,5 +4229,155 @@ mod logging_tests {
             res.contains("invalid_agent_id"),
             "bad agent_id must be rejected: {res}"
         );
+    }
+}
+
+#[cfg(test)]
+mod device_input_tests {
+    use super::*;
+
+    type Recorded = Arc<Mutex<Vec<(String, DevicePlatform, DeviceInput)>>>;
+
+    async fn build_mcp(input_fn: Option<DeviceInputFn>) -> DaemonMcp {
+        let store = Arc::new(daemon8_store::SurrealStore::memory().await.unwrap());
+        let (obs_tx, _obs_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (chrome_tx, _chrome_rx) = tokio::sync::mpsc::channel(8);
+        let (_, chrome_state) =
+            tokio::sync::watch::channel(daemon8_chrome::ConnectionState::Disconnected);
+        let (broadcast_tx, _broadcast_rx) = broadcast::channel(8);
+        let lens = Arc::new(LensManager::new(broadcast_tx.subscribe()));
+        DaemonMcp::new(DaemonMcpConfig {
+            store: store.clone(),
+            memory_store: Some(Arc::new(store.memory_store())),
+            debug_session_store: Some(Arc::new(store.debug_session_store())),
+            scope_ledger_store: Some(Arc::new(store.scope_ledger_store())),
+            obs_tx,
+            chrome_tx,
+            chrome_state,
+            chrome_endpoint: Arc::new(Mutex::new(None)),
+            device_screenshot_fn: None,
+            device_input_fn: input_fn,
+            screenshot_dir: std::env::temp_dir().join("daemon8-test"),
+            home_dir: std::env::temp_dir().join("daemon8-test-home"),
+            broadcast_tx,
+            lens,
+            cursor_store: None,
+            cancel: tokio_util::sync::CancellationToken::new(),
+        })
+    }
+
+    fn recording_fn(sink: Recorded) -> DeviceInputFn {
+        Arc::new(move |serial, platform, input| {
+            let sink = sink.clone();
+            Box::pin(async move {
+                sink.lock().unwrap().push((serial, platform, input));
+                Ok(())
+            })
+        })
+    }
+
+    fn key_params(serial: Option<&str>, key: Option<&str>) -> ActParams {
+        let mut p = base_params(DebugAction::DeviceKey);
+        p.device_serial = serial.map(Into::into);
+        p.device_key = key.map(Into::into);
+        p
+    }
+
+    fn base_params(action: DebugAction) -> ActParams {
+        serde_json::from_value(serde_json::json!({ "action": action })).unwrap()
+    }
+
+    #[test]
+    fn build_device_input_parses_each_action() {
+        let key = build_device_input(&key_params(Some("s"), Some("down"))).unwrap();
+        assert_eq!(
+            key,
+            DeviceInput::Key {
+                key: DeviceKey::Down
+            }
+        );
+
+        let mut text = base_params(DebugAction::DeviceText);
+        text.device_text = Some("hi".into());
+        assert_eq!(
+            build_device_input(&text).unwrap(),
+            DeviceInput::Text { text: "hi".into() }
+        );
+
+        let mut tap = base_params(DebugAction::DeviceTap);
+        tap.x = Some(10.0);
+        tap.y = Some(20.0);
+        assert_eq!(
+            build_device_input(&tap).unwrap(),
+            DeviceInput::Tap { x: 10.0, y: 20.0 }
+        );
+    }
+
+    #[test]
+    fn build_device_input_rejects_missing_and_bad_params() {
+        assert!(build_device_input(&key_params(Some("s"), None)).is_err());
+        assert!(build_device_input(&key_params(Some("s"), Some("nope"))).is_err());
+        let bare_tap = base_params(DebugAction::DeviceTap);
+        assert!(build_device_input(&bare_tap).is_err());
+    }
+
+    #[tokio::test]
+    async fn handle_device_input_records_call() {
+        let sink: Recorded = Arc::new(Mutex::new(Vec::new()));
+        let mcp = build_mcp(Some(recording_fn(sink.clone()))).await;
+        let res = mcp
+            .handle_device_input(&key_params(Some("emulator-5554"), Some("down")))
+            .await;
+        assert!(res.contains("device_input_sent"), "{res}");
+        let calls = sink.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "emulator-5554");
+        assert_eq!(calls[0].1, DevicePlatform::Android);
+        assert_eq!(
+            calls[0].2,
+            DeviceInput::Key {
+                key: DeviceKey::Down
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_device_input_missing_serial_errors() {
+        let mcp = build_mcp(Some(recording_fn(Arc::new(Mutex::new(Vec::new()))))).await;
+        let res = mcp
+            .handle_device_input(&key_params(None, Some("down")))
+            .await;
+        assert!(res.contains("missing_param"), "{res}");
+    }
+
+    #[tokio::test]
+    async fn handle_device_input_missing_key_errors() {
+        let mcp = build_mcp(Some(recording_fn(Arc::new(Mutex::new(Vec::new()))))).await;
+        let res = mcp
+            .handle_device_input(&key_params(Some("emulator-5554"), None))
+            .await;
+        assert!(res.contains("missing_param"), "{res}");
+    }
+
+    #[tokio::test]
+    async fn handle_device_input_unavailable_without_fn() {
+        let mcp = build_mcp(None).await;
+        let res = mcp
+            .handle_device_input(&key_params(Some("emulator-5554"), Some("down")))
+            .await;
+        assert!(res.contains("device_input_unavailable"), "{res}");
+    }
+
+    #[tokio::test]
+    async fn handle_device_input_surfaces_controller_error() {
+        let failing: DeviceInputFn = Arc::new(|_, _, _| {
+            Box::pin(async { Err(anyhow::anyhow!("vega device key not yet implemented")) })
+        });
+        let mcp = build_mcp(Some(failing)).await;
+        let mut p = key_params(Some("vega-1"), Some("down"));
+        p.device_platform = Some("vega".into());
+        let res = mcp.handle_device_input(&p).await;
+        assert!(res.contains("action_failed"), "{res}");
+        assert!(res.contains("not yet implemented"), "{res}");
     }
 }

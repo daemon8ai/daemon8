@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: LicenseRef-FCL-1.0-ALv2
 // Copyright (c) 2026 Havy.tech, LLC
 
+pub mod controller;
 pub mod device_manager;
 mod error;
 pub mod parser;
 pub mod transport;
 
+pub use controller::{DeviceController, controller_for};
 pub use error::{AdbError, Result};
 
 use std::net::SocketAddrV4;

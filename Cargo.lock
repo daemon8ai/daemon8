@@ -1334,6 +1334,7 @@ name = "daemon8-adb"
 version = "0.5.0-alpha.3"
 dependencies = [
  "adb_client",
+ "async-trait",
  "daemon8-types",
  "serde_json",
  "thiserror 2.0.18",

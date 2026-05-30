@@ -158,6 +158,12 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
         None
     };
 
+    let device_input_fn: Option<daemon8_mcp::DeviceInputFn> = if cfg.adb.enabled {
+        Some(crate::device::build_device_input_fn(cfg.adb.server_addr))
+    } else {
+        None
+    };
+
     if cfg.ingestion.udp.enabled {
         let bind = cfg.ingestion.udp.bind;
         let max_packet = cfg.ingestion.udp.max_packet;
@@ -210,6 +216,7 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
             chrome_state: chrome_state_rx.clone(),
             chrome_endpoint: chrome_endpoint.clone(),
             device_screenshot_fn: device_screenshot_fn.clone(),
+            device_input_fn: device_input_fn.clone(),
             screenshot_dir: screenshot_dir.clone(),
             home_dir: daemon8_providers::dirs_home(),
             broadcast_tx: broadcast_tx.clone(),
@@ -246,6 +253,7 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
     let mcp_state_rx = chrome_state_rx.clone();
     let mcp_ep = chrome_endpoint.clone();
     let mcp_screenshot_fn = device_screenshot_fn.clone();
+    let mcp_input_fn = device_input_fn.clone();
     let mcp_screenshot_dir = screenshot_dir.clone();
     let mcp_broadcast_tx = broadcast_tx.clone();
     let mcp_cursor_store: Arc<dyn daemon8_store::CursorStore> =
@@ -269,6 +277,7 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
                 chrome_state: mcp_state_rx.clone(),
                 chrome_endpoint: mcp_ep.clone(),
                 device_screenshot_fn: mcp_screenshot_fn.clone(),
+                device_input_fn: mcp_input_fn.clone(),
                 screenshot_dir: mcp_screenshot_dir.clone(),
                 home_dir: daemon8_providers::dirs_home(),
                 broadcast_tx: mcp_broadcast_tx.clone(),

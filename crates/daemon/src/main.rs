@@ -5,6 +5,7 @@ mod cleanup;
 mod cli;
 mod cli_config;
 mod config;
+mod device;
 mod screenshot;
 pub(crate) mod style;
 
