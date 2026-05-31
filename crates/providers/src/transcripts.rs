@@ -615,6 +615,7 @@ fn system_time_ms(time: std::time::SystemTime) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{Duration, SystemTime};
 
     fn write_codex_session(path: &Path, session_id: &str, cwd: &Path) {
         fs::write(
@@ -990,6 +991,30 @@ mod tests {
     }
 
     #[test]
+    fn discovery_filters_candidates_older_than_since_cutoff() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("myproject");
+        let home = tmp.path().join("home");
+        fs::create_dir_all(&project).unwrap();
+
+        let old = write_claude_transcript(&home, &project, "old-session.jsonl");
+        let recent = write_claude_transcript(&home, &project, "recent-session.jsonl");
+        let now = SystemTime::now();
+        set_file_modified(&old, now - Duration::from_secs(48 * 60 * 60));
+        set_file_modified(&recent, now);
+        let cutoff = now
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+            .saturating_sub(24 * 60 * 60 * 1000) as u64;
+
+        let candidates = discover_project_conversations(&project, &home, None, cutoff);
+
+        assert_eq!(candidates.len(), 1);
+        assert!(candidates[0].path.ends_with("recent-session.jsonl"));
+    }
+
+    #[test]
     fn discovery_falls_back_to_provider_root_scan() {
         let tmp = tempfile::tempdir().unwrap();
         let project = tmp.path().join("myproject");
@@ -1073,5 +1098,15 @@ mod tests {
 
         let candidates = discover_project_conversations(&project, &home, None, 0);
         assert!(candidates.is_empty());
+    }
+
+    fn set_file_modified(path: &Path, modified: SystemTime) {
+        let times = std::fs::FileTimes::new().set_modified(modified);
+        std::fs::File::options()
+            .read(true)
+            .open(path)
+            .unwrap()
+            .set_times(times)
+            .unwrap();
     }
 }

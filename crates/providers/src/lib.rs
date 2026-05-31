@@ -15,48 +15,16 @@ pub use traits::{
     ProjectEntry,
 };
 
-pub const CONVERSATION_RECENCY_MS: u64 = 12 * 60 * 60 * 1000;
+pub const DEFAULT_CONVERSATION_LOOKBACK_HOURS: u64 = 24;
 
-pub fn conversation_since_ms(home: &Path, scope_root: &Path, lookback_hours: Option<u64>) -> u64 {
-    if let Some(hours) = lookback_hours {
-        return current_time_ms().saturating_sub(
-            hours
-                .saturating_mul(60)
-                .saturating_mul(60)
-                .saturating_mul(1000),
-        );
-    }
-
-    default_conversation_since_ms(home, scope_root)
-}
-
-pub fn default_conversation_since_ms(home: &Path, scope_root: &Path) -> u64 {
-    let fallback = conversation_day_start_since_ms();
-    let scope_root = std::fs::canonicalize(scope_root).unwrap_or_else(|_| scope_root.to_path_buf());
-    let mut earliest = None;
-
-    for provider in ALL_PROVIDERS {
-        let ai = provider.as_provider();
-        for path in ai.project_conversation_files(home, &scope_root, fallback) {
-            let modified_ms = std::fs::metadata(path)
-                .ok()
-                .and_then(|metadata| metadata.modified().ok())
-                .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|duration| duration.as_millis() as u64);
-            if let Some(modified_ms) = modified_ms {
-                earliest =
-                    Some(earliest.map_or(modified_ms, |current: u64| current.min(modified_ms)));
-            }
-        }
-    }
-
-    earliest.unwrap_or(fallback)
-}
-
-pub fn conversation_day_start_since_ms() -> u64 {
-    let now = time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc());
-    let start_of_today = now.replace_time(time::Time::MIDNIGHT);
-    (start_of_today.unix_timestamp() * 1000) as u64
+pub fn conversation_since_ms(lookback_hours: Option<u64>) -> u64 {
+    let hours = lookback_hours.unwrap_or(DEFAULT_CONVERSATION_LOOKBACK_HOURS);
+    current_time_ms().saturating_sub(
+        hours
+            .saturating_mul(60)
+            .saturating_mul(60)
+            .saturating_mul(1000),
+    )
 }
 
 fn current_time_ms() -> u64 {
@@ -350,7 +318,7 @@ pub(crate) fn test_hook_identity() -> HookIdentity {
 #[cfg(test)]
 mod filesystem_layout_tests {
     use std::path::Path;
-    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
 
@@ -358,72 +326,32 @@ mod filesystem_layout_tests {
         Path::new("daemon8-test-home")
     }
 
-    fn write_claude_transcript(home: &Path, scope_root: &Path, filename: &str) -> PathBuf {
-        let canonical =
-            std::fs::canonicalize(scope_root).unwrap_or_else(|_| scope_root.to_path_buf());
-        let slug = canonical.to_string_lossy().replace('/', "-");
-        let dir = home.join(".claude/projects").join(slug);
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join(filename);
-        std::fs::write(
-            &path,
-            r#"{"type":"permission-mode","permissionMode":"auto","sessionId":"test"}"#,
-        )
-        .unwrap();
-        path
-    }
-
-    fn modified_ms(path: &Path) -> u64 {
-        std::fs::metadata(path)
-            .unwrap()
-            .modified()
-            .unwrap()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64
-    }
-
     #[test]
-    fn default_conversation_since_anchors_to_earliest_same_day_project_candidate() {
-        let tmp = tempfile::tempdir().unwrap();
-        let home = tmp.path().join("home");
-        let project = tmp.path().join("project");
-        std::fs::create_dir_all(&project).unwrap();
-
-        let first = write_claude_transcript(&home, &project, "first.jsonl");
-        std::thread::sleep(Duration::from_millis(20));
-        let _second = write_claude_transcript(&home, &project, "second.jsonl");
-
-        assert_eq!(
-            default_conversation_since_ms(&home, &project),
-            modified_ms(&first)
-        );
-    }
-
-    #[test]
-    fn default_conversation_since_falls_back_to_local_midnight_without_candidates() {
-        let tmp = tempfile::tempdir().unwrap();
-        let home = tmp.path().join("home");
-        let project = tmp.path().join("project");
-        std::fs::create_dir_all(&project).unwrap();
-
-        assert_eq!(
-            default_conversation_since_ms(&home, &project),
-            conversation_day_start_since_ms()
-        );
-    }
-
-    #[test]
-    fn explicit_conversation_lookback_uses_rolling_hours() {
-        let tmp = tempfile::tempdir().unwrap();
-        let home = tmp.path().join("home");
-        let project = tmp.path().join("project");
+    fn default_conversation_lookback_uses_rolling_24_hours() {
         let before = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64;
 
-        let since = conversation_since_ms(&home, &project, Some(1));
+        let since = conversation_since_ms(None);
+
+        let after = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let default_ms = DEFAULT_CONVERSATION_LOOKBACK_HOURS * 60 * 60 * 1000;
+        assert!(since >= before.saturating_sub(default_ms));
+        assert!(since <= after.saturating_sub(default_ms));
+    }
+
+    #[test]
+    fn explicit_conversation_lookback_uses_rolling_hours() {
+        let before = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+
+        let since = conversation_since_ms(Some(1));
 
         let after = SystemTime::now()
             .duration_since(UNIX_EPOCH)

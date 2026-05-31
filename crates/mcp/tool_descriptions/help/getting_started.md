@@ -18,7 +18,7 @@ Setup is mandatory. daemon8 cannot observe a project without `.daemon8/config.md
 - `start_debug_session` + `create_checkpoint` -- before/after investigation with retrievable fix summaries.
 - `issue_command` -- browser DevTools actions (eval_js, screenshot, navigate, inject_css, storage, viewport, network conditions).
 - `write_to_live_feed` -- emit notes, metrics, or agent-to-agent messages into the stream.
-- `build_context_snapshot` -- full cross-provider recall when the user asks for or accepts history/review/catch-up/continuity.
+- `build_context_snapshot` -- recent cross-provider recall when the user asks for or accepts history/review/catch-up/continuity. Defaults to the last 24 hours; use `since: "conversation_start"` for full history.
 - `link_conversation` -- link missing or explicit provider transcripts before a requested recall.
 
 ## Deeper topics

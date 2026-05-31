@@ -17,11 +17,27 @@ pub const VALID_FACETS: &[&str] = &[
     "summary",
 ];
 
+pub const DEFAULT_SNAPSHOT_LOOKBACK_MINUTES: u64 = 24 * 60;
+
 #[derive(Debug, Clone)]
 pub enum SnapshotSince {
     ConversationStart,
     Checkpoint { timestamp_ns: u64 },
     Duration { minutes: u64 },
+}
+
+impl Default for SnapshotSince {
+    fn default() -> Self {
+        Self::Duration {
+            minutes: DEFAULT_SNAPSHOT_LOOKBACK_MINUTES,
+        }
+    }
+}
+
+impl SnapshotSince {
+    pub fn cutoff_at(&self, now: SystemTime) -> SnapshotCutoff {
+        SnapshotCutoff::from_since_at(self, now)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -36,6 +52,36 @@ pub struct SnapshotRequest {
     pub facets: Vec<String>,
     pub sources: Vec<SnapshotSource>,
     pub output_dir: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct SnapshotCutoff {
+    pub ns: Option<u64>,
+    pub ms: Option<u64>,
+}
+
+impl SnapshotCutoff {
+    pub fn from_since_at(since: &SnapshotSince, now: SystemTime) -> Self {
+        match since {
+            SnapshotSince::ConversationStart => Self { ns: None, ms: None },
+            SnapshotSince::Checkpoint { timestamp_ns } => Self {
+                ns: Some(*timestamp_ns),
+                ms: Some(timestamp_ns / 1_000_000),
+            },
+            SnapshotSince::Duration { minutes } => {
+                let now_ns = now
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos() as u64;
+                let window_ns = minutes.saturating_mul(60).saturating_mul(1_000_000_000);
+                let cutoff_ns = now_ns.saturating_sub(window_ns);
+                Self {
+                    ns: Some(cutoff_ns),
+                    ms: Some(cutoff_ns / 1_000_000),
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -75,6 +121,15 @@ pub enum SnapshotError {
 }
 
 pub fn build_snapshot(request: &SnapshotRequest) -> Result<SnapshotResult, SnapshotError> {
+    build_snapshot_at(request, SystemTime::now())
+}
+
+pub fn build_snapshot_at(
+    request: &SnapshotRequest,
+    now: SystemTime,
+) -> Result<SnapshotResult, SnapshotError> {
+    let cutoff = request.since.cutoff_at(now);
+
     if request.sources.is_empty() {
         return Err(SnapshotError::NoSources);
     }
@@ -84,12 +139,11 @@ pub fn build_snapshot(request: &SnapshotRequest) -> Result<SnapshotResult, Snaps
     }
     std::fs::create_dir(&request.output_dir).map_err(SnapshotError::OutputDir)?;
 
-    let cutoff = resolve_since_cutoff_ns(&request.since);
     let mut all_events: Vec<ConversationEvent> = Vec::new();
     let mut sources_read: Vec<String> = Vec::new();
 
     for source in &request.sources {
-        let events = parse_transcript_events(source, cutoff);
+        let events = parse_transcript_events(source, cutoff.ns);
         if !events.is_empty() {
             sources_read.push(source.path.display().to_string());
         }
@@ -156,7 +210,25 @@ fn parse_transcript_events(
         Err(_) => return Vec::new(),
     };
 
+    let source_modified_ns = file
+        .metadata()
+        .ok()
+        .and_then(|metadata| metadata.modified().ok())
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(|modified| modified.as_nanos() as u64);
     let reader = BufReader::new(file);
+    let Some(cutoff) = since_cutoff_ns else {
+        return parse_all_transcript_events(source, reader);
+    };
+    let source_modified_in_window = source_modified_ns.is_some_and(|modified| modified >= cutoff);
+
+    parse_bounded_transcript_events(source, reader, cutoff, source_modified_in_window)
+}
+
+fn parse_all_transcript_events(
+    source: &SnapshotSource,
+    reader: impl BufRead,
+) -> Vec<ConversationEvent> {
     let mut events = Vec::new();
 
     for line in reader.lines() {
@@ -164,33 +236,134 @@ fn parse_transcript_events(
         if line.trim().is_empty() {
             continue;
         }
-        let parsed = daemon8_parse::parse_conversation_line(&source.provider, &line);
-        for event in parsed {
-            if let Some(cutoff) = since_cutoff_ns
-                && let Some(ts) = event_timestamp_ns(&event)
-                && ts < cutoff
-            {
-                continue;
-            }
-            events.push(event);
-        }
+        events.extend(parse_line_events(source, &line));
     }
 
     events
 }
 
-fn resolve_since_cutoff_ns(since: &SnapshotSince) -> Option<u64> {
-    match since {
-        SnapshotSince::ConversationStart => None,
-        SnapshotSince::Checkpoint { timestamp_ns } => Some(*timestamp_ns),
-        SnapshotSince::Duration { minutes } => {
-            let now_ns = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64;
-            Some(now_ns.saturating_sub(minutes * 60 * 1_000_000_000))
+fn parse_bounded_transcript_events(
+    source: &SnapshotSource,
+    reader: impl BufRead,
+    cutoff: u64,
+    source_modified_in_window: bool,
+) -> Vec<ConversationEvent> {
+    let mut retained_events = Vec::new();
+    let mut has_timestamped_event = false;
+    let mut has_in_window_timestamped_event = false;
+
+    for line in reader.lines() {
+        let Ok(line) = line else { continue };
+        if line.trim().is_empty() {
+            continue;
+        }
+        let line_timestamp = line_timestamp_ns(&line);
+        let line_in_window = line_timestamp.is_some_and(|ts| ts >= cutoff);
+        for event in parse_line_events(source, &line) {
+            let Some(retained) =
+                retain_bounded_event(event, cutoff, line_timestamp.is_some(), line_in_window)
+            else {
+                continue;
+            };
+            if retained.is_timestamped() {
+                has_timestamped_event = true;
+            }
+            if retained.is_in_window() {
+                has_in_window_timestamped_event = true;
+            }
+            retained_events.push(retained);
         }
     }
+
+    retained_events
+        .into_iter()
+        .filter(|event| {
+            event.is_in_window()
+                || (event.is_source_fresh_untimestamped()
+                    && source_modified_in_window
+                    && !has_timestamped_event)
+                || (event.is_structural_metadata() && has_in_window_timestamped_event)
+        })
+        .filter_map(BoundedEvent::into_event)
+        .collect()
+}
+
+fn parse_line_events(source: &SnapshotSource, line: &str) -> Vec<ConversationEvent> {
+    daemon8_parse::parse_conversation_line(&source.provider, line)
+}
+
+fn line_timestamp_ns(line: &str) -> Option<u64> {
+    let value = serde_json::from_str::<serde_json::Value>(line).ok()?;
+    let timestamp = value.get("timestamp").and_then(|value| value.as_str())?;
+    let ns = daemon8_parse::timestamp::normalize_timestamp_ns(timestamp)?;
+    if ns < 0 {
+        return None;
+    }
+    Some(ns as u64)
+}
+
+fn retain_bounded_event(
+    event: ConversationEvent,
+    cutoff: u64,
+    line_has_timestamp: bool,
+    line_in_window: bool,
+) -> Option<BoundedEvent> {
+    match event_timestamp_ns(&event) {
+        Some(ts) if ts >= cutoff => Some(BoundedEvent::InWindow(event)),
+        Some(_) => Some(BoundedEvent::OutOfWindow),
+        None if is_structural_metadata(&event) && line_has_timestamp && line_in_window => {
+            Some(BoundedEvent::StructuralMetadata(event))
+        }
+        None if is_structural_metadata(&event) && line_has_timestamp => None,
+        None if is_structural_metadata(&event) => Some(BoundedEvent::StructuralMetadata(event)),
+        None => Some(BoundedEvent::SourceFreshUntimestamped(event)),
+    }
+}
+
+enum BoundedEvent {
+    InWindow(ConversationEvent),
+    OutOfWindow,
+    StructuralMetadata(ConversationEvent),
+    SourceFreshUntimestamped(ConversationEvent),
+}
+
+impl BoundedEvent {
+    fn is_timestamped(&self) -> bool {
+        matches!(self, Self::InWindow(_) | Self::OutOfWindow)
+    }
+
+    fn is_in_window(&self) -> bool {
+        matches!(self, Self::InWindow(_))
+    }
+
+    fn is_structural_metadata(&self) -> bool {
+        matches!(self, Self::StructuralMetadata(_))
+    }
+
+    fn is_source_fresh_untimestamped(&self) -> bool {
+        matches!(
+            self,
+            Self::SourceFreshUntimestamped(_) | Self::StructuralMetadata(_)
+        )
+    }
+
+    fn into_event(self) -> Option<ConversationEvent> {
+        match self {
+            Self::InWindow(event)
+            | Self::StructuralMetadata(event)
+            | Self::SourceFreshUntimestamped(event) => Some(event),
+            Self::OutOfWindow => None,
+        }
+    }
+}
+
+fn is_structural_metadata(event: &ConversationEvent) -> bool {
+    matches!(
+        event,
+        ConversationEvent::SessionMeta { .. }
+            | ConversationEvent::TurnMeta { .. }
+            | ConversationEvent::AgentSpawn { .. }
+    )
 }
 
 fn event_timestamp_str(event: &ConversationEvent) -> Option<&str> {
@@ -870,6 +1043,7 @@ mod tests {
 "#,
         )
         .unwrap();
+        set_file_modified(&transcript, SystemTime::UNIX_EPOCH + Duration::from_secs(1));
 
         let source = SnapshotSource {
             provider: "codex".into(),
@@ -888,6 +1062,119 @@ mod tests {
 
         assert!(session_metas >= 1);
         assert_eq!(user_prompts, 1);
+    }
+
+    #[test]
+    fn bounded_parse_drops_timestampless_content_without_in_window_timestamp() {
+        let tmp = tempfile::tempdir().unwrap();
+        let transcript = tmp.path().join("codex.jsonl");
+        std::fs::write(
+            &transcript,
+            r#"{"type":"session_meta","payload":{"id":"sess_001","cwd":"/project","model":"o3"}}
+{"type":"user_message","payload":{"text":"old context without timestamp"}}
+"#,
+        )
+        .unwrap();
+        let now = SystemTime::now();
+        let cutoff = now
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+            .saturating_sub(24_u128 * 60 * 60 * 1_000_000_000) as u64;
+        set_file_modified(&transcript, now - Duration::from_secs(48 * 60 * 60));
+
+        let source = SnapshotSource {
+            provider: "codex".into(),
+            path: transcript,
+        };
+        let events = parse_transcript_events(&source, Some(cutoff));
+
+        assert!(
+            events.is_empty(),
+            "bounded snapshots must not pull timestampless content from old transcripts"
+        );
+    }
+
+    #[test]
+    fn bounded_parse_keeps_timestampless_content_when_source_is_recent_and_untimestamped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let transcript = tmp.path().join("codex.jsonl");
+        std::fs::write(
+            &transcript,
+            r#"{"type":"session_meta","payload":{"id":"sess_001","cwd":"/project","model":"o3"}}
+{"type":"user_message","payload":{"text":"recent context without timestamp"}}
+"#,
+        )
+        .unwrap();
+        set_file_modified(&transcript, SystemTime::now());
+
+        let source = SnapshotSource {
+            provider: "codex".into(),
+            path: transcript,
+        };
+        let events = parse_transcript_events(&source, Some(1_700_000_000_000_000_000));
+
+        assert!(events.iter().any(|e| matches!(
+            e,
+            ConversationEvent::UserPrompt { text, .. } if text == "recent context without timestamp"
+        )));
+    }
+
+    #[test]
+    fn bounded_parse_keeps_metadata_when_source_has_in_window_timestamp() {
+        let tmp = tempfile::tempdir().unwrap();
+        let transcript = tmp.path().join("claude.jsonl");
+        std::fs::write(
+            &transcript,
+            r#"{"type":"permission-mode","permissionMode":"bypassPermissions","isSidechain":false,"sessionId":"s1","cwd":"/project"}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"recent prompt"}]},"timestamp":"2024-01-01T00:00:00.000Z"}
+"#,
+        )
+        .unwrap();
+
+        let source = SnapshotSource {
+            provider: "claude".into(),
+            path: transcript,
+        };
+        let events = parse_transcript_events(&source, Some(1_700_000_000_000_000_000));
+
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, ConversationEvent::SessionMeta { .. }))
+        );
+        assert!(events.iter().any(|e| matches!(
+            e,
+            ConversationEvent::UserPrompt { text, .. } if text == "recent prompt"
+        )));
+    }
+
+    #[test]
+    fn bounded_parse_drops_structural_metadata_from_old_timestamped_lines() {
+        let tmp = tempfile::tempdir().unwrap();
+        let transcript = tmp.path().join("claude.jsonl");
+        std::fs::write(
+            &transcript,
+            r#"{"type":"assistant","message":{"role":"assistant","model":"old-model","content":[]},"timestamp":"2023-01-01T00:00:00.000Z"}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"recent prompt"}]},"timestamp":"2024-01-01T00:00:00.000Z"}
+"#,
+        )
+        .unwrap();
+
+        let source = SnapshotSource {
+            provider: "claude".into(),
+            path: transcript,
+        };
+        let events = parse_transcript_events(&source, Some(1_700_000_000_000_000_000));
+
+        assert!(events.iter().any(|e| matches!(
+            e,
+            ConversationEvent::UserPrompt { text, .. } if text == "recent prompt"
+        )));
+        assert!(!events.iter().any(|e| matches!(
+            e,
+            ConversationEvent::TurnMeta { model: Some(model), .. } if model == "old-model"
+        )));
     }
 
     #[test]
@@ -1069,6 +1356,16 @@ mod tests {
         let times = std::fs::FileTimes::new().set_modified(modified);
         std::fs::File::options()
             .read(true)
+            .open(path)
+            .unwrap()
+            .set_times(times)
+            .unwrap();
+    }
+
+    fn set_file_modified(path: &Path, modified: SystemTime) {
+        let times = std::fs::FileTimes::new().set_modified(modified);
+        std::fs::File::options()
+            .write(true)
             .open(path)
             .unwrap()
             .set_times(times)

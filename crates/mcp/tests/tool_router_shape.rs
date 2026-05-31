@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Havy.tech, LLC
 
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{borrow::Cow, sync::Arc};
 
 use daemon8_chrome::ConnectionState;
@@ -446,6 +446,52 @@ sources: []
         ),
     )
     .unwrap();
+}
+
+fn write_claude_project_transcript(
+    home: &std::path::Path,
+    project: &std::path::Path,
+    filename: &str,
+    content: &str,
+) -> PathBuf {
+    let canonical_project = std::fs::canonicalize(project).unwrap();
+    let slug = canonical_project.to_string_lossy().replace('/', "-");
+    let canonical_home = std::fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf());
+    let dir = canonical_home.join(".claude/projects").join(slug);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join(filename);
+    std::fs::write(&path, content).unwrap();
+    path
+}
+
+fn write_codex_project_transcript(
+    home: &std::path::Path,
+    project: &std::path::Path,
+    filename: &str,
+) -> PathBuf {
+    let canonical_project = std::fs::canonicalize(project).unwrap();
+    let dir = home.join(".codex/sessions");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join(filename);
+    std::fs::write(
+        &path,
+        format!(
+            r#"{{"type":"session_meta","payload":{{"id":"{filename}","cwd":"{}"}}}}"#,
+            canonical_project.display()
+        ),
+    )
+    .unwrap();
+    path
+}
+
+fn set_file_modified(path: &std::path::Path, modified: SystemTime) {
+    let times = std::fs::FileTimes::new().set_modified(modified);
+    std::fs::File::options()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_times(times)
+        .unwrap();
 }
 
 fn write_conversation_source_config(root: &std::path::Path, source_id: &str, path_name: &str) {
@@ -1025,6 +1071,72 @@ async fn daemon8_connect_binds_explicit_runtime_transcript() {
             .display()
             .to_string()
     );
+}
+
+#[tokio::test]
+async fn daemon8_connect_available_conversations_default_to_last_24_hours() {
+    let home = test_home_dir();
+    let project = home.join("connect-window-project");
+    std::fs::create_dir_all(&project).unwrap();
+    mark_project(&project);
+    write_empty_project_config(&project);
+
+    let cwd = std::fs::canonicalize(&project)
+        .unwrap()
+        .display()
+        .to_string();
+    let primary = write_claude_project_transcript(
+        &home,
+        &project,
+        "primary.jsonl",
+        &format!(
+            r#"{{"type":"permission-mode","permissionMode":"bypassPermissions","isSidechain":false,"sessionId":"primary","cwd":"{cwd}"}}"#
+        ),
+    );
+    let old = write_claude_project_transcript(
+        &home,
+        &project,
+        "old.jsonl",
+        &format!(
+            r#"{{"type":"permission-mode","permissionMode":"bypassPermissions","isSidechain":false,"sessionId":"old","cwd":"{cwd}"}}"#
+        ),
+    );
+    let recent = write_claude_project_transcript(
+        &home,
+        &project,
+        "recent.jsonl",
+        &format!(
+            r#"{{"type":"permission-mode","permissionMode":"bypassPermissions","isSidechain":false,"sessionId":"recent","cwd":"{cwd}"}}"#
+        ),
+    );
+    set_file_modified(&old, SystemTime::now() - Duration::from_secs(48 * 60 * 60));
+    set_file_modified(&recent, SystemTime::now());
+
+    let mcp = make_mcp_with_writer_in_home(home).await;
+    let connect = mcp
+        .daemon8_connect_for_tests(Daemon8ConnectParams {
+            provider: "claude".into(),
+            project_path: project.display().to_string(),
+            agent_name: None,
+            transcript_path: Some(primary.display().to_string()),
+            conversation_lookback_hours: None,
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&connect).unwrap();
+    assert_eq!(parsed["status"], "success", "connect: {connect}");
+
+    let available = parsed["data"]["conversations"]["available"]
+        .as_array()
+        .unwrap();
+    let paths: Vec<&str> = available
+        .iter()
+        .filter_map(|item| item["path"].as_str())
+        .collect();
+    let old_path = std::fs::canonicalize(old).unwrap().display().to_string();
+    let recent_path = std::fs::canonicalize(recent).unwrap().display().to_string();
+
+    assert!(paths.contains(&recent_path.as_str()));
+    assert!(!paths.contains(&old_path.as_str()));
 }
 
 #[tokio::test]
@@ -2772,7 +2884,7 @@ async fn build_context_snapshot_with_transcript() {
 
     let snap = mcp
         .build_context_snapshot_for_tests(BuildContextSnapshotParams {
-            since: None,
+            since: Some("conversation_start".into()),
             facets: None,
             providers: None,
         })
@@ -2824,7 +2936,7 @@ async fn build_context_snapshot_with_transcript() {
     // Subset facets through handler
     let snap_subset = mcp
         .build_context_snapshot_for_tests(BuildContextSnapshotParams {
-            since: None,
+            since: Some("conversation_start".into()),
             facets: Some(vec!["summary".into()]),
             providers: None,
         })
@@ -2846,6 +2958,148 @@ async fn build_context_snapshot_with_transcript() {
         second_snapshot_dir.exists(),
         "second snapshot should be written separately"
     );
+}
+
+#[tokio::test]
+async fn build_context_snapshot_defaults_to_last_24_hours() {
+    let home = test_home_dir();
+    let project = home.join("snap-default-window");
+    std::fs::create_dir_all(&project).unwrap();
+    mark_project(&project);
+    write_empty_project_config(&project);
+
+    let canonical_project = std::fs::canonicalize(&project).unwrap();
+    let slug = canonical_project.to_string_lossy().replace('/', "-");
+    let canonical_home = std::fs::canonicalize(&home).unwrap();
+    let claude_project_dir = canonical_home.join(".claude/projects").join(&slug);
+    std::fs::create_dir_all(&claude_project_dir).unwrap();
+    let transcript = claude_project_dir.join("default-window.jsonl");
+    let cwd = canonical_project.display().to_string();
+    let recent_ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        .to_string();
+    std::fs::write(
+        &transcript,
+        format!(
+            r#"{{"type":"permission-mode","permissionMode":"bypassPermissions","isSidechain":false,"sessionId":"s1","cwd":"{cwd}"}}
+{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"old prompt"}}]}},"timestamp":"2023-01-01T00:00:00.000Z"}}
+{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"recent prompt"}}]}},"timestamp":"{recent_ts}"}}
+"#
+        ),
+    )
+    .unwrap();
+
+    let mcp = make_mcp_with_cancel_and_home(CancellationToken::new(), canonical_home.clone()).await;
+    let connect = mcp
+        .daemon8_connect_for_tests(Daemon8ConnectParams {
+            project_path: canonical_project.display().to_string(),
+            provider: "claude".into(),
+            agent_name: None,
+            transcript_path: Some(transcript.display().to_string()),
+            conversation_lookback_hours: None,
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&connect).unwrap();
+    assert_eq!(parsed["status"], "success", "connect: {connect}");
+
+    let snap = mcp
+        .build_context_snapshot_for_tests(BuildContextSnapshotParams {
+            since: None,
+            facets: Some(vec!["user_messages".into()]),
+            providers: None,
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&snap).unwrap();
+    assert_eq!(parsed["status"], "success", "snapshot: {snap}");
+
+    let snapshot_dir = std::path::PathBuf::from(parsed["data"]["snapshot_path"].as_str().unwrap());
+    let content = std::fs::read_to_string(snapshot_dir.join("user-messages.md")).unwrap();
+    assert!(content.contains("recent prompt"));
+    assert!(!content.contains("old prompt"));
+}
+
+#[tokio::test]
+async fn build_context_snapshot_default_discovery_excludes_stale_transcripts() {
+    let home = test_home_dir();
+    let project = home.join("snap-discovery-window");
+    std::fs::create_dir_all(&project).unwrap();
+    mark_project(&project);
+    write_empty_project_config(&project);
+
+    let mcp = make_mcp_with_cancel_and_home(CancellationToken::new(), home.clone()).await;
+    let connect = mcp
+        .daemon8_connect_for_tests(Daemon8ConnectParams {
+            project_path: project.display().to_string(),
+            provider: "codex".into(),
+            agent_name: None,
+            transcript_path: None,
+            conversation_lookback_hours: None,
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&connect).unwrap();
+    assert_eq!(parsed["status"], "success", "connect: {connect}");
+
+    let cwd = std::fs::canonicalize(&project)
+        .unwrap()
+        .display()
+        .to_string();
+    let recent_ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        .to_string();
+    let old = write_claude_project_transcript(
+        &home,
+        &project,
+        "old-snapshot.jsonl",
+        &format!(
+            r#"{{"type":"permission-mode","permissionMode":"bypassPermissions","isSidechain":false,"sessionId":"old","cwd":"{cwd}"}}
+{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"old discovered prompt"}}]}},"timestamp":"2023-01-01T00:00:00.000Z"}}
+"#
+        ),
+    );
+    let recent = write_claude_project_transcript(
+        &home,
+        &project,
+        "recent-snapshot.jsonl",
+        &format!(
+            r#"{{"type":"permission-mode","permissionMode":"bypassPermissions","isSidechain":false,"sessionId":"recent","cwd":"{cwd}"}}
+{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"recent discovered prompt"}}]}},"timestamp":"{recent_ts}"}}
+"#
+        ),
+    );
+    set_file_modified(&old, SystemTime::now() - Duration::from_secs(48 * 60 * 60));
+    set_file_modified(&recent, SystemTime::now());
+
+    let snap = mcp
+        .build_context_snapshot_for_tests(BuildContextSnapshotParams {
+            since: None,
+            facets: Some(vec!["user_messages".into()]),
+            providers: Some(vec!["claude".into()]),
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&snap).unwrap();
+    assert_eq!(parsed["status"], "success", "snapshot: {snap}");
+    let snapshot_dir = std::path::PathBuf::from(parsed["data"]["snapshot_path"].as_str().unwrap());
+    let content = std::fs::read_to_string(snapshot_dir.join("user-messages.md")).unwrap();
+    assert!(content.contains("recent discovered prompt"));
+    assert!(!content.contains("old discovered prompt"));
+
+    let snap = mcp
+        .build_context_snapshot_for_tests(BuildContextSnapshotParams {
+            since: Some("conversation_start".into()),
+            facets: Some(vec!["user_messages".into()]),
+            providers: Some(vec!["claude".into()]),
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&snap).unwrap();
+    assert_eq!(parsed["status"], "success", "full snapshot: {snap}");
+    let snapshot_dir = std::path::PathBuf::from(parsed["data"]["snapshot_path"].as_str().unwrap());
+    let content = std::fs::read_to_string(snapshot_dir.join("user-messages.md")).unwrap();
+    assert!(content.contains("recent discovered prompt"));
+    assert!(content.contains("old discovered prompt"));
 }
 
 #[tokio::test]
@@ -3097,6 +3351,58 @@ async fn link_conversation_happy_path() {
     assert_eq!(parsed["status"], "success", "link: {result}");
     assert!(parsed["data"]["path"].as_str().is_some());
     assert_eq!(parsed["data"]["provider"], "codex");
+}
+
+#[tokio::test]
+async fn link_conversation_project_discovery_defaults_to_last_24_hours() {
+    let home = test_home_dir();
+    let project = home.join("link-window-project");
+    std::fs::create_dir_all(&project).unwrap();
+    mark_project(&project);
+    write_empty_project_config(&project);
+
+    let canonical_project = std::fs::canonicalize(&project).unwrap();
+    let cwd = canonical_project.display().to_string();
+    let claude_transcript = write_claude_project_transcript(
+        &home,
+        &project,
+        "primary-link-window.jsonl",
+        &format!(
+            r#"{{"type":"permission-mode","permissionMode":"bypassPermissions","isSidechain":false,"sessionId":"s1","cwd":"{cwd}"}}"#
+        ),
+    );
+    let old = write_codex_project_transcript(&home, &project, "old-session.jsonl");
+    let recent = write_codex_project_transcript(&home, &project, "recent-session.jsonl");
+    set_file_modified(&old, SystemTime::now() - Duration::from_secs(48 * 60 * 60));
+    set_file_modified(&recent, SystemTime::now());
+
+    let mcp = make_mcp_with_cancel_and_home(CancellationToken::new(), home).await;
+    let connect = mcp
+        .daemon8_connect_for_tests(Daemon8ConnectParams {
+            project_path: canonical_project.display().to_string(),
+            provider: "claude".into(),
+            agent_name: None,
+            transcript_path: Some(claude_transcript.display().to_string()),
+            conversation_lookback_hours: None,
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&connect).unwrap();
+    assert_eq!(parsed["status"], "success", "connect: {connect}");
+
+    let result = mcp
+        .link_conversation_for_tests(LinkConversationParams {
+            provider: "codex".into(),
+            project_path: Some(canonical_project.display().to_string()),
+            transcript_path: None,
+            conversation_lookback_hours: None,
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+    assert_eq!(parsed["status"], "success", "link: {result}");
+    assert_eq!(
+        parsed["data"]["path"].as_str().unwrap(),
+        std::fs::canonicalize(recent).unwrap().display().to_string()
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

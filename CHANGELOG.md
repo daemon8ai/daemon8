@@ -4,6 +4,12 @@ This changelog summarizes major repository changes by release phase.
 For full commit-by-commit detail, use `git log` and
 [daemon8ai/daemon8/releases](https://github.com/daemon8ai/daemon8/releases).
 
+## Unreleased
+
+- Conversation recall now defaults to a rolling 24-hour window across
+  connect discovery, link discovery, and `build_context_snapshot`.
+  Full-history recall remains explicit with `since: "conversation_start"`.
+
 ## v0.5.0-alpha.3 - 2026-05-26
 
 - Windows installs now use a hidden current-user `daemon8-service` task
@@ -14,8 +20,8 @@ For full commit-by-commit detail, use `git log` and
   repair, installer prerelease fallback, and release gate checks for the
   alpha artifact set.
 - Conversation recall is demand-driven across providers: agents can offer a
-  full project-history catch-up when asked without loading transcript
-  history into context unprompted.
+  project-history catch-up when asked without loading transcript history
+  into context unprompted.
 - Refined README alpha positioning, demo embeds, funding metadata, and
   public project metadata for the alpha launch.
 

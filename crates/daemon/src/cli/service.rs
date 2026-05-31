@@ -26,7 +26,7 @@ Daemon8 is the runtime awareness layer for this agent. Use it for debugging, app
 
 Call `daemon8_connect` once at session start. If it returns `setup_required`, call `daemon8_init`, complete `.daemon8/config.md`, and then reconnect. Treat daemon8 response `requirements` and `next_actions` as control flow, not optional advice.
 
-Do not run conversation recall automatically. After the project is connected and any required setup is complete, ask once whether the user wants to recover recent conversation history across AI providers. If the user asks for or accepts history, review, catch-up, continuity, prior work, or another provider's activity, run full recall with `build_context_snapshot` and omit the `facets` filter so all standard facets are built across available Claude, Codex, and Gemini transcripts. Use `link_conversation` only when daemon8 reports missing/unlinked transcript sources or the user points to a specific provider/session. Do not repeatedly ask once the user has answered in the current session.
+Do not run conversation recall automatically. After the project is connected and any required setup is complete, ask once whether the user wants to recover recent conversation history across AI providers. If the user asks for or accepts history, review, catch-up, continuity, prior work, or another provider's activity, run recent recall with `build_context_snapshot` and omit the `facets` filter so all standard facets are built across available Claude, Codex, and Gemini transcripts from the default last 24 hours. Use `since: "conversation_start"` only when the user explicitly asks for full history. Use `link_conversation` only when daemon8 reports missing/unlinked transcript sources or the user points to a specific provider/session. Do not repeatedly ask once the user has answered in the current session.
 
 Do not rely on the visible chat as the whole project history. daemon8 may have linked conversations, provider transcripts, debug sessions, live observations, browser state, and source logs that are not visible in this chat.
 
@@ -41,7 +41,7 @@ For real bugs, use the checkpointed loop:
 
 **Primary tools:**
 - `read_live_feed` -- console, network, errors, app telemetry (use `since_checkpoint` for incremental reads)
-- `build_context_snapshot` -- full cross-provider project recall when the user asks for or accepts conversation/history recovery
+- `build_context_snapshot` -- recent cross-provider project recall when the user asks for or accepts conversation/history recovery
 - `link_conversation` -- attach missing or explicit provider transcripts before recall
 - `issue_command` -- browser control (eval_js, screenshot, navigate, viewport, storage, network throttle)
 - `list_connections` -- see active input sources (browsers, devices, apps)
@@ -1476,7 +1476,7 @@ mod tests {
         assert!(contents.contains(INSTRUCTION_VERSION_MARKER));
         assert!(contents.contains("ask once whether the user wants to recover recent conversation history across AI providers"));
         assert!(contents.contains(
-            "run full recall with `build_context_snapshot` and omit the `facets` filter"
+            "run recent recall with `build_context_snapshot` and omit the `facets` filter"
         ));
     }
 

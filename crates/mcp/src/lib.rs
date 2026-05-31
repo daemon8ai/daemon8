@@ -193,7 +193,7 @@ pub struct Daemon8ConnectParams {
     pub transcript_path: Option<String>,
 
     #[schemars(
-        description = "Optional conversation discovery lookback window in hours. Defaults to the earliest matching project conversation modified today, falling back to local midnight."
+        description = "Optional conversation discovery lookback window in hours. Defaults to the last 24 hours."
     )]
     pub conversation_lookback_hours: Option<u64>,
 }
@@ -233,7 +233,7 @@ pub struct LinkConversationParams {
     pub transcript_path: Option<String>,
 
     #[schemars(
-        description = "Optional conversation discovery lookback window in hours. Defaults to the earliest matching project conversation modified today, falling back to local midnight."
+        description = "Optional conversation discovery lookback window in hours. Defaults to the last 24 hours."
     )]
     pub conversation_lookback_hours: Option<u64>,
 }
@@ -553,7 +553,7 @@ pub struct ListDebugSessionsParams {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct BuildContextSnapshotParams {
     #[schemars(
-        description = "Time scope: 'conversation_start' (default), 'checkpoint' (since active debug checkpoint), or 'duration:N' (last N minutes)."
+        description = "Time scope: 'duration:1440' (default, last 24 hours), 'conversation_start' (full transcript), 'checkpoint' (since active debug checkpoint), or 'duration:N' (last N minutes)."
     )]
     pub since: Option<String>,
     #[schemars(
@@ -1066,18 +1066,8 @@ impl DaemonMcp {
             agent_name: agent_name.clone(),
             transcript_path: transcript_path.clone().map(PathBuf::from),
         });
-        let conversation_since_ms = outcome
-            .connection
-            .as_ref()
-            .and_then(|connection| connection.scope_root.as_deref())
-            .map(|scope_root| {
-                daemon8_providers::conversation_since_ms(
-                    &self.home_dir,
-                    Path::new(scope_root),
-                    conversation_lookback_hours,
-                )
-            })
-            .unwrap_or_else(daemon8_providers::conversation_day_start_since_ms);
+        let conversation_since_ms =
+            daemon8_providers::conversation_since_ms(conversation_lookback_hours);
         let transcript_path_buf = transcript_path.as_ref().map(PathBuf::from);
         let outcome = resolve_connect_transcript(
             outcome,
@@ -2538,13 +2528,6 @@ impl DaemonMcp {
                         home: &self.home_dir,
                     };
                     let conversation_since_ms = daemon8_providers::conversation_since_ms(
-                        &self.home_dir,
-                        Path::new(
-                            connection
-                                .scope_root
-                                .as_deref()
-                                .unwrap_or(&connection.requested_path),
-                        ),
                         params.conversation_lookback_hours,
                     );
                     link_conversation(connection, request, conversation_since_ms).map_err(Some)
@@ -2598,9 +2581,12 @@ impl DaemonMcp {
             }
         }
 
-        let since = match params.since.as_deref().unwrap_or("conversation_start") {
-            "conversation_start" => daemon8_ingest::snapshot::SnapshotSince::ConversationStart,
-            "checkpoint" => {
+        let since = match params.since.as_deref() {
+            None => daemon8_ingest::snapshot::SnapshotSince::default(),
+            Some("conversation_start") => {
+                daemon8_ingest::snapshot::SnapshotSince::ConversationStart
+            }
+            Some("checkpoint") => {
                 let has_session = self.active_state.current_session().is_some();
                 if !has_session {
                     return self.err(
@@ -2629,7 +2615,7 @@ impl DaemonMcp {
                     timestamp_ns: created_at_ns,
                 }
             }
-            s if s.starts_with("duration:") => {
+            Some(s) if s.starts_with("duration:") => {
                 match s
                     .strip_prefix("duration:")
                     .and_then(|n| n.parse::<u64>().ok())
@@ -2645,7 +2631,7 @@ impl DaemonMcp {
                     }
                 }
             }
-            other => {
+            Some(other) => {
                 return self.err(
                     "invalid_since_param",
                     &format!("unknown since value '{other}'"),
@@ -2654,6 +2640,8 @@ impl DaemonMcp {
                 );
             }
         };
+        let snapshot_now = std::time::SystemTime::now();
+        let cutoff = since.cutoff_at(snapshot_now);
 
         let mut sources: Vec<daemon8_ingest::snapshot::SnapshotSource> = Vec::new();
 
@@ -2679,7 +2667,7 @@ impl DaemonMcp {
             &scope_root_path,
             &self.home_dir,
             exclude,
-            0,
+            cutoff.ms.unwrap_or(0),
         );
         for candidate in discovered {
             let already_added = sources
@@ -2713,7 +2701,7 @@ impl DaemonMcp {
             output_dir: snapshot_run_dir(&scope_root_path, &session_id),
         };
 
-        match daemon8_ingest::snapshot::build_snapshot(&request) {
+        match daemon8_ingest::snapshot::build_snapshot_at(&request, snapshot_now) {
             Ok(result) => self.ok_code(
                 "snapshot_built",
                 "conversation snapshot built",

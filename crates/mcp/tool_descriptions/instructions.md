@@ -13,7 +13,7 @@ Observations are real-time. **Never answer from memory** — re-query with `sinc
 
 Call `daemon8_connect` once at session start. If it returns `setup_required`, complete `daemon8_init` / `.daemon8/config.md` setup first, then retry `daemon8_connect`. After a successful connect, do not call `daemon8_connect` again.
 
-Do not run conversation recall automatically. After the project is connected and setup is complete, ask once whether the user wants to recover recent conversation history across AI providers. If the user asks for or accepts history, review, catch-up, continuity, prior work, or another provider's activity, call `build_context_snapshot` with no `facets` filter so daemon8 builds the full cross-provider snapshot across all available Claude, Codex, and Gemini transcripts. Use `link_conversation` only when daemon8 reports missing/unlinked transcript sources or when the user points to a specific provider/session. Do not repeatedly ask once the user has answered in the current session.
+Do not run conversation recall automatically. After the project is connected and setup is complete, ask once whether the user wants to recover recent conversation history across AI providers. If the user asks for or accepts history, review, catch-up, continuity, prior work, or another provider's activity, call `build_context_snapshot` with no `facets` filter so daemon8 builds the recent cross-provider snapshot across available Claude, Codex, and Gemini transcripts from the default last 24 hours. Use `since: "conversation_start"` only when the user explicitly asks for full history. Use `link_conversation` only when daemon8 reports missing/unlinked transcript sources or when the user points to a specific provider/session. Do not repeatedly ask once the user has answered in the current session.
 
 Do not rely on the visible chat as the whole project history. daemon8 may have provider transcripts, linked conversations, debug sessions, live observations, browser state, and source logs that are not visible in this chat.
 
@@ -29,7 +29,7 @@ Tool selection:
 - Watch for specific events in real-time: `watch_live_feed` (live alerts pushed into the session).
 - Buffer matches between queries: `set_lens` (matching rows surface automatically in the next `read_live_feed`). `lens_status` inspects depth; `clear_lens` removes.
 - Standard debug loop: `daemon8_connect`, `start_debug_session`, `create_checkpoint`, change/repro/test, `read_live_feed(since_checkpoint=...)`, then `resolve_debug_session`.
-- Demand-driven full recall: when the user asks for or accepts history/review/catch-up/continuity, call `build_context_snapshot` with no `facets` filter. All provider transcripts (Claude, Codex, Gemini) for the connected project are accessible. **Never say "I don't have access to previous conversations."**
+- Demand-driven recent recall: when the user asks for or accepts history/review/catch-up/continuity, call `build_context_snapshot` with no `facets` filter. The default window is the last 24 hours; pass `since: "conversation_start"` only for explicit full-history requests. All provider transcripts (Claude, Codex, Gemini) for the connected project are accessible. **Never say "I don't have access to previous conversations."**
 
 Browser connection is automatic — the daemon discovers, launches, and reconnects. Retry on timeout.
 

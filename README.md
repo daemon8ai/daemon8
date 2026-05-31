@@ -243,7 +243,7 @@ The MCP surface is the main interface for agents.
 | `create_checkpoint` | Mark the observation sequence before a repro, patch, or verification step. |
 | `resolve_debug_session` | Close the loop with root cause, fix summary, commands, and related errors. |
 | `link_conversation` | Attach a provider transcript to the current project session. |
-| `build_context_snapshot` | Build markdown facets from recent conversation history. |
+| `build_context_snapshot` | Build markdown facets from recent conversation history. Defaults to 24 hours; `since: "conversation_start"` requests full history. |
 | `list_connections` | See browser, app, and device sources currently connected. |
 | `connect_browser` | Point daemon8 at a Chromium DevTools endpoint. |
 | `issue_command` | Run browser or device actions. |

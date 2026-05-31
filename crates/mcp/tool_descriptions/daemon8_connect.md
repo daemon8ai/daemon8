@@ -16,7 +16,7 @@ None.
 - `project_path`: required directory path to classify.
 - `agent_name`: optional human-readable agent name.
 - `transcript_path`: optional provider transcript path. Use this to resolve ambiguous active transcripts or bind an explicit transcript file.
-- `conversation_lookback_hours`: optional discovery lookback. Default: current project workday (earliest matching conversation modified today, or local midnight).
+- `conversation_lookback_hours`: optional discovery lookback. Default: last 24 hours.
 
 ## Returns
 
@@ -47,6 +47,6 @@ Retry daemon8_connect **only** when the response status is not `success`:
 - `code=transcript_provider_mismatch` → retry with a transcript from the requested provider.
 - `code=transcript_scope_mismatch` → retry with a transcript for the connected project.
 
-**Conversation discovery**: when `data.conversations.available` is non-empty, state what daemon8 found -- provider count, most recent activity (compute from `modified_at_ms`). Link relevant transcripts with `link_conversation`. Present: "Call `build_context_snapshot` with `facets: ["summary"]` for a quick overview, or omit facets for full decomposition."
+**Conversation discovery**: when `data.conversations.available` is non-empty, state what daemon8 found -- provider count, most recent activity (compute from `modified_at_ms`). Link relevant transcripts with `link_conversation`. Present: "Call `build_context_snapshot` with `facets: ["summary"]` for a quick recent overview, or omit facets for full recent decomposition. Use `since: "conversation_start"` only for full history."
 
 **Post-setup orientation**: after first setup or fresh config confirmation, state how many sources daemon8 watches and name them. Mention available conversations by provider. If `data.related_projects` is empty, ask about sibling projects. Summarize capabilities: `read_live_feed`, `create_checkpoint`, `build_context_snapshot`, `start_debug_session`.

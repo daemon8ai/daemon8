@@ -37,7 +37,7 @@ pub struct ConnectArgs {
     #[arg(long)]
     pub transcript_path: Option<PathBuf>,
 
-    /// Optional conversation discovery lookback window in hours.
+    /// Optional conversation discovery lookback window in hours. Defaults to 24.
     #[arg(long)]
     pub conversation_lookback_hours: Option<u64>,
 
@@ -102,18 +102,7 @@ pub async fn cmd_connect(config_path: Option<String>, args: ConnectArgs) -> Resu
         transcript_path: transcript_path.clone(),
     });
     let home = dirs_home();
-    let conversation_since_ms = outcome
-        .connection
-        .as_ref()
-        .and_then(|connection| connection.scope_root.as_deref())
-        .map(|scope_root| {
-            conversation_since_ms(
-                &home,
-                std::path::Path::new(scope_root),
-                conversation_lookback_hours,
-            )
-        })
-        .unwrap_or_else(daemon8_providers::conversation_day_start_since_ms);
+    let conversation_since_ms = conversation_since_ms(conversation_lookback_hours);
     let outcome = resolve_connect_transcript(
         outcome,
         transcript_path.as_deref(),

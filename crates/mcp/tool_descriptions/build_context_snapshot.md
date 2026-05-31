@@ -4,14 +4,14 @@ Build a faceted snapshot of provider conversation history. Decomposes Claude, Co
 
 ## When
 
-When the user asks for or accepts conversation/history recovery: prior work, recent activity, a project review, catch-up, continuity, or another provider's activity. Do **not** call this automatically after connect. When recall is requested, omit `facets` for a full cross-provider review unless the user explicitly asks for a narrow summary.
+When the user asks for or accepts conversation/history recovery: prior work, recent activity, a project review, catch-up, continuity, or another provider's activity. Do **not** call this automatically after connect. When recall is requested, omit `facets` for a full recent cross-provider review unless the user explicitly asks for a narrow summary. Use `since="conversation_start"` only when the user explicitly asks for full history.
 
 ## Prereq
 
 Project-scoped connection (`data.connection.mode == "project"`) with at least one discoverable or linked transcript. If none found, use `link_conversation`.
 
 ## Args
-  - since: optional string. Time scope: `"conversation_start"` (default, full transcript), `"checkpoint"` (since active debug checkpoint), or `"duration:N"` (last N minutes). Use `"duration:30"` for a quick recent-activity check.
+  - since: optional string. Time scope: `"duration:1440"` (default, last 24 hours), `"conversation_start"` (full transcript), `"checkpoint"` (since active debug checkpoint), or `"duration:N"` (last N minutes). Use `"duration:30"` for a quick recent-activity check.
   - facets: optional string array. Which facets to build. Valid values: `user_messages`, `assistant_messages`, `tool_activity`, `file_changes`, `log_activity`, `summary`. Omit for all facets when the user asks for recall/review/catch-up. Use `["summary"]` only when the user explicitly asks for a brief or narrow summary.
   - providers: optional string array. Filter to specific providers (`claude`, `codex`, `gemini`). Omit for all discovered.
 
@@ -29,7 +29,7 @@ Common envelope with `code="snapshot_built"`, `data.snapshot_path` (absolute pat
 ## Next
 
 Read facet files with your file-reading tool:
-- For full recall, read across the generated facets and present a cohesive review -- **do not dump raw markdown**.
+- Read across the generated facets and present a cohesive review -- **do not dump raw markdown**.
 - `file-changes.md` for what changed, `tool-activity.md` for tools used, `user-messages.md` for original requests.
 - No sources found → call `link_conversation`.
 - Empty facets → verify time scope covers the period of interest (`"conversation_start"` for everything).

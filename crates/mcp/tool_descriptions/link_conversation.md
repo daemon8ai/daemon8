@@ -14,7 +14,7 @@ Project-scoped connection via `daemon8_connect`.
   - provider: required string. The AI provider id ("claude", "codex", "gemini") or alias ("claude-code", "codex-cli").
   - project_path: optional string. Absolute path to the project root for transcript discovery. Searches for the most recent transcript in the selected lookback window.
   - transcript_path: optional string. Absolute path to a specific transcript file to link directly.
-  - conversation_lookback_hours: optional discovery lookback when using project_path. When omitted, daemon8 includes the current project workday starting at the earliest matching project conversation modified today, falling back to local midnight.
+  - conversation_lookback_hours: optional discovery lookback when using project_path. When omitted, daemon8 searches the last 24 hours.
 
 One of `project_path` or `transcript_path` required. Both given → `transcript_path` takes precedence. When linking a `daemon8_connect` candidate, pass its `transcript_path` directly; otherwise repeat the same `conversation_lookback_hours`.
 

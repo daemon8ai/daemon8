@@ -8,7 +8,7 @@ Opening a session alone does nothing. Follow immediately with `create_checkpoint
 
 At the start of any non-trivial debugging task. Errors observed, tests failing, "this isn't behaving" -- open a session, then work inside it. The session is the persistent artifact future-you (or another agent) will retrieve when a similar issue resurfaces.
 
-Before opening, check for overlapping debug investigations: `list_debug_sessions(feature="...")`. Do not run conversation recall automatically. If the user asks for prior context, another provider's work, or a catch-up before debugging, call `build_context_snapshot` with no `facets` filter.
+Before opening, check for overlapping debug investigations: `list_debug_sessions(feature="...")`. Do not run conversation recall automatically. If the user asks for prior context, another provider's work, or a catch-up before debugging, call `build_context_snapshot` with no `facets` filter for the recent default window. Use `since="conversation_start"` only for explicit full-history requests.
 
 ## Prereq
 
