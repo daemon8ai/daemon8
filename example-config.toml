@@ -20,10 +20,14 @@
 # max_reconnect_interval_secs = 30
 # path = ""
 
-# [adb]
+# [device.adb]
 # enabled = false
 # server_addr = "127.0.0.1:5037"
 # scan_interval_secs = 10
+#
+# [device.vvd]
+# enabled = false
+# vega_cli_path = ""
 
 # [mcp]
 # stdio = true

@@ -72,21 +72,24 @@ fn local_bin_dir() -> String {
 }
 
 #[cfg(target_os = "macos")]
-fn macos_permission_preflight() {
+fn macos_permission_preflight(vvd_enabled: bool) {
     println!();
     println!("  macOS may ask once to allow daemon8 as a background item.");
+    if vvd_enabled {
+        println!("  VVD screenshots require Screen Recording permission for daemon8.");
+    }
     println!("  If Chromium control needs App Management later, daemon8 will guide that setup.");
     println!("  A browser extension is not needed.");
     println!();
 }
 
-// Best-effort jump to the Privacy & Security App Management pane. Fails
+// Best-effort jump to the Privacy & Security Screen Recording pane. Fails
 // silently if the URL scheme is unavailable or `open` returns non-zero --
 // install has already succeeded at this point.
 #[cfg(target_os = "macos")]
-fn macos_open_privacy_pane() {
+pub(crate) fn macos_open_privacy_pane() {
     let _ = std::process::Command::new("open")
-        .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_AppBundles")
+        .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
         .output();
 }
 
@@ -122,9 +125,13 @@ pub fn cmd_install(args: InstallArgs) -> Result<()> {
 
     #[cfg(target_os = "macos")]
     {
-        macos_permission_preflight();
+        macos_permission_preflight(cfg.device.vvd.enabled);
         install_launchd(&binary_str, chrome_endpoint.as_deref(), port)?;
-        macos_open_privacy_pane();
+
+        if should_request_screen_recording_on_install(&cfg) {
+            let _ = request_macos_screen_recording_permission();
+            macos_open_privacy_pane();
+        }
     }
 
     #[cfg(target_os = "linux")]
@@ -161,6 +168,60 @@ pub fn cmd_install(args: InstallArgs) -> Result<()> {
     }
 
     Ok(())
+}
+
+pub fn cmd_request_screen_recording() -> Result<()> {
+    #[cfg(all(target_os = "macos", feature = "xcap"))]
+    {
+        if request_macos_screen_recording_permission() {
+            println!(
+                "Screen Recording permission request completed for this daemon8 binary. Verify the launchd daemon with a device screenshot; macOS may still require toggling daemon8 in System Settings after reinstall."
+            );
+            macos_open_privacy_pane();
+        } else {
+            println!(
+                "Screen Recording permission is still not granted. Opening System Settings so you can approve daemon8."
+            );
+            macos_open_privacy_pane();
+        }
+        Ok(())
+    }
+
+    #[cfg(all(target_os = "macos", not(feature = "xcap")))]
+    {
+        anyhow::bail!(
+            "screen recording permission requests require daemon8 to be built with --features xcap"
+        );
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        println!("Screen Recording permission is macOS-only.");
+        Ok(())
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "xcap"))]
+pub(crate) fn request_macos_screen_recording_permission() -> bool {
+    if objc2_core_graphics::CGPreflightScreenCaptureAccess() {
+        return true;
+    }
+
+    println!("Requesting macOS Screen Recording permission for daemon8...");
+    objc2_core_graphics::CGRequestScreenCaptureAccess()
+}
+
+#[cfg(any(
+    not(target_os = "macos"),
+    all(target_os = "macos", not(feature = "xcap"))
+))]
+pub(crate) fn request_macos_screen_recording_permission() -> bool {
+    true
+}
+
+#[cfg(target_os = "macos")]
+fn should_request_screen_recording_on_install(cfg: &crate::config::Config) -> bool {
+    cfg.device.vvd.enabled
 }
 
 #[derive(Clone)]
@@ -1336,6 +1397,16 @@ mod tests {
             providers,
             vec![Provider::ClaudeCode, Provider::Gemini, Provider::Codex]
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn install_requests_screen_recording_only_when_vvd_is_enabled() {
+        let mut cfg = crate::config::Config::default();
+        assert!(!should_request_screen_recording_on_install(&cfg));
+
+        cfg.device.vvd.enabled = true;
+        assert!(should_request_screen_recording_on_install(&cfg));
     }
 
     #[test]

@@ -55,9 +55,12 @@ libc = "0.2"
 xcap = { version = "0.9", optional = true }
 image = { version = "0.25", optional = true, default-features = false, features = ["png"] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-core-graphics = { version = "0.3.2", optional = true }
+
 [features]
 default = []
-xcap = ["dep:xcap", "dep:image"]
+xcap = ["dep:xcap", "dep:image", "dep:objc2-core-graphics"]
 
 [dev-dependencies]
 tempfile = "3"

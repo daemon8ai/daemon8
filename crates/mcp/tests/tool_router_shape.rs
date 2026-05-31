@@ -8,7 +8,7 @@ use std::{borrow::Cow, sync::Arc};
 use daemon8_chrome::ConnectionState;
 use daemon8_mcp::{
     ActParams, BuildContextSnapshotParams, CreateCheckpointParams, Daemon8ConnectParams,
-    Daemon8InitParams, DaemonMcp, DaemonMcpConfig, DebugAction, IngestParams,
+    Daemon8InitParams, DaemonMcp, DaemonMcpConfig, DebugAction, DeviceFeatureStatus, IngestParams,
     LinkConversationParams, ListDebugSessionsParams, ObserveParams, StartDebugSessionParams,
     TOOL_POLICY_TABLE, ToolPolicy, tool_policy,
 };
@@ -79,6 +79,8 @@ async fn make_mcp_with_cancel_and_home(cancel: CancellationToken, home_dir: Path
         chrome_state: chrome_state_rx,
         chrome_endpoint: Arc::new(std::sync::Mutex::new(None)),
         device_screenshot_fn: None,
+        device_input_fn: None,
+        device_features: DeviceFeatureStatus::default(),
         screenshot_dir: std::env::temp_dir().join("daemon8-test-screenshots"),
         home_dir,
         broadcast_tx,
@@ -110,6 +112,8 @@ async fn make_mcp_with_debug() -> DaemonMcp {
         chrome_state: chrome_state_rx,
         chrome_endpoint: Arc::new(std::sync::Mutex::new(None)),
         device_screenshot_fn: None,
+        device_input_fn: None,
+        device_features: DeviceFeatureStatus::default(),
         screenshot_dir: std::env::temp_dir().join("daemon8-test-screenshots"),
         home_dir: test_home_dir(),
         broadcast_tx,
@@ -148,6 +152,8 @@ async fn make_mcp_with_debug_and_writer() -> DaemonMcp {
         chrome_state: chrome_state_rx,
         chrome_endpoint: Arc::new(std::sync::Mutex::new(None)),
         device_screenshot_fn: None,
+        device_input_fn: None,
+        device_features: DeviceFeatureStatus::default(),
         screenshot_dir: std::env::temp_dir().join("daemon8-test-screenshots"),
         home_dir: test_home_dir(),
         broadcast_tx,
@@ -177,6 +183,8 @@ async fn make_mcp_with_debug_without_memory() -> DaemonMcp {
         chrome_state: chrome_state_rx,
         chrome_endpoint: Arc::new(std::sync::Mutex::new(None)),
         device_screenshot_fn: None,
+        device_input_fn: None,
+        device_features: DeviceFeatureStatus::default(),
         screenshot_dir: std::env::temp_dir().join("daemon8-test-screenshots"),
         home_dir: test_home_dir(),
         broadcast_tx,
@@ -208,6 +216,8 @@ async fn make_mcp_with_debug_in_home(home_dir: PathBuf) -> DaemonMcp {
         chrome_state: chrome_state_rx,
         chrome_endpoint: Arc::new(std::sync::Mutex::new(None)),
         device_screenshot_fn: None,
+        device_input_fn: None,
+        device_features: DeviceFeatureStatus::default(),
         screenshot_dir: std::env::temp_dir().join("daemon8-test-screenshots"),
         home_dir,
         broadcast_tx,
@@ -248,6 +258,8 @@ async fn make_mcp_with_writer_in_home(home_dir: PathBuf) -> DaemonMcp {
         chrome_state: chrome_state_rx,
         chrome_endpoint: Arc::new(std::sync::Mutex::new(None)),
         device_screenshot_fn: None,
+        device_input_fn: None,
+        device_features: DeviceFeatureStatus::default(),
         screenshot_dir: std::env::temp_dir().join("daemon8-test-screenshots"),
         home_dir,
         broadcast_tx,
@@ -284,6 +296,8 @@ async fn make_mcp_with_read_through() -> DaemonMcp {
         chrome_state: chrome_state_rx,
         chrome_endpoint: Arc::new(std::sync::Mutex::new(None)),
         device_screenshot_fn: None,
+        device_input_fn: None,
+        device_features: DeviceFeatureStatus::default(),
         screenshot_dir: std::env::temp_dir().join("daemon8-test-screenshots"),
         home_dir: test_home_dir(),
         broadcast_tx,
@@ -313,6 +327,8 @@ async fn make_mcp_with_shared_store(
         chrome_state: chrome_state_rx,
         chrome_endpoint: Arc::new(std::sync::Mutex::new(None)),
         device_screenshot_fn: None,
+        device_input_fn: None,
+        device_features: DeviceFeatureStatus::default(),
         screenshot_dir: std::env::temp_dir().join("daemon8-test-screenshots"),
         home_dir,
         broadcast_tx,
@@ -349,6 +365,8 @@ fn act_params(action: DebugAction) -> ActParams {
         temporary: None,
         device_serial: None,
         device_platform: None,
+        device_key: None,
+        device_text: None,
         viewport_width: None,
         viewport_height: None,
         viewport_scale: None,
@@ -2455,6 +2473,14 @@ async fn list_connections_browser_key_visible() {
     assert!(
         val.get("browser").is_some(),
         "connections_json must contain 'browser' key. Got: {val}"
+    );
+    assert_eq!(
+        val["device_features"]["adb_enabled"], false,
+        "connections_json must expose adb feature state. Got: {val}"
+    );
+    assert_eq!(
+        val["device_features"]["vvd_enabled"], false,
+        "connections_json must expose vvd feature state. Got: {val}"
     );
 }
 

@@ -4,7 +4,7 @@
 pub mod logcat;
 pub mod loggingctl;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum LogSeverity {
     Trace,
     Debug,

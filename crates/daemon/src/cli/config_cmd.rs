@@ -73,7 +73,21 @@ fn cmd_config_show(config_path: Option<String>, json: bool) -> Result<()> {
     );
     println!();
     println!("  {}", style::blue("Device"));
-    println!("    {} {}", style::label("adb"), bval(cfg.adb.enabled));
+    println!(
+        "    {} {}",
+        style::label("adb"),
+        bval(cfg.device.adb.enabled)
+    );
+    println!(
+        "    {} {}",
+        style::label("vvd"),
+        bval(cfg.device.vvd.enabled)
+    );
+    println!(
+        "    {} {}",
+        style::label("vega cli"),
+        path_val(cfg.device.vvd.vega_cli_path.as_deref())
+    );
     println!();
     println!("  {}", style::blue("Debug Sessions"));
     println!(
@@ -252,7 +266,6 @@ fn validate_config_key_value(key: &str, value: &str) -> Result<()> {
             }
         }
         "browser.auto_connect"
-        | "adb.enabled"
         | "ingestion.udp.enabled"
         | "ingestion.unix.enabled"
         | "logging.stderr"
@@ -261,8 +274,50 @@ fn validate_config_key_value(key: &str, value: &str) -> Result<()> {
                 anyhow::bail!("{key} must be 'true' or 'false', got: '{value}'");
             }
         }
-        "adb.server_addr" | "ingestion.udp.bind" => {
+        "device.adb.enabled" => {
+            anyhow::bail!(
+                "device.adb.enabled is managed by feature preflight; use `daemon8 feature adb {}`",
+                if value == "true" { "enable" } else { "disable" }
+            );
+        }
+        "device.vvd.enabled" => {
+            anyhow::bail!(
+                "device.vvd.enabled is managed by feature preflight; use `daemon8 feature vvd {}`",
+                if value == "true" { "enable" } else { "disable" }
+            );
+        }
+        "device.adb.server_addr" | "ingestion.udp.bind" => {
             validate_host_port(key, value)?;
+        }
+        "device.adb.scan_interval_secs" => {
+            let n: u64 = value.parse().map_err(|_| {
+                anyhow::anyhow!(
+                    "device.adb.scan_interval_secs must be a positive integer, got: '{value}'"
+                )
+            })?;
+            if n == 0 {
+                anyhow::bail!("device.adb.scan_interval_secs must be greater than 0");
+            }
+        }
+        "device.vvd.vega_cli_path" => {
+            if value.is_empty() {
+                anyhow::bail!(
+                    "device.vvd.vega_cli_path must be non-empty (omit the key to use PATH)"
+                );
+            }
+            let p = std::path::Path::new(value);
+            if !p.exists() {
+                anyhow::bail!("Vega CLI path does not exist: {value}");
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let meta = std::fs::metadata(p)
+                    .with_context(|| format!("cannot stat Vega CLI path: {value}"))?;
+                if meta.permissions().mode() & 0o111 == 0 {
+                    anyhow::bail!("Vega CLI path is not executable: {value}");
+                }
+            }
         }
         "ingestion.unix.path" => {
             if cfg!(windows) {
@@ -338,6 +393,21 @@ mod tests {
     fn validate_config_key_value_accepts_stdio_bool() {
         validate_config_key_value("mcp.stdio", "true").unwrap();
         validate_config_key_value("mcp.stdio", "false").unwrap();
+    }
+
+    #[test]
+    fn validate_config_key_value_accepts_device_feature_keys() {
+        validate_config_key_value("device.adb.server_addr", "127.0.0.1:5037").unwrap();
+        validate_config_key_value("device.adb.scan_interval_secs", "10").unwrap();
+    }
+
+    #[test]
+    fn validate_config_key_value_rejects_feature_gate_bypass() {
+        let err = validate_config_key_value("device.vvd.enabled", "true").unwrap_err();
+        assert!(err.to_string().contains("daemon8 feature vvd enable"));
+
+        let err = validate_config_key_value("device.adb.enabled", "false").unwrap_err();
+        assert!(err.to_string().contains("daemon8 feature adb disable"));
     }
 
     #[test]

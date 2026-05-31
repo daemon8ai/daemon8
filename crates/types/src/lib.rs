@@ -123,6 +123,9 @@ pub enum DebugAction {
     ElementAtPoint,
     NewTab,
     CloseTab,
+    DeviceKey,
+    DeviceText,
+    DeviceTap,
 }
 
 #[derive(
@@ -199,6 +202,75 @@ pub enum DevicePlatform {
     #[default]
     Android,
     Vega,
+}
+
+/// Symbolic device key. Each platform controller translates these to its native
+/// representation (Android keyevent codes, or a Vega-specific mechanism), so the
+/// agent-facing vocabulary stays platform-neutral.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DeviceKey {
+    Up,
+    Down,
+    Left,
+    Right,
+    Select,
+    Back,
+    Home,
+    Menu,
+    PlayPause,
+    VolumeUp,
+    VolumeDown,
+}
+
+impl fmt::Display for DeviceKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            Self::Up => "up",
+            Self::Down => "down",
+            Self::Left => "left",
+            Self::Right => "right",
+            Self::Select => "select",
+            Self::Back => "back",
+            Self::Home => "home",
+            Self::Menu => "menu",
+            Self::PlayPause => "play_pause",
+            Self::VolumeUp => "volume_up",
+            Self::VolumeDown => "volume_down",
+        };
+        f.write_str(s)
+    }
+}
+
+impl FromStr for DeviceKey {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "up" => Ok(Self::Up),
+            "down" => Ok(Self::Down),
+            "left" => Ok(Self::Left),
+            "right" => Ok(Self::Right),
+            "select" => Ok(Self::Select),
+            "back" => Ok(Self::Back),
+            "home" => Ok(Self::Home),
+            "menu" => Ok(Self::Menu),
+            "play_pause" => Ok(Self::PlayPause),
+            "volume_up" => Ok(Self::VolumeUp),
+            "volume_down" => Ok(Self::VolumeDown),
+            other => Err(format!("unknown device key: {other}")),
+        }
+    }
+}
+
+/// A single device input command. Crosses the mcp -> daemon closure boundary
+/// (`DeviceInputFn`), so it lives in the shared types crate and carries no adb logic.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum DeviceInput {
+    Key { key: DeviceKey },
+    Text { text: String },
+    Tap { x: f64, y: f64 },
 }
 
 /// Enum discriminant without payload — use for filtering/matching without carrying variant data.
@@ -1223,12 +1295,57 @@ mod tests {
             (DebugAction::SetViewport, "set_viewport"),
             (DebugAction::StorageInspect, "storage_inspect"),
             (DebugAction::ElementAtPoint, "element_at_point"),
+            (DebugAction::DeviceKey, "device_key"),
+            (DebugAction::DeviceText, "device_text"),
+            (DebugAction::DeviceTap, "device_tap"),
         ];
         for (variant, wire) in cases {
             let text = serde_json::to_string(&variant).unwrap();
             assert_eq!(text, format!("\"{wire}\""));
             let back: DebugAction = serde_json::from_str(&text).unwrap();
             assert_eq!(back, variant);
+        }
+    }
+
+    #[test]
+    fn device_key_roundtrip_snake_case() {
+        let cases = [
+            (DeviceKey::Up, "up"),
+            (DeviceKey::Select, "select"),
+            (DeviceKey::PlayPause, "play_pause"),
+            (DeviceKey::VolumeDown, "volume_down"),
+        ];
+        for (variant, wire) in cases {
+            assert_eq!(
+                serde_json::to_string(&variant).unwrap(),
+                format!("\"{wire}\"")
+            );
+            assert_eq!(variant.to_string(), wire);
+            assert_eq!(DeviceKey::from_str(wire).unwrap(), variant);
+            assert_eq!(DeviceKey::from_str(&wire.to_uppercase()).unwrap(), variant);
+        }
+    }
+
+    #[test]
+    fn device_key_from_str_rejects_unknown() {
+        assert!(DeviceKey::from_str("rewind").is_err());
+    }
+
+    #[test]
+    fn device_input_roundtrip() {
+        let cases = [
+            DeviceInput::Key {
+                key: DeviceKey::Down,
+            },
+            DeviceInput::Text {
+                text: "hello".into(),
+            },
+            DeviceInput::Tap { x: 1.5, y: 2.0 },
+        ];
+        for input in cases {
+            let text = serde_json::to_string(&input).unwrap();
+            let back: DeviceInput = serde_json::from_str(&text).unwrap();
+            assert_eq!(back, input);
         }
     }
 
