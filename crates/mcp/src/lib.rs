@@ -25,7 +25,7 @@ use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{Implementation, ServerCapabilities, ServerInfo, Tool};
 use rmcp::schemars::{self, JsonSchema};
 use rmcp::{RoleServer, ServerHandler, tool, tool_router};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 use tracing::Instrument;
 
@@ -83,6 +83,12 @@ pub type DeviceInputFn = Arc<
         + Send
         + Sync,
 >;
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+pub struct DeviceFeatureStatus {
+    pub adb_enabled: bool,
+    pub vvd_enabled: bool,
+}
 
 #[derive(Debug)]
 pub enum ChromeCommand {
@@ -573,6 +579,8 @@ pub struct DaemonMcp {
     last_checkpoint: Mutex<(Checkpoint, u64)>,
     device_screenshot_fn: Option<DeviceScreenshotFn>,
     device_input_fn: Option<DeviceInputFn>,
+    device_features: DeviceFeatureStatus,
+    device_command_health: Arc<Mutex<std::collections::BTreeMap<String, DeviceCommandHealth>>>,
     screenshot_dir: std::path::PathBuf,
     home_dir: PathBuf,
     subscription_tx: tokio::sync::watch::Sender<Option<Filter>>,
@@ -598,12 +606,24 @@ pub struct DaemonMcpConfig {
     pub chrome_endpoint: Arc<Mutex<Option<Arc<str>>>>,
     pub device_screenshot_fn: Option<DeviceScreenshotFn>,
     pub device_input_fn: Option<DeviceInputFn>,
+    pub device_features: DeviceFeatureStatus,
     pub screenshot_dir: std::path::PathBuf,
     pub home_dir: PathBuf,
     pub broadcast_tx: broadcast::Sender<(Arc<Observation>, Arc<str>)>,
     pub lens: Arc<LensManager>,
     pub cursor_store: Option<Arc<dyn daemon8_store::CursorStore>>,
     pub cancel: tokio_util::sync::CancellationToken,
+}
+
+#[derive(Clone, Serialize)]
+struct DeviceCommandHealth {
+    serial: String,
+    platform: DevicePlatform,
+    state: &'static str,
+    last_action: String,
+    last_error: Option<String>,
+    last_ok_at_ns: Option<u64>,
+    last_failure_at_ns: Option<u64>,
 }
 
 #[tool_router(vis = "pub")]
@@ -633,6 +653,8 @@ impl DaemonMcp {
             last_checkpoint: Mutex::new((Checkpoint(0), 0)),
             device_screenshot_fn: cfg.device_screenshot_fn,
             device_input_fn: cfg.device_input_fn,
+            device_features: cfg.device_features,
+            device_command_health: Arc::new(Mutex::new(std::collections::BTreeMap::new())),
             screenshot_dir: cfg.screenshot_dir,
             home_dir: cfg.home_dir,
             subscription_tx,
@@ -988,19 +1010,6 @@ impl DaemonMcp {
         let transcript_path = params.transcript_path;
         let conversation_lookback_hours = params.conversation_lookback_hours;
 
-        if self.has_connection() {
-            return AlphaEnvelope::success(
-                "already_connected",
-                "session is already connected -- proceed with other tools",
-                self.with_session_context(serde_json::json!({})),
-            )
-            .with_hint(
-                "daemon8_connect already succeeded in this MCP session. Do not call it again.",
-            )
-            .with_next_action(next_action_for_tool("read_live_feed"))
-            .render();
-        }
-
         let provider =
             match normalize_provider_for_connect(&self.session_id, &provider, &project_path) {
                 Ok(provider) => provider,
@@ -1036,6 +1045,20 @@ impl DaemonMcp {
                     return envelope.render();
                 }
             };
+
+        if self.same_connection_request(&provider, &project_path) {
+            return AlphaEnvelope::success(
+                "already_connected",
+                "session is already connected -- proceed with other tools",
+                self.with_session_context(serde_json::json!({})),
+            )
+            .with_hint(
+                "daemon8_connect already succeeded in this MCP session. Do not call it again.",
+            )
+            .with_next_action(next_action_for_tool("read_live_feed"))
+            .render();
+        }
+
         let outcome = connect_scope(ConnectRequest {
             session_id: self.session_id.clone(),
             provider: provider.clone(),
@@ -2324,6 +2347,16 @@ impl DaemonMcp {
             .is_some()
     }
 
+    fn same_connection_request(&self, provider: &str, project_path: &str) -> bool {
+        self.connection
+            .lock()
+            .expect("connection mutex poisoned")
+            .as_ref()
+            .is_some_and(|connection| {
+                connection.provider == provider && connection.requested_path == project_path
+            })
+    }
+
     fn connection_mode(&self) -> Option<ScopeMode> {
         self.connection
             .lock()
@@ -3108,25 +3141,100 @@ impl DaemonMcp {
 }
 
 impl DaemonMcp {
+    fn record_device_action_success(
+        &self,
+        serial: &str,
+        platform: DevicePlatform,
+        action: DebugAction,
+    ) {
+        let key = device_health_key(serial, &platform);
+        let mut health = self
+            .device_command_health
+            .lock()
+            .expect("device_command_health mutex poisoned");
+        let previous_failure = health.get(&key).and_then(|h| h.last_failure_at_ns);
+        health.insert(
+            key,
+            DeviceCommandHealth {
+                serial: serial.into(),
+                platform,
+                state: "healthy",
+                last_action: debug_action_name(action).into(),
+                last_error: None,
+                last_ok_at_ns: Some(current_ns()),
+                last_failure_at_ns: previous_failure,
+            },
+        );
+    }
+
+    fn record_device_action_failure(
+        &self,
+        serial: &str,
+        platform: DevicePlatform,
+        action: DebugAction,
+        error: impl Into<String>,
+    ) {
+        let key = device_health_key(serial, &platform);
+        let mut health = self
+            .device_command_health
+            .lock()
+            .expect("device_command_health mutex poisoned");
+        let previous_ok = health.get(&key).and_then(|h| h.last_ok_at_ns);
+        health.insert(
+            key,
+            DeviceCommandHealth {
+                serial: serial.into(),
+                platform,
+                state: "degraded",
+                last_action: debug_action_name(action).into(),
+                last_error: Some(error.into()),
+                last_ok_at_ns: previous_ok,
+                last_failure_at_ns: Some(current_ns()),
+            },
+        );
+    }
+
+    fn device_command_health_json(&self) -> serde_json::Value {
+        let health = self
+            .device_command_health
+            .lock()
+            .expect("device_command_health mutex poisoned");
+        serde_json::to_value(health.values().collect::<Vec<_>>()).unwrap_or_default()
+    }
+
     async fn handle_device_screenshot(&self, params: &ActParams) -> String {
-        let screenshot_fn = match &self.device_screenshot_fn {
-            Some(f) => f,
-            None => {
-                tracing::warn!(
-                    "device screenshot requested but ADB screenshot support is unavailable"
-                );
+        let serial = match params.device_serial.as_deref() {
+            Some(serial) if !serial.is_empty() => serial.to_string(),
+            _ => {
                 return error_json(
-                    "device_screenshot_unavailable",
-                    "device screenshots not available (ADB not enabled)",
+                    "missing_param",
+                    "device screenshot requires 'device_serial'",
                 );
             }
         };
 
-        let serial = params.device_serial.clone().unwrap_or_default();
+        let screenshot_fn = match &self.device_screenshot_fn {
+            Some(f) => f,
+            None => {
+                tracing::warn!(
+                    "device screenshot requested but device screenshot support is unavailable"
+                );
+                return error_json(
+                    "device_screenshot_unavailable",
+                    "device screenshots not available (device feature not enabled)",
+                );
+            }
+        };
+
         let platform = match params.device_platform.as_deref() {
             Some("vega") => DevicePlatform::Vega,
             _ => DevicePlatform::Android,
         };
+
+        if let Some(message) = self.device_feature_disabled_message(&platform, "screenshots") {
+            self.record_device_action_failure(&serial, platform, params.action, message.clone());
+            return error_json("device_feature_disabled", &message);
+        }
 
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(15),
@@ -3137,10 +3245,22 @@ impl DaemonMcp {
         match result {
             Err(_) => {
                 tracing::warn!(serial, platform = ?platform, "device screenshot timed out");
+                self.record_device_action_failure(
+                    &serial,
+                    platform,
+                    params.action,
+                    "device screenshot timed out (15s)",
+                );
                 error_json("action_failed", "device screenshot timed out (15s)")
             }
             Ok(Err(e)) => {
                 tracing::warn!(serial, platform = ?platform, error = %e, "device screenshot failed");
+                self.record_device_action_failure(
+                    &serial,
+                    platform,
+                    params.action,
+                    format!("device screenshot failed: {e}"),
+                );
                 error_json(
                     "action_failed",
                     &format!("device screenshot failed for {serial}: {e}"),
@@ -3162,6 +3282,7 @@ impl DaemonMcp {
                     size_bytes = shot.png_bytes.len(),
                     "device screenshot captured"
                 );
+                self.record_device_action_success(&serial, platform, params.action);
                 serde_json::to_string(&serde_json::json!({
                     "screenshot": path.display().to_string(),
                     "size_bytes": shot.png_bytes.len(),
@@ -3177,10 +3298,10 @@ impl DaemonMcp {
         let input_fn = match &self.device_input_fn {
             Some(f) => f,
             None => {
-                tracing::warn!("device input requested but ADB support is unavailable");
+                tracing::warn!("device input requested but device input support is unavailable");
                 return self.err(
                     "device_input_unavailable",
-                    "device input not available (ADB not enabled)",
+                    "device input not available (device feature not enabled)",
                     None,
                     None,
                 );
@@ -3209,6 +3330,11 @@ impl DaemonMcp {
             _ => DevicePlatform::Android,
         };
 
+        if let Some(message) = self.device_feature_disabled_message(&platform, "input") {
+            self.record_device_action_failure(&serial, platform, params.action, message.clone());
+            return self.err("device_feature_disabled", &message, None, None);
+        }
+
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(15),
             (input_fn)(serial.clone(), platform.clone(), input.clone()),
@@ -3218,10 +3344,22 @@ impl DaemonMcp {
         match result {
             Err(_) => {
                 tracing::warn!(serial, platform = ?platform, "device input timed out");
+                self.record_device_action_failure(
+                    &serial,
+                    platform,
+                    params.action,
+                    "device input timed out (15s)",
+                );
                 self.err("action_failed", "device input timed out (15s)", None, None)
             }
             Ok(Err(e)) => {
                 tracing::warn!(serial, platform = ?platform, error = %e, "device input failed");
+                self.record_device_action_failure(
+                    &serial,
+                    platform,
+                    params.action,
+                    format!("device input failed: {e}"),
+                );
                 self.err(
                     "action_failed",
                     &format!("device input failed for {serial}: {e}"),
@@ -3231,6 +3369,7 @@ impl DaemonMcp {
             }
             Ok(Ok(())) => {
                 tracing::info!(serial, platform = ?platform, ?input, "device input sent");
+                self.record_device_action_success(&serial, platform, params.action);
                 self.ok_code(
                     "device_input_sent",
                     "device input sent",
@@ -3241,6 +3380,25 @@ impl DaemonMcp {
                     }),
                 )
             }
+        }
+    }
+}
+
+impl DaemonMcp {
+    fn device_feature_disabled_message(
+        &self,
+        platform: &DevicePlatform,
+        capability: &str,
+    ) -> Option<String> {
+        match platform {
+            DevicePlatform::Android if self.device_features.adb_enabled => None,
+            DevicePlatform::Vega if self.device_features.vvd_enabled => None,
+            DevicePlatform::Android => Some(format!(
+                "Android device {capability} disabled; run `daemon8 feature adb enable`"
+            )),
+            DevicePlatform::Vega => Some(format!(
+                "VVD device {capability} disabled; run `daemon8 feature vvd enable`"
+            )),
         }
     }
 }
@@ -3272,6 +3430,42 @@ fn build_device_input(params: &ActParams) -> Result<DeviceInput, &'static str> {
             Ok(DeviceInput::Tap { x, y })
         }
         _ => Err("build_device_input called with a non-device action"),
+    }
+}
+
+fn device_health_key(serial: &str, platform: &DevicePlatform) -> String {
+    format!("{serial}/{}", device_platform_name(platform))
+}
+
+fn device_platform_name(platform: &DevicePlatform) -> &'static str {
+    match platform {
+        DevicePlatform::Android => "android",
+        DevicePlatform::Vega => "vega",
+    }
+}
+
+fn debug_action_name(action: DebugAction) -> &'static str {
+    match action {
+        DebugAction::EvalJs => "eval_js",
+        DebugAction::Screenshot => "screenshot",
+        DebugAction::InjectCss => "inject_css",
+        DebugAction::RevertCss => "revert_css",
+        DebugAction::ListTabs => "list_tabs",
+        DebugAction::GetPerfMetrics => "get_perf_metrics",
+        DebugAction::GetDom => "get_dom",
+        DebugAction::SetViewport => "set_viewport",
+        DebugAction::ClearViewport => "clear_viewport",
+        DebugAction::NetworkConditions => "network_conditions",
+        DebugAction::Navigate => "navigate",
+        DebugAction::StorageClear => "storage_clear",
+        DebugAction::StorageInspect => "storage_inspect",
+        DebugAction::StorageSet => "storage_set",
+        DebugAction::ElementAtPoint => "element_at_point",
+        DebugAction::NewTab => "new_tab",
+        DebugAction::CloseTab => "close_tab",
+        DebugAction::DeviceKey => "device_key",
+        DebugAction::DeviceText => "device_text",
+        DebugAction::DeviceTap => "device_tap",
     }
 }
 
@@ -3335,13 +3529,21 @@ impl DaemonMcp {
             "browser": {
                 "state": format!("{chrome_state}"),
                 "endpoint": chrome_endpoint,
-            }
+            },
+            "device_features": self.device_features,
         });
 
         if let Ok(summary) = self.store.summary().await
             && !summary.connections.is_empty()
         {
             result["applications"] = serde_json::to_value(&summary.connections).unwrap_or_default();
+        }
+        let device_control = self.device_command_health_json();
+        if device_control
+            .as_array()
+            .is_some_and(|items| !items.is_empty())
+        {
+            result["device_control"] = device_control;
         }
 
         serde_json::to_string_pretty(&result).unwrap_or_else(|e| {
@@ -3603,6 +3805,7 @@ mod logging_tests {
             chrome_endpoint: Arc::new(Mutex::new(None)),
             device_screenshot_fn: None,
             device_input_fn: None,
+            device_features: DeviceFeatureStatus::default(),
             screenshot_dir: std::env::temp_dir().join("daemon8-test"),
             home_dir: std::env::temp_dir().join("daemon8-test-home"),
             broadcast_tx,
@@ -3878,6 +4081,7 @@ mod logging_tests {
                 chrome_endpoint: Arc::new(Mutex::new(None)),
                 device_screenshot_fn: None,
                 device_input_fn: None,
+                device_features: DeviceFeatureStatus::default(),
                 screenshot_dir: std::env::temp_dir().join("daemon8-test"),
                 home_dir: std::env::temp_dir().join("daemon8-test-home"),
                 broadcast_tx,
@@ -4239,6 +4443,29 @@ mod device_input_tests {
     type Recorded = Arc<Mutex<Vec<(String, DevicePlatform, DeviceInput)>>>;
 
     async fn build_mcp(input_fn: Option<DeviceInputFn>) -> DaemonMcp {
+        build_mcp_with_fns(input_fn, None).await
+    }
+
+    async fn build_mcp_with_fns(
+        input_fn: Option<DeviceInputFn>,
+        screenshot_fn: Option<DeviceScreenshotFn>,
+    ) -> DaemonMcp {
+        build_mcp_with_fns_and_features(
+            input_fn,
+            screenshot_fn,
+            DeviceFeatureStatus {
+                adb_enabled: true,
+                vvd_enabled: true,
+            },
+        )
+        .await
+    }
+
+    async fn build_mcp_with_fns_and_features(
+        input_fn: Option<DeviceInputFn>,
+        screenshot_fn: Option<DeviceScreenshotFn>,
+        device_features: DeviceFeatureStatus,
+    ) -> DaemonMcp {
         let store = Arc::new(daemon8_store::SurrealStore::memory().await.unwrap());
         let (obs_tx, _obs_rx) = tokio::sync::mpsc::unbounded_channel();
         let (chrome_tx, _chrome_rx) = tokio::sync::mpsc::channel(8);
@@ -4255,8 +4482,9 @@ mod device_input_tests {
             chrome_tx,
             chrome_state,
             chrome_endpoint: Arc::new(Mutex::new(None)),
-            device_screenshot_fn: None,
+            device_screenshot_fn: screenshot_fn,
             device_input_fn: input_fn,
+            device_features,
             screenshot_dir: std::env::temp_dir().join("daemon8-test"),
             home_dir: std::env::temp_dir().join("daemon8-test-home"),
             broadcast_tx,
@@ -4369,6 +4597,121 @@ mod device_input_tests {
     }
 
     #[tokio::test]
+    async fn handle_device_input_rejects_disabled_adb_feature_before_controller_call() {
+        let sink: Recorded = Arc::new(Mutex::new(Vec::new()));
+        let mcp = build_mcp_with_fns_and_features(
+            Some(recording_fn(sink.clone())),
+            None,
+            DeviceFeatureStatus {
+                adb_enabled: false,
+                vvd_enabled: true,
+            },
+        )
+        .await;
+
+        let res = mcp
+            .handle_device_input(&key_params(Some("emulator-5554"), Some("down")))
+            .await;
+
+        assert!(res.contains("device_feature_disabled"), "{res}");
+        assert!(res.contains("daemon8 feature adb enable"), "{res}");
+        assert!(sink.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn handle_device_input_rejects_disabled_vvd_feature_before_controller_call() {
+        let sink: Recorded = Arc::new(Mutex::new(Vec::new()));
+        let mcp = build_mcp_with_fns_and_features(
+            Some(recording_fn(sink.clone())),
+            None,
+            DeviceFeatureStatus {
+                adb_enabled: true,
+                vvd_enabled: false,
+            },
+        )
+        .await;
+        let mut p = key_params(Some("vega-1"), Some("down"));
+        p.device_platform = Some("vega".into());
+
+        let res = mcp.handle_device_input(&p).await;
+
+        assert!(res.contains("device_feature_disabled"), "{res}");
+        assert!(res.contains("daemon8 feature vvd enable"), "{res}");
+        assert!(sink.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn handle_device_screenshot_missing_serial_errors() {
+        let screenshot_fn: DeviceScreenshotFn = Arc::new(|_, _| {
+            Box::pin(async {
+                Ok(DeviceScreenshotResult {
+                    png_bytes: vec![1, 2, 3],
+                    source: "test".into(),
+                })
+            })
+        });
+        let mcp = build_mcp_with_fns(None, Some(screenshot_fn)).await;
+        let p = base_params(DebugAction::Screenshot);
+
+        let res = mcp.handle_device_screenshot(&p).await;
+
+        assert!(res.contains("missing_param"), "{res}");
+    }
+
+    #[tokio::test]
+    async fn handle_device_screenshot_rejects_disabled_adb_feature_before_capture_call() {
+        let calls = Arc::new(Mutex::new(0usize));
+        let screenshot_fn: DeviceScreenshotFn = {
+            let calls = calls.clone();
+            Arc::new(move |_, _| {
+                let calls = calls.clone();
+                Box::pin(async move {
+                    *calls.lock().unwrap() += 1;
+                    Ok(DeviceScreenshotResult {
+                        png_bytes: vec![1, 2, 3],
+                        source: "test".into(),
+                    })
+                })
+            })
+        };
+        let mcp = build_mcp_with_fns_and_features(
+            None,
+            Some(screenshot_fn),
+            DeviceFeatureStatus {
+                adb_enabled: false,
+                vvd_enabled: true,
+            },
+        )
+        .await;
+        let mut p = base_params(DebugAction::Screenshot);
+        p.device_serial = Some("emulator-5554".into());
+
+        let res = mcp.handle_device_screenshot(&p).await;
+
+        assert!(res.contains("device_feature_disabled"), "{res}");
+        assert_eq!(*calls.lock().unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn connections_json_exposes_non_default_device_features() {
+        let mcp = build_mcp_with_fns_and_features(
+            None,
+            None,
+            DeviceFeatureStatus {
+                adb_enabled: true,
+                vvd_enabled: false,
+            },
+        )
+        .await;
+
+        let raw = mcp.connections_json().await;
+        let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
+
+        assert_eq!(parsed["device_features"]["adb_enabled"], true);
+        assert_eq!(parsed["device_features"]["vvd_enabled"], false);
+    }
+
+    #[tokio::test]
     async fn handle_device_input_surfaces_controller_error() {
         let failing: DeviceInputFn = Arc::new(|_, _, _| {
             Box::pin(async { Err(anyhow::anyhow!("device vega-1: not connected")) })
@@ -4379,5 +4722,46 @@ mod device_input_tests {
         let res = mcp.handle_device_input(&p).await;
         assert!(res.contains("action_failed"), "{res}");
         assert!(res.contains("not connected"), "{res}");
+
+        let raw = mcp.connections_json().await;
+        let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let health = &parsed["device_control"][0];
+        assert_eq!(health["serial"], "vega-1");
+        assert_eq!(health["platform"], "vega");
+        assert_eq!(health["state"], "degraded");
+        assert_eq!(health["last_action"], "device_key");
+        assert!(
+            health["last_error"]
+                .as_str()
+                .unwrap()
+                .contains("not connected")
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_device_screenshot_failure_marks_control_channel_degraded() {
+        let failing: DeviceScreenshotFn =
+            Arc::new(|_, _| Box::pin(async { Err(anyhow::anyhow!("screenshooter hung")) }));
+        let mcp = build_mcp_with_fns(None, Some(failing)).await;
+        let mut p = base_params(DebugAction::Screenshot);
+        p.device_serial = Some("emulator-5554".into());
+        p.device_platform = Some("vega".into());
+
+        let res = mcp.handle_device_screenshot(&p).await;
+        assert!(res.contains("action_failed"), "{res}");
+
+        let raw = mcp.connections_json().await;
+        let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let health = &parsed["device_control"][0];
+        assert_eq!(health["serial"], "emulator-5554");
+        assert_eq!(health["platform"], "vega");
+        assert_eq!(health["state"], "degraded");
+        assert_eq!(health["last_action"], "screenshot");
+        assert!(
+            health["last_error"]
+                .as_str()
+                .unwrap()
+                .contains("screenshooter hung")
+        );
     }
 }

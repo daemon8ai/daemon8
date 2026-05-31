@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use daemon8_types::{DeviceKey, DevicePlatform};
 
 use crate::error::Result;
-use crate::transport::AdbTransport;
+use crate::transport::{AdbTransport, DeviceTransport};
 
 /// Drives input on one connected device. One impl per platform.
 #[async_trait]

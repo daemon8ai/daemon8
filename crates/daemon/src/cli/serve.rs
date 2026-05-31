@@ -143,23 +143,47 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
             None
         }));
 
-    let device_screenshot_fn: Option<daemon8_mcp::DeviceScreenshotFn> = if cfg.adb.enabled {
-        let addr = cfg.adb.server_addr;
-        let scan_interval = cfg.adb.scan_interval_secs;
+    let android_device_enabled = cfg.device.adb.enabled;
+    let vvd_device_enabled = cfg.device.vvd.enabled;
+    let device_transport_enabled = android_device_enabled || vvd_device_enabled;
+    let device_features = daemon8_mcp::DeviceFeatureStatus {
+        adb_enabled: android_device_enabled,
+        vvd_enabled: vvd_device_enabled,
+    };
+
+    let device_screenshot_fn: Option<daemon8_mcp::DeviceScreenshotFn> = if device_transport_enabled
+    {
+        let addr = cfg.device.adb.server_addr;
+        let scan_interval = cfg.device.adb.scan_interval_secs;
         let tx = obs_tx.clone();
         let ct = cancel.clone();
         tasks.spawn(async move {
-            if let Err(e) = daemon8_adb::connect_and_monitor(addr, scan_interval, tx, ct).await {
+            let features = daemon8_adb::device_manager::DeviceMonitorFeatures {
+                android: android_device_enabled,
+                vega: vvd_device_enabled,
+            };
+            if let Err(e) =
+                daemon8_adb::connect_and_monitor_features(addr, scan_interval, tx, ct, features)
+                    .await
+            {
                 tracing::error!("ADB device monitor error: {e}");
             }
         });
-        Some(crate::screenshot::build_screenshot_fn(addr))
+        Some(crate::screenshot::build_screenshot_fn(
+            addr,
+            android_device_enabled,
+            vvd_device_enabled,
+        ))
     } else {
         None
     };
 
-    let device_input_fn: Option<daemon8_mcp::DeviceInputFn> = if cfg.adb.enabled {
-        Some(crate::device::build_device_input_fn(cfg.adb.server_addr))
+    let device_input_fn: Option<daemon8_mcp::DeviceInputFn> = if device_transport_enabled {
+        Some(crate::device::build_device_input_fn(
+            cfg.device.adb.server_addr,
+            android_device_enabled,
+            vvd_device_enabled,
+        ))
     } else {
         None
     };
@@ -217,6 +241,7 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
             chrome_endpoint: chrome_endpoint.clone(),
             device_screenshot_fn: device_screenshot_fn.clone(),
             device_input_fn: device_input_fn.clone(),
+            device_features,
             screenshot_dir: screenshot_dir.clone(),
             home_dir: daemon8_providers::dirs_home(),
             broadcast_tx: broadcast_tx.clone(),
@@ -278,6 +303,7 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
                 chrome_endpoint: mcp_ep.clone(),
                 device_screenshot_fn: mcp_screenshot_fn.clone(),
                 device_input_fn: mcp_input_fn.clone(),
+                device_features,
                 screenshot_dir: mcp_screenshot_dir.clone(),
                 home_dir: daemon8_providers::dirs_home(),
                 broadcast_tx: mcp_broadcast_tx.clone(),
@@ -305,6 +331,7 @@ pub(crate) async fn cmd_serve(config_path: Option<String>, args: ServeArgs) -> R
         chrome_cmd_tx: chrome_cmd_tx.clone(),
         chrome_state: chrome_state_rx.clone(),
         chrome_endpoint: chrome_endpoint.clone(),
+        device_features,
         lens: api_lens,
         cursor_store: Some(Arc::new(surreal_store.cursor_store())),
     };

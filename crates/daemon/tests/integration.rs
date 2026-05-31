@@ -72,7 +72,7 @@ fn write_logging_config(
 path = "{}"
 screenshot_path = "{}"
 
-[adb]
+[device.adb]
 enabled = false
 
 [logging]
@@ -187,6 +187,7 @@ async fn start_server(
         chrome_cmd_tx,
         chrome_state: chrome_state_rx,
         chrome_endpoint: std::sync::Arc::new(std::sync::Mutex::new(None)),
+        device_features: daemon8_mcp::DeviceFeatureStatus::default(),
         lens: std::sync::Arc::new(daemon8_store::LensManager::new(broadcast_tx.subscribe())),
         cursor_store: None,
     };
@@ -1165,6 +1166,7 @@ async fn start_act_server() -> (
         chrome_cmd_tx,
         chrome_state: chrome_state_rx,
         chrome_endpoint: std::sync::Arc::new(std::sync::Mutex::new(None)),
+        device_features: daemon8_mcp::DeviceFeatureStatus::default(),
         lens: std::sync::Arc::new(daemon8_store::LensManager::new(stream_tx.subscribe())),
         cursor_store: None,
     };

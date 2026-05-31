@@ -8,7 +8,7 @@ On a browser: read DOM state, capture visual proof, prototype CSS, or simulate c
 
 ## Prereq
 
-Browser actions need a connected MCP session plus a connected browser (auto-connects on localhost:9222; use `connect_browser` for non-standard endpoints). Device actions need a connected MCP session plus an ADB-reachable device -- confirm it with `list_connections`. The daemon must run with ADB enabled, because device input is routed through the ADB transport; without it, device actions return `device_input_unavailable`.
+Browser actions need a connected MCP session plus a connected browser (auto-connects on localhost:9222; use `connect_browser` for non-standard endpoints). Device actions need a connected MCP session plus an enabled device feature and a reachable device -- confirm readiness with `list_connections`. Android uses `daemon8 feature adb enable`; Vega VVD uses `daemon8 feature vvd enable`, which also preflights the Vega CLI and macOS Screen Recording permission.
 
 ## Args
   - action: required string. Browser: eval_js, screenshot, inject_css, revert_css, list_tabs, get_perf_metrics, get_dom, set_viewport, clear_viewport, network_conditions, navigate, storage_clear, storage_inspect, storage_set, element_at_point, new_tab, close_tab. Device: device_key, device_text, device_tap.
@@ -27,7 +27,8 @@ Common envelope with action-specific `data`. Browser payloads carry fields such 
 ## Errors
   - `missing_param`: a required action-specific param is absent; `why` names the missing field (device_key needs `device_key`; device_tap needs `x` and `y`).
   - `browser_not_connected`: browser action with no connected browser; see list_connections / connect_browser.
-  - `device_input_unavailable`: device action but the daemon was started without ADB enabled; restart the daemon with ADB enabled.
+  - `device_input_unavailable`: device action but no device transport is enabled in this daemon process; enable the needed feature and restart daemon8.
+  - `device_feature_disabled`: the transport exists, but the requested platform feature is disabled (`device_platform="vega"` requires `daemon8 feature vvd enable`; Android requires `daemon8 feature adb enable`).
   - `action_failed`: the device rejected the command or was unreachable; `why` carries the device error.
 
 ## Next

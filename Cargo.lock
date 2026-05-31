@@ -1310,6 +1310,7 @@ dependencies = [
  "humantime",
  "image",
  "libc",
+ "objc2-core-graphics",
  "owo-colors",
  "proptest",
  "reqwest 0.13.2",

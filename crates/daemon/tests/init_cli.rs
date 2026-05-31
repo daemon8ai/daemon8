@@ -142,6 +142,13 @@ sources:
     .unwrap();
 }
 
+fn read_toml(path: &Path) -> toml::Value {
+    std::fs::read_to_string(path)
+        .unwrap()
+        .parse::<toml::Value>()
+        .unwrap()
+}
+
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -278,6 +285,158 @@ fn cli_config_set_accepts_debug_session_timeout() {
     let config = std::fs::read_to_string(&config_path).unwrap();
     assert!(config.contains("[debug_session]"));
     assert!(config.contains("inactivity_auto_end_secs = 12345"));
+}
+
+#[test]
+fn cli_feature_adb_enable_disable_mutates_config() {
+    let (_tmp, work, home) = setup_dirs();
+    let config_path = work.join("daemon8.toml");
+
+    let enable = run_daemon8_with_env(
+        &work,
+        &home,
+        &[],
+        &[
+            "--config",
+            config_path.to_str().unwrap(),
+            "feature",
+            "adb",
+            "enable",
+        ],
+    );
+    assert!(
+        enable.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&enable.stderr)
+    );
+    let cfg = read_toml(&config_path);
+    assert_eq!(cfg["device"]["adb"]["enabled"].as_bool(), Some(true));
+
+    let disable = run_daemon8_with_env(
+        &work,
+        &home,
+        &[],
+        &[
+            "--config",
+            config_path.to_str().unwrap(),
+            "feature",
+            "adb",
+            "disable",
+        ],
+    );
+    assert!(
+        disable.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&disable.stderr)
+    );
+    let cfg = read_toml(&config_path);
+    assert_eq!(cfg["device"]["adb"]["enabled"].as_bool(), Some(false));
+    assert_eq!(cfg["device"]["vvd"]["enabled"].as_bool(), Some(false));
+}
+
+#[test]
+fn cli_feature_status_json_reports_config() {
+    let (_tmp, work, home) = setup_dirs();
+    let config_path = work.join("daemon8.toml");
+    std::fs::write(
+        &config_path,
+        "[device.adb]\nenabled = true\nscan_interval_secs = 3\n",
+    )
+    .unwrap();
+
+    let out = run_daemon8_with_env(
+        &work,
+        &home,
+        &[],
+        &[
+            "--config",
+            config_path.to_str().unwrap(),
+            "feature",
+            "status",
+            "--json",
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let parsed: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(parsed["device"]["adb"]["enabled"], true);
+    assert_eq!(parsed["device"]["adb"]["scan_interval_secs"], 3);
+    assert_eq!(parsed["device"]["vvd"]["enabled"], false);
+}
+
+#[cfg(unix)]
+#[test]
+fn cli_feature_vvd_enable_uses_stub_cli_and_writes_config() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (_tmp, work, home) = setup_dirs();
+    let config_path = work.join("daemon8.toml");
+    let vega = work.join("vega");
+    std::fs::write(&vega, "#!/bin/sh\necho 0.0.0-test\n").unwrap();
+    let mut perms = std::fs::metadata(&vega).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&vega, perms).unwrap();
+
+    let out = run_daemon8_with_env(
+        &work,
+        &home,
+        &[],
+        &[
+            "--config",
+            config_path.to_str().unwrap(),
+            "feature",
+            "vvd",
+            "enable",
+            "--vega-cli",
+            vega.to_str().unwrap(),
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("0.0.0-test"), "{stdout}");
+
+    let cfg = read_toml(&config_path);
+    assert_eq!(cfg["device"]["adb"]["enabled"].as_bool(), Some(true));
+    assert_eq!(cfg["device"]["vvd"]["enabled"].as_bool(), Some(true));
+    assert_eq!(
+        cfg["device"]["vvd"]["vega_cli_path"].as_str().unwrap(),
+        vega.display().to_string()
+    );
+}
+
+#[test]
+fn cli_feature_vvd_enable_rejects_missing_vega_cli() {
+    let (_tmp, work, home) = setup_dirs();
+    let config_path = work.join("daemon8.toml");
+    let missing = work.join("missing-vega");
+
+    let out = run_daemon8_with_env(
+        &work,
+        &home,
+        &[],
+        &[
+            "--config",
+            config_path.to_str().unwrap(),
+            "feature",
+            "vvd",
+            "enable",
+            "--vega-cli",
+            missing.to_str().unwrap(),
+        ],
+    );
+
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("does not exist"), "stderr: {stderr}");
+    assert!(!config_path.exists());
 }
 
 #[test]

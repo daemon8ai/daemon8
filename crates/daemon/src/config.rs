@@ -20,7 +20,7 @@ pub struct Config {
     #[serde(default)]
     pub mcp: McpConfig,
     #[serde(default)]
-    pub adb: AdbConfig,
+    pub device: DeviceConfig,
     #[serde(default)]
     pub ingestion: IngestionConfig,
     #[serde(default)]
@@ -110,15 +110,33 @@ pub struct UnixConfig {
     pub path: Option<PathBuf>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeviceConfig {
+    #[serde(default)]
+    pub adb: AdbFeatureConfig,
+    #[serde(default)]
+    pub vvd: VvdFeatureConfig,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct AdbConfig {
+pub struct AdbFeatureConfig {
     #[serde(default)]
     pub enabled: bool,
     #[serde(default = "default_adb_server")]
     pub server_addr: SocketAddrV4,
     #[serde(default = "default_adb_scan_interval")]
     pub scan_interval_secs: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VvdFeatureConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default, deserialize_with = "deser_optional_path")]
+    pub vega_cli_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -223,7 +241,7 @@ impl Default for Config {
             storage: StorageConfig::default(),
             browser: ChromeConfig::default(),
             mcp: McpConfig::default(),
-            adb: AdbConfig::default(),
+            device: DeviceConfig::default(),
             ingestion: IngestionConfig::default(),
             logging: LoggingConfig::default(),
             debug_session: DebugSessionConfig::default(),
@@ -234,7 +252,7 @@ impl Default for Config {
     }
 }
 
-impl Default for AdbConfig {
+impl Default for AdbFeatureConfig {
     fn default() -> Self {
         Self {
             enabled: false,
@@ -308,6 +326,7 @@ pub fn load(config_path: Option<&str>) -> Result<Config, Box<figment::Error>> {
 
     if config_file.exists() {
         tracing::debug!(?config_file, "loading config file");
+        reject_legacy_top_level_adb(&config_file)?;
         figment = figment.merge(Toml::file(&config_file));
     }
 
@@ -333,6 +352,24 @@ pub fn load(config_path: Option<&str>) -> Result<Config, Box<figment::Error>> {
     Ok(cfg)
 }
 
+fn reject_legacy_top_level_adb(config_file: &std::path::Path) -> Result<(), Box<figment::Error>> {
+    let contents = std::fs::read_to_string(config_file).map_err(|e| {
+        Box::new(figment::Error::from(format!(
+            "failed to read config file {}: {e}",
+            config_file.display()
+        )))
+    })?;
+    let Ok(table) = contents.parse::<toml::Table>() else {
+        return Ok(());
+    };
+    if table.contains_key("adb") {
+        return Err(Box::new(figment::Error::from(
+            "top-level [adb] was removed; use [device.adb] or run `daemon8 feature adb enable`",
+        )));
+    }
+    Ok(())
+}
+
 fn is_config_env_key(key: &str) -> bool {
     let root = key
         .split_once("__")
@@ -348,7 +385,7 @@ fn is_config_env_key(key: &str) -> bool {
             | "storage"
             | "browser"
             | "mcp"
-            | "adb"
+            | "device"
             | "ingestion"
             | "logging"
             | "debug_session"
@@ -500,6 +537,22 @@ http = false
     }
 
     #[test]
+    fn load_rejects_legacy_top_level_adb_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"[adb]
+enabled = true
+"#,
+        )
+        .unwrap();
+
+        let err = load(Some(path.to_str().unwrap())).unwrap_err();
+        assert!(err.to_string().contains("top-level [adb] was removed"));
+    }
+
+    #[test]
     fn removed_nested_runtime_config_keys_are_rejected() {
         for toml_text in [
             r#"
@@ -641,29 +694,45 @@ max_log_files = 14
     }
 
     #[test]
-    fn adb_server_addr_parses_valid_socket() {
+    fn device_adb_server_addr_parses_valid_socket() {
         let cfg: Config = toml::from_str(
-            r#"[adb]
+            r#"[device.adb]
 server_addr = "192.168.1.10:5555"
 "#,
         )
         .unwrap();
         assert_eq!(
-            cfg.adb.server_addr,
+            cfg.device.adb.server_addr,
             SocketAddrV4::new(std::net::Ipv4Addr::new(192, 168, 1, 10), 5555)
         );
     }
 
     #[test]
-    fn adb_server_addr_rejects_hostname() {
+    fn device_adb_server_addr_rejects_hostname() {
         let result: Result<Config, _> = toml::from_str(
-            r#"[adb]
+            r#"[device.adb]
 server_addr = "localhost:5037"
 "#,
         );
         assert!(
             result.is_err(),
             "SocketAddrV4 should reject hostnames, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn device_vvd_config_deserializes() {
+        let cfg: Config = toml::from_str(
+            r#"[device.vvd]
+enabled = true
+vega_cli_path = "/tmp/vega"
+"#,
+        )
+        .unwrap();
+        assert!(cfg.device.vvd.enabled);
+        assert_eq!(
+            cfg.device.vvd.vega_cli_path,
+            Some(PathBuf::from("/tmp/vega"))
         );
     }
 

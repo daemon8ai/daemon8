@@ -406,7 +406,7 @@ mod tests {
 
     #[test]
     fn decode_project_slug_no_leading_dash() {
-        assert!(decode_project_slug("Users-jhavens").is_none());
+        assert!(decode_project_slug("Users-example").is_none());
     }
 
     #[test]
@@ -507,7 +507,7 @@ mod tests {
 
     #[test]
     fn encode_decode_slug_roundtrip() {
-        let path = PathBuf::from("/Users/jhavens/Code/Me/Rust/daemon8");
+        let path = PathBuf::from("/workspace/projects/daemon8");
         let slug = encode_project_slug(&path);
         assert_eq!(decode_project_slug(&slug), Some(path));
     }

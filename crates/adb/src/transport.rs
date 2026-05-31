@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: LicenseRef-FCL-1.0-ALv2
 // Copyright (c) 2026 Havy.tech, LLC
 
+use std::io::{BufRead, BufReader};
 use std::net::SocketAddrV4;
-use std::sync::Arc;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use adb_client::{ADBDeviceExt, server::ADBServer};
+use async_trait::async_trait;
 use daemon8_types::DevicePlatform;
 
 use crate::error::{AdbError, Result};
@@ -21,12 +24,29 @@ pub struct AdbTransport {
     addr: SocketAddrV4,
 }
 
+pub struct DeviceLogStream {
+    pub handle: std::thread::JoinHandle<Result<()>>,
+    pub rx: tokio::sync::mpsc::UnboundedReceiver<String>,
+    pub stop: Arc<AtomicBool>,
+    pub done: Arc<AtomicBool>,
+}
+
+#[async_trait]
+pub trait DeviceTransport: Send + Sync + 'static {
+    async fn list_devices(&self) -> Result<Vec<DeviceInfo>>;
+    async fn shell_command(&self, serial: &str, cmd: &str) -> Result<String>;
+    fn spawn_log_stream(&self, serial: String, cmd: String) -> DeviceLogStream;
+}
+
 impl AdbTransport {
     pub fn new(addr: SocketAddrV4) -> Self {
         Self { addr }
     }
+}
 
-    pub async fn list_devices(&self) -> Result<Vec<DeviceInfo>> {
+#[async_trait]
+impl DeviceTransport for AdbTransport {
+    async fn list_devices(&self) -> Result<Vec<DeviceInfo>> {
         let addr = self.addr;
         tokio::task::spawn_blocking(move || {
             let mut server = ADBServer::new(addr);
@@ -46,7 +66,7 @@ impl AdbTransport {
         .await?
     }
 
-    pub async fn shell_command(&self, serial: &str, cmd: &str) -> Result<String> {
+    async fn shell_command(&self, serial: &str, cmd: &str) -> Result<String> {
         let addr = self.addr;
         let serial = serial.to_string();
         let cmd = cmd.to_string();
@@ -69,6 +89,131 @@ impl AdbTransport {
         .await?
     }
 
+    /// Spawn a dedicated OS thread that streams shell output line-by-line.
+    /// Set the stop flag to signal the thread to exit.
+    fn spawn_log_stream(&self, serial: String, cmd: String) -> DeviceLogStream {
+        let addr = self.addr;
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_flag = stop.clone();
+        let done = Arc::new(AtomicBool::new(false));
+        let done_flag = done.clone();
+
+        let handle = std::thread::Builder::new()
+            .name(format!("adb-log-{serial}"))
+            .spawn(move || {
+                let result = stream_adb_shell(addr, &serial, &cmd, tx, stop_flag);
+                done_flag.store(true, Ordering::Relaxed);
+                result
+            })
+            .expect("failed to spawn log stream thread");
+
+        DeviceLogStream {
+            handle,
+            rx,
+            stop,
+            done,
+        }
+    }
+}
+
+fn stream_adb_shell(
+    addr: SocketAddrV4,
+    serial: &str,
+    cmd: &str,
+    tx: tokio::sync::mpsc::UnboundedSender<String>,
+    stop: Arc<AtomicBool>,
+) -> Result<()> {
+    let mut child = Command::new("adb")
+        .args(adb_shell_args(addr, serial, cmd))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| AdbError::Adb(format!("spawn adb shell stream: {e}")))?;
+
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| AdbError::Adb("adb shell stream had no stdout".into()))?;
+    let child = Arc::new(Mutex::new(child));
+    let process_done = Arc::new(AtomicBool::new(false));
+    let monitor_child = child.clone();
+    let monitor_stop = stop.clone();
+    let monitor_done = process_done.clone();
+
+    let monitor = std::thread::spawn(move || {
+        while !monitor_done.load(Ordering::Relaxed) {
+            if monitor_stop.load(Ordering::Relaxed) {
+                if let Ok(mut child) = monitor_child.lock() {
+                    let _ = child.kill();
+                }
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+    });
+
+    let mut reader = BufReader::new(stdout);
+    let mut line = String::new();
+
+    loop {
+        line.clear();
+        let bytes = match reader.read_line(&mut line) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                stop.store(true, Ordering::Relaxed);
+                if let Ok(mut child) = child.lock() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+                process_done.store(true, Ordering::Relaxed);
+                let _ = monitor.join();
+                return Err(AdbError::Adb(format!("read adb shell stream: {e}")));
+            }
+        };
+
+        if bytes == 0 {
+            break;
+        }
+
+        let trimmed = line.trim_end_matches(['\r', '\n']);
+        if !trimmed.is_empty() && tx.send(trimmed.to_string()).is_err() {
+            stop.store(true, Ordering::Relaxed);
+            break;
+        }
+    }
+
+    let status = child
+        .lock()
+        .expect("adb child mutex poisoned")
+        .wait()
+        .map_err(|e| AdbError::Adb(format!("wait adb shell stream: {e}")))?;
+    process_done.store(true, Ordering::Relaxed);
+    let _ = monitor.join();
+
+    if stop.load(Ordering::Relaxed) || status.success() {
+        Ok(())
+    } else {
+        Err(AdbError::Adb(format!(
+            "adb shell stream exited with status {status}"
+        )))
+    }
+}
+
+fn adb_shell_args(addr: SocketAddrV4, serial: &str, cmd: &str) -> Vec<String> {
+    vec![
+        "-H".into(),
+        addr.ip().to_string(),
+        "-P".into(),
+        addr.port().to_string(),
+        "-s".into(),
+        serial.into(),
+        "shell".into(),
+        cmd.into(),
+    ]
+}
+
+impl AdbTransport {
     pub async fn shell_command_raw(&self, serial: &str, cmd: &str) -> Result<Vec<u8>> {
         let addr = self.addr;
         let serial = serial.to_string();
@@ -165,109 +310,6 @@ impl AdbTransport {
 
         Ok(bytes)
     }
-
-    /// Spawn a dedicated OS thread that streams shell output line-by-line.
-    /// Returns a JoinHandle and a channel receiver for raw lines.
-    /// Set the stop flag to signal the thread to exit.
-    pub fn spawn_log_stream(
-        &self,
-        serial: String,
-        cmd: String,
-    ) -> (
-        std::thread::JoinHandle<Result<()>>,
-        tokio::sync::mpsc::UnboundedReceiver<String>,
-        Arc<AtomicBool>,
-    ) {
-        let addr = self.addr;
-        // Unbounded: logcat streams at device rate; backpressure would block the
-        // ADB read loop and cause the device to drop lines upstream. The consumer
-        // batches into the observation store, which has its own retention ceiling.
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        let stop = Arc::new(AtomicBool::new(false));
-        let stop_flag = stop.clone();
-
-        let handle = std::thread::Builder::new()
-            .name(format!("adb-log-{serial}"))
-            .spawn(move || {
-                let mut server = ADBServer::new(addr);
-                let mut device =
-                    server
-                        .get_device_by_name(&serial)
-                        .map_err(|e| AdbError::Device {
-                            serial: serial.clone(),
-                            reason: e.to_string(),
-                        })?;
-
-                // Capture output to a buffer that we drain periodically.
-                // adb_client's shell_command blocks until EOF, so for streaming
-                // commands like `logcat -f` we need a different approach:
-                // pipe through a writer that sends lines as they arrive.
-                let mut line_writer = LineSender {
-                    tx: tx.clone(),
-                    buf: String::new(),
-                    stop: stop_flag,
-                };
-
-                let result = device.shell_command(&cmd, Some(&mut line_writer), None);
-
-                match result {
-                    Ok(_) => {
-                        // Flush any remaining partial line
-                        if !line_writer.buf.is_empty() {
-                            let _ = line_writer.tx.send(std::mem::take(&mut line_writer.buf));
-                        }
-                        Ok(())
-                    }
-                    Err(e) => {
-                        tracing::error!(serial, cmd, error = %e, "log stream ended with error");
-                        Err(AdbError::Adb(format!("log stream: {e}")))
-                    }
-                }
-            })
-            .expect("failed to spawn log stream thread");
-
-        (handle, rx, stop)
-    }
-}
-
-struct LineSender {
-    tx: tokio::sync::mpsc::UnboundedSender<String>,
-    buf: String,
-    stop: Arc<AtomicBool>,
-}
-
-impl std::io::Write for LineSender {
-    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
-        if self.stop.load(Ordering::Relaxed) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::BrokenPipe,
-                "stop requested",
-            ));
-        }
-
-        let text = String::from_utf8_lossy(data);
-        self.buf.push_str(&text);
-
-        while let Some(newline_pos) = self.buf.find('\n') {
-            let line: String = self.buf.drain(..=newline_pos).collect();
-            let line = line
-                .trim_end_matches('\n')
-                .trim_end_matches('\r')
-                .to_string();
-            if !line.is_empty() && self.tx.send(line).is_err() {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::BrokenPipe,
-                    "receiver dropped",
-                ));
-            }
-        }
-
-        Ok(data.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
 }
 
 #[cfg(test)]
@@ -276,39 +318,23 @@ mod tests {
     use std::net::Ipv4Addr;
 
     #[test]
-    fn line_sender_splits_lines() {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let stop = Arc::new(AtomicBool::new(false));
-        let mut sender = LineSender {
-            tx,
-            buf: String::new(),
-            stop,
-        };
+    fn adb_shell_args_include_server_device_and_command() {
+        let addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 5037);
+        let args = adb_shell_args(addr, "emulator-5554", "logcat -v threadtime");
 
-        use std::io::Write;
-        sender.write_all(b"line one\nline two\npartial").unwrap();
-
-        assert_eq!(rx.try_recv().unwrap(), "line one");
-        assert_eq!(rx.try_recv().unwrap(), "line two");
-        assert!(rx.try_recv().is_err()); // partial not sent yet
-
-        sender.write_all(b" end\n").unwrap();
-        assert_eq!(rx.try_recv().unwrap(), "partial end");
-    }
-
-    #[test]
-    fn line_sender_respects_stop_flag() {
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let stop = Arc::new(AtomicBool::new(true));
-        let mut sender = LineSender {
-            tx,
-            buf: String::new(),
-            stop,
-        };
-
-        use std::io::Write;
-        let result = sender.write(b"should fail");
-        assert!(result.is_err());
+        assert_eq!(
+            args,
+            vec![
+                "-H",
+                "127.0.0.1",
+                "-P",
+                "5037",
+                "-s",
+                "emulator-5554",
+                "shell",
+                "logcat -v threadtime"
+            ]
+        );
     }
 
     #[tokio::test]

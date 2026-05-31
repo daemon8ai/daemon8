@@ -58,6 +58,9 @@ enum Commands {
     /// Show or modify configuration
     #[command(subcommand)]
     Config(cli::config_cmd::ConfigSubcommand),
+    /// Enable, disable, and inspect daemon8 feature gates
+    #[command(subcommand)]
+    Feature(cli::feature::FeatureSubcommand),
     /// Generate shell completions
     Completions {
         #[arg(value_enum)]
@@ -82,6 +85,9 @@ enum Commands {
 enum ServiceSubcommand {
     /// Install daemon8 as a system service (starts on login, restarts on crash)
     Install(cli::service::InstallArgs),
+    /// Request macOS Screen Recording permission for emulator screenshots
+    #[command(name = "request-screen-recording")]
+    RequestScreenRecording,
     /// Remove daemon8 system service
     Uninstall,
 }
@@ -122,6 +128,7 @@ async fn main() -> Result<()> {
         Commands::Lens(sub) => cli::lens::cmd_lens(sub).await,
         Commands::Logs { follow } => cli::logs::cmd_logs(cli.config, follow),
         Commands::Config(sub) => cli::config_cmd::cmd_config(cli.config, sub),
+        Commands::Feature(sub) => cli::feature::cmd_feature(cli.config, sub).await,
         Commands::Completions { shell } => {
             cli::completions::cmd_completions(shell, &mut Cli::command())
         }
@@ -129,6 +136,9 @@ async fn main() -> Result<()> {
         Commands::Init(args) => cli::init::cmd_init(cli.config, args).await,
         Commands::Service(sub) => match sub {
             ServiceSubcommand::Install(args) => cli::service::cmd_install(args),
+            ServiceSubcommand::RequestScreenRecording => {
+                cli::service::cmd_request_screen_recording()
+            }
             ServiceSubcommand::Uninstall => cli::service::cmd_uninstall(),
         },
         Commands::Reset(args) => cli::reset::cmd_reset(cli.config, args).await,

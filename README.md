@@ -262,10 +262,10 @@ The daemon serves local endpoints for direct integrations:
 | `POST /ingest/batch` | Write multiple observations. |
 | `GET /api/observe` | Query stored observations. |
 | `GET /api/stream` | Stream observations over SSE. |
-| `GET /api/connections` | Inspect browser and app connection state. |
+| `GET /api/connections` | Inspect browser, app, and device feature state. |
 | `GET /api/lens`, `PUT /api/lens`, `DELETE /api/lens` | Inspect, set, or clear the observation lens. |
 | `POST /api/connect` | Connect a browser DevTools endpoint. |
-| `POST /api/browser/act` | Run a browser or device action. |
+| `POST /api/browser/act` | Run a browser action. Device actions are exposed through MCP `issue_command`. |
 | `POST /mcp` | Streamable HTTP MCP transport. |
 
 _SDKs are on the roadmap_

@@ -15,7 +15,7 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post};
 use daemon8_chrome::BrowserAction;
-use daemon8_mcp::ChromeCommand;
+use daemon8_mcp::{ChromeCommand, DeviceFeatureStatus};
 use daemon8_store::{CursorStore, LensManager, StateModel};
 use daemon8_types::{Checkpoint, Filter, Observation, SliceSummary, StateSlice};
 use serde::Deserialize;
@@ -30,6 +30,7 @@ pub struct ApiState {
     pub chrome_cmd_tx: tokio::sync::mpsc::Sender<ChromeCommand>,
     pub chrome_state: tokio::sync::watch::Receiver<daemon8_chrome::ConnectionState>,
     pub chrome_endpoint: Arc<std::sync::Mutex<Option<Arc<str>>>>,
+    pub device_features: DeviceFeatureStatus,
     pub lens: Arc<LensManager>,
     pub cursor_store: Option<Arc<dyn CursorStore>>,
 }
@@ -260,6 +261,12 @@ mod tests {
     use tower::ServiceExt;
 
     async fn app_with_store() -> (Router, tempfile::TempDir) {
+        app_with_device_features(DeviceFeatureStatus::default()).await
+    }
+
+    async fn app_with_device_features(
+        device_features: DeviceFeatureStatus,
+    ) -> (Router, tempfile::TempDir) {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::create_dir(tmp.path().join(".git")).unwrap();
         std::fs::write(tmp.path().join("cargo.log"), "cargo check one\n").unwrap();
@@ -306,6 +313,7 @@ sources:
             chrome_cmd_tx,
             chrome_state,
             chrome_endpoint: Arc::new(std::sync::Mutex::new(None)),
+            device_features,
             lens: Arc::new(LensManager::new(stream_tx.subscribe())),
             cursor_store: Some(cursor_store),
         };
@@ -354,6 +362,31 @@ sources:
         let body: serde_json::Value =
             serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
         assert_eq!(body["observations"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn connections_exposes_device_feature_state() {
+        let (app, _tmp) = app_with_device_features(DeviceFeatureStatus {
+            adb_enabled: true,
+            vvd_enabled: false,
+        })
+        .await;
+
+        let resp = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/connections")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: serde_json::Value =
+            serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        assert_eq!(body["device_features"]["adb_enabled"], true);
+        assert_eq!(body["device_features"]["vvd_enabled"], false);
     }
 }
 
@@ -552,7 +585,8 @@ async fn handle_connections(State(state): State<ApiState>) -> Response {
         "browser": {
             "state": format!("{chrome_state}"),
             "endpoint": chrome_endpoint,
-        }
+        },
+        "device_features": state.device_features,
     });
 
     if let Ok(summary) = state.store.summary().await

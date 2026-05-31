@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LicenseRef-FCL-1.0-ALv2
 // Copyright (c) 2026 Havy.tech, LLC
 
-use daemon8_adb::transport::AdbTransport;
+use daemon8_adb::transport::{AdbTransport, DeviceTransport};
 use std::net::{Ipv4Addr, SocketAddrV4};
 
 #[tokio::main]
@@ -54,7 +54,10 @@ async fn main() {
         }
     };
 
-    let (handle, mut rx, stop) = transport.spawn_log_stream(serial.clone(), cmd);
+    let stream = transport.spawn_log_stream(serial.clone(), cmd);
+    let handle = stream.handle;
+    let mut rx = stream.rx;
+    let stop = stream.stop;
 
     let mut count = 0;
     while let Some(line) = rx.recv().await {
