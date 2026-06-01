@@ -32,6 +32,7 @@ Default recall is bounded and hygiene-filtered. Instruction blocks (system promp
 
 Read facet files with your file-reading tool:
 - Read across the generated facets and present a cohesive review -- **do not dump raw markdown**.
+- Always tell the user the time window covered (from `data.time_range`) in human-readable format, and that the default is the last 24 hours. If results are sparse or empty, tell the user they can request a wider window ("sync the last 3 days", "full history") or a narrower one ("last 30 minutes").
 - `file-changes.md` for what changed, `tool-activity.md` for tools used, `user-messages.md` for original requests.
 - No sources found → call `link_conversation`.
 - Empty facets → verify time scope covers the period of interest (`"conversation_start"` for everything).
