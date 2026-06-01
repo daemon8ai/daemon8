@@ -3245,6 +3245,138 @@ async fn build_context_snapshot_checkpoint_without_created_checkpoint() {
 }
 
 #[tokio::test]
+async fn build_context_snapshot_hides_instruction_blocks() {
+    let home = test_home_dir();
+    let project = home.join("snap-instruction-hide");
+    std::fs::create_dir_all(&project).unwrap();
+    mark_project(&project);
+    write_empty_project_config(&project);
+
+    let canonical_project = std::fs::canonicalize(&project).unwrap();
+    let slug = canonical_project.to_string_lossy().replace('/', "-");
+    let canonical_home = std::fs::canonicalize(&home).unwrap();
+    let claude_dir = canonical_home.join(".claude/projects").join(&slug);
+    std::fs::create_dir_all(&claude_dir).unwrap();
+    let transcript = claude_dir.join("instruction-test.jsonl");
+
+    let cwd = canonical_project.display().to_string();
+    let transcript_content = format!(
+        r#"{{"type":"permission-mode","permissionMode":"bypassPermissions","isSidechain":false,"sessionId":"s1","cwd":"{cwd}"}}
+{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"<system-reminder>\nYou are Claude Code.\n</system-reminder>"}}]}},"timestamp":"2026-05-22T09:59:00.000Z"}}
+{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"fix the login bug"}}]}},"timestamp":"2026-05-22T10:00:00.000Z"}}
+"#
+    );
+    std::fs::write(&transcript, &transcript_content).unwrap();
+
+    let mcp = make_mcp_with_cancel_and_home(CancellationToken::new(), canonical_home.clone()).await;
+
+    let connect = mcp
+        .daemon8_connect_for_tests(Daemon8ConnectParams {
+            project_path: canonical_project.display().to_string(),
+            provider: "claude".into(),
+            agent_name: None,
+            transcript_path: Some(transcript.display().to_string()),
+            conversation_lookback_hours: None,
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&connect).unwrap();
+    assert_eq!(parsed["status"], "success", "connect: {connect}");
+
+    let snap = mcp
+        .build_context_snapshot_for_tests(BuildContextSnapshotParams {
+            since: Some("conversation_start".into()),
+            facets: Some(vec!["user_messages".into()]),
+            providers: None,
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&snap).unwrap();
+    assert_eq!(parsed["status"], "success", "snapshot: {snap}");
+
+    let snapshot_path = parsed["data"]["snapshot_path"].as_str().unwrap();
+    let content =
+        std::fs::read_to_string(std::path::PathBuf::from(snapshot_path).join("user-messages.md"))
+            .unwrap();
+
+    assert!(
+        content.contains("fix the login bug"),
+        "real user prompt should be present"
+    );
+    assert!(
+        !content.contains("system-reminder"),
+        "instruction block should be hidden"
+    );
+    assert_eq!(
+        parsed["data"]["facets"]["user_messages"]["entry_count"]
+            .as_u64()
+            .unwrap(),
+        1,
+        "only the real user prompt should count"
+    );
+}
+
+#[tokio::test]
+async fn build_context_snapshot_caps_facet_entries() {
+    let home = test_home_dir();
+    let project = home.join("snap-cap-test");
+    std::fs::create_dir_all(&project).unwrap();
+    mark_project(&project);
+    write_empty_project_config(&project);
+
+    let canonical_project = std::fs::canonicalize(&project).unwrap();
+    let slug = canonical_project.to_string_lossy().replace('/', "-");
+    let canonical_home = std::fs::canonicalize(&home).unwrap();
+    let claude_dir = canonical_home.join(".claude/projects").join(&slug);
+    std::fs::create_dir_all(&claude_dir).unwrap();
+    let transcript = claude_dir.join("cap-test.jsonl");
+
+    let cwd = canonical_project.display().to_string();
+    let mut lines = format!(
+        r#"{{"type":"permission-mode","permissionMode":"bypassPermissions","isSidechain":false,"sessionId":"s1","cwd":"{cwd}"}}"#
+    );
+    lines.push('\n');
+
+    for i in 0..250 {
+        lines.push_str(&format!(
+            r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"prompt {i}"}}]}},"timestamp":"2026-05-22T10:{i:02}:00.000Z"}}"#
+        ));
+        lines.push('\n');
+    }
+    std::fs::write(&transcript, &lines).unwrap();
+
+    let mcp = make_mcp_with_cancel_and_home(CancellationToken::new(), canonical_home.clone()).await;
+
+    let connect = mcp
+        .daemon8_connect_for_tests(Daemon8ConnectParams {
+            project_path: canonical_project.display().to_string(),
+            provider: "claude".into(),
+            agent_name: None,
+            transcript_path: Some(transcript.display().to_string()),
+            conversation_lookback_hours: None,
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&connect).unwrap();
+    assert_eq!(parsed["status"], "success", "connect: {connect}");
+
+    let snap = mcp
+        .build_context_snapshot_for_tests(BuildContextSnapshotParams {
+            since: Some("conversation_start".into()),
+            facets: Some(vec!["user_messages".into()]),
+            providers: None,
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&snap).unwrap();
+    assert_eq!(parsed["status"], "success", "snapshot: {snap}");
+
+    let entry_count = parsed["data"]["facets"]["user_messages"]["entry_count"]
+        .as_u64()
+        .unwrap();
+    assert!(
+        entry_count <= 200,
+        "facet should cap at 200 entries, got {entry_count}"
+    );
+}
+
+#[tokio::test]
 async fn link_conversation_requires_connection() {
     let mcp = make_mcp().await;
     let result = mcp

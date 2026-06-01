@@ -208,9 +208,7 @@ pub fn build_snapshot_at(
     })
 }
 
-fn parse_transcript_events(
-    source: &SnapshotSource,
-) -> (recall::TimestampedEvents, Option<u64>) {
+fn parse_transcript_events(source: &SnapshotSource) -> (recall::TimestampedEvents, Option<u64>) {
     let file = match std::fs::File::open(&source.path) {
         Ok(f) => f,
         Err(_) => return (Vec::new(), None),
@@ -258,7 +256,9 @@ fn line_timestamp_ns(line: &str) -> Option<u64> {
 }
 
 fn extract_time_range(entries: &[RecallEntry]) -> SnapshotTimeRange {
-    let mut timestamps = entries.iter().filter_map(|e| recall::event_timestamp_str(&e.event));
+    let mut timestamps = entries
+        .iter()
+        .filter_map(|e| recall::event_timestamp_str(&e.event));
 
     let from = timestamps.next().map(str::to_string);
     let to = timestamps
@@ -364,7 +364,10 @@ fn build_user_messages_facet(entries: &[RecallEntry], policy: &RecallPolicy) -> 
     (out, count)
 }
 
-fn build_assistant_messages_facet(entries: &[RecallEntry], policy: &RecallPolicy) -> (String, usize) {
+fn build_assistant_messages_facet(
+    entries: &[RecallEntry],
+    policy: &RecallPolicy,
+) -> (String, usize) {
     let mut out = String::new();
     let mut count = 0;
 
@@ -427,7 +430,8 @@ fn build_file_changes_facet(entries: &[RecallEntry], policy: &RecallPolicy) -> (
         }
 
         if let ConversationEvent::FileChange { path, .. } = &entry.event {
-            if seen.len() >= policy.max_entries_per_facet || out.len() >= policy.max_bytes_per_facet {
+            if seen.len() >= policy.max_entries_per_facet || out.len() >= policy.max_bytes_per_facet
+            {
                 break;
             }
 
