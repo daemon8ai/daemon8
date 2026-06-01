@@ -533,10 +533,14 @@ fn build_summary_facet(entries: &[RecallEntry], policy: &RecallPolicy) -> (Strin
         turns.push((prompt, tool_count, file_count));
     }
 
+    let mut count = 0;
+
     for (prompt, tools, files) in turns.iter().take(policy.max_entries_per_facet) {
         if out.len() >= policy.max_bytes_per_facet {
             break;
         }
+
+        count += 1;
 
         let tool_word = if *tools == 1 { "call" } else { "calls" };
         let file_word = if *files == 1 { "change" } else { "changes" };
@@ -546,7 +550,6 @@ fn build_summary_facet(entries: &[RecallEntry], policy: &RecallPolicy) -> (Strin
         ));
     }
 
-    let count = turns.len().min(policy.max_entries_per_facet);
     (out, count)
 }
 

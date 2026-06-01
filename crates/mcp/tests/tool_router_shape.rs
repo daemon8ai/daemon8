@@ -3306,7 +3306,11 @@ async fn build_context_snapshot_hides_instruction_blocks() {
     );
     assert!(
         !content.contains("system-reminder"),
-        "instruction block should be hidden"
+        "short instruction block should be hidden"
+    );
+    assert!(
+        !content.contains("CLAUDE.md"),
+        "long instruction block should be hidden"
     );
     assert_eq!(
         parsed["data"]["facets"]["user_messages"]["entry_count"]
