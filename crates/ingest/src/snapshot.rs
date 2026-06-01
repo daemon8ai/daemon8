@@ -8,6 +8,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use daemon8_parse::ConversationEvent;
 
+use crate::recall::{self, RecallEntry, RecallPolicy, Visibility};
+
 pub const VALID_FACETS: &[&str] = &[
     "user_messages",
     "assistant_messages",
@@ -139,24 +141,29 @@ pub fn build_snapshot_at(
     }
     std::fs::create_dir(&request.output_dir).map_err(SnapshotError::OutputDir)?;
 
-    let mut all_events: Vec<ConversationEvent> = Vec::new();
+    let mut pipeline_sources = Vec::new();
     let mut sources_read: Vec<String> = Vec::new();
 
     for source in &request.sources {
-        let events = parse_transcript_events(source, cutoff.ns);
+        let (events, modified_ns) = parse_transcript_events(source);
+
         if !events.is_empty() {
             sources_read.push(source.path.display().to_string());
         }
-        all_events.extend(events);
+
+        pipeline_sources.push((
+            recall::SourceMeta {
+                provider: source.provider.clone(),
+                path: source.path.clone(),
+                modified_at_ns: modified_ns,
+            },
+            events,
+        ));
     }
 
-    all_events.sort_by(|a, b| {
-        event_timestamp_ns(a)
-            .unwrap_or(0)
-            .cmp(&event_timestamp_ns(b).unwrap_or(0))
-    });
-
-    let time_range = extract_time_range(&all_events);
+    let policy = RecallPolicy::default();
+    let entries = recall::recall_pipeline(pipeline_sources, &cutoff, &policy);
+    let time_range = extract_time_range(&entries);
 
     let active_facets: Vec<&str> = if request.facets.is_empty() {
         VALID_FACETS.to_vec()
@@ -167,12 +174,12 @@ pub fn build_snapshot_at(
     let mut facets = BTreeMap::new();
     for facet_name in &active_facets {
         let (content, entry_count) = match *facet_name {
-            "user_messages" => build_user_messages_facet(&all_events),
-            "assistant_messages" => build_assistant_messages_facet(&all_events),
-            "tool_activity" => build_tool_activity_facet(&all_events),
-            "file_changes" => build_file_changes_facet(&all_events),
-            "log_activity" => build_log_activity_facet(&all_events),
-            "summary" => build_summary_facet(&all_events),
+            "user_messages" => build_user_messages_facet(&entries, &policy),
+            "assistant_messages" => build_assistant_messages_facet(&entries, &policy),
+            "tool_activity" => build_tool_activity_facet(&entries, &policy),
+            "file_changes" => build_file_changes_facet(&entries, &policy),
+            "log_activity" => build_log_activity_facet(&entries, &policy),
+            "summary" => build_summary_facet(&entries, &policy),
             _ => continue,
         };
 
@@ -203,11 +210,10 @@ pub fn build_snapshot_at(
 
 fn parse_transcript_events(
     source: &SnapshotSource,
-    since_cutoff_ns: Option<u64>,
-) -> Vec<ConversationEvent> {
+) -> (recall::TimestampedEvents, Option<u64>) {
     let file = match std::fs::File::open(&source.path) {
         Ok(f) => f,
-        Err(_) => return Vec::new(),
+        Err(_) => return (Vec::new(), None),
     };
 
     let source_modified_ns = file
@@ -216,76 +222,25 @@ fn parse_transcript_events(
         .and_then(|metadata| metadata.modified().ok())
         .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
         .map(|modified| modified.as_nanos() as u64);
+
     let reader = BufReader::new(file);
-    let Some(cutoff) = since_cutoff_ns else {
-        return parse_all_transcript_events(source, reader);
-    };
-    let source_modified_in_window = source_modified_ns.is_some_and(|modified| modified >= cutoff);
-
-    parse_bounded_transcript_events(source, reader, cutoff, source_modified_in_window)
-}
-
-fn parse_all_transcript_events(
-    source: &SnapshotSource,
-    reader: impl BufRead,
-) -> Vec<ConversationEvent> {
     let mut events = Vec::new();
 
     for line in reader.lines() {
         let Ok(line) = line else { continue };
+
         if line.trim().is_empty() {
             continue;
         }
-        events.extend(parse_line_events(source, &line));
-    }
 
-    events
-}
+        let line_ts = line_timestamp_ns(&line);
 
-fn parse_bounded_transcript_events(
-    source: &SnapshotSource,
-    reader: impl BufRead,
-    cutoff: u64,
-    source_modified_in_window: bool,
-) -> Vec<ConversationEvent> {
-    let mut retained_events = Vec::new();
-    let mut has_timestamped_event = false;
-    let mut has_in_window_timestamped_event = false;
-
-    for line in reader.lines() {
-        let Ok(line) = line else { continue };
-        if line.trim().is_empty() {
-            continue;
-        }
-        let line_timestamp = line_timestamp_ns(&line);
-        let line_in_window = line_timestamp.is_some_and(|ts| ts >= cutoff);
         for event in parse_line_events(source, &line) {
-            let Some(retained) =
-                retain_bounded_event(event, cutoff, line_timestamp.is_some(), line_in_window)
-            else {
-                continue;
-            };
-            if retained.is_timestamped() {
-                has_timestamped_event = true;
-            }
-            if retained.is_in_window() {
-                has_in_window_timestamped_event = true;
-            }
-            retained_events.push(retained);
+            events.push((event, line_ts));
         }
     }
 
-    retained_events
-        .into_iter()
-        .filter(|event| {
-            event.is_in_window()
-                || (event.is_source_fresh_untimestamped()
-                    && source_modified_in_window
-                    && !has_timestamped_event)
-                || (event.is_structural_metadata() && has_in_window_timestamped_event)
-        })
-        .filter_map(BoundedEvent::into_event)
-        .collect()
+    (events, source_modified_ns)
 }
 
 fn parse_line_events(source: &SnapshotSource, line: &str) -> Vec<ConversationEvent> {
@@ -302,94 +257,8 @@ fn line_timestamp_ns(line: &str) -> Option<u64> {
     Some(ns as u64)
 }
 
-fn retain_bounded_event(
-    event: ConversationEvent,
-    cutoff: u64,
-    line_has_timestamp: bool,
-    line_in_window: bool,
-) -> Option<BoundedEvent> {
-    match event_timestamp_ns(&event) {
-        Some(ts) if ts >= cutoff => Some(BoundedEvent::InWindow(event)),
-        Some(_) => Some(BoundedEvent::OutOfWindow),
-        None if is_structural_metadata(&event) && line_has_timestamp && line_in_window => {
-            Some(BoundedEvent::StructuralMetadata(event))
-        }
-        None if is_structural_metadata(&event) && line_has_timestamp => None,
-        None if is_structural_metadata(&event) => Some(BoundedEvent::StructuralMetadata(event)),
-        None => Some(BoundedEvent::SourceFreshUntimestamped(event)),
-    }
-}
-
-enum BoundedEvent {
-    InWindow(ConversationEvent),
-    OutOfWindow,
-    StructuralMetadata(ConversationEvent),
-    SourceFreshUntimestamped(ConversationEvent),
-}
-
-impl BoundedEvent {
-    fn is_timestamped(&self) -> bool {
-        matches!(self, Self::InWindow(_) | Self::OutOfWindow)
-    }
-
-    fn is_in_window(&self) -> bool {
-        matches!(self, Self::InWindow(_))
-    }
-
-    fn is_structural_metadata(&self) -> bool {
-        matches!(self, Self::StructuralMetadata(_))
-    }
-
-    fn is_source_fresh_untimestamped(&self) -> bool {
-        matches!(
-            self,
-            Self::SourceFreshUntimestamped(_) | Self::StructuralMetadata(_)
-        )
-    }
-
-    fn into_event(self) -> Option<ConversationEvent> {
-        match self {
-            Self::InWindow(event)
-            | Self::StructuralMetadata(event)
-            | Self::SourceFreshUntimestamped(event) => Some(event),
-            Self::OutOfWindow => None,
-        }
-    }
-}
-
-fn is_structural_metadata(event: &ConversationEvent) -> bool {
-    matches!(
-        event,
-        ConversationEvent::SessionMeta { .. }
-            | ConversationEvent::TurnMeta { .. }
-            | ConversationEvent::AgentSpawn { .. }
-    )
-}
-
-fn event_timestamp_str(event: &ConversationEvent) -> Option<&str> {
-    match event {
-        ConversationEvent::ToolUse { timestamp, .. }
-        | ConversationEvent::ToolResult { timestamp, .. }
-        | ConversationEvent::UserPrompt { timestamp, .. }
-        | ConversationEvent::FileChange { timestamp, .. }
-        | ConversationEvent::AssistantMessage { timestamp, .. }
-        | ConversationEvent::RawEvent { timestamp, .. } => timestamp.as_deref(),
-        ConversationEvent::SessionMeta { .. }
-        | ConversationEvent::TurnMeta { .. }
-        | ConversationEvent::AgentSpawn { .. } => None,
-    }
-}
-
-fn event_timestamp_ns(event: &ConversationEvent) -> Option<u64> {
-    let ns = daemon8_parse::timestamp::normalize_timestamp_ns(event_timestamp_str(event)?)?;
-    if ns < 0 {
-        return None;
-    }
-    Some(ns as u64)
-}
-
-fn extract_time_range(events: &[ConversationEvent]) -> SnapshotTimeRange {
-    let mut timestamps = events.iter().filter_map(event_timestamp_str);
+fn extract_time_range(entries: &[RecallEntry]) -> SnapshotTimeRange {
+    let mut timestamps = entries.iter().filter_map(|e| recall::event_timestamp_str(&e.event));
 
     let from = timestamps.next().map(str::to_string);
     let to = timestamps
@@ -472,12 +341,20 @@ fn input_keys(input: &serde_json::Value) -> String {
         .unwrap_or_default()
 }
 
-fn build_user_messages_facet(events: &[ConversationEvent]) -> (String, usize) {
+fn build_user_messages_facet(entries: &[RecallEntry], policy: &RecallPolicy) -> (String, usize) {
     let mut out = String::new();
     let mut count = 0;
 
-    for event in events {
-        if let ConversationEvent::UserPrompt { text, timestamp } = event {
+    for entry in entries {
+        if entry.visibility != Visibility::Recall {
+            continue;
+        }
+
+        if let ConversationEvent::UserPrompt { text, timestamp } = &entry.event {
+            if count >= policy.max_entries_per_facet || out.len() >= policy.max_bytes_per_facet {
+                break;
+            }
+
             count += 1;
             let label = timestamp.as_deref().unwrap_or("prompt");
             out.push_str(&format!("## [{label}]\n\n{text}\n\n"));
@@ -487,12 +364,20 @@ fn build_user_messages_facet(events: &[ConversationEvent]) -> (String, usize) {
     (out, count)
 }
 
-fn build_assistant_messages_facet(events: &[ConversationEvent]) -> (String, usize) {
+fn build_assistant_messages_facet(entries: &[RecallEntry], policy: &RecallPolicy) -> (String, usize) {
     let mut out = String::new();
     let mut count = 0;
 
-    for event in events {
-        if let ConversationEvent::AssistantMessage { text, timestamp } = event {
+    for entry in entries {
+        if entry.visibility != Visibility::Recall {
+            continue;
+        }
+
+        if let ConversationEvent::AssistantMessage { text, timestamp } = &entry.event {
+            if count >= policy.max_entries_per_facet || out.len() >= policy.max_bytes_per_facet {
+                break;
+            }
+
             count += 1;
             let label = timestamp.as_deref().unwrap_or("response");
             out.push_str(&format!("## [{label}]\n\n{text}\n\n"));
@@ -502,18 +387,26 @@ fn build_assistant_messages_facet(events: &[ConversationEvent]) -> (String, usiz
     (out, count)
 }
 
-fn build_tool_activity_facet(events: &[ConversationEvent]) -> (String, usize) {
+fn build_tool_activity_facet(entries: &[RecallEntry], policy: &RecallPolicy) -> (String, usize) {
     let mut out = String::new();
     let mut count = 0;
 
-    for event in events {
+    for entry in entries {
+        if entry.visibility != Visibility::Recall {
+            continue;
+        }
+
         if let ConversationEvent::ToolUse {
             tool,
             input,
             timestamp,
             ..
-        } = event
+        } = &entry.event
         {
+            if count >= policy.max_entries_per_facet || out.len() >= policy.max_bytes_per_facet {
+                break;
+            }
+
             count += 1;
             let label = timestamp.as_deref().unwrap_or("?");
             let condensed = condense_tool_input(tool, input);
@@ -524,15 +417,23 @@ fn build_tool_activity_facet(events: &[ConversationEvent]) -> (String, usize) {
     (out, count)
 }
 
-fn build_file_changes_facet(events: &[ConversationEvent]) -> (String, usize) {
+fn build_file_changes_facet(entries: &[RecallEntry], policy: &RecallPolicy) -> (String, usize) {
     let mut out = String::new();
     let mut seen = BTreeSet::new();
 
-    for event in events {
-        if let ConversationEvent::FileChange { path, .. } = event
-            && seen.insert(path.clone())
-        {
-            out.push_str(&format!("- {path}\n"));
+    for entry in entries {
+        if entry.visibility != Visibility::Recall {
+            continue;
+        }
+
+        if let ConversationEvent::FileChange { path, .. } = &entry.event {
+            if seen.len() >= policy.max_entries_per_facet || out.len() >= policy.max_bytes_per_facet {
+                break;
+            }
+
+            if seen.insert(path.clone()) {
+                out.push_str(&format!("- {path}\n"));
+            }
         }
     }
 
@@ -540,12 +441,20 @@ fn build_file_changes_facet(events: &[ConversationEvent]) -> (String, usize) {
     (out, count)
 }
 
-fn build_log_activity_facet(events: &[ConversationEvent]) -> (String, usize) {
+fn build_log_activity_facet(entries: &[RecallEntry], policy: &RecallPolicy) -> (String, usize) {
     let mut out = String::new();
     let mut count = 0;
 
-    for event in events {
-        match event {
+    for entry in entries {
+        if entry.visibility == Visibility::Hidden {
+            continue;
+        }
+
+        if count >= policy.max_entries_per_facet || out.len() >= policy.max_bytes_per_facet {
+            break;
+        }
+
+        match &entry.event {
             ConversationEvent::RawEvent {
                 line_type,
                 timestamp,
@@ -578,15 +487,19 @@ fn build_log_activity_facet(events: &[ConversationEvent]) -> (String, usize) {
     (out, count)
 }
 
-fn build_summary_facet(events: &[ConversationEvent]) -> (String, usize) {
+fn build_summary_facet(entries: &[RecallEntry], policy: &RecallPolicy) -> (String, usize) {
     let mut out = String::new();
     let mut turns: Vec<(String, usize, usize)> = Vec::new();
     let mut current_prompt: Option<String> = None;
     let mut tool_count: usize = 0;
     let mut file_count: usize = 0;
 
-    for event in events {
-        match event {
+    for entry in entries {
+        if entry.visibility != Visibility::Recall {
+            continue;
+        }
+
+        match &entry.event {
             ConversationEvent::UserPrompt { text, .. } => {
                 if let Some(prompt) = current_prompt.take() {
                     turns.push((prompt, tool_count, file_count));
@@ -617,6 +530,10 @@ fn build_summary_facet(events: &[ConversationEvent]) -> (String, usize) {
     }
 
     for (prompt, tools, files) in &turns {
+        if turns.len() > policy.max_entries_per_facet {
+            break;
+        }
+
         let tool_word = if *tools == 1 { "call" } else { "calls" };
         let file_word = if *files == 1 { "change" } else { "changes" };
         out.push_str(&format!(
@@ -765,17 +682,26 @@ mod tests {
 
     #[test]
     fn build_user_messages_renders_with_timestamps() {
-        let events = vec![
-            ConversationEvent::UserPrompt {
-                text: "fix the bug".into(),
-                timestamp: Some("2026-05-22T10:00:00Z".into()),
+        let entries = vec![
+            RecallEntry {
+                event: ConversationEvent::UserPrompt {
+                    text: "fix the bug".into(),
+                    timestamp: Some("2026-05-22T10:00:00Z".into()),
+                },
+                visibility: Visibility::Recall,
+                timestamp_ns: None,
             },
-            ConversationEvent::UserPrompt {
-                text: "now add tests".into(),
-                timestamp: None,
+            RecallEntry {
+                event: ConversationEvent::UserPrompt {
+                    text: "now add tests".into(),
+                    timestamp: None,
+                },
+                visibility: Visibility::Recall,
+                timestamp_ns: None,
             },
         ];
-        let (content, count) = build_user_messages_facet(&events);
+        let policy = RecallPolicy::default();
+        let (content, count) = build_user_messages_facet(&entries, &policy);
         assert_eq!(count, 2);
         assert!(content.contains("## [2026-05-22T10:00:00Z]"));
         assert!(content.contains("## [prompt]"));
@@ -785,21 +711,30 @@ mod tests {
 
     #[test]
     fn build_tool_activity_condenses_inputs() {
-        let events = vec![
-            ConversationEvent::ToolUse {
-                tool: "Read".into(),
-                input: json!({"file_path": "/src/main.rs"}),
-                call_id: None,
-                timestamp: Some("2026-05-22T10:00:01Z".into()),
+        let entries = vec![
+            RecallEntry {
+                event: ConversationEvent::ToolUse {
+                    tool: "Read".into(),
+                    input: json!({"file_path": "/src/main.rs"}),
+                    call_id: None,
+                    timestamp: Some("2026-05-22T10:00:01Z".into()),
+                },
+                visibility: Visibility::Recall,
+                timestamp_ns: None,
             },
-            ConversationEvent::ToolUse {
-                tool: "Bash".into(),
-                input: json!({"command": "cargo test"}),
-                call_id: None,
-                timestamp: Some("2026-05-22T10:00:02Z".into()),
+            RecallEntry {
+                event: ConversationEvent::ToolUse {
+                    tool: "Bash".into(),
+                    input: json!({"command": "cargo test"}),
+                    call_id: None,
+                    timestamp: Some("2026-05-22T10:00:02Z".into()),
+                },
+                visibility: Visibility::Recall,
+                timestamp_ns: None,
             },
         ];
-        let (content, count) = build_tool_activity_facet(&events);
+        let policy = RecallPolicy::default();
+        let (content, count) = build_tool_activity_facet(&entries, &policy);
         assert_eq!(count, 2);
         assert!(content.contains("Read /src/main.rs"));
         assert!(content.contains("Bash: cargo test"));
@@ -807,60 +742,98 @@ mod tests {
 
     #[test]
     fn build_file_changes_deduplicates() {
-        let events = vec![
-            ConversationEvent::FileChange {
-                path: "/src/main.rs".into(),
-                timestamp: None,
+        let entries = vec![
+            RecallEntry {
+                event: ConversationEvent::FileChange {
+                    path: "/src/main.rs".into(),
+                    timestamp: None,
+                },
+                visibility: Visibility::Recall,
+                timestamp_ns: None,
             },
-            ConversationEvent::FileChange {
-                path: "/src/main.rs".into(),
-                timestamp: None,
+            RecallEntry {
+                event: ConversationEvent::FileChange {
+                    path: "/src/main.rs".into(),
+                    timestamp: None,
+                },
+                visibility: Visibility::Recall,
+                timestamp_ns: None,
             },
-            ConversationEvent::FileChange {
-                path: "/src/lib.rs".into(),
-                timestamp: None,
+            RecallEntry {
+                event: ConversationEvent::FileChange {
+                    path: "/src/lib.rs".into(),
+                    timestamp: None,
+                },
+                visibility: Visibility::Recall,
+                timestamp_ns: None,
             },
         ];
-        let (content, count) = build_file_changes_facet(&events);
+        let policy = RecallPolicy::default();
+        let (content, count) = build_file_changes_facet(&entries, &policy);
         assert_eq!(count, 2);
         assert_eq!(content.matches("/src/main.rs").count(), 1);
     }
 
     #[test]
     fn build_summary_groups_by_turn() {
-        let events = vec![
-            ConversationEvent::UserPrompt {
-                text: "fix the login bug".into(),
-                timestamp: None,
+        let entries = vec![
+            RecallEntry {
+                event: ConversationEvent::UserPrompt {
+                    text: "fix the login bug".into(),
+                    timestamp: None,
+                },
+                visibility: Visibility::Recall,
+                timestamp_ns: None,
             },
-            ConversationEvent::ToolUse {
-                tool: "Read".into(),
-                input: json!({}),
-                call_id: None,
-                timestamp: None,
+            RecallEntry {
+                event: ConversationEvent::ToolUse {
+                    tool: "Read".into(),
+                    input: json!({}),
+                    call_id: None,
+                    timestamp: None,
+                },
+                visibility: Visibility::Recall,
+                timestamp_ns: None,
             },
-            ConversationEvent::ToolUse {
-                tool: "Edit".into(),
-                input: json!({}),
-                call_id: None,
-                timestamp: None,
+            RecallEntry {
+                event: ConversationEvent::ToolUse {
+                    tool: "Edit".into(),
+                    input: json!({}),
+                    call_id: None,
+                    timestamp: None,
+                },
+                visibility: Visibility::Recall,
+                timestamp_ns: None,
             },
-            ConversationEvent::FileChange {
-                path: "/src/auth.rs".into(),
-                timestamp: None,
+            RecallEntry {
+                event: ConversationEvent::FileChange {
+                    path: "/src/auth.rs".into(),
+                    timestamp: None,
+                },
+                visibility: Visibility::Recall,
+                timestamp_ns: None,
             },
-            ConversationEvent::UserPrompt {
-                text: "now add tests".into(),
-                timestamp: None,
+            RecallEntry {
+                event: ConversationEvent::UserPrompt {
+                    text: "now add tests".into(),
+                    timestamp: None,
+                },
+                visibility: Visibility::Recall,
+                timestamp_ns: None,
             },
-            ConversationEvent::ToolUse {
-                tool: "Write".into(),
-                input: json!({}),
-                call_id: None,
-                timestamp: None,
+            RecallEntry {
+                event: ConversationEvent::ToolUse {
+                    tool: "Write".into(),
+                    input: json!({}),
+                    call_id: None,
+                    timestamp: None,
+                },
+                visibility: Visibility::Recall,
+                timestamp_ns: None,
             },
         ];
-        let (content, count) = build_summary_facet(&events);
+        let policy = RecallPolicy::default();
+        let (content, count) = build_summary_facet(&entries, &policy);
         assert_eq!(count, 2);
         assert!(content.contains("2 tool calls, 1 file change"));
         assert!(content.contains("1 tool call, 0 file changes"));
@@ -1010,7 +983,8 @@ mod tests {
             provider: "claude".into(),
             path: transcript,
         };
-        let events = parse_transcript_events(&source, None);
+        let (event_pairs, _modified) = parse_transcript_events(&source);
+        let events: Vec<_> = event_pairs.into_iter().map(|(e, _)| e).collect();
 
         let user_prompts = events
             .iter()
@@ -1049,7 +1023,8 @@ mod tests {
             provider: "codex".into(),
             path: transcript,
         };
-        let events = parse_transcript_events(&source, None);
+        let (event_pairs, _modified) = parse_transcript_events(&source);
+        let events: Vec<_> = event_pairs.into_iter().map(|(e, _)| e).collect();
 
         let session_metas = events
             .iter()
@@ -1062,119 +1037,6 @@ mod tests {
 
         assert!(session_metas >= 1);
         assert_eq!(user_prompts, 1);
-    }
-
-    #[test]
-    fn bounded_parse_drops_timestampless_content_without_in_window_timestamp() {
-        let tmp = tempfile::tempdir().unwrap();
-        let transcript = tmp.path().join("codex.jsonl");
-        std::fs::write(
-            &transcript,
-            r#"{"type":"session_meta","payload":{"id":"sess_001","cwd":"/project","model":"o3"}}
-{"type":"user_message","payload":{"text":"old context without timestamp"}}
-"#,
-        )
-        .unwrap();
-        let now = SystemTime::now();
-        let cutoff = now
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-            .saturating_sub(24_u128 * 60 * 60 * 1_000_000_000) as u64;
-        set_file_modified(&transcript, now - Duration::from_secs(48 * 60 * 60));
-
-        let source = SnapshotSource {
-            provider: "codex".into(),
-            path: transcript,
-        };
-        let events = parse_transcript_events(&source, Some(cutoff));
-
-        assert!(
-            events.is_empty(),
-            "bounded snapshots must not pull timestampless content from old transcripts"
-        );
-    }
-
-    #[test]
-    fn bounded_parse_keeps_timestampless_content_when_source_is_recent_and_untimestamped() {
-        let tmp = tempfile::tempdir().unwrap();
-        let transcript = tmp.path().join("codex.jsonl");
-        std::fs::write(
-            &transcript,
-            r#"{"type":"session_meta","payload":{"id":"sess_001","cwd":"/project","model":"o3"}}
-{"type":"user_message","payload":{"text":"recent context without timestamp"}}
-"#,
-        )
-        .unwrap();
-        set_file_modified(&transcript, SystemTime::now());
-
-        let source = SnapshotSource {
-            provider: "codex".into(),
-            path: transcript,
-        };
-        let events = parse_transcript_events(&source, Some(1_700_000_000_000_000_000));
-
-        assert!(events.iter().any(|e| matches!(
-            e,
-            ConversationEvent::UserPrompt { text, .. } if text == "recent context without timestamp"
-        )));
-    }
-
-    #[test]
-    fn bounded_parse_keeps_metadata_when_source_has_in_window_timestamp() {
-        let tmp = tempfile::tempdir().unwrap();
-        let transcript = tmp.path().join("claude.jsonl");
-        std::fs::write(
-            &transcript,
-            r#"{"type":"permission-mode","permissionMode":"bypassPermissions","isSidechain":false,"sessionId":"s1","cwd":"/project"}
-{"type":"user","message":{"role":"user","content":[{"type":"text","text":"recent prompt"}]},"timestamp":"2024-01-01T00:00:00.000Z"}
-"#,
-        )
-        .unwrap();
-
-        let source = SnapshotSource {
-            provider: "claude".into(),
-            path: transcript,
-        };
-        let events = parse_transcript_events(&source, Some(1_700_000_000_000_000_000));
-
-        assert!(
-            events
-                .iter()
-                .any(|e| matches!(e, ConversationEvent::SessionMeta { .. }))
-        );
-        assert!(events.iter().any(|e| matches!(
-            e,
-            ConversationEvent::UserPrompt { text, .. } if text == "recent prompt"
-        )));
-    }
-
-    #[test]
-    fn bounded_parse_drops_structural_metadata_from_old_timestamped_lines() {
-        let tmp = tempfile::tempdir().unwrap();
-        let transcript = tmp.path().join("claude.jsonl");
-        std::fs::write(
-            &transcript,
-            r#"{"type":"assistant","message":{"role":"assistant","model":"old-model","content":[]},"timestamp":"2023-01-01T00:00:00.000Z"}
-{"type":"user","message":{"role":"user","content":[{"type":"text","text":"recent prompt"}]},"timestamp":"2024-01-01T00:00:00.000Z"}
-"#,
-        )
-        .unwrap();
-
-        let source = SnapshotSource {
-            provider: "claude".into(),
-            path: transcript,
-        };
-        let events = parse_transcript_events(&source, Some(1_700_000_000_000_000_000));
-
-        assert!(events.iter().any(|e| matches!(
-            e,
-            ConversationEvent::UserPrompt { text, .. } if text == "recent prompt"
-        )));
-        assert!(!events.iter().any(|e| matches!(
-            e,
-            ConversationEvent::TurnMeta { model: Some(model), .. } if model == "old-model"
-        )));
     }
 
     #[test]
@@ -1436,5 +1298,44 @@ mod tests {
         let result = condense_tool_input("Bash", &json!({"command": long_cjk}));
         let content = result.strip_prefix("Bash: ").unwrap();
         assert_eq!(content.chars().count(), 200);
+    }
+
+    #[test]
+    fn facet_respects_max_entries() {
+        let entries: Vec<RecallEntry> = (0..300)
+            .map(|i| RecallEntry {
+                event: ConversationEvent::UserPrompt {
+                    text: format!("prompt {i}"),
+                    timestamp: None,
+                },
+                visibility: Visibility::Recall,
+                timestamp_ns: None,
+            })
+            .collect();
+
+        let policy = RecallPolicy::default();
+        let (_content, count) = build_user_messages_facet(&entries, &policy);
+        assert_eq!(count, 200);
+    }
+
+    #[test]
+    fn log_activity_includes_diagnostic() {
+        let entries = vec![RecallEntry {
+            event: ConversationEvent::TurnMeta {
+                model: Some("opus".into()),
+                git_branch: None,
+                git_sha: None,
+                tokens: Some(500),
+                duration_ms: None,
+                permission_mode: None,
+                cli_version: None,
+            },
+            visibility: Visibility::Diagnostic,
+            timestamp_ns: None,
+        }];
+        let policy = RecallPolicy::default();
+        let (content, count) = build_log_activity_facet(&entries, &policy);
+        assert_eq!(count, 1);
+        assert!(content.contains("opus"));
     }
 }
