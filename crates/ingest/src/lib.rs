@@ -4,6 +4,7 @@
 mod error;
 pub mod normalize;
 pub mod read_through;
+pub mod recall;
 pub mod snapshot;
 pub mod udp;
 #[cfg(unix)]
