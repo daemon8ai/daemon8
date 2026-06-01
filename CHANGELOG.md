@@ -86,26 +86,27 @@ For full commit-by-commit detail, use `git log` and
 Historical notes below describe pre-alpha releases. Use the
 `v0.4.0` section above for current alpha commands and config.
 
-The lean MVP cull tightened TOML config parsing to reject unknown keys via `deny_unknown_fields`. Existing global and project configs that contain removed sections will fail to parse and the daemon will refuse to start until the stale keys are removed.
+The lean MVP cull tightened TOML config parsing around active sections.
+Some removed top-level sections are ignored during upgrade, but stale keys
+inside active sections still fail to parse.
 
-If the daemon reports `[ERR] config load (unknown field: found '<X>')` after upgrade, edit the offending file and remove the listed key. Affected sections to delete from pre-alpha TOML config:
+If the daemon reports `[ERR] config load (unknown field: found '<X>')` after
+upgrade, edit the offending file and remove the listed key. Known rejected
+pre-alpha config keys:
 
-- `[embeddings]` (entire section — embedding runtime is gone)
 - `[mcp]` `http = ...` field (HTTP MCP key removed; HTTP transport is now controlled at the server layer)
 - `[storage]` `embedding_path = ...` field
-- Any `role_default = ...` field on `[browser]` or `[sources.*]` (legacy agent-role concept)
-- `desired_scope` entries beyond `["file-sources"]` (now the only valid scope)
-- `hook_policy` values other than `"install"` or `"manual"`
-- Any deliber8/inbox/envelope/specialist/bookkeeper/agent keys
+- `[browser]` `role_default = ...` field
+- top-level `[adb]` section (use `[device.adb]` or `daemon8 feature adb enable`)
 
 Memory data: rows in the `memory` SurrealDB table that contain `embedding` columns are not migrated. The export pipeline strips them; live queries and saves no longer touch the column. If a fresh start is preferred, delete the local data directory before first `0.3.0` run (`daemon8 uninstall` removes it).
 
 ### Lean MVP cull
 
-- Removed experimental Deliber8 runtime, CLI, roster, inbox, and storage
-  surfaces from the shipped workspace.
-- Removed memory tiers, bookkeeper operations, embedding profiles, and
-  embedding runtime/config/dependencies.
+- Removed experimental pre-alpha orchestration surfaces from the shipped
+  workspace.
+- Removed memory tiers, role-specific maintenance operations, embedding
+  profiles, and embedding runtime/config/dependencies.
 - Kept daemon8 focused on runtime observations, checkpoints, lenses, browser
   and device actions, hooks as telemetry, setup, and curated non-embedded
   memory.

@@ -1425,7 +1425,7 @@ mod tests {
         use base64::Engine as _;
 
         let (powershell, args) = windows_task_action(
-            r"C:\Users\Jon's Machine\AppData\Local\Programs\daemon8\daemon8.exe",
+            r"C:\Program Files\daemon8\daemon8's folder\daemon8.exe",
             Some("http://127.0.0.1:9222/devtools/browser/abc"),
         );
 
@@ -1453,7 +1453,7 @@ mod tests {
 
         assert_eq!(
             command,
-            "& 'C:\\Users\\Jon''s Machine\\AppData\\Local\\Programs\\daemon8\\daemon8.exe' serve --browser 'http://127.0.0.1:9222/devtools/browser/abc'; exit $LASTEXITCODE"
+            "& 'C:\\Program Files\\daemon8\\daemon8''s folder\\daemon8.exe' serve --browser 'http://127.0.0.1:9222/devtools/browser/abc'; exit $LASTEXITCODE"
         );
     }
 

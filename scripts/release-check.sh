@@ -145,9 +145,16 @@ git ls-files \
   crates \
   | grep -v '^scripts/release-check.sh$' > "$stale_surface_list"
 
-stale_pattern='setup_(apply|status|plan)|\.daemon8\.toml|librarian|discovery_daemon|debug_summary|debug_observe|provider hooks|old setup|deprecated alias|migration shim|:host/codex\+worker>'
+stale_pattern='setup_(apply|status|plan)|\.daemon8\.toml|librarian|discovery_daemon|debug_summary|debug_observe|provider hooks|old setup|deprecated alias|migration shim|:host/codex\+worker>|[Dd]eliber8|[Uu]plink8|[Bb]ookkeeper|[Rr]oomin8'
 if xargs grep -n -E "$stale_pattern" < "$stale_surface_list"; then
   fail "stale alpha release-surface wording found"
+fi
+
+machine_path_patterns="$tmp_dir/machine-path-patterns"
+user_home_component="Users"
+printf '%s\n' "/${user_home_component}/" "C:\\${user_home_component}\\" "C:/${user_home_component}/" > "$machine_path_patterns"
+if xargs grep -n -F -f "$machine_path_patterns" < "$stale_surface_list"; then
+  fail "hardcoded user machine path found"
 fi
 
 current_changelog_hits="$(awk '/^## v0\.3\.0/ { exit } { print }' CHANGELOG.md | grep -n -E "$stale_pattern" || true)"

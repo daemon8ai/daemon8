@@ -9,7 +9,7 @@
 
 # daemon8
 
-[![Total Downloads](https://img.shields.io/crates/d/daemon8?label=downloads&color=blue)](https://crates.io/crates/daemon8) [![Follow on X](https://img.shields.io/badge/Say%20hi%20on%20X-000000?logo=x&logoColor=white)](https://x.com/j_havenz)
+[![Follow on X](https://img.shields.io/badge/Say%20hi%20on%20X-000000?logo=x&logoColor=white)](https://x.com/j_havenz)
 
 [Join the Discussion](https://github.com/daemon8ai/daemon8/discussions)
 
@@ -48,7 +48,7 @@ By converging this context and surfacing it over MCP, your agent gets a 360-degr
 
 ## Alpha Release
 
-daemon8 is in alpha. The core awareness loop is here: connect a project, bring recent conversation and runtime state into reach, checkpoint the work, and verify what changed.
+daemon8 is in alpha. The core loop is here: connect a project, bring recent conversation and runtime state into reach, checkpoint the work, and verify what changed.
 
 This release is the foundation for a local-first, provider-agnostic layer that will be built upon going forward.
 
