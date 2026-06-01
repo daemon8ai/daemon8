@@ -533,19 +533,20 @@ fn build_summary_facet(entries: &[RecallEntry], policy: &RecallPolicy) -> (Strin
         turns.push((prompt, tool_count, file_count));
     }
 
-    for (prompt, tools, files) in &turns {
-        if turns.len() > policy.max_entries_per_facet {
+    for (prompt, tools, files) in turns.iter().take(policy.max_entries_per_facet) {
+        if out.len() >= policy.max_bytes_per_facet {
             break;
         }
 
         let tool_word = if *tools == 1 { "call" } else { "calls" };
         let file_word = if *files == 1 { "change" } else { "changes" };
+
         out.push_str(&format!(
             "- User: {prompt} -> {tools} tool {tool_word}, {files} file {file_word}\n"
         ));
     }
 
-    let count = turns.len();
+    let count = turns.len().min(policy.max_entries_per_facet);
     (out, count)
 }
 
@@ -1337,9 +1338,30 @@ mod tests {
             visibility: Visibility::Diagnostic,
             timestamp_ns: None,
         }];
+
         let policy = RecallPolicy::default();
         let (content, count) = build_log_activity_facet(&entries, &policy);
+
         assert_eq!(count, 1);
         assert!(content.contains("opus"));
+    }
+
+    #[test]
+    fn summary_respects_max_entries() {
+        let entries: Vec<RecallEntry> = (0..300)
+            .map(|i| RecallEntry {
+                event: ConversationEvent::UserPrompt {
+                    text: format!("prompt {i}"),
+                    timestamp: None,
+                },
+                visibility: Visibility::Recall,
+                timestamp_ns: None,
+            })
+            .collect();
+
+        let policy = RecallPolicy::default();
+        let (_content, count) = build_summary_facet(&entries, &policy);
+
+        assert_eq!(count, 200);
     }
 }

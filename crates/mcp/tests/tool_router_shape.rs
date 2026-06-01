@@ -3260,9 +3260,12 @@ async fn build_context_snapshot_hides_instruction_blocks() {
     let transcript = claude_dir.join("instruction-test.jsonl");
 
     let cwd = canonical_project.display().to_string();
+    let long_instruction =
+        "x".repeat(4500) + " Contents of /home/user/.claude/CLAUDE.md more stuff";
     let transcript_content = format!(
         r#"{{"type":"permission-mode","permissionMode":"bypassPermissions","isSidechain":false,"sessionId":"s1","cwd":"{cwd}"}}
 {{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"<system-reminder>\nYou are Claude Code.\n</system-reminder>"}}]}},"timestamp":"2026-05-22T09:59:00.000Z"}}
+{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"{long_instruction}"}}]}},"timestamp":"2026-05-22T09:59:30.000Z"}}
 {{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"fix the login bug"}}]}},"timestamp":"2026-05-22T10:00:00.000Z"}}
 "#
     );
@@ -3336,8 +3339,11 @@ async fn build_context_snapshot_caps_facet_entries() {
     lines.push('\n');
 
     for i in 0..250 {
+        let hour = 10 + i / 60;
+        let minute = i % 60;
+
         lines.push_str(&format!(
-            r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"prompt {i}"}}]}},"timestamp":"2026-05-22T10:{i:02}:00.000Z"}}"#
+            r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"prompt {i}"}}]}},"timestamp":"2026-05-22T{hour:02}:{minute:02}:00.000Z"}}"#
         ));
         lines.push('\n');
     }
@@ -3370,10 +3376,79 @@ async fn build_context_snapshot_caps_facet_entries() {
     let entry_count = parsed["data"]["facets"]["user_messages"]["entry_count"]
         .as_u64()
         .unwrap();
-    assert!(
-        entry_count <= 200,
-        "facet should cap at 200 entries, got {entry_count}"
+    assert_eq!(
+        entry_count, 200,
+        "facet should cap at exactly 200 entries, got {entry_count}"
     );
+}
+
+#[tokio::test]
+async fn build_context_snapshot_derives_file_changes_from_tools() {
+    let home = test_home_dir();
+    let project = home.join("snap-derive-fc");
+    std::fs::create_dir_all(&project).unwrap();
+    mark_project(&project);
+    write_empty_project_config(&project);
+
+    let canonical_project = std::fs::canonicalize(&project).unwrap();
+    let slug = canonical_project.to_string_lossy().replace('/', "-");
+    let canonical_home = std::fs::canonicalize(&home).unwrap();
+    let claude_dir = canonical_home.join(".claude/projects").join(&slug);
+    std::fs::create_dir_all(&claude_dir).unwrap();
+    let transcript = claude_dir.join("derive-fc-test.jsonl");
+
+    let cwd = canonical_project.display().to_string();
+    let transcript_content = format!(
+        r#"{{"type":"permission-mode","permissionMode":"bypassPermissions","isSidechain":false,"sessionId":"s1","cwd":"{cwd}"}}
+{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"fix the bug"}}]}},"timestamp":"2026-05-22T10:00:00.000Z"}}
+{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"call_1","name":"Edit","input":{{"file_path":"/src/auth.rs","old_string":"old","new_string":"new"}}}}]}},"timestamp":"2026-05-22T10:00:01.000Z"}}
+{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"call_2","name":"Write","input":{{"file_path":"/src/new_file.rs","content":"hello"}}}}]}},"timestamp":"2026-05-22T10:00:02.000Z"}}
+"#
+    );
+    std::fs::write(&transcript, &transcript_content).unwrap();
+
+    let mcp = make_mcp_with_cancel_and_home(CancellationToken::new(), canonical_home.clone()).await;
+
+    let connect = mcp
+        .daemon8_connect_for_tests(Daemon8ConnectParams {
+            project_path: canonical_project.display().to_string(),
+            provider: "claude".into(),
+            agent_name: None,
+            transcript_path: Some(transcript.display().to_string()),
+            conversation_lookback_hours: None,
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&connect).unwrap();
+    assert_eq!(parsed["status"], "success", "connect: {connect}");
+
+    let snap = mcp
+        .build_context_snapshot_for_tests(BuildContextSnapshotParams {
+            since: Some("conversation_start".into()),
+            facets: Some(vec!["file_changes".into()]),
+            providers: None,
+        })
+        .await;
+    let parsed: serde_json::Value = serde_json::from_str(&snap).unwrap();
+    assert_eq!(parsed["status"], "success", "snapshot: {snap}");
+
+    let snapshot_path = parsed["data"]["snapshot_path"].as_str().unwrap();
+    let content =
+        std::fs::read_to_string(std::path::PathBuf::from(snapshot_path).join("file-changes.md"))
+            .unwrap();
+
+    assert!(
+        content.contains("/src/auth.rs"),
+        "Edit tool call should derive a file change"
+    );
+    assert!(
+        content.contains("/src/new_file.rs"),
+        "Write tool call should derive a file change"
+    );
+
+    let entry_count = parsed["data"]["facets"]["file_changes"]["entry_count"]
+        .as_u64()
+        .unwrap();
+    assert_eq!(entry_count, 2);
 }
 
 #[tokio::test]

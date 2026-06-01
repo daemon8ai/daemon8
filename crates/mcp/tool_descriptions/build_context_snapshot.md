@@ -18,7 +18,7 @@ Project-scoped connection (`data.connection.mode == "project"`) with at least on
 ## Returns
 Common envelope with `code="snapshot_built"`, `data.snapshot_path` (absolute path to the unique snapshot run directory), `data.facets` (map of facet name to path/bytes/entry_count), `data.sources_read`, `data.time_range`. Snapshot run directories are retained for roughly 24 hours and then purged by daemon cleanup.
 
-Default recall is bounded and hygiene-filtered: instruction blocks (system prompts, CLAUDE.md content, `<system-reminder>` injections) are hidden from user-message facets; text entries are truncated at 8KB; each facet caps at 200 entries and 128KB total. File changes are derived from Edit/Write/apply_patch tool calls across all providers, so Codex and Gemini sessions produce useful file-change facets even without native FileChange events. `since="conversation_start"` provides full history but still hides instruction blocks.
+Default recall is bounded and hygiene-filtered. Instruction blocks (system prompts, CLAUDE.md content, `<system-reminder>` injections) are hidden from user-message facets because they are harness-injected noise with no user or agent intent. Text entries are truncated at 8KB, each facet caps at 200 entries and 128KB total -- these bounds prevent snapshot output from exceeding a single context window. File changes are derived from Edit/Write/MultiEdit/NotebookEdit/apply_patch/apply_diff tool calls across all providers, so Codex and Gemini sessions produce useful file-change facets even without native FileChange events. Use `since="conversation_start"` for full history; daemon8 still hides instruction blocks.
 
 ## Errors
   - no_scope_root: connected but no project scope root available. Reconnect with a project path.

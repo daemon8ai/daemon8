@@ -116,7 +116,7 @@ fn is_instruction_block(text: &str) -> bool {
             || (t.contains("Contents of") && t.contains("CLAUDE.md")))
 }
 
-pub type TimestampedEvents = Vec<(ConversationEvent, Option<u64>)>;
+pub(crate) type TimestampedEvents = Vec<(ConversationEvent, Option<u64>)>;
 
 pub fn recall_pipeline(
     sources: Vec<(SourceMeta, TimestampedEvents)>,
@@ -146,13 +146,15 @@ pub fn recall_pipeline(
             }
 
             Some(cutoff_ns) => {
-                let has_timestamped = events
-                    .iter()
-                    .any(|(ev, _)| event_timestamp_ns(ev).is_some());
-
-                let has_in_window_timestamped = events
-                    .iter()
-                    .any(|(ev, _)| event_timestamp_ns(ev).is_some_and(|ts| ts >= cutoff_ns));
+                let (has_timestamped, has_in_window_timestamped) =
+                    events
+                        .iter()
+                        .fold((false, false), |(any_ts, any_in_window), (ev, _)| {
+                            match event_timestamp_ns(ev) {
+                                Some(ts) => (true, any_in_window || ts >= cutoff_ns),
+                                None => (any_ts, any_in_window),
+                            }
+                        });
 
                 let source_modified_in_window =
                     source.modified_at_ns.is_some_and(|m| m >= cutoff_ns);
@@ -216,14 +218,14 @@ fn is_in_scope(
                 return false;
             }
 
-            has_in_window_timestamped
+            has_in_window_timestamped || (source_modified_in_window && !has_timestamped)
         }
         None => source_modified_in_window && !has_timestamped,
     }
 }
 
 fn derive_file_mutations(entries: &mut Vec<RecallEntry>) {
-    let existing: BTreeSet<String> = entries
+    let mut seen: BTreeSet<String> = entries
         .iter()
         .filter_map(|e| match &e.event {
             ConversationEvent::FileChange { path, .. } => Some(path.clone()),
@@ -248,7 +250,7 @@ fn derive_file_mutations(entries: &mut Vec<RecallEntry>) {
             continue;
         };
 
-        if existing.contains(path) {
+        if !seen.insert(path.to_owned()) {
             continue;
         }
 
@@ -860,5 +862,108 @@ mod tests {
             ConversationEvent::UserPrompt { text, .. } => assert_eq!(text, "short message"),
             _ => unreachable!(),
         }
+    }
+
+    #[test]
+    fn truncate_splits_on_char_boundary() {
+        let mut text = "a".repeat(8190);
+        text.push('\u{1F600}');
+
+        let event = ConversationEvent::UserPrompt {
+            text,
+            timestamp: None,
+        };
+
+        let cutoff = crate::snapshot::SnapshotCutoff { ns: None, ms: None };
+        let policy = RecallPolicy::default();
+        let sources = vec![(source_meta(None), vec![(event, None)])];
+
+        let result = recall_pipeline(sources, &cutoff, &policy);
+
+        match &result[0].event {
+            ConversationEvent::UserPrompt { text, .. } => {
+                assert!(text.is_char_boundary(text.len()));
+                assert!(text.ends_with("[truncated]"));
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn scope_keeps_structural_in_fresh_untimestamped_source() {
+        let meta_event = ConversationEvent::TurnMeta {
+            model: Some("opus".into()),
+            git_branch: None,
+            git_sha: None,
+            tokens: None,
+            duration_ms: None,
+            permission_mode: None,
+            cli_version: None,
+        };
+
+        let user_event = ConversationEvent::UserPrompt {
+            text: "hello".into(),
+            timestamp: None,
+        };
+
+        let cutoff = cutoff_with_ns(1_700_000_000_000_000_000);
+        let policy = RecallPolicy::default();
+
+        let fresh_modified = Some(1_800_000_000_000_000_000);
+        let sources = vec![(
+            source_meta(fresh_modified),
+            vec![(meta_event, None), (user_event, None)],
+        )];
+
+        let result = recall_pipeline(sources, &cutoff, &policy);
+
+        assert!(
+            result.iter().any(|e| matches!(
+                &e.event,
+                ConversationEvent::TurnMeta { model: Some(m), .. } if m == "opus"
+            )),
+            "structural metadata should survive in fresh untimestamped source"
+        );
+    }
+
+    #[test]
+    fn derive_dedup_across_multiple_edits() {
+        let events = vec![
+            (
+                ConversationEvent::ToolUse {
+                    tool: "Edit".into(),
+                    input: serde_json::json!({"file_path": "/src/lib.rs"}),
+                    call_id: None,
+                    timestamp: Some("2026-05-31T10:00:00Z".into()),
+                },
+                None,
+            ),
+            (
+                ConversationEvent::ToolUse {
+                    tool: "Edit".into(),
+                    input: serde_json::json!({"file_path": "/src/lib.rs"}),
+                    call_id: None,
+                    timestamp: Some("2026-05-31T10:01:00Z".into()),
+                },
+                None,
+            ),
+        ];
+
+        let cutoff = crate::snapshot::SnapshotCutoff { ns: None, ms: None };
+        let policy = RecallPolicy::default();
+        let sources = vec![(source_meta(None), events)];
+
+        let result = recall_pipeline(sources, &cutoff, &policy);
+
+        let file_changes: Vec<_> = result
+            .iter()
+            .filter(|e| matches!(&e.event, ConversationEvent::FileChange { .. }))
+            .collect();
+
+        assert_eq!(
+            file_changes.len(),
+            1,
+            "two edits to same path should derive one FileChange"
+        );
     }
 }
