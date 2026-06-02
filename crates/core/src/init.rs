@@ -6,9 +6,7 @@ use std::time::SystemTime;
 
 use serde_json::{Value, json};
 
-use crate::control::{
-    AlphaEnvelope, AlphaStatus, NextAction, ScopeCandidate, ScopeMode, classify_scope,
-};
+use crate::control::{Envelope, NextAction, ScopeCandidate, ScopeMode, Status, classify_scope};
 use crate::project_config::{
     PROJECT_CONFIG_SCHEMA, parse_project_config_str, slugify, split_project_config,
 };
@@ -25,7 +23,7 @@ pub struct InitRequest {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct InitOutcome {
-    pub envelope: AlphaEnvelope,
+    pub envelope: Envelope,
     pub config_path: Option<PathBuf>,
 }
 
@@ -75,8 +73,8 @@ pub fn init_project(request: InitRequest) -> InitOutcome {
         Ok(path) => path,
         Err(reason) => {
             return InitOutcome {
-                envelope: AlphaEnvelope::non_success(
-                    AlphaStatus::Error,
+                envelope: Envelope::non_success(
+                    Status::Error,
                     "invalid_scope",
                     "path cannot be used as a daemon8 project",
                     reason,
@@ -93,8 +91,8 @@ pub fn init_project(request: InitRequest) -> InitOutcome {
         ScopeCandidate::Project(path) => path,
         ScopeCandidate::General(scope) => {
             return InitOutcome {
-                envelope: AlphaEnvelope::non_success(
-                    AlphaStatus::Blocked,
+                envelope: Envelope::non_success(
+                    Status::Blocked,
                     "general_scope",
                     "project marker is missing",
                     "daemon8_init writes project config only; run it from a directory with .git, Cargo.toml, package.json, composer.json, pyproject.toml, go.mod, artisan, or bin/console",
@@ -120,8 +118,8 @@ pub fn init_project(request: InitRequest) -> InitOutcome {
 
     if config_path.exists() && !request.overwrite {
         return InitOutcome {
-            envelope: AlphaEnvelope::non_success(
-                AlphaStatus::Blocked,
+            envelope: Envelope::non_success(
+                Status::Blocked,
                 "config_exists",
                 "project config already exists",
                 ".daemon8/config.md already exists; daemon8_init will only replace it when overwrite is true",
@@ -144,8 +142,8 @@ pub fn init_project(request: InitRequest) -> InitOutcome {
             let trimmed = name.trim();
             if trimmed.is_empty() {
                 return InitOutcome {
-                    envelope: AlphaEnvelope::non_success(
-                        AlphaStatus::Error,
+                    envelope: Envelope::non_success(
+                        Status::Error,
                         "invalid_project_name",
                         "project name is empty",
                         "daemon8_init requires a non-empty project name",
@@ -170,8 +168,8 @@ pub fn init_project(request: InitRequest) -> InitOutcome {
         Ok(config) => config,
         Err(err) => {
             return InitOutcome {
-                envelope: AlphaEnvelope::non_success(
-                    AlphaStatus::Error,
+                envelope: Envelope::non_success(
+                    Status::Error,
                     "generated_config_invalid",
                     "generated project config did not validate",
                     err.to_string(),
@@ -185,8 +183,8 @@ pub fn init_project(request: InitRequest) -> InitOutcome {
     match std::fs::symlink_metadata(&config_dir) {
         Ok(meta) if meta.file_type().is_symlink() => {
             return InitOutcome {
-                envelope: AlphaEnvelope::non_success(
-                    AlphaStatus::Blocked,
+                envelope: Envelope::non_success(
+                    Status::Blocked,
                     "unsafe_config_dir",
                     "project config directory is a symlink",
                     ".daemon8 must be a real project-local directory before daemon8_init can write config.md",
@@ -200,8 +198,8 @@ pub fn init_project(request: InitRequest) -> InitOutcome {
 
     if let Err(err) = std::fs::create_dir_all(&config_dir) {
         return InitOutcome {
-            envelope: AlphaEnvelope::non_success(
-                AlphaStatus::Error,
+            envelope: Envelope::non_success(
+                Status::Error,
                 "write_failed",
                 "failed to create project config directory",
                 format!("{}: {err}", config_dir.display()),
@@ -214,8 +212,8 @@ pub fn init_project(request: InitRequest) -> InitOutcome {
     match std::fs::symlink_metadata(&config_path) {
         Ok(meta) if meta.file_type().is_symlink() => {
             return InitOutcome {
-                envelope: AlphaEnvelope::non_success(
-                    AlphaStatus::Blocked,
+                envelope: Envelope::non_success(
+                    Status::Blocked,
                     "unsafe_config_file",
                     "project config file is a symlink",
                     ".daemon8/config.md must be a real project-local file before daemon8_init can replace it",
@@ -226,8 +224,8 @@ pub fn init_project(request: InitRequest) -> InitOutcome {
         }
         Ok(meta) if !meta.file_type().is_file() => {
             return InitOutcome {
-                envelope: AlphaEnvelope::non_success(
-                    AlphaStatus::Blocked,
+                envelope: Envelope::non_success(
+                    Status::Blocked,
                     "unsafe_config_file",
                     "project config path is not a file",
                     ".daemon8/config.md must be a real project-local file before daemon8_init can replace it",
@@ -240,8 +238,8 @@ pub fn init_project(request: InitRequest) -> InitOutcome {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
         Err(err) => {
             return InitOutcome {
-                envelope: AlphaEnvelope::non_success(
-                    AlphaStatus::Error,
+                envelope: Envelope::non_success(
+                    Status::Error,
                     "write_failed",
                     "failed to inspect project config path",
                     format!("{}: {err}", config_path.display()),
@@ -254,8 +252,8 @@ pub fn init_project(request: InitRequest) -> InitOutcome {
 
     if let Err(err) = std::fs::write(&config_path, contents) {
         return InitOutcome {
-            envelope: AlphaEnvelope::non_success(
-                AlphaStatus::Error,
+            envelope: Envelope::non_success(
+                Status::Error,
                 "write_failed",
                 "failed to write project config",
                 format!("{}: {err}", config_path.display()),
@@ -279,7 +277,7 @@ pub fn init_project(request: InitRequest) -> InitOutcome {
     };
 
     InitOutcome {
-        envelope: AlphaEnvelope::success("initialized", "project config written", data)
+        envelope: Envelope::success("initialized", "project config written", data)
             .with_next_action(NextAction::new(
                 "daemon8_connect",
                 "connect this MCP session to the initialized project",
@@ -301,8 +299,8 @@ pub fn remove_project_config(request: RemoveRequest, confirmed: bool) -> InitOut
         Ok(path) => path,
         Err(reason) => {
             return InitOutcome {
-                envelope: AlphaEnvelope::non_success(
-                    AlphaStatus::Error,
+                envelope: Envelope::non_success(
+                    Status::Error,
                     "invalid_scope",
                     "path cannot be used as a daemon8 project",
                     reason,
@@ -324,11 +322,7 @@ pub fn remove_project_config(request: RemoveRequest, confirmed: bool) -> InitOut
 
     if !config_dir.exists() {
         return InitOutcome {
-            envelope: AlphaEnvelope::success(
-                "already_removed",
-                "no .daemon8/ directory",
-                common_data,
-            ),
+            envelope: Envelope::success("already_removed", "no .daemon8/ directory", common_data),
             config_path: None,
         };
     }
@@ -336,8 +330,8 @@ pub fn remove_project_config(request: RemoveRequest, confirmed: bool) -> InitOut
     match std::fs::symlink_metadata(&config_dir) {
         Ok(meta) if meta.file_type().is_symlink() => {
             return InitOutcome {
-                envelope: AlphaEnvelope::non_success(
-                    AlphaStatus::Blocked,
+                envelope: Envelope::non_success(
+                    Status::Blocked,
                     "unsafe_config_dir",
                     "project config directory is a symlink",
                     ".daemon8 must be a real project-local directory before removal",
@@ -349,8 +343,8 @@ pub fn remove_project_config(request: RemoveRequest, confirmed: bool) -> InitOut
         Ok(_) => {}
         Err(err) => {
             return InitOutcome {
-                envelope: AlphaEnvelope::non_success(
-                    AlphaStatus::Error,
+                envelope: Envelope::non_success(
+                    Status::Error,
                     "remove_failed",
                     "failed to inspect .daemon8",
                     format!("{}: {err}", config_dir.display()),
@@ -363,8 +357,8 @@ pub fn remove_project_config(request: RemoveRequest, confirmed: bool) -> InitOut
 
     if !config_path.exists() {
         return InitOutcome {
-            envelope: AlphaEnvelope::non_success(
-                AlphaStatus::Blocked,
+            envelope: Envelope::non_success(
+                Status::Blocked,
                 "not_initialized",
                 ".daemon8/ exists but has no config.md",
                 "manual cleanup required -- daemon8 will not delete a .daemon8 directory it did not create",
@@ -376,19 +370,15 @@ pub fn remove_project_config(request: RemoveRequest, confirmed: bool) -> InitOut
 
     if !confirmed {
         return InitOutcome {
-            envelope: AlphaEnvelope::success(
-                "remove_pending",
-                "ready to remove .daemon8/",
-                common_data,
-            ),
+            envelope: Envelope::success("remove_pending", "ready to remove .daemon8/", common_data),
             config_path: Some(config_path),
         };
     }
 
     if let Err(err) = std::fs::remove_dir_all(&config_dir) {
         return InitOutcome {
-            envelope: AlphaEnvelope::non_success(
-                AlphaStatus::Error,
+            envelope: Envelope::non_success(
+                Status::Error,
                 "remove_failed",
                 "failed to delete .daemon8/",
                 format!("{}: {err}", config_dir.display()),
@@ -399,7 +389,7 @@ pub fn remove_project_config(request: RemoveRequest, confirmed: bool) -> InitOut
     }
 
     InitOutcome {
-        envelope: AlphaEnvelope::success("removed", ".daemon8/ deleted", common_data),
+        envelope: Envelope::success("removed", ".daemon8/ deleted", common_data),
         config_path: None,
     }
 }
@@ -794,7 +784,7 @@ daemon8_schema: 1
             name: Some("alpha".into()),
             overwrite: false,
         });
-        assert_eq!(outcome.envelope.status, AlphaStatus::Success);
+        assert_eq!(outcome.envelope.status, Status::Success);
         assert_eq!(outcome.envelope.next_actions[0].tool, "daemon8_connect");
 
         let config_path = tmp.path().join(".daemon8").join("config.md");
@@ -816,7 +806,7 @@ daemon8_schema: 1
             name: None,
             overwrite: false,
         });
-        assert_eq!(outcome.envelope.status, AlphaStatus::Blocked);
+        assert_eq!(outcome.envelope.status, Status::Blocked);
         assert_eq!(
             std::fs::read_to_string(config_path).unwrap(),
             "# existing\n"
@@ -835,7 +825,7 @@ daemon8_schema: 1
             name: Some("replacement".into()),
             overwrite: true,
         });
-        assert_eq!(outcome.envelope.status, AlphaStatus::Success);
+        assert_eq!(outcome.envelope.status, Status::Success);
 
         let contents = std::fs::read_to_string(config_path).unwrap();
         let parsed = parse_project_config_str(&contents).unwrap();
@@ -850,7 +840,7 @@ daemon8_schema: 1
             name: Some("alpha".into()),
             overwrite: false,
         });
-        assert_eq!(outcome.envelope.status, AlphaStatus::Blocked);
+        assert_eq!(outcome.envelope.status, Status::Blocked);
         assert_eq!(outcome.envelope.code, "general_scope");
         assert!(!tmp.path().join(".daemon8").exists());
     }
@@ -865,7 +855,7 @@ daemon8_schema: 1
             name: Some("   ".into()),
             overwrite: false,
         });
-        assert_eq!(outcome.envelope.status, AlphaStatus::Error);
+        assert_eq!(outcome.envelope.status, Status::Error);
         assert_eq!(outcome.envelope.code, "invalid_project_name");
         assert!(!tmp.path().join(".daemon8").exists());
     }
@@ -885,7 +875,7 @@ daemon8_schema: 1
             overwrite: false,
         });
 
-        assert_eq!(outcome.envelope.status, AlphaStatus::Blocked);
+        assert_eq!(outcome.envelope.status, Status::Blocked);
         assert_eq!(outcome.envelope.code, "unsafe_config_dir");
         assert!(!outside.join("config.md").exists());
     }
@@ -907,7 +897,7 @@ daemon8_schema: 1
             overwrite: true,
         });
 
-        assert_eq!(outcome.envelope.status, AlphaStatus::Blocked);
+        assert_eq!(outcome.envelope.status, Status::Blocked);
         assert_eq!(outcome.envelope.code, "unsafe_config_file");
         assert_eq!(std::fs::read_to_string(outside).unwrap(), "do not replace");
     }
@@ -921,7 +911,7 @@ daemon8_schema: 1
             name: Some("alpha".into()),
             overwrite: false,
         });
-        assert_eq!(outcome.envelope.status, AlphaStatus::Success);
+        assert_eq!(outcome.envelope.status, Status::Success);
         assert!(tmp.path().join(".daemon8").exists());
 
         let outcome = remove_project_config(
@@ -930,7 +920,7 @@ daemon8_schema: 1
             },
             true,
         );
-        assert_eq!(outcome.envelope.status, AlphaStatus::Success);
+        assert_eq!(outcome.envelope.status, Status::Success);
         assert_eq!(outcome.envelope.code, "removed");
         assert!(!tmp.path().join(".daemon8").exists());
     }
@@ -946,7 +936,7 @@ daemon8_schema: 1
             },
             true,
         );
-        assert_eq!(outcome.envelope.status, AlphaStatus::Success);
+        assert_eq!(outcome.envelope.status, Status::Success);
         assert_eq!(outcome.envelope.code, "already_removed");
     }
 
@@ -966,7 +956,7 @@ daemon8_schema: 1
             },
             true,
         );
-        assert_eq!(outcome.envelope.status, AlphaStatus::Blocked);
+        assert_eq!(outcome.envelope.status, Status::Blocked);
         assert_eq!(outcome.envelope.code, "unsafe_config_dir");
         assert!(outside.exists());
     }
@@ -983,7 +973,7 @@ daemon8_schema: 1
             },
             true,
         );
-        assert_eq!(outcome.envelope.status, AlphaStatus::Blocked);
+        assert_eq!(outcome.envelope.status, Status::Blocked);
         assert_eq!(outcome.envelope.code, "not_initialized");
         assert!(tmp.path().join(".daemon8").exists());
     }
@@ -1004,7 +994,7 @@ daemon8_schema: 1
             },
             false,
         );
-        assert_eq!(outcome.envelope.status, AlphaStatus::Success);
+        assert_eq!(outcome.envelope.status, Status::Success);
         assert_eq!(outcome.envelope.code, "remove_pending");
         assert!(tmp.path().join(".daemon8").join("config.md").exists());
     }
@@ -1062,7 +1052,7 @@ daemon8_schema: 1
             name: Some("laravel-app".into()),
             overwrite: false,
         });
-        assert_eq!(outcome.envelope.status, AlphaStatus::Success);
+        assert_eq!(outcome.envelope.status, Status::Success);
 
         let config_path = tmp.path().join(".daemon8").join("config.md");
         let contents = std::fs::read_to_string(config_path).unwrap();
@@ -1083,7 +1073,7 @@ daemon8_schema: 1
             name: Some("empty-proj".into()),
             overwrite: false,
         });
-        assert_eq!(outcome.envelope.status, AlphaStatus::Success);
+        assert_eq!(outcome.envelope.status, Status::Success);
 
         let config_path = tmp.path().join(".daemon8").join("config.md");
         let contents = std::fs::read_to_string(config_path).unwrap();

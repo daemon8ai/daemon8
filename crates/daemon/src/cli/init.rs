@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Result, bail};
-use daemon8_core::control::{AlphaEnvelope, AlphaStatus};
+use daemon8_core::control::{Envelope, Status};
 use daemon8_core::init::{InitRequest, RemoveRequest, init_project, remove_project_config};
 use daemon8_store::{RecentScopeRecord, ScopeLedgerStore, SurrealStore};
 
@@ -68,7 +68,7 @@ pub async fn cmd_init(config_path: Option<String>, args: InitArgs) -> Result<()>
     }
 
     match outcome.envelope.status {
-        AlphaStatus::Success => {
+        Status::Success => {
             if let Some(path) = outcome.config_path {
                 println!("wrote {}", path.display());
             } else {
@@ -86,7 +86,7 @@ pub async fn cmd_init(config_path: Option<String>, args: InitArgs) -> Result<()>
             print_next_actions(&outcome.envelope);
             Ok(())
         }
-        AlphaStatus::Blocked => {
+        Status::Blocked => {
             println!("{}", outcome.envelope.message);
             if let Some(why) = &outcome.envelope.why {
                 println!("{why}");
@@ -162,7 +162,7 @@ async fn cmd_remove(
 
     let outcome = remove_project_config(request, true);
 
-    if outcome.envelope.status == AlphaStatus::Success
+    if outcome.envelope.status == Status::Success
         && outcome.envelope.code == "removed"
         && let Err(err) = cleanup_removed_scope(config_path.as_deref(), &scope_root).await
     {
@@ -192,14 +192,14 @@ async fn cleanup_removed_scope(config_path: Option<&str>, scope_root: &str) -> R
     Ok(())
 }
 
-fn print_next_actions(envelope: &AlphaEnvelope) {
+fn print_next_actions(envelope: &Envelope) {
     for action in &envelope.next_actions {
         println!("next: {} ({})", action.tool, action.reason);
     }
 }
 
-async fn record_init_outcome(config_path: Option<&str>, envelope: &AlphaEnvelope) -> Result<()> {
-    if envelope.status != AlphaStatus::Success {
+async fn record_init_outcome(config_path: Option<&str>, envelope: &Envelope) -> Result<()> {
+    if envelope.status != Status::Success {
         return Ok(());
     }
     let Some(scope_root) = envelope_data_str(envelope, "scope_root") else {
@@ -231,7 +231,7 @@ async fn record_init_outcome(config_path: Option<&str>, envelope: &AlphaEnvelope
     Ok(())
 }
 
-fn envelope_data_str(envelope: &AlphaEnvelope, key: &str) -> Option<String> {
+fn envelope_data_str(envelope: &Envelope, key: &str) -> Option<String> {
     envelope
         .data
         .as_ref()
@@ -240,7 +240,7 @@ fn envelope_data_str(envelope: &AlphaEnvelope, key: &str) -> Option<String> {
         .map(ToString::to_string)
 }
 
-fn envelope_data_u64(envelope: &AlphaEnvelope, key: &str) -> Option<u64> {
+fn envelope_data_u64(envelope: &Envelope, key: &str) -> Option<u64> {
     envelope
         .data
         .as_ref()

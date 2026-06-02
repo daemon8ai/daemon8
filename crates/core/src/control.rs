@@ -23,7 +23,7 @@ const GENERATED_CONFIG_BODY_REQUIREMENT: &str = concat!(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum AlphaStatus {
+pub enum Status {
     Success,
     Error,
     ConnectRequired,
@@ -68,8 +68,8 @@ impl NextAction {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AlphaEnvelope {
-    pub status: AlphaStatus,
+pub struct Envelope {
+    pub status: Status,
     pub code: String,
     pub message: String,
     pub why: Option<String>,
@@ -82,10 +82,10 @@ pub struct AlphaEnvelope {
     pub next_actions: Vec<NextAction>,
 }
 
-impl AlphaEnvelope {
+impl Envelope {
     pub fn success(code: impl Into<String>, message: impl Into<String>, data: Value) -> Self {
         Self {
-            status: AlphaStatus::Success,
+            status: Status::Success,
             code: code.into(),
             message: message.into(),
             why: None,
@@ -97,7 +97,7 @@ impl AlphaEnvelope {
     }
 
     pub fn non_success(
-        status: AlphaStatus,
+        status: Status,
         code: impl Into<String>,
         message: impl Into<String>,
         why: impl Into<String>,
@@ -143,8 +143,8 @@ impl AlphaEnvelope {
     }
 }
 
-pub fn status_envelope(data: Value) -> AlphaEnvelope {
-    AlphaEnvelope::success("status", "daemon status", data)
+pub fn status_envelope(data: Value) -> Envelope {
+    Envelope::success("status", "daemon status", data)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -185,7 +185,7 @@ pub struct ConnectRequest {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConnectOutcome {
-    pub envelope: AlphaEnvelope,
+    pub envelope: Envelope,
     pub connection: Option<SessionConnection>,
 }
 
@@ -199,13 +199,13 @@ pub fn normalize_provider_for_connect(
     session_id: &str,
     provider: &str,
     requested_path: &str,
-) -> Result<String, Box<AlphaEnvelope>> {
+) -> Result<String, Box<Envelope>> {
     normalize_provider_id(provider)
         .map(ToString::to_string)
         .map_err(|err| {
             Box::new(
-                AlphaEnvelope::non_success(
-                    AlphaStatus::Error,
+                Envelope::non_success(
+                    Status::Error,
                     err.code.as_str(),
                     "provider is not supported",
                     err.message,
@@ -224,8 +224,8 @@ pub fn connect(request: ConnectRequest) -> ConnectOutcome {
     let provider = request.provider.trim().to_string();
     if provider.is_empty() {
         return ConnectOutcome {
-            envelope: AlphaEnvelope::non_success(
-                AlphaStatus::Error,
+            envelope: Envelope::non_success(
+                Status::Error,
                 "invalid_provider",
                 "provider is required",
                 "daemon8_connect needs the calling agent provider to bind this session explicitly",
@@ -243,8 +243,8 @@ pub fn connect(request: ConnectRequest) -> ConnectOutcome {
         Ok(path) => path,
         Err(reason) => {
             return ConnectOutcome {
-                envelope: AlphaEnvelope::non_success(
-                    AlphaStatus::Error,
+                envelope: Envelope::non_success(
+                    Status::Error,
                     "invalid_scope",
                     "path cannot be used as a daemon8 scope",
                     reason,
@@ -276,7 +276,7 @@ pub fn connect(request: ConnectRequest) -> ConnectOutcome {
                 project_config: None,
             };
             ConnectOutcome {
-                envelope: AlphaEnvelope::success(
+                envelope: Envelope::success(
                     "connected",
                     "connected in general mode",
                     serde_json::to_value(&connection).unwrap_or(Value::Null),
@@ -306,8 +306,8 @@ fn connect_project(
 
     if !config_path.exists() {
         return ConnectOutcome {
-            envelope: AlphaEnvelope::non_success(
-                AlphaStatus::SetupRequired,
+            envelope: Envelope::non_success(
+                Status::SetupRequired,
                 "missing_config",
                 "project config is missing",
                 "daemon8 project mode requires .daemon8/config.md before project-scoped tools can run",
@@ -326,8 +326,8 @@ fn connect_project(
         Ok(contents) => contents,
         Err(source) => {
             return ConnectOutcome {
-                envelope: AlphaEnvelope::non_success(
-                    AlphaStatus::Blocked,
+                envelope: Envelope::non_success(
+                    Status::Blocked,
                     "config_unreadable",
                     "project config cannot be read",
                     format!(
@@ -345,8 +345,8 @@ fn connect_project(
         Ok(config) => config,
         Err(err) => {
             return ConnectOutcome {
-                envelope: AlphaEnvelope::non_success(
-                    AlphaStatus::SetupRequired,
+                envelope: Envelope::non_success(
+                    Status::SetupRequired,
                     "invalid_config",
                     "project config is invalid",
                     format!("daemon8 can reconnect after .daemon8/config.md is regenerated: {err}"),
@@ -394,7 +394,7 @@ fn connect_project(
         data["related_projects"] = json!(config.related_projects.keys().collect::<Vec<_>>());
     }
 
-    let mut envelope = AlphaEnvelope::success("connected", "connected to project", data);
+    let mut envelope = Envelope::success("connected", "connected to project", data);
     if config.sources.is_empty() {
         envelope = envelope.with_requirement(
             "REQUIRED: sources is empty. Open .daemon8/config.md and complete ALL steps in the markdown body NOW. daemon8 cannot observe this project without sources.",
@@ -423,7 +423,7 @@ pub fn resolve_connect_transcript(
     home: &Path,
     since_ms: u64,
 ) -> ConnectOutcome {
-    if outcome.envelope.status != AlphaStatus::Success {
+    if outcome.envelope.status != Status::Success {
         return outcome;
     }
     let Some(connection) = &outcome.connection else {
@@ -544,7 +544,7 @@ fn transcript_blocked_outcome(
     let data = transcript_outcome_data(&outcome, transcript);
     let params = transcript_retry_params(&outcome, retry_path);
     ConnectOutcome {
-        envelope: AlphaEnvelope::non_success(AlphaStatus::Blocked, code, message, why)
+        envelope: Envelope::non_success(Status::Blocked, code, message, why)
             .with_data(data)
             .with_hint("daemon8 found multiple transcripts and cannot choose implicitly -- retry daemon8_connect with transcript_path set to one of the candidates listed above")
             .with_next_action(NextAction::new(
@@ -579,7 +579,7 @@ fn transcript_error_outcome(
         "code": code,
     });
     ConnectOutcome {
-        envelope: AlphaEnvelope::non_success(AlphaStatus::Error, code, message, why)
+        envelope: Envelope::non_success(Status::Error, code, message, why)
             .with_data(transcript_outcome_data(&outcome, transcript)),
         connection: None,
     }
@@ -651,10 +651,10 @@ pub fn link_conversation(
     connection: &mut SessionConnection,
     request: LinkConversationRequest<'_>,
     since_ms: u64,
-) -> Result<LinkedTranscript, Box<AlphaEnvelope>> {
+) -> Result<LinkedTranscript, Box<Envelope>> {
     let provider_id = normalize_provider_id(request.provider).map_err(|err| {
-        Box::new(AlphaEnvelope::non_success(
-            AlphaStatus::Error,
+        Box::new(Envelope::non_success(
+            Status::Error,
             "invalid_provider",
             &err.message,
             err.message.clone(),
@@ -662,8 +662,8 @@ pub fn link_conversation(
     })?;
 
     let scope_root = connection.scope_root.as_deref().ok_or_else(|| {
-        Box::new(AlphaEnvelope::non_success(
-            AlphaStatus::Error,
+        Box::new(Envelope::non_success(
+            Status::Error,
             "no_scope_root",
             "no project scope root in current connection",
             "link_conversation requires a project-scoped connection with a scope_root",
@@ -686,8 +686,8 @@ pub fn link_conversation(
         ) {
             Ok(TranscriptResolution::Bound(candidate)) => candidate,
             Ok(TranscriptResolution::NotFound | TranscriptResolution::Ambiguous(_)) => {
-                return Err(Box::new(AlphaEnvelope::non_success(
-                    AlphaStatus::Error,
+                return Err(Box::new(Envelope::non_success(
+                    Status::Error,
                     "transcript_unreadable",
                     "transcript path cannot be linked",
                     format!(
@@ -698,8 +698,8 @@ pub fn link_conversation(
                 )));
             }
             Err(err) => {
-                return Err(Box::new(AlphaEnvelope::non_success(
-                    AlphaStatus::Error,
+                return Err(Box::new(Envelope::non_success(
+                    Status::Error,
                     err.code.as_str(),
                     "transcript path cannot be linked",
                     err.message,
@@ -715,8 +715,8 @@ pub fn link_conversation(
                 .into_iter()
                 .find(|candidate| candidate.provider == provider_id)
                 .ok_or_else(|| {
-                    Box::new(AlphaEnvelope::non_success(
-                        AlphaStatus::Error,
+                    Box::new(Envelope::non_success(
+                        Status::Error,
                         "no_transcripts_found",
                         "no recent transcripts found for provider and project path",
                         format!(
@@ -727,8 +727,8 @@ pub fn link_conversation(
                 })?;
         (candidate.path, canonical_scope.display().to_string())
     } else {
-        return Err(Box::new(AlphaEnvelope::non_success(
-            AlphaStatus::Error,
+        return Err(Box::new(Envelope::non_success(
+            Status::Error,
             "missing_params",
             "either project_path or transcript_path is required",
             "provide project_path to discover transcripts, or transcript_path to link directly",
@@ -775,7 +775,7 @@ mod tests {
             name: None,
             overwrite: false,
         });
-        assert_eq!(outcome.envelope.status, AlphaStatus::Success);
+        assert_eq!(outcome.envelope.status, Status::Success);
     }
 
     fn write_codex_session(path: &Path, session_id: &str, cwd: &Path) {
@@ -806,7 +806,7 @@ mod tests {
 
     #[test]
     fn envelope_has_alpha_shape() {
-        let envelope = AlphaEnvelope::success("connected", "connected", json!({"x": 1}))
+        let envelope = Envelope::success("connected", "connected", json!({"x": 1}))
             .with_next_action(NextAction::new("daemon8_status", "inspect", json!({})));
         let value: Value = serde_json::from_str(&envelope.render()).unwrap();
         assert_eq!(value["status"], "success");
@@ -822,7 +822,7 @@ mod tests {
 
     #[test]
     fn envelope_serializes_empty_alpha_fields() {
-        let envelope = AlphaEnvelope::success("status", "daemon status", json!({}));
+        let envelope = Envelope::success("status", "daemon status", json!({}));
         let value: Value = serde_json::from_str(&envelope.render()).unwrap();
 
         assert!(value.as_object().unwrap().contains_key("why"));
@@ -840,7 +840,7 @@ mod tests {
         std::fs::write(tmp.path().join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
 
         let outcome = connect(request(tmp.path()));
-        assert_eq!(outcome.envelope.status, AlphaStatus::SetupRequired);
+        assert_eq!(outcome.envelope.status, Status::SetupRequired);
         assert_eq!(outcome.envelope.code, "missing_config");
         assert!(outcome.connection.is_none());
     }
@@ -853,7 +853,7 @@ mod tests {
         std::fs::create_dir_all(&config_path).unwrap();
 
         let outcome = connect(request(tmp.path()));
-        assert_eq!(outcome.envelope.status, AlphaStatus::Blocked);
+        assert_eq!(outcome.envelope.status, Status::Blocked);
         assert_eq!(outcome.envelope.code, "config_unreadable");
         assert!(outcome.envelope.next_actions.is_empty());
         assert!(outcome.connection.is_none());
@@ -864,7 +864,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
 
         let outcome = connect(request(tmp.path()));
-        assert_eq!(outcome.envelope.status, AlphaStatus::Success);
+        assert_eq!(outcome.envelope.status, Status::Success);
         assert_eq!(outcome.connection.unwrap().mode, ScopeMode::General);
     }
 
@@ -875,7 +875,7 @@ mod tests {
         std::fs::write(&file, "").unwrap();
 
         let outcome = connect(request(&file));
-        assert_eq!(outcome.envelope.status, AlphaStatus::Error);
+        assert_eq!(outcome.envelope.status, Status::Error);
         assert_eq!(outcome.envelope.code, "invalid_scope");
     }
 
@@ -887,7 +887,7 @@ mod tests {
 
         let outcome = connect(request(tmp.path()));
 
-        assert_eq!(outcome.envelope.status, AlphaStatus::Success);
+        assert_eq!(outcome.envelope.status, Status::Success);
         assert_eq!(outcome.envelope.requirements.len(), 2);
         assert!(
             outcome
@@ -921,7 +921,7 @@ mod tests {
 
         let outcome = connect(request(tmp.path()));
 
-        assert_eq!(outcome.envelope.status, AlphaStatus::Success);
+        assert_eq!(outcome.envelope.status, Status::Success);
         assert_eq!(outcome.envelope.requirements.len(), 1);
         assert!(
             outcome.envelope.requirements[0].contains("Do not repeat log paths or sources"),
@@ -954,7 +954,7 @@ mod tests {
         req.transcript_path = Some(transcript.clone());
         let outcome = resolve_connect_transcript(connect(req), Some(&transcript), &home, 0);
 
-        assert_eq!(outcome.envelope.status, AlphaStatus::Success);
+        assert_eq!(outcome.envelope.status, Status::Success);
         let connection = outcome.connection.unwrap();
         let expected = transcript.canonicalize().unwrap().display().to_string();
         assert_eq!(
@@ -986,7 +986,7 @@ mod tests {
         req.transcript_path = Some(transcript.clone());
         let outcome = resolve_connect_transcript(connect(req), Some(&transcript), &home, 0);
 
-        assert_eq!(outcome.envelope.status, AlphaStatus::Error);
+        assert_eq!(outcome.envelope.status, Status::Error);
         assert_eq!(outcome.envelope.code, "transcript_scope_mismatch");
         assert!(outcome.connection.is_none());
     }
@@ -1006,7 +1006,7 @@ mod tests {
 
         let outcome = resolve_connect_transcript(connect(request(&project)), None, &home, 0);
 
-        assert_eq!(outcome.envelope.status, AlphaStatus::Blocked);
+        assert_eq!(outcome.envelope.status, Status::Blocked);
         assert_eq!(outcome.envelope.code, "transcript_ambiguous");
         assert!(outcome.connection.is_none());
         let data = outcome.envelope.data.unwrap();
@@ -1038,7 +1038,7 @@ mod tests {
         req.transcript_path = Some(transcript.clone());
         let outcome = resolve_connect_transcript(connect(req), Some(&transcript), &home, 0);
 
-        assert_eq!(outcome.envelope.status, AlphaStatus::Success);
+        assert_eq!(outcome.envelope.status, Status::Success);
         let data = outcome.envelope.data.unwrap();
         let conversations = &data["conversations"];
         assert!(!conversations.is_null(), "conversations key missing");
@@ -1339,7 +1339,7 @@ mod tests {
         );
 
         let envelope = result.unwrap_err();
-        assert_eq!(envelope.status, AlphaStatus::Error);
+        assert_eq!(envelope.status, Status::Error);
         assert_eq!(envelope.code, "transcript_provider_mismatch");
     }
 
@@ -1369,7 +1369,7 @@ mod tests {
         );
 
         let envelope = result.unwrap_err();
-        assert_eq!(envelope.status, AlphaStatus::Error);
+        assert_eq!(envelope.status, Status::Error);
         assert_eq!(envelope.code, "transcript_scope_mismatch");
     }
 
@@ -1391,7 +1391,7 @@ mod tests {
 
         assert!(result.is_err());
         let envelope = result.unwrap_err();
-        assert_eq!(envelope.status, AlphaStatus::Error);
+        assert_eq!(envelope.status, Status::Error);
         assert_eq!(envelope.code, "missing_params");
     }
 
@@ -1412,7 +1412,7 @@ mod tests {
         );
 
         let envelope = result.unwrap_err();
-        assert_eq!(envelope.status, AlphaStatus::Error);
+        assert_eq!(envelope.status, Status::Error);
         assert_eq!(envelope.code, "invalid_provider");
     }
 
@@ -1433,7 +1433,7 @@ mod tests {
         );
 
         let envelope = result.unwrap_err();
-        assert_eq!(envelope.status, AlphaStatus::Error);
+        assert_eq!(envelope.status, Status::Error);
         assert_eq!(envelope.code, "transcript_unreadable");
     }
 
@@ -1465,7 +1465,7 @@ mod tests {
         );
 
         let envelope = result.unwrap_err();
-        assert_eq!(envelope.status, AlphaStatus::Error);
+        assert_eq!(envelope.status, Status::Error);
         assert_eq!(envelope.code, "no_scope_root");
     }
 }

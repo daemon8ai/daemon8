@@ -9,8 +9,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Result, bail};
 use daemon8_core::control::{
-    AlphaEnvelope, AlphaStatus, ConnectOutcome, ConnectRequest, ScopeMode, SessionConnection,
-    connect, normalize_provider_for_connect, resolve_connect_transcript,
+    ConnectOutcome, ConnectRequest, Envelope, ScopeMode, SessionConnection, Status, connect,
+    normalize_provider_for_connect, resolve_connect_transcript,
 };
 use daemon8_providers::{conversation_since_ms, dirs_home};
 use daemon8_store::{
@@ -138,10 +138,7 @@ pub async fn cmd_connect(config_path: Option<String>, args: ConnectArgs) -> Resu
     }
 
     match outcome.envelope.status {
-        AlphaStatus::Success
-        | AlphaStatus::SetupRequired
-        | AlphaStatus::ConnectRequired
-        | AlphaStatus::Blocked => {
+        Status::Success | Status::SetupRequired | Status::ConnectRequired | Status::Blocked => {
             print_envelope_guidance(&outcome.envelope);
             Ok(())
         }
@@ -157,7 +154,7 @@ pub async fn cmd_connect(config_path: Option<String>, args: ConnectArgs) -> Resu
     }
 }
 
-fn print_envelope_guidance(envelope: &AlphaEnvelope) {
+fn print_envelope_guidance(envelope: &Envelope) {
     println!("{}", envelope.message);
     if let Some(why) = &envelope.why {
         println!("{why}");
@@ -244,7 +241,7 @@ async fn record_connect_outcome_with_store(
 
 fn scope_session_record(
     connection: &SessionConnection,
-    envelope: &AlphaEnvelope,
+    envelope: &Envelope,
     now: u64,
 ) -> ScopeSessionRecord {
     ScopeSessionRecord {
@@ -269,7 +266,7 @@ fn scope_failure_record(
     requested_path: &str,
     agent_name: Option<&str>,
     transcript_path: Option<&str>,
-    envelope: &AlphaEnvelope,
+    envelope: &Envelope,
     now: u64,
 ) -> ScopeConnectFailureRecord {
     ScopeConnectFailureRecord {
@@ -282,7 +279,7 @@ fn scope_failure_record(
         transcript_path: transcript_path.map(Into::into),
         mode: envelope_data_str(envelope, "mode")
             .unwrap_or_else(|| ScopeMode::Invalid.as_str().into()),
-        status: alpha_status_str(envelope.status).into(),
+        status: status_str(envelope.status).into(),
         code: envelope.code.clone(),
         message: envelope.message.clone(),
         why: envelope.why.clone(),
@@ -292,7 +289,7 @@ fn scope_failure_record(
     }
 }
 
-fn envelope_data_str(envelope: &AlphaEnvelope, key: &str) -> Option<String> {
+fn envelope_data_str(envelope: &Envelope, key: &str) -> Option<String> {
     envelope
         .data
         .as_ref()
@@ -301,7 +298,7 @@ fn envelope_data_str(envelope: &AlphaEnvelope, key: &str) -> Option<String> {
         .map(ToString::to_string)
 }
 
-fn envelope_data_u64(envelope: &AlphaEnvelope, key: &str) -> Option<u64> {
+fn envelope_data_u64(envelope: &Envelope, key: &str) -> Option<u64> {
     envelope
         .data
         .as_ref()
@@ -309,13 +306,13 @@ fn envelope_data_u64(envelope: &AlphaEnvelope, key: &str) -> Option<u64> {
         .and_then(|value| value.as_u64())
 }
 
-fn alpha_status_str(status: AlphaStatus) -> &'static str {
+fn status_str(status: Status) -> &'static str {
     match status {
-        AlphaStatus::Success => "success",
-        AlphaStatus::Error => "error",
-        AlphaStatus::ConnectRequired => "connect_required",
-        AlphaStatus::SetupRequired => "setup_required",
-        AlphaStatus::Blocked => "blocked",
+        Status::Success => "success",
+        Status::Error => "error",
+        Status::ConnectRequired => "connect_required",
+        Status::SetupRequired => "setup_required",
+        Status::Blocked => "blocked",
     }
 }
 

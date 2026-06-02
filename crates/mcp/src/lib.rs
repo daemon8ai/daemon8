@@ -10,8 +10,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use daemon8_core::control::{
-    AlphaEnvelope, AlphaStatus, ConnectRequest, LinkConversationRequest, NextAction, ScopeMode,
-    SessionConnection, connect as connect_scope, link_conversation, normalize_provider_for_connect,
+    ConnectRequest, Envelope, LinkConversationRequest, NextAction, ScopeMode, SessionConnection,
+    Status, connect as connect_scope, link_conversation, normalize_provider_for_connect,
     resolve_connect_transcript, status_envelope,
 };
 use daemon8_core::init::{InitRequest, init_project};
@@ -839,8 +839,8 @@ impl DaemonMcp {
     #[tool(name = "read_live_feed")]
     async fn read_live_feed(&self, Parameters(params): Parameters<ObserveParams>) -> String {
         if self.connection_mode() == Some(ScopeMode::General) && !params.has_narrowing_filter() {
-            return AlphaEnvelope::non_success(
-                AlphaStatus::Blocked,
+            return Envelope::non_success(
+                Status::Blocked,
                 "narrow_filter_required",
                 "general mode read_live_feed requires a narrowing filter",
                 "add kinds, severity_min, origins, service, source, source_instance, text_match, since_checkpoint, correlation_id, or tags",
@@ -1047,7 +1047,7 @@ impl DaemonMcp {
             };
 
         if self.same_connection_request(&provider, &project_path) {
-            return AlphaEnvelope::success(
+            return Envelope::success(
                 "already_connected",
                 "session is already connected -- proceed with other tools",
                 self.with_session_context(serde_json::json!({})),
@@ -1076,7 +1076,7 @@ impl DaemonMcp {
             conversation_since_ms,
         );
 
-        if outcome.envelope.status == AlphaStatus::SetupRequired
+        if outcome.envelope.status == Status::SetupRequired
             && let Some(ledger) = &self.scope_ledger_store
         {
             let scope_root = outcome
@@ -1087,8 +1087,8 @@ impl DaemonMcp {
                 .map(str::to_owned)
                 .unwrap_or_else(|| project_path.clone());
             if let Ok(true) = ledger.is_scope_ignored(&scope_root).await {
-                let mut envelope = AlphaEnvelope::non_success(
-                    AlphaStatus::Blocked,
+                let mut envelope = Envelope::non_success(
+                    Status::Blocked,
                     "project_ignored",
                     "this project is explicitly ignored -- daemon8 will not prompt for setup",
                     "do not call daemon8 tools for this project; no connection was established",
@@ -1161,7 +1161,7 @@ impl DaemonMcp {
                             &format!("failed to persist ignore: {e}"),
                         );
                     }
-                    return AlphaEnvelope::success(
+                    return Envelope::success(
                         "project_ignored",
                         format!(
                             "{scope_root_str} is now ignored. daemon8_connect will skip setup for this project.",
@@ -1180,7 +1180,7 @@ impl DaemonMcp {
                             &format!("failed to remove ignore: {e}"),
                         );
                     }
-                    return AlphaEnvelope::success(
+                    return Envelope::success(
                         "project_unignored",
                         format!("{scope_root_str} is no longer ignored"),
                         serde_json::json!({"scope_root": scope_root_str}),
@@ -1683,8 +1683,8 @@ impl DaemonMcp {
             }
         };
         if let Some(existing) = self.active_state.current_session() {
-            return AlphaEnvelope::non_success(
-                AlphaStatus::Error,
+            return Envelope::non_success(
+                Status::Error,
                 "already_active_debug_session",
                 format!("session {} is already active", existing.id),
                 "call resolve_debug_session if you have a durable conclusion, or end_debug_session to abandon/in-progress",
@@ -2069,7 +2069,7 @@ async fn flush_active_debug_session_state(
 
 fn scope_session_record(
     connection: &SessionConnection,
-    envelope: &AlphaEnvelope,
+    envelope: &Envelope,
     now: u64,
 ) -> ScopeSessionRecord {
     ScopeSessionRecord {
@@ -2094,7 +2094,7 @@ fn scope_failure_record(
     requested_path: &str,
     agent_name: Option<&str>,
     transcript_path: Option<&str>,
-    envelope: &AlphaEnvelope,
+    envelope: &Envelope,
     now: u64,
 ) -> ScopeConnectFailureRecord {
     ScopeConnectFailureRecord {
@@ -2107,7 +2107,7 @@ fn scope_failure_record(
         transcript_path: transcript_path.map(Into::into),
         mode: envelope_data_str(envelope, "mode")
             .unwrap_or_else(|| ScopeMode::Invalid.as_str().into()),
-        status: alpha_status_str(envelope.status).into(),
+        status: status_str(envelope.status).into(),
         code: envelope.code.clone(),
         message: envelope.message.clone(),
         why: envelope.why.clone(),
@@ -2117,7 +2117,7 @@ fn scope_failure_record(
     }
 }
 
-fn envelope_data_str(envelope: &AlphaEnvelope, key: &str) -> Option<String> {
+fn envelope_data_str(envelope: &Envelope, key: &str) -> Option<String> {
     envelope
         .data
         .as_ref()
@@ -2126,7 +2126,7 @@ fn envelope_data_str(envelope: &AlphaEnvelope, key: &str) -> Option<String> {
         .map(ToString::to_string)
 }
 
-fn envelope_data_u64(envelope: &AlphaEnvelope, key: &str) -> Option<u64> {
+fn envelope_data_u64(envelope: &Envelope, key: &str) -> Option<u64> {
     envelope
         .data
         .as_ref()
@@ -2134,13 +2134,13 @@ fn envelope_data_u64(envelope: &AlphaEnvelope, key: &str) -> Option<u64> {
         .and_then(|value| value.as_u64())
 }
 
-fn alpha_status_str(status: AlphaStatus) -> &'static str {
+fn status_str(status: Status) -> &'static str {
     match status {
-        AlphaStatus::Success => "success",
-        AlphaStatus::Error => "error",
-        AlphaStatus::ConnectRequired => "connect_required",
-        AlphaStatus::SetupRequired => "setup_required",
-        AlphaStatus::Blocked => "blocked",
+        Status::Success => "success",
+        Status::Error => "error",
+        Status::ConnectRequired => "connect_required",
+        Status::SetupRequired => "setup_required",
+        Status::Blocked => "blocked",
     }
 }
 
@@ -2150,7 +2150,7 @@ impl DaemonMcp {
     }
 
     pub(crate) fn ok_code(&self, code: &str, message: &str, value: serde_json::Value) -> String {
-        AlphaEnvelope::success(code, message, self.with_session_context(value)).render()
+        Envelope::success(code, message, self.with_session_context(value)).render()
     }
 
     pub(crate) fn ok_with_actions(
@@ -2161,7 +2161,7 @@ impl DaemonMcp {
         next_actions: Vec<NextAction>,
         hint: Option<&str>,
     ) -> String {
-        let mut envelope = AlphaEnvelope::success(code, message, self.with_session_context(value));
+        let mut envelope = Envelope::success(code, message, self.with_session_context(value));
         for action in next_actions {
             envelope = envelope.with_next_action(action);
         }
@@ -2179,7 +2179,7 @@ impl DaemonMcp {
         next_tool: Option<&str>,
     ) -> String {
         let mut envelope =
-            AlphaEnvelope::non_success(AlphaStatus::Error, code, message, hint.unwrap_or(message))
+            Envelope::non_success(Status::Error, code, message, hint.unwrap_or(message))
                 .with_data(self.session_context());
         if let Some(tool) = next_tool {
             envelope = envelope.with_next_action(next_action_for_tool(tool));
@@ -2299,8 +2299,8 @@ impl DaemonMcp {
         }
     }
 
-    async fn record_init_outcome(&self, envelope: &AlphaEnvelope) {
-        if envelope.status != AlphaStatus::Success {
+    async fn record_init_outcome(&self, envelope: &Envelope) {
+        if envelope.status != Status::Success {
             return;
         }
         let Some(ledger) = &self.scope_ledger_store else {
@@ -2363,8 +2363,8 @@ impl DaemonMcp {
             ToolPolicy::GeneralSafe if self.has_connection() => None,
             ToolPolicy::ProjectOnly if self.connection_mode() == Some(ScopeMode::Project) => None,
             ToolPolicy::ProjectOnly if self.connection_mode() == Some(ScopeMode::General) => Some(
-                AlphaEnvelope::non_success(
-                    AlphaStatus::Blocked,
+                Envelope::non_success(
+                    Status::Blocked,
                     "project_required",
                     "project scope required",
                     "reconnect with daemon8_connect using a project path before using this tool",
@@ -2378,8 +2378,8 @@ impl DaemonMcp {
                 .render(),
             ),
             ToolPolicy::GeneralSafe | ToolPolicy::ProjectOnly => Some(
-                AlphaEnvelope::non_success(
-                    AlphaStatus::ConnectRequired,
+                Envelope::non_success(
+                    Status::ConnectRequired,
                     "connect_required",
                     "daemon8_connect required",
                     "call daemon8_connect before using runtime tools in this MCP session",
@@ -3501,7 +3501,7 @@ fn missing_param_json(msg: &str) -> String {
 }
 
 fn error_json(code: &str, msg: &str) -> String {
-    AlphaEnvelope::non_success(AlphaStatus::Error, code, msg, msg).render()
+    Envelope::non_success(Status::Error, code, msg, msg).render()
 }
 
 impl DaemonMcp {
