@@ -4,11 +4,22 @@ This changelog summarizes major repository changes by release phase.
 For full commit-by-commit detail, use `git log` and
 [daemon8ai/daemon8/releases](https://github.com/daemon8ai/daemon8/releases).
 
-## Unreleased
+## v0.5.0-alpha.4 - 2026-06-02
 
-- Conversation recall now defaults to a rolling 24-hour window across
-  connect discovery, link discovery, and `build_context_snapshot`.
-  Full-history recall remains explicit with `since: "conversation_start"`.
+- Recall pipeline processes provider transcripts through visibility
+  classification, time-window scoping, instruction-block filtering,
+  per-entry truncation (8KB), and file-mutation derivation before
+  faceted snapshot output. Each facet caps at 200 entries and 128KB.
+- `build_context_snapshot` defaults to a rolling 24-hour window; stale
+  transcripts are excluded from discovery. Full history remains explicit
+  with `since: "conversation_start"`.
+- File changes are derived from Edit/Write/MultiEdit/NotebookEdit/
+  apply_patch/apply_diff tool calls so Codex and Gemini sessions produce
+  useful file-change facets without native FileChange events.
+- Recall presentation now surfaces the time window covered and informs
+  users they can request different periods.
+- Renamed `AlphaStatus`/`AlphaEnvelope` to `Status`/`Envelope` across
+  the workspace.
 
 ## v0.5.0-alpha.3 - 2026-05-26
 

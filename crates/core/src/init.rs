@@ -674,7 +674,7 @@ mod tests {
     }
 
     #[test]
-    fn template_uses_empty_alpha_sources_array() {
+    fn template_uses_empty_sources_array() {
         let root = Path::new("/tmp/my-app");
         let stack = DetectedStack {
             languages: vec!["rust".into()],

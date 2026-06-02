@@ -1530,7 +1530,7 @@ impl DaemonMcp {
 fn wrap_inner_result(daemon: &DaemonMcp, raw: &str) -> String {
     match serde_json::from_str::<serde_json::Value>(raw) {
         Ok(mut v) => {
-            // If the inner function already produced an alpha envelope
+            // If the inner function already produced an envelope
             // (i.e. `error_json(...)` from inside the inner), pass it through.
             // Otherwise it's a raw success payload to wrap as `data`.
             if v.get("status").is_some() && v.get("code").is_some() {

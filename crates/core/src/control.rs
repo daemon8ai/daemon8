@@ -805,7 +805,7 @@ mod tests {
     }
 
     #[test]
-    fn envelope_has_alpha_shape() {
+    fn envelope_has_expected_shape() {
         let envelope = Envelope::success("connected", "connected", json!({"x": 1}))
             .with_next_action(NextAction::new("daemon8_status", "inspect", json!({})));
         let value: Value = serde_json::from_str(&envelope.render()).unwrap();
@@ -821,7 +821,7 @@ mod tests {
     }
 
     #[test]
-    fn envelope_serializes_empty_alpha_fields() {
+    fn envelope_serializes_empty_fields() {
         let envelope = Envelope::success("status", "daemon status", json!({}));
         let value: Value = serde_json::from_str(&envelope.render()).unwrap();
 

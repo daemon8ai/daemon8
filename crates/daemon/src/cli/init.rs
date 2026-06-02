@@ -29,7 +29,7 @@ pub struct InitArgs {
     #[arg(long)]
     pub path: Option<PathBuf>,
 
-    /// Emit the common alpha JSON envelope.
+    /// Emit the common JSON envelope.
     #[arg(long)]
     pub json: bool,
 

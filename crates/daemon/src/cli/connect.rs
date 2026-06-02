@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LicenseRef-FCL-1.0-ALv2
 // Copyright (c) 2026 Havy.tech, LLC
 
-//! `daemon8 connect` -- classify an explicit alpha scope and report the next step.
+//! `daemon8 connect` -- classify a project scope and report the next step.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -41,7 +41,7 @@ pub struct ConnectArgs {
     #[arg(long)]
     pub conversation_lookback_hours: Option<u64>,
 
-    /// Emit the common alpha JSON envelope.
+    /// Emit the common JSON envelope.
     #[arg(long)]
     pub json: bool,
 }

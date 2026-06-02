@@ -66,7 +66,7 @@ enum Commands {
         #[arg(value_enum)]
         shell: clap_complete::aot::Shell,
     },
-    /// Classify and connect an explicit alpha scope
+    /// Classify and connect a project scope
     Connect(cli::connect::ConnectArgs),
     /// Write `.daemon8/config.md` for explicit project configuration
     Init(cli::init::InitArgs),
