@@ -4,6 +4,25 @@ This changelog summarizes major repository changes by release phase.
 For full commit-by-commit detail, use `git log` and
 [daemon8ai/daemon8/releases](https://github.com/daemon8ai/daemon8/releases).
 
+## v0.5.0-alpha.5 - 2026-06-07
+
+- Release workflow now creates the GitHub Release and verifies public
+  assets before the optional server artifact mirror, so missing deploy
+  secrets cannot block installer-visible release artifacts.
+- Installer smoke tests now install from locally served artifacts built
+  from the checked-out release source.
+- Shell and PowerShell installers remain release-asset based, fall back to
+  prerelease discovery when GitHub has no stable latest release, and no longer
+  hardcode stale example tags.
+- daemon8.ai installer script copies are kept in sync with the canonical
+  repository installers, with a dedicated hosted-installer verification script
+  for post-deploy smoke testing.
+- Missing configured file sources are treated as inactive sources instead
+  of warning-level read-through failures.
+- README and release docs now use the current smoke surface:
+  `daemon8 status`, `daemon8 connections`, `/health`, `/api/summary`,
+  and `/api/connections`.
+
 ## v0.5.0-alpha.4 - 2026-06-02
 
 - Recall pipeline processes provider transcripts through visibility

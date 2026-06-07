@@ -223,7 +223,34 @@ jobs:
           cd artifacts
           sha256sum * > checksums.sha256
 
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare.outputs.release_tag }}
+          prerelease: ${{ contains(needs.prepare.outputs.release_tag, '-') }}
+          files: artifacts/*
+          generate_release_notes: true
+
+      - name: Verify GitHub release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.prepare.outputs.release_tag }}
+        run: |
+          expected_assets="
+          checksums.sha256
+          daemon8-aarch64-apple-darwin.tar.gz
+          daemon8-aarch64-unknown-linux-gnu.tar.gz
+          daemon8-mcp-server-aarch64-apple-darwin.tar.gz
+          daemon8-x86_64-apple-darwin.tar.gz
+          daemon8-x86_64-pc-windows-msvc.zip
+          daemon8-x86_64-unknown-linux-gnu.tar.gz
+          "
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$VERSION" --jq '.assets[].name' | sort > actual-assets.txt
+          printf '%s\n' "$expected_assets" | sed '/^$/d' | sort > expected-assets.txt
+          diff -u expected-assets.txt actual-assets.txt
+
       - name: Validate server upload configuration
+        id: server-upload-config
         run: |
           set_count=0
           for name in DEPLOY_HOST DEPLOY_USER DEPLOY_KEY DEPLOY_PATH; do
@@ -235,12 +262,19 @@ jobs:
               set_count=$((set_count + 1))
             fi
           done
+          if [ "$set_count" -eq 0 ]; then
+            echo "should_upload=false" >> "$GITHUB_OUTPUT"
+            echo "Server upload skipped: DEPLOY_* secrets are not configured."
+            exit 0
+          fi
           if [ "$set_count" -ne 4 ]; then
-            echo "DEPLOY_HOST, DEPLOY_USER, DEPLOY_KEY, and DEPLOY_PATH are required before creating a GitHub release" >&2
+            echo "DEPLOY_HOST, DEPLOY_USER, DEPLOY_KEY, and DEPLOY_PATH must be configured together for server upload" >&2
             exit 1
           fi
+          echo "should_upload=true" >> "$GITHUB_OUTPUT"
 
       - name: Upload to server
+        if: steps.server-upload-config.outputs.should_upload == 'true'
         run: |
           VERSION="${{ needs.prepare.outputs.release_tag }}"
           DEPLOY_HOST="$(printf '%s' "$DEPLOY_HOST" | tr -d '\r' | xargs)"
@@ -252,11 +286,3 @@ jobs:
           ssh -o StrictHostKeyChecking=no -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p $DEPLOY_PATH/$VERSION"
           scp -o StrictHostKeyChecking=no -i ~/.ssh/deploy_key artifacts/* "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/$VERSION/"
           ssh -o StrictHostKeyChecking=no -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" "ln -sfn $DEPLOY_PATH/$VERSION $DEPLOY_PATH/latest"
-
-      - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ needs.prepare.outputs.release_tag }}
-          prerelease: ${{ contains(needs.prepare.outputs.release_tag, '-') }}
-          files: artifacts/*
-          generate_release_notes: true

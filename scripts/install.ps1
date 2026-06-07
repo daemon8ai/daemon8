@@ -66,72 +66,15 @@ function Wait-Daemon8Port {
     Write-Host "  ! Check status with: $Daemon8Exe status" -ForegroundColor Yellow
 }
 
-function Repair-Daemon8Config {
-    if (-not $env:APPDATA) {
-        return
-    }
-
-    $ConfigPath = Join-Path $env:APPDATA "daemon8\daemon8\config\config.toml"
-    if (-not (Test-Path $ConfigPath)) {
-        return
-    }
-
-    $Lines = Get-Content $ConfigPath
-    $Changed = $false
-    $Skipping = $false
-    $InServer = $false
-    $PortUpdated = $false
-    $Next = New-Object System.Collections.Generic.List[string]
-
-    foreach ($Line in $Lines) {
-        if ($Line -match '^\s*\[licensing\]\s*(#.*)?$') {
-            $Changed = $true
-            $Skipping = $true
-            continue
-        }
-
-        if ($Skipping -and $Line -match '^\s*\[[^\]]+\]\s*(#.*)?$') {
-            $Skipping = $false
-        }
-
-        if (-not $Skipping) {
-            if ($Line -match '^\s*\[server\]\s*(#.*)?$') {
-                $InServer = $true
-                $Next.Add($Line)
-                continue
-            }
-
-            if ($Line -match '^\s*\[[^\]]+\]\s*(#.*)?$') {
-                $InServer = $false
-            }
-
-            if ($InServer -and $Line -match '^(\s*port\s*=\s*)9077(\s*(#.*)?)$') {
-                $Next.Add("$($Matches[1])8888$($Matches[2])")
-                $Changed = $true
-                $PortUpdated = $true
-                continue
-            }
-
-            $Next.Add($Line)
-        }
-    }
-
-    if ($Changed) {
-        $Stamp = Get-Date -Format "yyyyMMddHHmmss"
-        $BackupPath = "$ConfigPath.bak-$Stamp"
-        Copy-Item $ConfigPath $BackupPath -Force
-        Set-Content -Path $ConfigPath -Value $Next -Encoding UTF8
-        if ($PortUpdated) {
-            Write-Host "  + Updated stale server.port 9077 -> 8888" -ForegroundColor Green
-        }
-        if ($Lines -match '^\s*\[licensing\]\s*(#.*)?$') {
-            Write-Host "  + Removed stale [licensing] config section" -ForegroundColor Green
-        }
-        Write-Host "  Backup: $BackupPath" -ForegroundColor DarkGray
-    }
-}
-
 function Resolve-Daemon8Version {
+    if ($ReleaseBaseUrl) {
+        if ($Version -ne "latest") {
+            return $Version
+        }
+
+        return "custom"
+    }
+
     if ($Version -ne "latest") {
         return $Version
     }
@@ -143,13 +86,13 @@ function Resolve-Daemon8Version {
     } catch {
         $Releases = @(Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases?per_page=1" -Headers $Headers -UseBasicParsing)
         if ($Releases.Count -eq 0) {
-            throw "Could not resolve the latest daemon8 release. Set DAEMON8_VERSION to a tag, for example: DAEMON8_VERSION=v0.5.0-alpha.3"
+            throw "Could not resolve the latest daemon8 release. Set DAEMON8_VERSION to a tag, for example: DAEMON8_VERSION=vX.Y.Z-alpha.N"
         }
         $Release = $Releases[0]
     }
 
     if (-not $Release.tag_name) {
-        throw "Could not resolve the latest daemon8 release. Set DAEMON8_VERSION to a tag, for example: DAEMON8_VERSION=v0.5.0-alpha.3"
+        throw "Could not resolve the latest daemon8 release. Set DAEMON8_VERSION to a tag, for example: DAEMON8_VERSION=vX.Y.Z-alpha.N"
     }
 
     return $Release.tag_name
@@ -202,33 +145,35 @@ $ChecksumsFile = Join-Path $Tmp "checksums.sha256"
 
 try {
     Invoke-WebRequest -Uri $ChecksumsUrl -OutFile $ChecksumsFile -UseBasicParsing
-    $ExpectedLine = Get-Content $ChecksumsFile | Where-Object {
-        $Parts = $_ -split '\s+'
-        $Parts.Length -ge 2 -and $Parts[1] -eq $ArchiveName
-    } | Select-Object -First 1
-    if ($ExpectedLine) {
-        $Expected = ($ExpectedLine -split '\s+')[0]
-        $Actual = (Get-FileHash -Path $Archive -Algorithm SHA256).Hash.ToLower()
-        if ($Expected -eq $Actual) {
-            Write-Host "  + SHA-256 verified" -ForegroundColor Green
-        } else {
-            Write-Host "  ! Checksum verification failed!" -ForegroundColor Red
-            Write-Host "  ! Expected: $Expected" -ForegroundColor Red
-            Write-Host "  ! Got:      $Actual" -ForegroundColor Red
-            Write-Host "  ! The downloaded file may be corrupted. Aborting." -ForegroundColor Red
-            Remove-Item -Recurse -Force $Tmp -ErrorAction SilentlyContinue
-            throw "daemon8 installer failed checksum verification"
-        }
-    } else {
-        Write-Host "  ! No checksum entry for $ArchiveName. Aborting." -ForegroundColor Red
-        Remove-Item -Recurse -Force $Tmp -ErrorAction SilentlyContinue
-        throw "daemon8 installer failed checksum verification"
-    }
 } catch {
     Write-Host "  ! Checksum file not available. Aborting." -ForegroundColor Red
     Remove-Item -Recurse -Force $Tmp -ErrorAction SilentlyContinue
     throw "daemon8 installer failed checksum verification"
 }
+
+$ExpectedLine = Get-Content $ChecksumsFile | Where-Object {
+    $Parts = $_ -split '\s+'
+    $Parts.Length -ge 2 -and $Parts[1] -eq $ArchiveName
+} | Select-Object -First 1
+
+if (-not $ExpectedLine) {
+    Write-Host "  ! No checksum entry for $ArchiveName. Aborting." -ForegroundColor Red
+    Remove-Item -Recurse -Force $Tmp -ErrorAction SilentlyContinue
+    throw "daemon8 installer failed checksum verification"
+}
+
+$Expected = ($ExpectedLine -split '\s+')[0]
+$Actual = (Get-FileHash -Path $Archive -Algorithm SHA256).Hash.ToLower()
+if ($Expected -ne $Actual) {
+    Write-Host "  ! Checksum verification failed!" -ForegroundColor Red
+    Write-Host "  ! Expected: $Expected" -ForegroundColor Red
+    Write-Host "  ! Got:      $Actual" -ForegroundColor Red
+    Write-Host "  ! The downloaded file may be corrupted. Aborting." -ForegroundColor Red
+    Remove-Item -Recurse -Force $Tmp -ErrorAction SilentlyContinue
+    throw "daemon8 installer failed checksum verification"
+}
+
+Write-Host "  + SHA-256 verified" -ForegroundColor Green
 
 Expand-Archive -Path $Archive -DestinationPath $Tmp -Force
 
@@ -257,8 +202,6 @@ if ($CurrentPath -notlike "*$InstallDir*") {
 
 Write-Host "  + Installed to $InstallDir\$Binary.exe" -ForegroundColor Green
 
-Repair-Daemon8Config
-
 Remove-Item -Recurse -Force $Tmp -ErrorAction SilentlyContinue
 
 Write-Host ""
@@ -270,7 +213,7 @@ if ($env:DAEMON8_INSTALLER_SKIP_SERVICE -eq "1") {
 }
 
 $Daemon8Exe = Join-Path $InstallDir "$Binary.exe"
-$ServiceInstallOutput = @(& $Daemon8Exe service install --yes 2>&1)
+$ServiceInstallOutput = @(& $Daemon8Exe service install 2>&1)
 if ($LASTEXITCODE -ne 0) {
     $ServiceText = ($ServiceInstallOutput | Out-String)
     if ($ServiceText -match "Access is denied") {

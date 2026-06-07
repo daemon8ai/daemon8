@@ -23,7 +23,6 @@ workspace_version="$(
 
 [ -n "$workspace_version" ] || fail "workspace package version not found"
 command -v jq >/dev/null 2>&1 || fail "jq is required for release metadata checks"
-command -v curl >/dev/null 2>&1 || fail "curl is required for release URL checks"
 
 if [ "$(sed -n '1p' .gitignore)" != ".*" ] || [ "$(sed -n '2p' .gitignore)" != "*.md" ]; then
   fail ".gitignore must start with default-deny rules: .* then *.md"
@@ -43,9 +42,6 @@ if [ -n "$unexpected_tracked_context" ]; then
   printf '%s\n' "$unexpected_tracked_context" >&2
   fail "tracked hidden/markdown files must be explicitly allowlisted"
 fi
-
-curl -fsSIL https://daemon8.ai/install.sh >/dev/null || fail "public shell installer URL must be reachable"
-curl -fsSIL https://daemon8.ai/install.ps1 >/dev/null || fail "public PowerShell installer URL must be reachable"
 
 awk -v want="$workspace_version" '
   /^daemon8-/ && $0 ~ /version =/ {
@@ -74,9 +70,13 @@ if [[ "$ref" == v* ]]; then
 fi
 
 bash -n scripts/install.sh
+bash -n scripts/installer-artifact-smoke.sh
+bash -n scripts/verify-landing-installers.sh
+bash -n scripts/verify-hosted-installers.sh
 
 if command -v pwsh >/dev/null 2>&1; then
   pwsh -NoLogo -NoProfile -Command "\$ErrorActionPreference='Stop'; [scriptblock]::Create((Get-Content -Raw 'scripts/install.ps1')) | Out-Null"
+  pwsh -NoLogo -NoProfile -Command "\$ErrorActionPreference='Stop'; [scriptblock]::Create((Get-Content -Raw 'scripts/installer-artifact-smoke.ps1')) | Out-Null"
 fi
 
 tmp_dir="$(mktemp -d)"
@@ -105,23 +105,43 @@ if grep -R -n -E 'cargo (install|binstall) daemon8|crates\.io|cargo-binstall|Hom
 fi
 
 if grep -n "if: env.DEPLOY_HOST != ''" .github/workflows/release.yml; then
-  fail "release workflow must not create a GitHub release when server upload is skipped"
+  fail "release workflow must not gate GitHub release creation on server upload config"
 fi
-upload_line="$(grep -n 'name: Upload to server' .github/workflows/release.yml | cut -d: -f1)"
 release_lines="$(grep -n 'softprops/action-gh-release' .github/workflows/release.yml | cut -d: -f1)"
 release_line_count="$(printf '%s\n' "$release_lines" | sed '/^$/d' | wc -l | tr -d ' ')"
 release_line="$(printf '%s\n' "$release_lines" | sed '/^$/d' | head -n 1)"
-if [ -z "$upload_line" ] || [ "$release_line_count" != "1" ] || [ "$upload_line" -ge "$release_line" ]; then
-  fail "release workflow must upload to server before exactly one GitHub release step"
+upload_line="$(grep -n 'name: Upload to server' .github/workflows/release.yml | cut -d: -f1)"
+verify_release_line="$(grep -n 'name: Verify GitHub release assets' .github/workflows/release.yml | cut -d: -f1)"
+if [ "$release_line_count" != "1" ] || [ -z "$release_line" ]; then
+  fail "release workflow must contain exactly one GitHub release step"
 fi
-next_step_line="$(awk -v start="$upload_line" 'NR > start && /^[[:space:]]+- name:/ { print NR; exit }' .github/workflows/release.yml)"
-if [ -n "$next_step_line" ]; then
-  upload_end_line=$((next_step_line - 1))
+if [ -n "$upload_line" ] && [ "$release_line" -ge "$upload_line" ]; then
+  fail "release workflow must create the GitHub release before server upload"
+fi
+if [ -z "$verify_release_line" ] || [ "$verify_release_line" -le "$release_line" ]; then
+  fail "release workflow must verify GitHub release assets after release creation"
+fi
+release_step_line="$(grep -n 'name: Create GitHub release' .github/workflows/release.yml | cut -d: -f1)"
+next_step_line="$(awk -v start="$release_step_line" 'NR > start && /^[[:space:]]+- name:/ { print NR; exit }' .github/workflows/release.yml)"
+release_step_end_line=$((next_step_line - 1))
+if sed -n "${release_step_line},${release_step_end_line}p" .github/workflows/release.yml | grep -n '^[[:space:]]*if:'; then
+  fail "GitHub release step must not be conditional"
+fi
+hardcoded_alpha_tag='v[0-9]+\.[0-9]+\.[0-9]+-alpha\.[0-9]+'
+if grep -R -n -E "$hardcoded_alpha_tag" scripts/install.sh scripts/install.ps1; then
+  fail "installer fallback examples must not hardcode old alpha tags"
+fi
+if grep -R -n 'releases/latest/download' scripts/install.sh scripts/install.ps1; then
+  fail "installers must use explicit resolved release tags, not releases/latest/download"
+fi
+if ! grep -q 'releases?per_page=1' scripts/install.sh || ! grep -q 'releases?per_page=1' scripts/install.ps1; then
+  fail "installers must fall back to prerelease discovery during alpha"
+fi
+
+if [ -n "${DAEMON8_LANDING_DIR:-}" ] || [ -d "$ROOT_DIR/../daemon8-landing" ]; then
+  bash scripts/verify-landing-installers.sh
 else
-  upload_end_line="$(wc -l < .github/workflows/release.yml | tr -d ' ')"
-fi
-if sed -n "${upload_line},${upload_end_line}p" .github/workflows/release.yml | grep -n '^[[:space:]]*if:'; then
-  fail "server upload step must not be conditional"
+  printf 'release-check: landing installer sync skipped (set DAEMON8_LANDING_DIR or check out ../daemon8-landing)\n'
 fi
 
 cargo metadata --no-deps --format-version 1 >/dev/null

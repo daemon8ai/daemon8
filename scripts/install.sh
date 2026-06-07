@@ -64,6 +64,15 @@ extract_tag_name() {
 }
 
 resolve_version() {
+  if [ -n "${DAEMON8_RELEASE_BASE_URL:-}" ]; then
+    if [ "$VERSION" != "latest" ]; then
+      echo "$VERSION"
+    else
+      echo "custom"
+    fi
+    return
+  fi
+
   if [ "$VERSION" != "latest" ]; then
     echo "$VERSION"
     return
@@ -82,7 +91,7 @@ resolve_version() {
 
   if [ -z "$tag" ]; then
     err "Could not resolve the latest daemon8 release."
-    err "Set DAEMON8_VERSION to a tag, for example: DAEMON8_VERSION=v0.5.0-alpha.3"
+    err "Set DAEMON8_VERSION to a tag, for example: DAEMON8_VERSION=vX.Y.Z-alpha.N"
     exit 1
   fi
 

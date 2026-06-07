@@ -16,7 +16,7 @@ Windows PowerShell:
 iwr https://daemon8.ai/install.ps1 -UseB | iex
 ```
 
-The release installers download the matching GitHub Release artifact, verify `checksums.sha256`, install the `daemon8` binary, and run `daemon8 service install`. When `DAEMON8_VERSION` is unset, installers resolve the newest public release, including prereleases during alpha.
+The release installers download the matching GitHub Release artifact, verify `checksums.sha256`, install the `daemon8` binary, and run `daemon8 service install`. When `DAEMON8_VERSION` is unset, installers try GitHub's latest release first; if that is unavailable during alpha, they fall back to the newest public prerelease.
 
 Install destination:
 
@@ -113,7 +113,7 @@ The release workflow builds these targets for `v*` tags:
 
 Artifacts are packaged as `.tar.gz` on Unix targets and `.zip` on Windows. Each release also includes `checksums.sha256`.
 
-The workflow creates the GitHub Release after the server artifact upload step succeeds. Required server upload secrets are validated in the workflow before release creation.
+The GitHub Release is the public installer source of truth. The workflow creates the GitHub Release and verifies its assets before the optional server artifact mirror. Server upload secrets are validated only when that mirror is configured. The installer smoke workflow serves the checked-out release artifact locally before running the installers, so it verifies the artifact being built rather than GitHub's current `latest` pointer. `bash scripts/verify-landing-installers.sh` must pass before deploying daemon8.ai. After deploying daemon8.ai and purging any cached installer responses, run `bash scripts/verify-hosted-installers.sh` before manual installer smoke testing.
 
 ## Tagging a Release
 

@@ -4,7 +4,7 @@
 use std::collections::{VecDeque, hash_map::DefaultHasher};
 use std::fs::File;
 use std::hash::{Hash, Hasher};
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{ErrorKind, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -67,6 +67,7 @@ pub async fn read_through_file_sources(
 
         let canonical_path = match canonical_source_path(&resolved_path) {
             Ok(path) => path,
+            Err(err) if err.kind() == ErrorKind::NotFound => continue,
             Err(err) => {
                 errors.push(ReadThroughError {
                     source_id: file_source.id.clone(),
@@ -84,6 +85,7 @@ pub async fn read_through_file_sources(
 
         let fingerprint = match source_file_fingerprint(&canonical_path) {
             Ok(fp) => fp,
+            Err(err) if err.kind() == ErrorKind::NotFound => continue,
             Err(err) => {
                 errors.push(ReadThroughError {
                     source_id: file_source.id.clone(),
@@ -113,6 +115,7 @@ pub async fn read_through_file_sources(
 
         let window = match read_complete_window(&canonical_path, cursor_position) {
             Ok(window) => window,
+            Err(err) if err.kind() == ErrorKind::NotFound => continue,
             Err(err) => {
                 errors.push(ReadThroughError {
                     source_id: file_source.id.clone(),
@@ -721,7 +724,7 @@ sources:
     }
 
     #[tokio::test]
-    async fn read_through_handles_missing_file() {
+    async fn read_through_skips_missing_file_sources() {
         let tmp = tempfile::tempdir().unwrap();
         write_test_config(
             tmp.path(),
@@ -740,7 +743,62 @@ sources:
             read_through_file_sources(tmp.path(), &config, &Filter::default(), &cursors).await;
 
         assert_eq!(result.observations.len(), 0);
+        assert!(result.errors.is_empty());
+    }
+
+    #[tokio::test]
+    async fn read_through_missing_file_does_not_block_present_sources() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("app.log"), "line\n").unwrap();
+        write_test_config(
+            tmp.path(),
+            r#"  - id: missing.logs
+    service: missing
+    kind: file
+    parser: line
+    path: "$PRJ_ROOT/missing.log"
+  - id: app.logs
+    service: app
+    kind: file
+    parser: line
+    path: "$PRJ_ROOT/app.log"
+"#,
+        );
+        let config = load_test_config(tmp.path());
+        let store = SurrealStore::memory().await.unwrap();
+        let cursors = store.cursor_store();
+
+        let result =
+            read_through_file_sources(tmp.path(), &config, &Filter::default(), &cursors).await;
+
+        assert!(result.errors.is_empty());
+        assert_eq!(result.observations.len(), 1);
+        assert_eq!(result.observations[0].source.as_deref(), Some("app.logs"));
+    }
+
+    #[tokio::test]
+    async fn read_through_surfaces_present_directory_read_errors() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("app.log")).unwrap();
+        write_test_config(
+            tmp.path(),
+            r#"  - id: app.logs
+    service: app
+    kind: file
+    parser: line
+    path: "$PRJ_ROOT/app.log"
+"#,
+        );
+        let config = load_test_config(tmp.path());
+        let store = SurrealStore::memory().await.unwrap();
+        let cursors = store.cursor_store();
+
+        let result =
+            read_through_file_sources(tmp.path(), &config, &Filter::default(), &cursors).await;
+
+        assert_eq!(result.observations.len(), 0);
         assert_eq!(result.errors.len(), 1);
+        assert_eq!(result.errors[0].source_id, "app.logs");
         assert_eq!(result.errors[0].code, "read_failed");
     }
 

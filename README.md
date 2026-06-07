@@ -67,6 +67,7 @@ iwr https://daemon8.ai/install.ps1 -UseB | iex
 ```
 
 The installer downloads the release, verifies a checksum, installs the `daemon8` binary, registers daemon8 as a user-level service, and can add daemon8 MCP settings for Claude Code, Gemini CLI, and Codex.
+By default, the installer resolves GitHub's newest public release; during alpha, if GitHub has no stable `latest` release, it falls back to the newest public prerelease unless `DAEMON8_VERSION` is set.
 
 > [!IMPORTANT]
 > Finish the instruction-file step during install. This is _the one place_ daemon8 needs manual setup from you: let the installer add the daemon8 instruction block to your global agent instruction files (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`), or choose print/copy and add it yourself. That standing instruction is what makes agents connect first, use daemon8 for logs/browser/conversation state, and run the checkpointed debug loop instead of falling back to guessing.
@@ -261,6 +262,7 @@ The daemon serves local endpoints for direct integrations:
 | `POST /ingest` | Write one observation. |
 | `POST /ingest/batch` | Write multiple observations. |
 | `GET /api/observe` | Query stored observations. |
+| `GET /api/summary` | Inspect daemon runtime summary state. |
 | `GET /api/stream` | Stream observations over SSE. |
 | `GET /api/connections` | Inspect browser, app, and device feature state. |
 | `GET /api/lens`, `PUT /api/lens`, `DELETE /api/lens` | Inspect, set, or clear the observation lens. |
