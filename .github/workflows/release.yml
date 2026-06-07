@@ -135,7 +135,7 @@ jobs:
           path = "$SMOKE_ROOT/store"
           screenshot_path = "$SMOKE_ROOT/screens"
 
-          [adb]
+          [device.adb]
           enabled = false
           EOF
           smoke/${{ env.BINARY_NAME }} --config "$SMOKE_ROOT/config.toml" status --json
@@ -188,7 +188,7 @@ jobs:
           path = "$StorePath"
           screenshot_path = "$ScreensPath"
 
-          [adb]
+          [device.adb]
           enabled = false
           "@ | Set-Content -Path $ConfigPath -NoNewline
           .\smoke\daemon8.exe --config $ConfigPath status --json

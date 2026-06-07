@@ -5,10 +5,15 @@ use anyhow::{Context, Result};
 #[cfg(target_os = "macos")]
 use std::process::Output;
 use std::{
-    fs::{self, OpenOptions},
-    io::{self, BufRead, BufReader, IsTerminal, Write},
+    fs,
+    io::{self, IsTerminal, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
+};
+#[cfg(unix)]
+use std::{
+    fs::OpenOptions,
+    io::{BufRead, BufReader},
 };
 
 use daemon8_providers::Provider;
@@ -58,10 +63,12 @@ fn binary_path() -> Result<PathBuf> {
         .context("failed to resolve binary path")
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn home_dir() -> PathBuf {
     dirs::home_dir().unwrap_or_else(|| PathBuf::from("."))
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn cargo_bin_dir() -> String {
     home_dir().join(".cargo/bin").display().to_string()
 }
@@ -211,10 +218,7 @@ pub(crate) fn request_macos_screen_recording_permission() -> bool {
     objc2_core_graphics::CGRequestScreenCaptureAccess()
 }
 
-#[cfg(any(
-    not(target_os = "macos"),
-    all(target_os = "macos", not(feature = "xcap"))
-))]
+#[cfg(all(target_os = "macos", not(feature = "xcap")))]
 pub(crate) fn request_macos_screen_recording_permission() -> bool {
     true
 }

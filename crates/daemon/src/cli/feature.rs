@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LicenseRef-FCL-1.0-ALv2
 // Copyright (c) 2026 Havy.tech, LLC
 
+#[cfg(target_os = "macos")]
 use std::io::IsTerminal;
 use std::net::SocketAddrV4;
 use std::path::{Path, PathBuf};
